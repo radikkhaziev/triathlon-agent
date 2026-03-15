@@ -44,7 +44,7 @@ async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from data.database import get_daily_metrics
 
-    row = get_daily_metrics(date.today())
+    row = await get_daily_metrics(date.today())
     if row is None:
         await update.message.reply_text("No data for today yet. Try /sync first.")
         return
@@ -72,8 +72,8 @@ async def week_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
-    activities = get_activities(week_start, today)
-    metrics = get_daily_metrics_range(week_start, today)
+    activities = await get_activities(week_start, today)
+    metrics = await get_daily_metrics_range(week_start, today)
 
     if not activities and not metrics:
         await update.message.reply_text("No data for this week yet.")
@@ -102,7 +102,7 @@ async def week_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def goal_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from data.database import get_daily_metrics
 
-    row = get_daily_metrics(date.today())
+    row = await get_daily_metrics(date.today())
     goal = _build_goal_progress(row)
     await update.message.reply_text(format_goal_message(goal), parse_mode="Markdown")
 

@@ -5,6 +5,9 @@ from datetime import date
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
+from data.database import save_daily_metrics
+from data.garmin_client import GarminClient
+from data.models import SleepData
 
 logger = logging.getLogger(__name__)
 
@@ -12,22 +15,30 @@ logger = logging.getLogger(__name__)
 def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
-    scheduler.add_job(
-        garmin_sync_job,
-        trigger="cron",
-        hour=settings.MORNING_REPORT_HOUR,
-        minute=max(0, settings.MORNING_REPORT_MINUTE - 30),
-        id="garmin_sync",
-        replace_existing=True,
-    )
+    # scheduler.add_job(
+    #     garmin_sync_job,
+    #     trigger="cron",
+    #     hour=settings.MORNING_REPORT_HOUR,
+    #     minute=max(0, settings.MORNING_REPORT_MINUTE - 30),
+    #     id="garmin_sync",
+    #     replace_existing=True,
+    # )
+
+    # scheduler.add_job(
+    #     morning_report_job,
+    #     trigger="cron",
+    #     hour=settings.MORNING_REPORT_HOUR,
+    #     minute=settings.MORNING_REPORT_MINUTE,
+    #     id="morning_report",
+    #     replace_existing=True,
+    # )
 
     scheduler.add_job(
-        morning_report_job,
+        daily_metrics_job,
         trigger="cron",
-        hour=settings.MORNING_REPORT_HOUR,
-        minute=settings.MORNING_REPORT_MINUTE,
-        id="morning_report",
-        replace_existing=True,
+        hour="5-11",
+        minute="*/15",
+        id="daily_metrics",
     )
 
     return scheduler
@@ -77,7 +88,7 @@ async def garmin_sync_job() -> None:
                 tss = calc_swim_tss(act.distance_meters, act.duration_seconds, css)
 
         act_date = act.start_time.date()
-        save_activity(
+        await save_activity(
             activity_id=act.activity_id,
             dt=act_date,
             sport=act.sport.value,
@@ -91,7 +102,7 @@ async def garmin_sync_job() -> None:
         )
 
         if tss is not None:
-            save_tss_history(act_date, act.sport.value, tss)
+            await save_tss_history(act_date, act.sport.value, tss)
 
     logger.info("Garmin sync complete: %d activities processed", len(activities))
 
@@ -123,17 +134,21 @@ async def morning_report_job() -> str:
 
     sleep = await asyncio.to_thread(garmin.get_sleep, today_str)
     hrv = await asyncio.to_thread(garmin.get_hrv, today_str)
-    resting_hr = await asyncio.to_thread(garmin.get_resting_hr, today_str) or resting_hr_baseline
+    resting_hr = (
+        await asyncio.to_thread(garmin.get_resting_hr, today_str) or resting_hr_baseline
+    )
     stress = await asyncio.to_thread(garmin.get_stress, today_str)
 
-    body_battery_list = await asyncio.to_thread(garmin.get_body_battery, today_str, today_str)
+    body_battery_list = await asyncio.to_thread(
+        garmin.get_body_battery, today_str, today_str
+    )
     body_battery = body_battery_list[0].start_value if body_battery_list else 50
 
     readiness_score, readiness_level = calculate_readiness(
         hrv, sleep, body_battery, resting_hr, resting_hr_baseline
     )
 
-    tss_rows = get_tss_history(days=42)
+    tss_rows = await get_tss_history(days=42)
     daily_tss: dict[str, float] = {}
     sport_tss: dict[str, dict[str, float]] = {}
     for row in tss_rows:
@@ -160,10 +175,10 @@ async def morning_report_job() -> str:
         else 0
     )
 
-    save_daily_metrics(
+    await save_daily_metrics(
         today,
-        sleep_score=sleep.sleep_score,
-        sleep_duration=sleep.duration_seconds,
+        sleep_score=sleep.score,
+        sleep_duration=sleep.duration,
         hrv_last=hrv.hrv_last_night,
         hrv_baseline=hrv.hrv_weekly_avg,
         body_battery=body_battery,
@@ -184,7 +199,7 @@ async def morning_report_job() -> str:
         readiness_score=readiness_score,
         readiness_level=readiness_level,
         hrv_delta_pct=hrv_delta_pct,
-        sleep_score=sleep.sleep_score,
+        sleep_score=sleep.score,
         body_battery_morning=body_battery,
         resting_hr=resting_hr,
         ctl=ctl,
@@ -195,7 +210,7 @@ async def morning_report_job() -> str:
         ctl_run=ctl_run,
     )
 
-    workout_rows = get_scheduled_workouts(today)
+    workout_rows = await get_scheduled_workouts(today)
     workout = None
     if workout_rows:
         w = workout_rows[0]
@@ -214,10 +229,10 @@ async def morning_report_job() -> str:
             planned_tss=w.planned_tss,
         )
 
-    row = get_daily_metrics(today)
+    row = await get_daily_metrics(today)
     goal = _build_goal_progress(row)
 
-    sleep_hours = sleep.duration_seconds / 3600
+    sleep_hours = sleep.duration / 3600
     sleep_duration_str = f"{int(sleep_hours)}h {int((sleep_hours % 1) * 60)}m"
 
     agent = ClaudeAgent()
@@ -232,7 +247,7 @@ async def morning_report_job() -> str:
         goal=goal,
     )
 
-    save_daily_metrics(today, ai_recommendation=ai_text)
+    await save_daily_metrics(today, ai_recommendation=ai_text)
 
     message = format_morning_message(metrics, workout, goal, ai_text)
 
@@ -252,3 +267,17 @@ async def morning_report_job() -> str:
         )
 
     return message
+
+
+async def daily_metrics_job() -> str:
+    today = date.today()
+    today_str = str(today)
+
+    garmin = GarminClient(
+        settings.GARMIN_EMAIL,
+        settings.GARMIN_PASSWORD.get_secret_value(),
+    )
+
+    sleep: SleepData = await asyncio.to_thread(garmin.get_sleep, today_str)
+
+    await save_daily_metrics(today, sleep_data=sleep)

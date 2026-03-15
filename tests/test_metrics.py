@@ -112,9 +112,8 @@ class TestCalculateReadiness:
 
     def _make_sleep(self, score: int) -> SleepData:
         return SleepData(
-            date=date(2026, 1, 1), sleep_score=score,
-            duration_seconds=28800, deep_sleep_seconds=7200,
-            rem_sleep_seconds=5400, awake_seconds=1800,
+            date=date(2026, 1, 1), score=score,
+            duration=28800,
         )
 
     def test_perfect_conditions(self):
@@ -152,9 +151,8 @@ class TestCalculateReadiness:
     def test_zero_hrv_weekly_avg(self):
         hrv = HRVData(date=date(2026, 1, 1), hrv_weekly_avg=0, hrv_last_night=50, status="Unknown")
         sleep = SleepData(
-            date=date(2026, 1, 1), sleep_score=80,
-            duration_seconds=28800, deep_sleep_seconds=7200,
-            rem_sleep_seconds=5400, awake_seconds=1800,
+            date=date(2026, 1, 1), score=80,
+            duration=28800,
         )
         score, level = calculate_readiness(hrv, sleep, 70, 42, 42)
         assert 0 <= score <= 100

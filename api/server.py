@@ -13,14 +13,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-from data.database import init_db
-
 app = FastAPI(title="Triathlon Agent API", version="0.1.0")
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
 
 _allowed_origins = [settings.WEBAPP_URL] if settings.WEBAPP_URL else []
 app.add_middleware(

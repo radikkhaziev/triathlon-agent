@@ -11,7 +11,13 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Use the URL from config if set programmatically (e.g. tests),
+# otherwise fall back to settings.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option(
+        "sqlalchemy.url",
+        settings.DATABASE_URL.replace("+asyncpg", ""),
+    )
 
 target_metadata = Base.metadata
 

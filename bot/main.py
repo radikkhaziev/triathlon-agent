@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler
@@ -23,25 +24,21 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    from data.database import init_db
-
-    init_db()
-
     token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
     app = ApplicationBuilder().token(token).build()
 
-    app.add_handler(CommandHandler("start", start_handler))
-    app.add_handler(CommandHandler("report", report_handler))
-    app.add_handler(CommandHandler("status", status_handler))
-    app.add_handler(CommandHandler("week", week_handler))
-    app.add_handler(CommandHandler("goal", goal_handler))
-    app.add_handler(CommandHandler("zones", zones_handler))
-    app.add_handler(CommandHandler("settings", settings_handler))
-    app.add_handler(CommandHandler("sync", sync_handler))
-    app.add_handler(CallbackQueryHandler(callback_handler))
+    # app.add_handler(CommandHandler("start", start_handler))
+    # app.add_handler(CommandHandler("report", report_handler))
+    # app.add_handler(CommandHandler("status", status_handler))
+    # app.add_handler(CommandHandler("week", week_handler))
+    # app.add_handler(CommandHandler("goal", goal_handler))
+    # app.add_handler(CommandHandler("zones", zones_handler))
+    # app.add_handler(CommandHandler("settings", settings_handler))
+    # app.add_handler(CommandHandler("sync", sync_handler))
+    # app.add_handler(CallbackQueryHandler(callback_handler))
 
     scheduler = create_scheduler()
     scheduler.start()

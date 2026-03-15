@@ -187,11 +187,11 @@ def calculate_readiness(
         score += 5  # bonus for good recovery
 
     # Sleep component (weight: 30%)
-    if sleep.sleep_score < 50:
+    if sleep.score < 50:
         score -= 30
-    elif sleep.sleep_score < 65:
+    elif sleep.score < 65:
         score -= 15
-    elif sleep.sleep_score < 75:
+    elif sleep.score < 75:
         score -= 7
 
     # Body Battery component (weight: 20%)

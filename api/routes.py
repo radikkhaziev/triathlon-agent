@@ -45,10 +45,10 @@ def health() -> dict:
 
 
 @router.get("/api/dashboard")
-def dashboard(authorization: str | None = Header(default=None)) -> dict:
+async def dashboard(authorization: str | None = Header(default=None)) -> dict:
     _verify_request(authorization)
     today = date.today()
-    row = get_daily_metrics(today)
+    row = await get_daily_metrics(today)
 
     if row is None:
         return {"date": str(today), "has_data": False}
@@ -74,14 +74,14 @@ def dashboard(authorization: str | None = Header(default=None)) -> dict:
 
 
 @router.get("/api/training-load")
-def training_load(
+async def training_load(
     days: int = 84,
     authorization: str | None = Header(default=None),
 ) -> dict:
     _verify_request(authorization)
     today = date.today()
     start = today - timedelta(days=days)
-    rows = get_daily_metrics_range(start, today)
+    rows = await get_daily_metrics_range(start, today)
 
     return {
         "dates": [r.date for r in rows],
@@ -92,14 +92,14 @@ def training_load(
 
 
 @router.get("/api/activities")
-def activities_list(
+async def activities_list(
     days: int = 28,
     authorization: str | None = Header(default=None),
 ) -> dict:
     _verify_request(authorization)
     today = date.today()
     start = today - timedelta(days=days)
-    rows = get_activities(start, today)
+    rows = await get_activities(start, today)
 
     return {
         "activities": [
@@ -118,7 +118,7 @@ def activities_list(
 
 
 @router.get("/api/goal")
-def goal_progress(authorization: str | None = Header(default=None)) -> dict:
+async def goal_progress(authorization: str | None = Header(default=None)) -> dict:
     _verify_request(authorization)
     event_date = settings.GOAL_EVENT_DATE
     weeks_remaining = max(0, (event_date - date.today()).days // 7)
@@ -127,7 +127,7 @@ def goal_progress(authorization: str | None = Header(default=None)) -> dict:
     bike_target = settings.GOAL_BIKE_CTL_TARGET
     run_target = settings.GOAL_RUN_CTL_TARGET
 
-    row = get_daily_metrics(date.today())
+    row = await get_daily_metrics(date.today())
     ctl_swim = (row.ctl_swim or 0) if row else 0
     ctl_bike = (row.ctl_bike or 0) if row else 0
     ctl_run = (row.ctl_run or 0) if row else 0
@@ -148,11 +148,11 @@ def goal_progress(authorization: str | None = Header(default=None)) -> dict:
 
 
 @router.get("/api/weekly-summary")
-def weekly_summary(authorization: str | None = Header(default=None)) -> dict:
+async def weekly_summary(authorization: str | None = Header(default=None)) -> dict:
     _verify_request(authorization)
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
-    rows = get_activities(week_start, today)
+    rows = await get_activities(week_start, today)
 
     by_sport: dict[str, dict] = {}
     for r in rows:
@@ -168,14 +168,14 @@ def weekly_summary(authorization: str | None = Header(default=None)) -> dict:
 
 
 @router.get("/api/scheduled")
-def scheduled_workouts(
+async def scheduled_workouts(
     days: int = 7,
     authorization: str | None = Header(default=None),
 ) -> dict:
     _verify_request(authorization)
     today = date.today()
     end = today + timedelta(days=days)
-    rows = get_scheduled_workouts_range(today, end)
+    rows = await get_scheduled_workouts_range(today, end)
 
     return {
         "workouts": [

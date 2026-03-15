@@ -25,7 +25,9 @@ class Settings(BaseSettings):
     # App
     API_BASE_URL: str = "https://your-api.railway.app"
     WEBAPP_URL: str = "https://your-app.vercel.app"
-    DATABASE_URL: str = "sqlite:///./triathlon.db"
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
+    )
 
     # Athlete thresholds
     ATHLETE_LTHR_RUN: int = 158

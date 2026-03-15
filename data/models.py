@@ -1,6 +1,7 @@
-from pydantic import BaseModel
 from datetime import date, datetime
 from enum import Enum
+
+from pydantic import BaseModel
 
 
 class SportType(str, Enum):
@@ -19,13 +20,13 @@ class ReadinessLevel(str, Enum):
 
 class SleepData(BaseModel):
     date: date
-    sleep_score: int
-    duration_seconds: int
-    deep_sleep_seconds: int
-    rem_sleep_seconds: int
-    awake_seconds: int
-    avg_overnight_hrv: float | None = None
-    avg_stress: float | None = None
+    score: int | None = None
+    duration: int | None = None
+    start: int | None = None
+    end: int | None = None
+    stress_avg: int | None = None
+    hrv_avg: int | None = None
+    heart_rate_avg: int | None = None
 
 
 class HRVData(BaseModel):
@@ -89,6 +90,74 @@ class ScheduledWorkout(BaseModel):
     description: str | None = None
     planned_duration_seconds: int | None = None
     planned_tss: float | None = None
+
+
+class HeartRateData(BaseModel):
+    date: date
+    resting_hr: float
+    max_hr: float
+    min_hr: float
+    avg_hr: float | None = None
+
+
+class DailyStats(BaseModel):
+    date: date
+    total_steps: int
+    total_distance_meters: float
+    active_calories: int
+    total_calories: int
+    intensity_minutes: int
+    floors_climbed: int
+
+
+class BodyCompositionData(BaseModel):
+    date: date
+    weight_kg: float | None = None
+    bmi: float | None = None
+    body_fat_pct: float | None = None
+    muscle_mass_kg: float | None = None
+    bone_mass_kg: float | None = None
+    body_water_pct: float | None = None
+
+
+class RespirationData(BaseModel):
+    date: date
+    avg_breathing_rate: float
+    lowest_breathing_rate: float | None = None
+    highest_breathing_rate: float | None = None
+
+
+class SpO2Data(BaseModel):
+    date: date
+    avg_spo2: float
+    lowest_spo2: float | None = None
+
+
+class MaxMetricsData(BaseModel):
+    date: date
+    vo2_max_run: float | None = None
+    vo2_max_bike: float | None = None
+
+
+class RacePrediction(BaseModel):
+    distance_name: str
+    predicted_time_seconds: float
+
+
+class EnduranceScoreData(BaseModel):
+    date: date
+    overall_score: int
+    rating: str | None = None
+
+
+class LactateThresholdData(BaseModel):
+    heart_rate: float | None = None
+    speed: float | None = None
+
+
+class CyclingFTPData(BaseModel):
+    ftp: float | None = None
+    ftp_date: date | None = None
 
 
 class DailyMetrics(BaseModel):

@@ -1,42 +1,51 @@
-"""SQLAlchemy models and CRUD operations for the triathlon training agent."""
+"""SQLAlchemy async models and CRUD operations for the triathlon training agent."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import Index, String, Integer, Float, Text, create_engine, func, select
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    Session,
-    sessionmaker,
-)
+from sqlalchemy import DateTime, Float, Integer, String, Text, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from config import settings
+from data.models import SleepData
 
 # ---------------------------------------------------------------------------
 # Engine / Session helpers
 # ---------------------------------------------------------------------------
 
 _engine = None
-_SessionLocal = None
+_SessionLocal: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine():
-    """Return a singleton SQLAlchemy engine."""
+    """Return a singleton async SQLAlchemy engine."""
     global _engine
     if _engine is None:
-        _engine = create_engine(settings.DATABASE_URL, echo=False)
+        _engine = create_async_engine(settings.DATABASE_URL, echo=False)
     return _engine
 
 
-def get_session() -> Session:
-    """Return a new SQLAlchemy session."""
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the async session factory (singleton)."""
     global _SessionLocal
     if _SessionLocal is None:
-        _SessionLocal = sessionmaker(bind=get_engine())
-    return _SessionLocal()
+        _SessionLocal = async_sessionmaker(bind=get_engine(), expire_on_commit=False)
+    return _SessionLocal
+
+
+@asynccontextmanager
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Yield an async session with automatic close."""
+    factory = get_session_factory()
+    session = factory()
+    try:
+        yield session
+    finally:
+        await session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -48,11 +57,6 @@ class Base(DeclarativeBase):
     pass
 
 
-def init_db() -> None:
-    """Create all tables if they don't exist."""
-    Base.metadata.create_all(get_engine())
-
-
 # ---------------------------------------------------------------------------
 # ORM Models
 # ---------------------------------------------------------------------------
@@ -62,29 +66,44 @@ class DailyMetricsRow(Base):
     __tablename__ = "daily_metrics"
 
     date: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
     sleep_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sleep_duration: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    hrv_last: Mapped[float | None] = mapped_column(Float, nullable=True)
-    hrv_baseline: Mapped[float | None] = mapped_column(Float, nullable=True)
-    body_battery: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    resting_hr: Mapped[float | None] = mapped_column(Float, nullable=True)
-    stress_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    readiness_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    readiness_level: Mapped[str | None] = mapped_column(String, nullable=True)
-    ctl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    atl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    tsb: Mapped[float | None] = mapped_column(Float, nullable=True)
-    ctl_swim: Mapped[float | None] = mapped_column(Float, nullable=True)
-    ctl_bike: Mapped[float | None] = mapped_column(Float, nullable=True)
-    ctl_run: Mapped[float | None] = mapped_column(Float, nullable=True)
-    ai_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    sleep_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sleep_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sleep_stress_avg: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sleep_hrv_avg: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sleep_heart_rate_avg: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # hrv_last: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # hrv_baseline: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # body_battery: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # resting_hr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # stress_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # readiness_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # readiness_level: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ctl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # atl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # tsb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ctl_swim: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ctl_bike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ctl_run: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ai_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ActivityRow(Base):
     __tablename__ = "activities"
 
-    activity_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    activity_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=False
+    )
     date: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     sport: Mapped[str | None] = mapped_column(String, nullable=True)
     duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -94,14 +113,18 @@ class ActivityRow(Base):
     avg_power: Mapped[float | None] = mapped_column(Float, nullable=True)
     norm_power: Mapped[float | None] = mapped_column(Float, nullable=True)
     tss: Mapped[float | None] = mapped_column(Float, nullable=True)
-    synced_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class ScheduledWorkoutRow(Base):
     __tablename__ = "scheduled_workouts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    scheduled_date: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    scheduled_date: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
     sport: Mapped[str | None] = mapped_column(String, nullable=True)
     workout_name: Mapped[str | None] = mapped_column(String, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -122,91 +145,57 @@ class TSSHistoryRow(Base):
 # ---------------------------------------------------------------------------
 
 
-def save_daily_metrics(
+async def save_daily_metrics(
     dt: date,
     *,
-    sleep_score: int | None = None,
-    sleep_duration: int | None = None,
-    hrv_last: float | None = None,
-    hrv_baseline: float | None = None,
-    body_battery: int | None = None,
-    resting_hr: float | None = None,
-    stress_score: int | None = None,
-    readiness_score: int | None = None,
-    readiness_level: str | None = None,
-    ctl: float | None = None,
-    atl: float | None = None,
-    tsb: float | None = None,
-    ctl_swim: float | None = None,
-    ctl_bike: float | None = None,
-    ctl_run: float | None = None,
-    ai_recommendation: str | None = None,
+    sleep_data: SleepData,
 ) -> DailyMetricsRow:
     """Insert or update a daily metrics row (upsert by date)."""
-    session = get_session()
-    try:
-        row = session.get(DailyMetricsRow, str(dt))
+
+    async with get_session() as session:
+        row = await session.get(DailyMetricsRow, str(dt))
         if row is None:
             row = DailyMetricsRow(date=str(dt))
             session.add(row)
 
-        # Update all provided fields
-        fields = {
-            "sleep_score": sleep_score,
-            "sleep_duration": sleep_duration,
-            "hrv_last": hrv_last,
-            "hrv_baseline": hrv_baseline,
-            "body_battery": body_battery,
-            "resting_hr": resting_hr,
-            "stress_score": stress_score,
-            "readiness_score": readiness_score,
-            "readiness_level": readiness_level,
-            "ctl": ctl,
-            "atl": atl,
-            "tsb": tsb,
-            "ctl_swim": ctl_swim,
-            "ctl_bike": ctl_bike,
-            "ctl_run": ctl_run,
-            "ai_recommendation": ai_recommendation,
-        }
-        for key, value in fields.items():
-            if value is not None:
-                setattr(row, key, value)
+        row.sleep_score = sleep_data.score
+        row.sleep_duration = sleep_data.duration
+        row.sleep_start = (
+            datetime.fromtimestamp(sleep_data.start / 1000, tz=timezone.utc)
+            if sleep_data.start is not None
+            else None
+        )
+        row.sleep_end = (
+            datetime.fromtimestamp(sleep_data.end / 1000, tz=timezone.utc)
+            if sleep_data.end is not None
+            else None
+        )
+        row.sleep_stress_avg = sleep_data.stress_avg
+        row.sleep_hrv_avg = sleep_data.hrv_avg
+        row.sleep_heart_rate_avg = sleep_data.heart_rate_avg
 
-        session.commit()
-        session.refresh(row)
+        await session.commit()
+        await session.refresh(row)
         return row
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
-def get_daily_metrics(dt: date) -> DailyMetricsRow | None:
+async def get_daily_metrics(dt: date) -> DailyMetricsRow | None:
     """Fetch a single day's metrics by date."""
-    session = get_session()
-    try:
-        return session.get(DailyMetricsRow, str(dt))
-    finally:
-        session.close()
+    async with get_session() as session:
+        return await session.get(DailyMetricsRow, str(dt))
 
 
-def get_daily_metrics_range(
-    start: date, end: date
-) -> list[DailyMetricsRow]:
+async def get_daily_metrics_range(start: date, end: date) -> list[DailyMetricsRow]:
     """Fetch metrics for a date range (inclusive)."""
-    session = get_session()
-    try:
+    async with get_session() as session:
         stmt = (
             select(DailyMetricsRow)
             .where(DailyMetricsRow.date >= str(start))
             .where(DailyMetricsRow.date <= str(end))
             .order_by(DailyMetricsRow.date)
         )
-        return list(session.scalars(stmt).all())
-    finally:
-        session.close()
+        result = await session.scalars(stmt)
+        return list(result.all())
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +203,7 @@ def get_daily_metrics_range(
 # ---------------------------------------------------------------------------
 
 
-def save_activity(
+async def save_activity(
     activity_id: int,
     *,
     dt: date | None = None,
@@ -228,9 +217,8 @@ def save_activity(
     tss: float | None = None,
 ) -> ActivityRow:
     """Insert or update an activity (upsert by activity_id)."""
-    session = get_session()
-    try:
-        row = session.get(ActivityRow, activity_id)
+    async with get_session() as session:
+        row = await session.get(ActivityRow, activity_id)
         if row is None:
             row = ActivityRow(activity_id=activity_id)
             session.add(row)
@@ -250,29 +238,22 @@ def save_activity(
             if value is not None:
                 setattr(row, key, value)
 
-        session.commit()
-        session.refresh(row)
+        await session.commit()
+        await session.refresh(row)
         return row
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
-def get_activities(start_date: date, end_date: date) -> list[ActivityRow]:
+async def get_activities(start_date: date, end_date: date) -> list[ActivityRow]:
     """Fetch activities within a date range (inclusive)."""
-    session = get_session()
-    try:
+    async with get_session() as session:
         stmt = (
             select(ActivityRow)
             .where(ActivityRow.date >= str(start_date))
             .where(ActivityRow.date <= str(end_date))
             .order_by(ActivityRow.date)
         )
-        return list(session.scalars(stmt).all())
-    finally:
-        session.close()
+        result = await session.scalars(stmt)
+        return list(result.all())
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +261,7 @@ def get_activities(start_date: date, end_date: date) -> list[ActivityRow]:
 # ---------------------------------------------------------------------------
 
 
-def save_scheduled_workout(
+async def save_scheduled_workout(
     scheduled_date: date,
     workout_name: str,
     sport: str,
@@ -290,8 +271,7 @@ def save_scheduled_workout(
     source: str = "garmin",
 ) -> ScheduledWorkoutRow:
     """Insert a new scheduled workout."""
-    session = get_session()
-    try:
+    async with get_session() as session:
         row = ScheduledWorkoutRow(
             scheduled_date=str(scheduled_date),
             workout_name=workout_name,
@@ -301,45 +281,36 @@ def save_scheduled_workout(
             source=source,
         )
         session.add(row)
-        session.commit()
-        session.refresh(row)
+        await session.commit()
+        await session.refresh(row)
         return row
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
-def get_scheduled_workouts(dt: date) -> list[ScheduledWorkoutRow]:
+async def get_scheduled_workouts(dt: date) -> list[ScheduledWorkoutRow]:
     """Fetch all scheduled workouts for a given date."""
-    session = get_session()
-    try:
+    async with get_session() as session:
         stmt = (
             select(ScheduledWorkoutRow)
             .where(ScheduledWorkoutRow.scheduled_date == str(dt))
             .order_by(ScheduledWorkoutRow.id)
         )
-        return list(session.scalars(stmt).all())
-    finally:
-        session.close()
+        result = await session.scalars(stmt)
+        return list(result.all())
 
 
-def get_scheduled_workouts_range(
+async def get_scheduled_workouts_range(
     start_date: date, end_date: date
 ) -> list[ScheduledWorkoutRow]:
     """Fetch all scheduled workouts within a date range (inclusive)."""
-    session = get_session()
-    try:
+    async with get_session() as session:
         stmt = (
             select(ScheduledWorkoutRow)
             .where(ScheduledWorkoutRow.scheduled_date >= str(start_date))
             .where(ScheduledWorkoutRow.scheduled_date <= str(end_date))
             .order_by(ScheduledWorkoutRow.scheduled_date, ScheduledWorkoutRow.id)
         )
-        return list(session.scalars(stmt).all())
-    finally:
-        session.close()
+        result = await session.scalars(stmt)
+        return list(result.all())
 
 
 # ---------------------------------------------------------------------------
@@ -347,37 +318,29 @@ def get_scheduled_workouts_range(
 # ---------------------------------------------------------------------------
 
 
-def save_tss_history(dt: date, sport: str, tss: float) -> TSSHistoryRow:
+async def save_tss_history(dt: date, sport: str, tss: float) -> TSSHistoryRow:
     """Insert or update a TSS history entry (upsert by date + sport)."""
-    session = get_session()
-    try:
-        row = session.get(TSSHistoryRow, (str(dt), sport))
+    async with get_session() as session:
+        row = await session.get(TSSHistoryRow, (str(dt), sport))
         if row is None:
             row = TSSHistoryRow(date=str(dt), sport=sport, tss=tss)
             session.add(row)
         else:
             row.tss = tss
 
-        session.commit()
-        session.refresh(row)
+        await session.commit()
+        await session.refresh(row)
         return row
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
-def get_tss_history(days: int = 42) -> list[TSSHistoryRow]:
+async def get_tss_history(days: int = 42) -> list[TSSHistoryRow]:
     """Fetch TSS history for the last N days, ordered by date."""
     cutoff = date.today() - timedelta(days=days)
-    session = get_session()
-    try:
+    async with get_session() as session:
         stmt = (
             select(TSSHistoryRow)
             .where(TSSHistoryRow.date >= str(cutoff))
             .order_by(TSSHistoryRow.date, TSSHistoryRow.sport)
         )
-        return list(session.scalars(stmt).all())
-    finally:
-        session.close()
+        result = await session.scalars(stmt)
+        return list(result.all())
