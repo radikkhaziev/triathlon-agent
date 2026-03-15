@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: triathlon
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  bot:
+    build: .
+    command: python -m bot.main
+    env_file: .env
+    depends_on:
+      - db
+    volumes:
+      - garmin-tokens:/root/.garminconnect
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  garmin-tokens:

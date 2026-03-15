@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Triathlon Dashboard — Glassmorphism</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+:root {
+    --text: #ffffff;
+    --hint: rgba(255,255,255,0.5);
+    --glass: rgba(255,255,255,0.08);
+    --glass-border: rgba(255,255,255,0.12);
+    --glass-strong: rgba(255,255,255,0.12);
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --swim: #60a5fa;
+    --bike: #4ade80;
+    --run: #fbbf24;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+    color: var(--text);
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 0 16px 40px;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    background: linear-gradient(145deg, #0f0c29 0%, #1a1a4e 35%, #24243e 60%, #1b1b3a 100%);
+    background-attachment: fixed;
+}
+
+/* Floating blobs background */
+body::before, body::after {
+    content: '';
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    z-index: -1;
+    opacity: 0.35;
+}
+body::before {
+    width: 300px; height: 300px;
+    top: -50px; right: -80px;
+    background: radial-gradient(circle, #7c3aed, transparent 70%);
+}
+body::after {
+    width: 250px; height: 250px;
+    bottom: 20%; left: -60px;
+    background: radial-gradient(circle, #2563eb, transparent 70%);
+}
+
+/* Header */
+.header {
+    padding: 24px 0 8px;
+    text-align: center;
+}
+.header-date { font-size: 12px; color: var(--hint); font-weight: 500; }
+.header-title { font-size: 22px; font-weight: 700; margin-top: 4px; }
+
+/* Tabs */
+.tabs {
+    display: flex;
+    gap: 6px;
+    padding: 12px 0;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: transparent;
+}
+.tabs::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(15,12,41,0.95) 60%, transparent);
+    z-index: -1;
+}
+.tab-btn {
+    flex: 1;
+    padding: 10px 4px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: var(--glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: var(--hint);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+.tab-btn.active {
+    background: rgba(255,255,255,0.15);
+    border-color: var(--glass-border);
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+.tab-content { display: none; }
+.tab-content.active { display: block; animation: glassIn 0.4s ease; }
+@keyframes glassIn { from { opacity: 0; transform: translateY(16px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+/* Glass card */
+.glass {
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 12px;
+}
+.glass-strong {
+    background: var(--glass-strong);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+}
+.card-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--hint);
+    margin-bottom: 12px;
+}
+
+/* Readiness */
+.readiness-container {
+    text-align: center;
+    padding: 28px 0 16px;
+}
+.readiness-ring-wrap {
+    position: relative;
+    width: 160px;
+    height: 160px;
+    margin: 0 auto;
+}
+.readiness-ring-wrap svg { width: 100%; height: 100%; transform: rotate(-126deg); }
+.readiness-ring-wrap circle { fill: none; stroke-linecap: round; }
+.ring-track { stroke: rgba(255,255,255,0.06); stroke-width: 10; }
+.ring-value {
+    stroke: url(#gaugeGrad);
+    stroke-width: 10;
+    stroke-dasharray: 332;
+    stroke-dashoffset: 53;
+    filter: drop-shadow(0 0 6px rgba(74,222,128,0.5));
+}
+.readiness-inner {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+}
+.readiness-num {
+    font-size: 48px;
+    font-weight: 800;
+    line-height: 1;
+}
+.readiness-lbl {
+    font-size: 11px;
+    color: var(--hint);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-top: 4px;
+}
+.readiness-pill {
+    display: inline-block;
+    margin-top: 12px;
+    padding: 6px 18px;
+    border-radius: 20px;
+    background: rgba(74,222,128,0.15);
+    border: 1px solid rgba(74,222,128,0.25);
+    color: var(--green);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+/* Metrics */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+.metric-tile {
+    background: var(--glass);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--glass-border);
+    border-radius: 14px;
+    padding: 14px;
+    position: relative;
+    overflow: hidden;
+}
+.metric-tile::before {
+    content: '';
+    position: absolute;
+    top: -20px; right: -20px;
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    opacity: 0.08;
+}
+.metric-tile.hrv::before { background: var(--green); }
+.metric-tile.sleep::before { background: var(--blue); }
+.metric-tile.battery::before { background: var(--yellow); }
+.metric-tile.rhr::before { background: #a78bfa; }
+
+.metric-val { font-size: 28px; font-weight: 800; }
+.metric-val.up { color: var(--green); }
+.metric-val.neutral { color: var(--text); }
+.metric-lbl { font-size: 11px; color: var(--hint); margin-top: 4px; }
+.metric-spark {
+    display: block;
+    height: 24px;
+    margin-top: 8px;
+    width: 100%;
+}
+
+/* Load */
+.load-flex {
+    display: flex;
+    justify-content: space-around;
+    text-align: center;
+    padding: 8px 0;
+}
+.load-num { font-size: 34px; font-weight: 800; }
+.load-num.ctl { color: var(--blue); }
+.load-num.atl { color: var(--red); }
+.load-num.tsb { color: var(--green); }
+.load-sub { font-size: 10px; color: var(--hint); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+
+/* Workout */
+.workout-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.04);
+    margin-bottom: 8px;
+}
+.workout-badge {
+    width: 42px; height: 42px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+}
+.workout-badge.run { background: rgba(251,191,36,0.15); }
+.workout-badge.swim { background: rgba(96,165,250,0.15); }
+.workout-name { font-size: 15px; font-weight: 700; }
+.workout-desc { font-size: 12px; color: var(--hint); margin-top: 2px; }
+
+/* AI */
+.ai-text {
+    font-size: 14px;
+    line-height: 1.7;
+    color: rgba(255,255,255,0.8);
+}
+
+/* Progress */
+.progress-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+.progress-sport {
+    width: 50px;
+    font-size: 13px;
+    font-weight: 700;
+}
+.progress-track {
+    flex: 1;
+    height: 8px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    border-radius: 4px;
+}
+.progress-fill.swim {
+    background: linear-gradient(90deg, #3b82f6, #93c5fd);
+    box-shadow: 0 0 10px rgba(59,130,246,0.4);
+}
+.progress-fill.bike {
+    background: linear-gradient(90deg, #22c55e, #86efac);
+    box-shadow: 0 0 10px rgba(34,197,94,0.4);
+}
+.progress-fill.run {
+    background: linear-gradient(90deg, #f59e0b, #fcd34d);
+    box-shadow: 0 0 10px rgba(245,158,11,0.4);
+}
+.progress-pct {
+    width: 42px;
+    text-align: right;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+/* Countdown */
+.countdown-box {
+    text-align: center;
+    padding: 24px 0;
+}
+.countdown-event {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--hint);
+}
+.countdown-num {
+    font-size: 64px;
+    font-weight: 900;
+    background: linear-gradient(135deg, var(--blue), #c084fc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    line-height: 1.1;
+}
+.countdown-unit {
+    font-size: 13px;
+    color: var(--hint);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+/* Chart */
+.chart-glass {
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 12px;
+}
+.chart-glass canvas { max-height: 220px; }
+
+/* Week table */
+.week-table { width: 100%; border-collapse: collapse; }
+.week-table th {
+    text-align: left; padding: 8px 4px;
+    font-size: 10px; color: var(--hint); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px;
+    border-bottom: 1px solid var(--glass-border);
+}
+.week-table td {
+    padding: 10px 4px; font-size: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.week-table .dot {
+    display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; margin-right: 8px;
+}
+.week-table .today-row {
+    background: rgba(255,255,255,0.04);
+    border-radius: 8px;
+}
+.week-table .rest { color: var(--hint); }
+
+/* Summary */
+.summary-flex {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    text-align: center;
+}
+.summary-box {
+    padding: 14px 0;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.04);
+}
+.summary-num { font-size: 24px; font-weight: 800; }
+.summary-txt { font-size: 10px; color: var(--hint); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div class="header-date">Saturday, March 7, 2026</div>
+    <div class="header-title">Good morning!</div>
+</div>
+
+<div class="tabs">
+    <button class="tab-btn active" data-tab="today">Today</button>
+    <button class="tab-btn" data-tab="load">Load</button>
+    <button class="tab-btn" data-tab="goal">Goal</button>
+    <button class="tab-btn" data-tab="week">Week</button>
+</div>
+
+<!-- TODAY -->
+<div id="tab-today" class="tab-content active">
+    <div class="readiness-container">
+        <div class="readiness-ring-wrap">
+            <svg viewBox="0 0 160 160">
+                <defs>
+                    <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#4ade80"/>
+                        <stop offset="100%" stop-color="#22d3ee"/>
+                    </linearGradient>
+                </defs>
+                <circle class="ring-track" cx="80" cy="80" r="65"/>
+                <circle class="ring-value" cx="80" cy="80" r="65"/>
+            </svg>
+            <div class="readiness-inner">
+                <div class="readiness-num">84</div>
+                <div class="readiness-lbl">Readiness</div>
+            </div>
+        </div>
+        <div class="readiness-pill">Ready to Train</div>
+    </div>
+
+    <div class="metrics-grid">
+        <div class="metric-tile hrv">
+            <div class="metric-val up">+8%</div>
+            <div class="metric-lbl">HRV vs baseline</div>
+            <svg class="metric-spark" viewBox="0 0 100 24"><polyline fill="none" stroke="rgba(74,222,128,0.6)" stroke-width="2" stroke-linecap="round" points="0,20 14,16 28,22 42,12 56,16 70,8 84,10 100,4"/></svg>
+        </div>
+        <div class="metric-tile sleep">
+            <div class="metric-val neutral">82</div>
+            <div class="metric-lbl">Sleep Score</div>
+            <svg class="metric-spark" viewBox="0 0 100 24"><polyline fill="none" stroke="rgba(96,165,250,0.6)" stroke-width="2" stroke-linecap="round" points="0,12 14,10 28,14 42,8 56,10 70,12 84,6 100,8"/></svg>
+        </div>
+    </div>
+    <div class="metrics-grid">
+        <div class="metric-tile battery">
+            <div class="metric-val neutral">71</div>
+            <div class="metric-lbl">Body Battery</div>
+            <svg class="metric-spark" viewBox="0 0 100 24"><polyline fill="none" stroke="rgba(251,191,36,0.6)" stroke-width="2" stroke-linecap="round" points="0,16 14,12 28,18 42,10 56,14 70,8 84,12 100,10"/></svg>
+        </div>
+        <div class="metric-tile rhr">
+            <div class="metric-val neutral">43</div>
+            <div class="metric-lbl">Resting HR</div>
+            <svg class="metric-spark" viewBox="0 0 100 24"><polyline fill="none" stroke="rgba(167,139,250,0.6)" stroke-width="2" stroke-linecap="round" points="0,10 14,12 28,10 42,16 56,14 70,10 84,12 100,10"/></svg>
+        </div>
+    </div>
+
+    <div class="glass">
+        <div class="card-title">Training Load</div>
+        <div class="load-flex">
+            <div><div class="load-num ctl">52</div><div class="load-sub">Fitness</div></div>
+            <div><div class="load-num atl">61</div><div class="load-sub">Fatigue</div></div>
+            <div><div class="load-num tsb">-9</div><div class="load-sub">Form</div></div>
+        </div>
+    </div>
+
+    <div class="glass">
+        <div class="card-title">Today's Plan</div>
+        <div class="workout-row">
+            <div class="workout-badge run">🏃</div>
+            <div>
+                <div class="workout-name">Tempo Run — 10km</div>
+                <div class="workout-desc">Zone 3-4 · 55 min · ~65 TSS</div>
+            </div>
+        </div>
+        <div class="workout-row">
+            <div class="workout-badge swim">🏊</div>
+            <div>
+                <div class="workout-name">Technique Drills + 1500m</div>
+                <div class="workout-desc">Zone 2 · 45 min · ~38 TSS</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="glass">
+        <div class="card-title">AI Coach</div>
+        <div class="ai-text">
+            Your HRV is trending above baseline and sleep quality was solid — you're well-recovered.
+            TSB at -9 puts you in the optimal training zone. Go ahead with the tempo run as planned,
+            but keep the first 2km in Zone 2 as warmup. For the swim session, focus on technique
+            during drills — your swim CTL is lagging behind bike and run.
+        </div>
+    </div>
+</div>
+
+<!-- LOAD -->
+<div id="tab-load" class="tab-content">
+    <div class="chart-glass"><canvas id="load-chart-3" height="220"></canvas></div>
+    <div class="chart-glass"><canvas id="tss-chart-3" height="200"></canvas></div>
+</div>
+
+<!-- GOAL -->
+<div id="tab-goal" class="tab-content">
+    <div class="glass">
+        <div class="countdown-box">
+            <div class="countdown-event">Ironman 70.3</div>
+            <div class="countdown-num">27</div>
+            <div class="countdown-unit">weeks remaining</div>
+        </div>
+    </div>
+    <div class="glass">
+        <div class="card-title">Target CTL Progress</div>
+        <div class="progress-row">
+            <span class="progress-sport">🏊 Swim</span>
+            <div class="progress-track"><div class="progress-fill swim" style="width:47%"></div></div>
+            <span class="progress-pct">47%</span>
+        </div>
+        <div class="progress-row">
+            <span class="progress-sport">🚴 Bike</span>
+            <div class="progress-track"><div class="progress-fill bike" style="width:68%"></div></div>
+            <span class="progress-pct">68%</span>
+        </div>
+        <div class="progress-row">
+            <span class="progress-sport">🏃 Run</span>
+            <div class="progress-track"><div class="progress-fill run" style="width:74%"></div></div>
+            <span class="progress-pct">74%</span>
+        </div>
+    </div>
+    <div class="chart-glass"><canvas id="goal-chart-3" height="200"></canvas></div>
+</div>
+
+<!-- WEEK -->
+<div id="tab-week" class="tab-content">
+    <div class="glass">
+        <div class="card-title">This Week</div>
+        <table class="week-table">
+            <thead><tr><th>Day</th><th>Workout</th><th>TSS</th></tr></thead>
+            <tbody>
+                <tr><td>Mon</td><td><span class="dot" style="background:var(--run)"></span>Easy Run 8km</td><td>42</td></tr>
+                <tr><td>Tue</td><td><span class="dot" style="background:var(--swim)"></span>Swim Intervals</td><td>45</td></tr>
+                <tr><td>Wed</td><td><span class="dot" style="background:var(--bike)"></span>Bike Tempo 60min</td><td>72</td></tr>
+                <tr><td>Thu</td><td><span class="dot" style="background:var(--run)"></span>Hill Repeats</td><td>68</td></tr>
+                <tr><td>Fri</td><td class="rest">Rest</td><td>—</td></tr>
+                <tr class="today-row"><td><strong>Sat</strong></td><td><span class="dot" style="background:var(--run)"></span><strong>Tempo Run 10km</strong></td><td><strong>65</strong></td></tr>
+                <tr><td>Sun</td><td><span class="dot" style="background:var(--bike)"></span>Long Ride 3h</td><td>120</td></tr>
+            </tbody>
+        </table>
+    </div>
+    <div class="glass">
+        <div class="card-title">Weekly Summary</div>
+        <div class="summary-flex">
+            <div class="summary-box"><div class="summary-num">8.2h</div><div class="summary-txt">Volume</div></div>
+            <div class="summary-box"><div class="summary-num">412</div><div class="summary-txt">TSS</div></div>
+            <div class="summary-box"><div class="summary-num">87km</div><div class="summary-txt">Distance</div></div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+    });
+});
+
+const dates = Array.from({length: 84}, (_, i) => {
+    const d = new Date(2026, 0, 1); d.setDate(d.getDate() + i);
+    return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
+});
+function ema(data, span) { const k=2/(span+1); let v=data[0]; return data.map(d => v=d*k+v*(1-k)); }
+const dailyTss = Array.from({length:84}, () => Math.random()*80+20);
+const ctl = ema(dailyTss, 42), atl = ema(dailyTss, 7), tsb = ctl.map((c,i) => c-atl[i]);
+
+Chart.defaults.color = 'rgba(255,255,255,0.4)';
+Chart.defaults.borderColor = 'rgba(255,255,255,0.04)';
+
+new Chart(document.getElementById('load-chart-3'), {
+    type: 'line',
+    data: { labels: dates, datasets: [
+        { label: 'CTL', data: ctl, borderColor: '#60a5fa', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+        { label: 'ATL', data: atl, borderColor: '#f87171', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+        { label: 'TSB', data: tsb, borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.06)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 10, padding: 12, font: { size: 11 } } }, title: { display: true, text: 'Training Load — 12 Weeks', font: { size: 13, weight: '700' }, color: '#fff' } },
+        scales: { x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+    }
+});
+
+const last28 = dailyTss.slice(-28), last28d = dates.slice(-28);
+new Chart(document.getElementById('tss-chart-3'), {
+    type: 'bar',
+    data: { labels: last28d, datasets: [
+        { label: 'Swim', data: last28.map(d=>d*0.25), backgroundColor: 'rgba(96,165,250,0.65)', borderRadius: 3 },
+        { label: 'Bike', data: last28.map(d=>d*0.4), backgroundColor: 'rgba(74,222,128,0.65)', borderRadius: 3 },
+        { label: 'Run', data: last28.map(d=>d*0.35), backgroundColor: 'rgba(251,191,36,0.65)', borderRadius: 3 },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } }, title: { display: true, text: 'Daily TSS', font: { size: 13, weight: '700' }, color: '#fff' } },
+        scales: { x: { stacked: true, ticks: { maxTicksLimit: 7, font: { size: 10 } } }, y: { stacked: true, ticks: { font: { size: 10 } } } }
+    }
+});
+
+new Chart(document.getElementById('goal-chart-3'), {
+    type: 'line',
+    data: { labels: dates, datasets: [
+        { label: 'Swim', data: ctl.map(c=>c*0.3), borderColor: '#60a5fa', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+        { label: 'Bike', data: ctl.map(c=>c*0.65), borderColor: '#4ade80', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+        { label: 'Run', data: ctl.map(c=>c*0.55), borderColor: '#fbbf24', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } }, title: { display: true, text: 'CTL by Sport', font: { size: 13, weight: '700' }, color: '#fff' } },
+        scales: { x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+    }
+});
+</script>
+</body>
+</html>

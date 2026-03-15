@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Triathlon Dashboard — Clean Minimal</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+:root {
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --hint: #86868b;
+    --green: #34c759;
+    --yellow: #ff9f0a;
+    --red: #ff3b30;
+    --blue: #007aff;
+    --swim: #007aff;
+    --bike: #34c759;
+    --run: #ff9f0a;
+    --border: rgba(0,0,0,0.06);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 0 16px 32px;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Header */
+.header {
+    padding: 20px 0 8px;
+    text-align: center;
+}
+.header-date { font-size: 13px; color: var(--hint); font-weight: 500; }
+.header-title { font-size: 20px; font-weight: 700; margin-top: 2px; }
+
+/* Tabs */
+.tabs {
+    display: flex;
+    gap: 4px;
+    padding: 12px 0;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+}
+.tab-btn {
+    flex: 1;
+    padding: 8px 4px;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--hint);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.tab-btn.active {
+    background: var(--card);
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.tab-content { display: none; }
+.tab-content.active { display: block; animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Readiness */
+.readiness {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 0 16px;
+}
+.readiness-ring {
+    position: relative;
+    width: 140px;
+    height: 140px;
+}
+.readiness-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.readiness-ring circle {
+    fill: none;
+    stroke-width: 10;
+    stroke-linecap: round;
+}
+.ring-bg { stroke: var(--border); }
+.ring-fill {
+    stroke: var(--green);
+    stroke-dasharray: 377;
+    stroke-dashoffset: 60;
+    transition: stroke-dashoffset 1s ease;
+}
+.readiness-score {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+}
+.readiness-score .number { font-size: 40px; font-weight: 700; letter-spacing: -1px; }
+.readiness-score .label { font-size: 11px; color: var(--hint); text-transform: uppercase; letter-spacing: 1px; }
+.readiness-status {
+    margin-top: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--green);
+}
+
+/* Metric cards */
+.metrics-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+.metric-card {
+    background: var(--card);
+    border-radius: 14px;
+    padding: 14px;
+    text-align: center;
+    border: 1px solid var(--border);
+}
+.metric-value { font-size: 24px; font-weight: 700; }
+.metric-value.positive { color: var(--green); }
+.metric-value.negative { color: var(--red); }
+.metric-value.neutral { color: var(--text); }
+.metric-sublabel { font-size: 11px; color: var(--hint); margin-top: 2px; }
+.metric-spark {
+    height: 24px;
+    margin: 6px auto 0;
+    display: block;
+}
+
+/* Cards */
+.card {
+    background: var(--card);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+}
+.card-title {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--hint);
+    margin-bottom: 10px;
+}
+
+/* Training load row */
+.load-row {
+    display: flex;
+    justify-content: space-around;
+    text-align: center;
+    padding: 8px 0;
+}
+.load-item .load-number { font-size: 28px; font-weight: 700; }
+.load-item .load-label { font-size: 11px; color: var(--hint); margin-top: 2px; }
+.load-item.fitness .load-number { color: var(--blue); }
+.load-item.fatigue .load-number { color: var(--red); }
+.load-item.form .load-number { color: var(--green); }
+
+/* AI section */
+.ai-text {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+}
+
+/* Workout card */
+.workout-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+}
+.workout-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+}
+.workout-icon.run { background: rgba(255,159,10,0.12); }
+.workout-icon.swim { background: rgba(0,122,255,0.12); }
+.workout-name { font-size: 15px; font-weight: 600; }
+.workout-detail { font-size: 12px; color: var(--hint); margin-top: 2px; }
+
+/* Progress bars */
+.progress-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+.progress-sport { width: 60px; font-size: 14px; font-weight: 600; }
+.progress-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--bg);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s ease;
+}
+.progress-fill.swim { background: var(--swim); }
+.progress-fill.bike { background: var(--bike); }
+.progress-fill.run { background: var(--run); }
+.progress-pct { width: 42px; text-align: right; font-size: 14px; font-weight: 600; }
+
+/* Countdown */
+.countdown {
+    text-align: center;
+    padding: 20px 0;
+}
+.countdown-weeks { font-size: 48px; font-weight: 800; color: var(--blue); }
+.countdown-label { font-size: 13px; color: var(--hint); }
+.countdown-event { font-size: 16px; font-weight: 700; margin-top: 4px; }
+
+/* Chart container */
+.chart-box {
+    background: var(--card);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+}
+.chart-box canvas { max-height: 220px; }
+
+/* Week table */
+.week-table { width: 100%; border-collapse: collapse; }
+.week-table th {
+    text-align: left;
+    padding: 8px 4px;
+    font-size: 11px;
+    color: var(--hint);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+}
+.week-table td {
+    padding: 10px 4px;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+}
+.week-table .sport-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+}
+
+/* Summary stats */
+.summary-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    text-align: center;
+}
+.summary-item .summary-value { font-size: 20px; font-weight: 700; }
+.summary-item .summary-label { font-size: 11px; color: var(--hint); }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div class="header-date">Saturday, March 7, 2026</div>
+    <div class="header-title">Good morning!</div>
+</div>
+
+<div class="tabs">
+    <button class="tab-btn active" data-tab="today">Today</button>
+    <button class="tab-btn" data-tab="load">Load</button>
+    <button class="tab-btn" data-tab="goal">Goal</button>
+    <button class="tab-btn" data-tab="week">Week</button>
+</div>
+
+<!-- TODAY -->
+<div id="tab-today" class="tab-content active">
+    <div class="readiness">
+        <div class="readiness-ring">
+            <svg viewBox="0 0 140 140">
+                <circle class="ring-bg" cx="70" cy="70" r="60"/>
+                <circle class="ring-fill" cx="70" cy="70" r="60"/>
+            </svg>
+            <div class="readiness-score">
+                <div class="number">84</div>
+                <div class="label">Readiness</div>
+            </div>
+        </div>
+        <div class="readiness-status">Ready to Train</div>
+    </div>
+
+    <div class="metrics-row">
+        <div class="metric-card">
+            <div class="metric-value positive">+8%</div>
+            <div class="metric-sublabel">HRV vs baseline</div>
+            <svg class="metric-spark" viewBox="0 0 80 24"><polyline fill="none" stroke="#34c759" stroke-width="2" points="0,18 12,14 24,20 36,12 48,16 60,8 72,10 80,6"/></svg>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value neutral">82</div>
+            <div class="metric-sublabel">Sleep Score</div>
+            <svg class="metric-spark" viewBox="0 0 80 24"><polyline fill="none" stroke="#007aff" stroke-width="2" points="0,12 12,10 24,14 36,8 48,10 60,12 72,6 80,8"/></svg>
+        </div>
+    </div>
+    <div class="metrics-row">
+        <div class="metric-card">
+            <div class="metric-value neutral">71</div>
+            <div class="metric-sublabel">Body Battery</div>
+            <svg class="metric-spark" viewBox="0 0 80 24"><polyline fill="none" stroke="#ff9f0a" stroke-width="2" points="0,16 12,12 24,18 36,10 48,14 60,8 72,12 80,10"/></svg>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value neutral">43</div>
+            <div class="metric-sublabel">Resting HR</div>
+            <svg class="metric-spark" viewBox="0 0 80 24"><polyline fill="none" stroke="#86868b" stroke-width="2" points="0,10 12,12 24,10 36,14 48,12 60,10 72,12 80,10"/></svg>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Training Load</div>
+        <div class="load-row">
+            <div class="load-item fitness">
+                <div class="load-number">52</div>
+                <div class="load-label">CTL (Fitness)</div>
+            </div>
+            <div class="load-item fatigue">
+                <div class="load-number">61</div>
+                <div class="load-label">ATL (Fatigue)</div>
+            </div>
+            <div class="load-item form">
+                <div class="load-number">-9</div>
+                <div class="load-label">TSB (Form)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Today's Plan</div>
+        <div class="workout-card">
+            <div class="workout-icon run">🏃</div>
+            <div>
+                <div class="workout-name">Tempo Run — 10km</div>
+                <div class="workout-detail">Zone 3-4 · 55 min · ~65 TSS</div>
+            </div>
+        </div>
+        <div class="workout-card">
+            <div class="workout-icon swim">🏊</div>
+            <div>
+                <div class="workout-name">Technique Drills + 1500m</div>
+                <div class="workout-detail">Zone 2 · 45 min · ~38 TSS</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">AI Recommendation</div>
+        <div class="ai-text">
+            Your HRV is trending above baseline and sleep quality was solid — you're well-recovered.
+            TSB at -9 puts you in the optimal training zone. Go ahead with the tempo run as planned,
+            but keep the first 2km in Zone 2 as warmup. For the swim session, focus on technique
+            during drills — your swim CTL is lagging behind bike and run.
+        </div>
+    </div>
+</div>
+
+<!-- LOAD -->
+<div id="tab-load" class="tab-content">
+    <div class="chart-box">
+        <canvas id="load-chart-1" height="220"></canvas>
+    </div>
+    <div class="chart-box">
+        <canvas id="tss-chart-1" height="200"></canvas>
+    </div>
+</div>
+
+<!-- GOAL -->
+<div id="tab-goal" class="tab-content">
+    <div class="card">
+        <div class="countdown">
+            <div class="countdown-event">Ironman 70.3</div>
+            <div class="countdown-weeks">27</div>
+            <div class="countdown-label">weeks remaining</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Progress to Target CTL</div>
+        <div class="progress-row">
+            <span class="progress-sport">🏊 Swim</span>
+            <div class="progress-bar"><div class="progress-fill swim" style="width:47%"></div></div>
+            <span class="progress-pct">47%</span>
+        </div>
+        <div class="progress-row">
+            <span class="progress-sport">🚴 Bike</span>
+            <div class="progress-bar"><div class="progress-fill bike" style="width:68%"></div></div>
+            <span class="progress-pct">68%</span>
+        </div>
+        <div class="progress-row">
+            <span class="progress-sport">🏃 Run</span>
+            <div class="progress-bar"><div class="progress-fill run" style="width:74%"></div></div>
+            <span class="progress-pct">74%</span>
+        </div>
+    </div>
+
+    <div class="chart-box">
+        <canvas id="goal-chart-1" height="200"></canvas>
+    </div>
+</div>
+
+<!-- WEEK -->
+<div id="tab-week" class="tab-content">
+    <div class="card">
+        <div class="card-title">This Week</div>
+        <table class="week-table">
+            <thead><tr><th>Day</th><th>Workout</th><th>TSS</th></tr></thead>
+            <tbody>
+                <tr><td>Mon</td><td><span class="sport-dot" style="background:var(--run)"></span>Easy Run 8km</td><td>42</td></tr>
+                <tr><td>Tue</td><td><span class="sport-dot" style="background:var(--swim)"></span>Swim Intervals</td><td>45</td></tr>
+                <tr><td>Wed</td><td><span class="sport-dot" style="background:var(--bike)"></span>Bike Tempo 60min</td><td>72</td></tr>
+                <tr><td>Thu</td><td><span class="sport-dot" style="background:var(--run)"></span>Hill Repeats</td><td>68</td></tr>
+                <tr><td>Fri</td><td style="color:var(--hint)">Rest</td><td>—</td></tr>
+                <tr><td style="font-weight:600">Sat</td><td><span class="sport-dot" style="background:var(--run)"></span>Tempo Run 10km</td><td>65</td></tr>
+                <tr><td>Sun</td><td><span class="sport-dot" style="background:var(--bike)"></span>Long Ride 3h</td><td>120</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Weekly Summary</div>
+        <div class="summary-grid">
+            <div class="summary-item">
+                <div class="summary-value">8.2h</div>
+                <div class="summary-label">Total Time</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">412</div>
+                <div class="summary-label">Total TSS</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">87km</div>
+                <div class="summary-label">Distance</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+    });
+});
+
+// Mock chart data
+const dates = Array.from({length: 84}, (_, i) => {
+    const d = new Date(2026, 0, 1);
+    d.setDate(d.getDate() + i);
+    return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
+});
+
+function ema(data, span) {
+    const k = 2/(span+1);
+    let v = data[0];
+    return data.map(d => v = d*k + v*(1-k));
+}
+
+const dailyTss = Array.from({length:84}, () => Math.random()*80+20);
+const ctl = ema(dailyTss, 42);
+const atl = ema(dailyTss, 7);
+const tsb = ctl.map((c,i) => c - atl[i]);
+
+const chartFont = { family: "-apple-system, BlinkMacSystemFont, sans-serif" };
+const gridColor = 'rgba(0,0,0,0.05)';
+
+// Load chart
+new Chart(document.getElementById('load-chart-1'), {
+    type: 'line',
+    data: {
+        labels: dates,
+        datasets: [
+            { label: 'CTL', data: ctl, borderColor: '#007aff', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+            { label: 'ATL', data: atl, borderColor: '#ff3b30', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+            { label: 'TSB', data: tsb, borderColor: '#34c759', backgroundColor: 'rgba(52,199,89,0.08)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 },
+        ],
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 10, padding: 12, font: { size: 11, ...chartFont } } },
+            title: { display: true, text: 'Training Load — 12 Weeks', font: { size: 13, weight: '600', ...chartFont } } },
+        scales: {
+            x: { grid: { color: gridColor }, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+            y: { grid: { color: gridColor }, ticks: { font: { size: 10 } } }
+        }
+    }
+});
+
+// TSS bar chart
+const last28 = dailyTss.slice(-28);
+const last28dates = dates.slice(-28);
+new Chart(document.getElementById('tss-chart-1'), {
+    type: 'bar',
+    data: {
+        labels: last28dates,
+        datasets: [
+            { label: 'Swim', data: last28.map(d => d*0.25), backgroundColor: 'rgba(0,122,255,0.7)', borderRadius: 2 },
+            { label: 'Bike', data: last28.map(d => d*0.4), backgroundColor: 'rgba(52,199,89,0.7)', borderRadius: 2 },
+            { label: 'Run', data: last28.map(d => d*0.35), backgroundColor: 'rgba(255,159,10,0.7)', borderRadius: 2 },
+        ],
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } },
+            title: { display: true, text: 'Daily TSS by Sport', font: { size: 13, weight: '600' } } },
+        scales: {
+            x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 7, font: { size: 10 } } },
+            y: { stacked: true, grid: { color: gridColor }, ticks: { font: { size: 10 } } }
+        }
+    }
+});
+
+// Goal trend chart
+new Chart(document.getElementById('goal-chart-1'), {
+    type: 'line',
+    data: {
+        labels: dates,
+        datasets: [
+            { label: 'Swim CTL', data: ctl.map(c => c*0.3), borderColor: '#007aff', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+            { label: 'Bike CTL', data: ctl.map(c => c*0.65), borderColor: '#34c759', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+            { label: 'Run CTL', data: ctl.map(c => c*0.55), borderColor: '#ff9f0a', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+        ],
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 10, font: { size: 11 } } },
+            title: { display: true, text: 'CTL by Sport — Trend', font: { size: 13, weight: '600' } } },
+        scales: {
+            x: { grid: { color: gridColor }, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+            y: { grid: { color: gridColor }, ticks: { font: { size: 10 } } }
+        }
+    }
+});
+</script>
+</body>
+</html>

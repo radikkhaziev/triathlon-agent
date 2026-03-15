@@ -1,0 +1,418 @@
+"""Wrapper around the garminconnect library for fetching athlete data."""
+
+import logging
+import time
+from datetime import date, datetime
+from pathlib import Path
+
+from garminconnect import Garmin
+
+from data.models import (
+    Activity,
+    BodyBatteryData,
+    HRVData,
+    ScheduledWorkout,
+    SleepData,
+    SportType,
+    StressData,
+    TrainingReadinessData,
+    TrainingStatusData,
+)
+
+logger = logging.getLogger(__name__)
+
+TOKENSTORE = str(Path.home() / ".garminconnect")
+
+# Mapping from Garmin activity type names to our SportType enum.
+# Garmin uses various strings like "running", "cycling", "lap_swimming", etc.
+_GARMIN_SPORT_MAP: dict[str, SportType] = {
+    "running": SportType.RUN,
+    "trail_running": SportType.RUN,
+    "treadmill_running": SportType.RUN,
+    "track_running": SportType.RUN,
+    "cycling": SportType.BIKE,
+    "road_cycling": SportType.BIKE,
+    "indoor_cycling": SportType.BIKE,
+    "mountain_biking": SportType.BIKE,
+    "gravel_cycling": SportType.BIKE,
+    "virtual_ride": SportType.BIKE,
+    "lap_swimming": SportType.SWIM,
+    "open_water_swimming": SportType.SWIM,
+    "swimming": SportType.SWIM,
+    "pool_swimming": SportType.SWIM,
+    "strength_training": SportType.STRENGTH,
+    "cardio": SportType.STRENGTH,
+}
+
+
+def _map_sport(garmin_type: str) -> SportType:
+    """Map a Garmin activity type string to our SportType enum."""
+    if not garmin_type:
+        return SportType.OTHER
+    key = garmin_type.lower().replace(" ", "_")
+    return _GARMIN_SPORT_MAP.get(key, SportType.OTHER)
+
+
+def _minutes_to_hours(minutes: int | None) -> int | None:
+    """Convert recovery time from minutes to hours, rounding up."""
+    if minutes is None:
+        return None
+    return (minutes + 59) // 60
+
+
+class GarminClient:
+    """High-level wrapper around the garminconnect library.
+
+    Handles authentication with token caching, rate limiting,
+    and parsing raw API responses into Pydantic models.
+    """
+
+    def __init__(self, email: str, password: str) -> None:
+        self.email = email
+        self.password = password
+        self.client: Garmin | None = None
+        self._last_request_time: float = 0.0
+        self._login()
+
+    # ------------------------------------------------------------------
+    # Authentication
+    # ------------------------------------------------------------------
+
+    def _login(self) -> None:
+        """Create a Garmin client and authenticate.
+
+        Uses token store at ~/.garminconnect so we don't need to
+        re-authenticate with credentials on every startup.
+        """
+        try:
+            self.client = Garmin(self.email, self.password)
+            self.client.login(tokenstore=TOKENSTORE)
+            logger.info("Garmin login successful (token store: %s)", TOKENSTORE)
+        except Exception as exc:
+            logger.warning("Token-based login failed (%s), retrying with credentials", exc)
+            try:
+                self.client = Garmin(self.email, self.password)
+                self.client.login()
+                # Persist tokens for next time
+                self.client.garth.dump(TOKENSTORE)
+                logger.info("Garmin credential login successful, tokens saved")
+            except Exception as login_exc:
+                logger.error("Garmin login failed: %s", login_exc)
+                raise
+
+    def _ensure_connected(self) -> None:
+        """Re-login if the session has expired."""
+        if self.client is None:
+            self._login()
+            return
+        try:
+            # A lightweight call to check if the session is still valid
+            self.client.get_full_name()
+        except Exception:
+            logger.info("Garmin session expired, re-authenticating")
+            self._login()
+
+    # ------------------------------------------------------------------
+    # Rate limiting
+    # ------------------------------------------------------------------
+
+    def _rate_limit(self) -> None:
+        """Ensure at least 1 second between consecutive API requests."""
+        now = time.monotonic()
+        elapsed = now - self._last_request_time
+        if elapsed < 1.0:
+            time.sleep(1.0 - elapsed)
+        self._last_request_time = time.monotonic()
+
+    # ------------------------------------------------------------------
+    # Data fetching methods
+    # ------------------------------------------------------------------
+
+    def get_sleep(self, date_str: str) -> SleepData:
+        """Fetch sleep data for a given date (YYYY-MM-DD).
+
+        Parses the dailySleepDTO from the Garmin response.
+        """
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_sleep_data(date_str)
+        logger.debug("Raw sleep data keys: %s", list(raw.keys()) if raw else None)
+
+        dto = raw.get("dailySleepDTO", {}) if raw else {}
+        sleep_scores = raw.get("sleepScores", {}) if raw else {}
+
+        sleep_score = sleep_scores.get("overallScore", {}).get("value", 0)
+        if not sleep_score:
+            sleep_score = sleep_scores.get("totalScore", {}).get("value", 0)
+
+        return SleepData(
+            date=date.fromisoformat(date_str),
+            sleep_score=int(sleep_score or 0),
+            duration_seconds=int(dto.get("sleepTimeSeconds", 0) or 0),
+            deep_sleep_seconds=int(dto.get("deepSleepSeconds", 0) or 0),
+            rem_sleep_seconds=int(dto.get("remSleepSeconds", 0) or 0),
+            awake_seconds=int(dto.get("awakeSleepSeconds", 0) or 0),
+            avg_overnight_hrv=dto.get("averageHRV"),
+            avg_stress=dto.get("averageStress"),
+        )
+
+    def get_hrv(self, date_str: str) -> HRVData:
+        """Fetch HRV summary for a given date (YYYY-MM-DD)."""
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_hrv_data(date_str)
+        logger.debug("Raw HRV data keys: %s", list(raw.keys()) if raw else None)
+
+        summary = raw.get("hrvSummary", {}) if raw else {}
+
+        return HRVData(
+            date=date.fromisoformat(date_str),
+            hrv_weekly_avg=float(summary.get("weeklyAvg", 0) or 0),
+            hrv_last_night=float(summary.get("lastNight", 0) or summary.get("lastNightAvg", 0) or 0),
+            hrv_5min_high=summary.get("lastNight5MinHigh"),
+            status=str(summary.get("status", "Unknown") or "Unknown"),
+        )
+
+    def get_body_battery(self, start: str, end: str) -> list[BodyBatteryData]:
+        """Fetch body battery data for a date range (YYYY-MM-DD)."""
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_body_battery(start, end)
+        logger.debug("Body battery entries: %d", len(raw) if raw else 0)
+
+        results: list[BodyBatteryData] = []
+        if not raw:
+            return results
+
+        # The API may return a list of daily summaries or detailed readings.
+        # We group by date and extract min/max for start/end values.
+        for entry in raw:
+            try:
+                entry_date_str = entry.get("calendarDate") or entry.get("date")
+                if not entry_date_str:
+                    continue
+                results.append(BodyBatteryData(
+                    date=date.fromisoformat(entry_date_str),
+                    start_value=int(entry.get("startValue", 0) or entry.get("bodyBatteryStartOfDay", 0) or 0),
+                    end_value=int(entry.get("endValue", 0) or entry.get("bodyBatteryEndOfDay", 0) or 0),
+                    charged=int(entry.get("charged", 0) or entry.get("bodyBatteryCharged", 0) or 0),
+                    drained=int(entry.get("drained", 0) or entry.get("bodyBatteryDrained", 0) or 0),
+                ))
+            except (ValueError, TypeError) as exc:
+                logger.warning("Skipping body battery entry: %s", exc)
+                continue
+
+        return results
+
+    def get_stress(self, date_str: str) -> StressData:
+        """Fetch stress data for a given date (YYYY-MM-DD)."""
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_stress_data(date_str)
+        logger.debug("Raw stress data keys: %s", list(raw.keys()) if raw else None)
+
+        if not raw:
+            return StressData(
+                date=date.fromisoformat(date_str),
+                avg_stress=0.0,
+                max_stress=0.0,
+                stress_duration_seconds=0,
+                rest_duration_seconds=0,
+            )
+
+        return StressData(
+            date=date.fromisoformat(date_str),
+            avg_stress=float(raw.get("overallStressLevel", 0) or raw.get("avgStressLevel", 0) or 0),
+            max_stress=float(raw.get("maxStressLevel", 0) or 0),
+            stress_duration_seconds=int(raw.get("highStressDuration", 0) or raw.get("stressDuration", 0) or 0),
+            rest_duration_seconds=int(raw.get("restStressDuration", 0) or raw.get("lowStressDuration", 0) or 0),
+        )
+
+    def get_resting_hr(self, date_str: str) -> float:
+        """Fetch resting heart rate for a given date (YYYY-MM-DD)."""
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_resting_heart_rate(date_str)
+        logger.debug("Raw resting HR data: %s", raw)
+
+        if not raw:
+            return 0.0
+
+        # The response may nest the value in different structures
+        value = raw.get("restingHeartRate")
+        if value is None:
+            stats = raw.get("statisticsDTO", {})
+            value = stats.get("restingHeartRate")
+        if value is None:
+            value = raw.get("value")
+
+        return float(value or 0)
+
+    def get_scheduled_workouts(self, start: str, end: str) -> list[ScheduledWorkout]:
+        """Fetch scheduled/planned workouts for a date range (YYYY-MM-DD)."""
+        self._ensure_connected()
+        self._rate_limit()
+
+        try:
+            raw = self.client.get_training_plan_list()
+        except Exception:
+            logger.debug("get_training_plan_list not available, trying calendar")
+            raw = None
+
+        # Try calendar-based approach if training plan list is unavailable
+        if raw is None:
+            try:
+                self._rate_limit()
+                raw = self.client.get_calendar(start, end)
+            except Exception as exc:
+                logger.warning("Failed to fetch scheduled workouts: %s", exc)
+                return []
+
+        results: list[ScheduledWorkout] = []
+        if not raw:
+            return results
+
+        # The calendar response may have workouts in different structures
+        items = raw if isinstance(raw, list) else raw.get("calendarItems", [])
+
+        for item in items:
+            try:
+                sched_date_str = item.get("date") or item.get("calendarDate") or item.get("scheduledDate")
+                if not sched_date_str:
+                    continue
+
+                # Filter to requested date range
+                sched_date = date.fromisoformat(sched_date_str[:10])
+                start_date = date.fromisoformat(start)
+                end_date = date.fromisoformat(end)
+                if sched_date < start_date or sched_date > end_date:
+                    continue
+
+                sport_str = (
+                    item.get("activityType", {}).get("typeKey", "")
+                    if isinstance(item.get("activityType"), dict)
+                    else item.get("sportType", item.get("activityTypeKey", ""))
+                )
+
+                results.append(ScheduledWorkout(
+                    scheduled_date=sched_date,
+                    workout_name=str(item.get("title", "") or item.get("workoutName", "") or "Workout"),
+                    sport=_map_sport(str(sport_str)),
+                    description=item.get("description") or item.get("notes"),
+                    planned_duration_seconds=item.get("duration") or item.get("plannedDuration"),
+                    planned_tss=item.get("plannedTSS") or item.get("estimatedTSS"),
+                ))
+            except (ValueError, TypeError) as exc:
+                logger.warning("Skipping scheduled workout entry: %s", exc)
+                continue
+
+        return results
+
+    def get_activities(self, start: int = 0, limit: int = 20) -> list[Activity]:
+        """Fetch recent activities.
+
+        Args:
+            start: Offset index (0-based).
+            limit: Maximum number of activities to return.
+        """
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_activities(start, limit)
+        logger.debug("Fetched %d activities", len(raw) if raw else 0)
+
+        results: list[Activity] = []
+        if not raw:
+            return results
+
+        for act in raw:
+            try:
+                # Parse activity type
+                activity_type = act.get("activityType", {})
+                type_key = (
+                    activity_type.get("typeKey", "")
+                    if isinstance(activity_type, dict)
+                    else str(activity_type)
+                )
+
+                # Parse start time
+                start_time_str = act.get("startTimeLocal") or act.get("startTimeGMT", "")
+                try:
+                    start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    start_time = datetime.now()
+
+                results.append(Activity(
+                    activity_id=int(act.get("activityId", 0)),
+                    sport=_map_sport(type_key),
+                    start_time=start_time,
+                    duration_seconds=int(act.get("duration", 0) or 0),
+                    distance_meters=act.get("distance"),
+                    avg_hr=act.get("averageHR"),
+                    max_hr=act.get("maxHR"),
+                    avg_power=act.get("averagePower"),
+                    normalized_power=act.get("normPower") or act.get("normalizedPower"),
+                    tss=act.get("trainingStressScore"),
+                ))
+            except (ValueError, TypeError) as exc:
+                logger.warning("Skipping activity entry: %s", exc)
+                continue
+
+        return results
+
+    def get_training_readiness(self, date_str: str) -> TrainingReadinessData:
+        """Fetch training readiness score for a given date (YYYY-MM-DD)."""
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_training_readiness(date_str)
+        logger.debug("Raw training readiness data: %s", raw)
+
+        if not raw:
+            return TrainingReadinessData(
+                date=date.fromisoformat(date_str),
+                score=0,
+                level="UNKNOWN",
+            )
+
+        # The response may be a list with one entry or a dict
+        entry = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
+
+        return TrainingReadinessData(
+            date=date.fromisoformat(date_str),
+            score=int(entry.get("score", 0) or entry.get("readinessScore", 0) or 0),
+            level=str(entry.get("level", "UNKNOWN") or entry.get("readinessLevel", "UNKNOWN")),
+            hrv_status=entry.get("hrvStatus") or entry.get("hrvFeedback"),
+            sleep_score=entry.get("sleepScore") or entry.get("sleepQualityScore"),
+            recovery_time_hours=_minutes_to_hours(entry.get("recoveryTimeInMinutes")),
+        )
+
+    def get_training_status(self, date_str: str) -> TrainingStatusData:
+        """Fetch training status for a given date (YYYY-MM-DD)."""
+        self._ensure_connected()
+        self._rate_limit()
+
+        raw = self.client.get_training_status(date_str)
+        logger.debug("Raw training status data: %s", raw)
+
+        if not raw:
+            return TrainingStatusData(
+                date=date.fromisoformat(date_str),
+                training_status="UNKNOWN",
+            )
+
+        # May be a list or dict
+        entry = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
+
+        return TrainingStatusData(
+            date=date.fromisoformat(date_str),
+            training_status=str(entry.get("trainingStatus", "UNKNOWN") or entry.get("currentDayTrainingStatus", "UNKNOWN")),
+            vo2_max_run=entry.get("vo2MaxPreciseValue") or entry.get("vo2MaxRun"),
+            vo2_max_bike=entry.get("vo2MaxCyclingPreciseValue") or entry.get("vo2MaxBike"),
+            load_focus=entry.get("loadFocus") or entry.get("trainingLoadFocus"),
+        )
