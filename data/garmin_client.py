@@ -108,19 +108,22 @@ class GarminClient:
         """
         self.client = Garmin(self.email, self.password)
         self._mount_retry_adapter()
-        try:
-            self.client.login(tokenstore=TOKENSTORE)
-            logger.info("Garmin login successful (token store: %s)", TOKENSTORE)
-        except Exception as exc:
-            if "429" in str(exc):
-                logger.error("Garmin rate limited (429), not retrying: %s", exc)
-                raise
-            logger.warning(
-                "Token-based login failed (%s), retrying with credentials", exc
-            )
-            self.client.login()
-            self.client.garth.dump(TOKENSTORE)
-            logger.info("Garmin credential login successful, tokens saved")
+        token_file = Path(TOKENSTORE) / "oauth1_token.json"
+        if token_file.exists():
+            try:
+                self.client.login(tokenstore=TOKENSTORE)
+                logger.info("Garmin login successful (token store: %s)", TOKENSTORE)
+                return
+            except Exception as exc:
+                if "429" in str(exc):
+                    logger.error("Garmin rate limited (429), not retrying: %s", exc)
+                    raise
+                logger.warning(
+                    "Token-based login failed (%s), retrying with credentials", exc
+                )
+        self.client.login()
+        self.client.garth.dump(TOKENSTORE)
+        logger.info("Garmin credential login successful, tokens saved")
 
     def _mount_retry_adapter(self) -> None:
         """Mount an HTTPAdapter with retry/backoff on the garth session."""
@@ -152,9 +155,12 @@ class GarminClient:
         self._rate_limit()
         try:
             return fn(*args, **kwargs)
-        except Exception:
+        except Exception as exc:
+            if "429" in str(exc):
+                logger.warning("Garmin API rate limited (429), not retrying")
+                raise
             # Session may have expired — re-login once and retry
-            logger.info("API call failed, re-authenticating")
+            logger.info("API call failed, re-authenticating: %s", exc)
             self._login()
             self._rate_limit()
             return fn(*args, **kwargs)

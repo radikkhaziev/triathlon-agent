@@ -32,7 +32,7 @@ services:
       migrate:
         condition: service_completed_successfully
     volumes:
-      - garmin-tokens:/root/.garminconnect
+      - ~/.garminconnect:/root/.garminconnect
     restart: unless-stopped
 
   # api:
@@ -48,4 +48,3 @@ services:
 
 volumes:
   pgdata:
-  garmin-tokens:
