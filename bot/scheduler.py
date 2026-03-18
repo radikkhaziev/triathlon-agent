@@ -68,7 +68,7 @@ def create_scheduler() -> AsyncIOScheduler:
         daily_metrics_job,
         trigger="cron",
         hour="5-20",
-        minute="*/15",
+        minute="*/3",
         id="daily_metrics",
     )
 
