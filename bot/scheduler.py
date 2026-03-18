@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Singleton Garmin client — created once, reused across all scheduler jobs.
 _garmin_client: GarminClient | None = None
 _garmin_login_cooldown_until: float = 0.0  # monotonic timestamp
-_LOGIN_COOLDOWN_SEC = 15 * 60  # 15 minutes after a failed login
+_LOGIN_COOLDOWN_SEC = 60 * 60  # 1 hour after a failed login
 
 
 def _get_garmin_client() -> GarminClient | None:
@@ -68,7 +68,7 @@ def create_scheduler() -> AsyncIOScheduler:
         daily_metrics_job,
         trigger="cron",
         hour="5-20",
-        minute="*/5",
+        minute="*/15",
         id="daily_metrics",
     )
 

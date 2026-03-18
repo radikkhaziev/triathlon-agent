@@ -24,16 +24,16 @@ services:
       db:
         condition: service_healthy
 
-  # bot:
-  #   build: .
-  #   command: python -m bot.main
-  #   env_file: .env
-  #   depends_on:
-  #     migrate:
-  #       condition: service_completed_successfully
-  #   volumes:
-  #     - garmin-tokens:/root/.garminconnect
-  #   restart: unless-stopped
+  bot:
+    build: .
+    command: python -m bot.main
+    env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - garmin-tokens:/root/.garminconnect
+    restart: unless-stopped
 
   # api:
   #   build: .

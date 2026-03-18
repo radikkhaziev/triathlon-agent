@@ -36,12 +36,12 @@ logger = logging.getLogger(__name__)
 TOKENSTORE = str(Path.home() / ".garminconnect")
 
 _RETRY_STRATEGY = Retry(
-    total=9,
+    total=5,
     connect=3,
-    read=3,
-    status=4,
-    backoff_factor=1.0,  # 1s, 2s, 4s, 8s, ...
-    status_forcelist=[429, 500, 502, 503, 504],
+    read=2,
+    status=3,
+    backoff_factor=1.0,
+    status_forcelist=[500, 502, 503, 504],  # NOT 429 — retrying makes the ban longer
     respect_retry_after_header=True,
 )
 
@@ -112,16 +112,15 @@ class GarminClient:
             self.client.login(tokenstore=TOKENSTORE)
             logger.info("Garmin login successful (token store: %s)", TOKENSTORE)
         except Exception as exc:
+            if "429" in str(exc):
+                logger.error("Garmin rate limited (429), not retrying: %s", exc)
+                raise
             logger.warning(
                 "Token-based login failed (%s), retrying with credentials", exc
             )
-            try:
-                self.client.login()
-                self.client.garth.dump(TOKENSTORE)
-                logger.info("Garmin credential login successful, tokens saved")
-            except Exception as login_exc:
-                logger.error("Garmin login failed: %s", login_exc)
-                raise
+            self.client.login()
+            self.client.garth.dump(TOKENSTORE)
+            logger.info("Garmin credential login successful, tokens saved")
 
     def _mount_retry_adapter(self) -> None:
         """Mount an HTTPAdapter with retry/backoff on the garth session."""
