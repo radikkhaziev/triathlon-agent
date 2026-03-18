@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import date
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -10,6 +11,36 @@ from data.garmin_client import GarminClient
 from data.models import SleepData
 
 logger = logging.getLogger(__name__)
+
+# Singleton Garmin client — created once, reused across all scheduler jobs.
+_garmin_client: GarminClient | None = None
+_garmin_login_cooldown_until: float = 0.0  # monotonic timestamp
+_LOGIN_COOLDOWN_SEC = 15 * 60  # 15 minutes after a failed login
+
+
+def _get_garmin_client() -> GarminClient | None:
+    global _garmin_client, _garmin_login_cooldown_until
+    if _garmin_client is not None:
+        return _garmin_client
+
+    now = time.monotonic()
+    if now < _garmin_login_cooldown_until:
+        remaining = int(_garmin_login_cooldown_until - now)
+        logger.warning("Garmin login on cooldown, %ds remaining — skipping", remaining)
+        return
+
+    try:
+        _garmin_client = GarminClient(
+            settings.GARMIN_EMAIL,
+            settings.GARMIN_PASSWORD.get_secret_value(),
+        )
+        return _garmin_client
+    except Exception as exc:
+        _garmin_login_cooldown_until = now + _LOGIN_COOLDOWN_SEC
+        logger.error(
+            "Garmin login failed, cooldown for %ds: %s", _LOGIN_COOLDOWN_SEC, exc
+        )
+        return
 
 
 def create_scheduler() -> AsyncIOScheduler:
@@ -36,8 +67,8 @@ def create_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         daily_metrics_job,
         trigger="cron",
-        hour="5-11",
-        minute="*/15",
+        hour="5-20",
+        minute="*/5",
         id="daily_metrics",
     )
 
@@ -48,17 +79,10 @@ async def garmin_sync_job() -> None:
     logger.info("Starting Garmin data sync")
 
     from data.database import save_activity, save_tss_history
-    from data.garmin_client import GarminClient
     from data.metrics import calc_hr_tss, calc_power_tss, calc_swim_tss
     from data.models import SportType
 
-    email = settings.GARMIN_EMAIL
-    password = settings.GARMIN_PASSWORD.get_secret_value()
-    if not email or not password:
-        logger.error("GARMIN_EMAIL and GARMIN_PASSWORD must be set")
-        return
-
-    client = GarminClient(email, password)
+    client = _get_garmin_client()
     activities = await asyncio.to_thread(client.get_activities, 0, 30)
 
     resting_hr = settings.ATHLETE_RESTING_HR
@@ -119,7 +143,6 @@ async def morning_report_job() -> str:
         get_tss_history,
         save_daily_metrics,
     )
-    from data.garmin_client import GarminClient
     from data.metrics import calculate_readiness, update_ctl_atl
     from data.models import DailyMetrics, ReadinessLevel, ScheduledWorkout
 
@@ -128,9 +151,7 @@ async def morning_report_job() -> str:
 
     resting_hr_baseline = settings.ATHLETE_RESTING_HR
 
-    garmin = GarminClient(
-        settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value()
-    )
+    garmin = _get_garmin_client()
 
     sleep = await asyncio.to_thread(garmin.get_sleep, today_str)
     hrv = await asyncio.to_thread(garmin.get_hrv, today_str)
@@ -269,14 +290,13 @@ async def morning_report_job() -> str:
     return message
 
 
-async def daily_metrics_job() -> str:
+async def daily_metrics_job() -> None:
+    garmin = _get_garmin_client()
+    if garmin is None:
+        return
+
     today = date.today()
     today_str = str(today)
-
-    garmin = GarminClient(
-        settings.GARMIN_EMAIL,
-        settings.GARMIN_PASSWORD.get_secret_value(),
-    )
 
     sleep: SleepData = await asyncio.to_thread(garmin.get_sleep, today_str)
 

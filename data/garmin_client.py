@@ -6,6 +6,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from garminconnect import Garmin
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from data.models import (
     Activity,
@@ -32,6 +34,16 @@ from data.models import (
 logger = logging.getLogger(__name__)
 
 TOKENSTORE = str(Path.home() / ".garminconnect")
+
+_RETRY_STRATEGY = Retry(
+    total=9,
+    connect=3,
+    read=3,
+    status=4,
+    backoff_factor=1.0,  # 1s, 2s, 4s, 8s, ...
+    status_forcelist=[429, 500, 502, 503, 504],
+    respect_retry_after_header=True,
+)
 
 # Mapping from Garmin activity type names to our SportType enum.
 # Garmin uses various strings like "running", "cycling", "lap_swimming", etc.
@@ -94,8 +106,9 @@ class GarminClient:
         Uses token store at ~/.garminconnect so we don't need to
         re-authenticate with credentials on every startup.
         """
+        self.client = Garmin(self.email, self.password)
+        self._mount_retry_adapter()
         try:
-            self.client = Garmin(self.email, self.password)
             self.client.login(tokenstore=TOKENSTORE)
             logger.info("Garmin login successful (token store: %s)", TOKENSTORE)
         except Exception as exc:
@@ -103,25 +116,23 @@ class GarminClient:
                 "Token-based login failed (%s), retrying with credentials", exc
             )
             try:
-                self.client = Garmin(self.email, self.password)
                 self.client.login()
-                # Persist tokens for next time
                 self.client.garth.dump(TOKENSTORE)
                 logger.info("Garmin credential login successful, tokens saved")
             except Exception as login_exc:
                 logger.error("Garmin login failed: %s", login_exc)
                 raise
 
+    def _mount_retry_adapter(self) -> None:
+        """Mount an HTTPAdapter with retry/backoff on the garth session."""
+        adapter = HTTPAdapter(max_retries=_RETRY_STRATEGY)
+        sess = self.client.garth.sess
+        sess.mount("https://", adapter)
+        sess.mount("http://", adapter)
+
     def _ensure_connected(self) -> None:
-        """Re-login if the session has expired."""
+        """Re-login only if the client was never initialized."""
         if self.client is None:
-            self._login()
-            return
-        try:
-            # A lightweight call to check if the session is still valid
-            self.client.get_full_name()
-        except Exception:
-            logger.info("Garmin session expired, re-authenticating")
             self._login()
 
     # ------------------------------------------------------------------
@@ -136,6 +147,19 @@ class GarminClient:
             time.sleep(1.0 - elapsed)
         self._last_request_time = time.monotonic()
 
+    def _call_api(self, fn, *args, **kwargs):
+        """Call a Garmin API method with rate limiting and session recovery."""
+        self._ensure_connected()
+        self._rate_limit()
+        try:
+            return fn(*args, **kwargs)
+        except Exception:
+            # Session may have expired — re-login once and retry
+            logger.info("API call failed, re-authenticating")
+            self._login()
+            self._rate_limit()
+            return fn(*args, **kwargs)
+
     # ------------------------------------------------------------------
     # Data fetching methods
     # ------------------------------------------------------------------
@@ -145,10 +169,7 @@ class GarminClient:
 
         Parses the dailySleepDTO from the Garmin response.
         """
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_sleep_data(date_str)
+        raw = self._call_api(self.client.get_sleep_data, date_str)
         logger.debug("Raw sleep data keys: %s", list(raw.keys()) if raw else None)
 
         dto = raw.get("dailySleepDTO", {}) if raw else {}
@@ -169,10 +190,7 @@ class GarminClient:
 
     def get_hrv(self, date_str: str) -> HRVData:
         """Fetch HRV summary for a given date (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_hrv_data(date_str)
+        raw = self._call_api(self.client.get_hrv_data, date_str)
         logger.debug("Raw HRV data keys: %s", list(raw.keys()) if raw else None)
 
         summary = raw.get("hrvSummary", {}) if raw else {}
@@ -189,10 +207,7 @@ class GarminClient:
 
     def get_body_battery(self, start: str, end: str) -> list[BodyBatteryData]:
         """Fetch body battery data for a date range (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_body_battery(start, end)
+        raw = self._call_api(self.client.get_body_battery, start, end)
         logger.debug("Body battery entries: %d", len(raw) if raw else 0)
 
         results: list[BodyBatteryData] = []
@@ -239,10 +254,7 @@ class GarminClient:
 
     def get_stress(self, date_str: str) -> StressData:
         """Fetch stress data for a given date (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_stress_data(date_str)
+        raw = self._call_api(self.client.get_stress_data, date_str)
         logger.debug("Raw stress data keys: %s", list(raw.keys()) if raw else None)
 
         if not raw:
@@ -270,10 +282,7 @@ class GarminClient:
 
     def get_resting_hr(self, date_str: str) -> float:
         """Fetch resting heart rate for a given date (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_rhr_day(date_str)
+        raw = self._call_api(self.client.get_rhr_day, date_str)
         logger.debug("Raw resting HR data: %s", raw)
 
         if not raw:
@@ -295,7 +304,7 @@ class GarminClient:
         self._rate_limit()
 
         try:
-            raw = self.client.get_training_plan_list()
+            raw = self._call_api(self.client.get_training_plan_list)
         except Exception:
             logger.debug("get_training_plan_list not available, trying calendar")
             raw = None
@@ -303,8 +312,7 @@ class GarminClient:
         # Try calendar-based approach if training plan list is unavailable
         if raw is None:
             try:
-                self._rate_limit()
-                raw = self.client.get_calendar(start, end)
+                raw = self._call_api(self.client.get_calendar, start, end)
             except Exception as exc:
                 logger.warning("Failed to fetch scheduled workouts: %s", exc)
                 return []
@@ -367,10 +375,7 @@ class GarminClient:
             start: Offset index (0-based).
             limit: Maximum number of activities to return.
         """
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_activities(start, limit)
+        raw = self._call_api(self.client.get_activities, start, limit)
         logger.debug("Fetched %d activities", len(raw) if raw else 0)
 
         results: list[Activity] = []
@@ -421,10 +426,7 @@ class GarminClient:
 
     def get_training_readiness(self, date_str: str) -> TrainingReadinessData:
         """Fetch training readiness score for a given date (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_training_readiness(date_str)
+        raw = self._call_api(self.client.get_training_readiness, date_str)
         logger.debug("Raw training readiness data: %s", raw)
 
         if not raw:
@@ -452,10 +454,7 @@ class GarminClient:
 
     def get_training_status(self, date_str: str) -> TrainingStatusData:
         """Fetch training status for a given date (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_training_status(date_str)
+        raw = self._call_api(self.client.get_training_status, date_str)
         logger.debug("Raw training status data: %s", raw)
 
         if not raw:
@@ -493,10 +492,7 @@ class GarminClient:
 
         More precise than get_activities() for syncing specific periods.
         """
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_activities_by_date(start, end)
+        raw = self._call_api(self.client.get_activities_by_date, start, end)
         logger.debug("Fetched %d activities by date", len(raw) if raw else 0)
 
         results: list[Activity] = []
@@ -545,10 +541,7 @@ class GarminClient:
 
     def get_heart_rates(self, date_str: str) -> HeartRateData:
         """Fetch daily heart rate summary for a given date (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_heart_rates(date_str)
+        raw = self._call_api(self.client.get_heart_rates, date_str)
         logger.debug("Raw heart rates data keys: %s", list(raw.keys()) if raw else None)
 
         if not raw:
@@ -569,10 +562,7 @@ class GarminClient:
 
     def get_stats(self, date_str: str) -> DailyStats:
         """Fetch daily summary stats (steps, calories, distance, etc.)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_stats(date_str)
+        raw = self._call_api(self.client.get_stats, date_str)
         logger.debug("Raw stats data keys: %s", list(raw.keys()) if raw else None)
 
         if not raw:
@@ -601,10 +591,7 @@ class GarminClient:
 
     def get_body_composition(self, start: str, end: str) -> list[BodyCompositionData]:
         """Fetch body composition / weigh-in data for a date range."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_body_composition(start, end)
+        raw = self._call_api(self.client.get_body_composition, start, end)
         logger.debug("Raw body composition data: %s", type(raw))
 
         results: list[BodyCompositionData] = []
@@ -645,10 +632,7 @@ class GarminClient:
 
     def get_respiration(self, date_str: str) -> RespirationData:
         """Fetch respiration / breathing rate data for a given date."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_respiration_data(date_str)
+        raw = self._call_api(self.client.get_respiration_data, date_str)
         logger.debug("Raw respiration data: %s", raw)
 
         if not raw:
@@ -670,10 +654,7 @@ class GarminClient:
 
     def get_spo2(self, date_str: str) -> SpO2Data:
         """Fetch SpO2 (blood oxygen) data for a given date."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_spo2_data(date_str)
+        raw = self._call_api(self.client.get_spo2_data, date_str)
         logger.debug("Raw SpO2 data: %s", raw)
 
         if not raw:
@@ -687,10 +668,7 @@ class GarminClient:
 
     def get_max_metrics(self, date_str: str) -> MaxMetricsData:
         """Fetch VO2max and other max metrics for a given date."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_max_metrics(date_str)
+        raw = self._call_api(self.client.get_max_metrics, date_str)
         logger.debug("Raw max metrics data: %s", raw)
 
         if not raw:
@@ -725,10 +703,7 @@ class GarminClient:
 
     def get_race_predictions(self) -> list[RacePrediction]:
         """Fetch predicted race times."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_race_predictions()
+        raw = self._call_api(self.client.get_race_predictions)
         logger.debug("Raw race predictions data: %s", raw)
 
         results: list[RacePrediction] = []
@@ -762,10 +737,7 @@ class GarminClient:
 
     def get_endurance_score(self, date_str: str) -> EnduranceScoreData:
         """Fetch endurance score for a given date."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_endurance_score(date_str)
+        raw = self._call_api(self.client.get_endurance_score, date_str)
         logger.debug("Raw endurance score data: %s", raw)
 
         if not raw:
@@ -783,10 +755,7 @@ class GarminClient:
 
     def get_lactate_threshold(self) -> LactateThresholdData:
         """Fetch the athlete's current lactate threshold values."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_lactate_threshold()
+        raw = self._call_api(self.client.get_lactate_threshold)
         logger.debug("Raw lactate threshold data: %s", raw)
 
         if not raw:
@@ -799,10 +768,7 @@ class GarminClient:
 
     def get_cycling_ftp(self) -> CyclingFTPData:
         """Fetch the athlete's current cycling FTP."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        raw = self.client.get_cycling_ftp()
+        raw = self._call_api(self.client.get_cycling_ftp)
         logger.debug("Raw cycling FTP data: %s", raw)
 
         if not raw:

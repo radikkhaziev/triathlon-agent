@@ -1,0 +1,23 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+defaults:
+  run:
+    working-directory: /opt/triatlon-bot
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: /opt/triatlon-bot
+      - name: Copy .env
+        run: cp /home/deploy/.env.triathlon .env
+      - name: Stop services
+        run: docker compose down
+      - name: Deploy
+        run: docker compose up -d --build --remove-orphans

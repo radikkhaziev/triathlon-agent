@@ -28,7 +28,12 @@ def main() -> None:
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
-    app = ApplicationBuilder().token(token).build()
+    async def post_init(application):
+        scheduler = create_scheduler()
+        scheduler.start()
+        logging.info("Scheduler started")
+
+    app = ApplicationBuilder().token(token).post_init(post_init).build()
 
     # app.add_handler(CommandHandler("start", start_handler))
     # app.add_handler(CommandHandler("report", report_handler))
@@ -39,9 +44,6 @@ def main() -> None:
     # app.add_handler(CommandHandler("settings", settings_handler))
     # app.add_handler(CommandHandler("sync", sync_handler))
     # app.add_handler(CallbackQueryHandler(callback_handler))
-
-    scheduler = create_scheduler()
-    scheduler.start()
 
     logging.info("Bot started")
     app.run_polling()
