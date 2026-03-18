@@ -9,6 +9,11 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   migrate:
@@ -16,7 +21,8 @@ services:
     command: alembic upgrade head
     env_file: .env
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   # bot:
   #   build: .
