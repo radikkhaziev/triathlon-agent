@@ -11,10 +11,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync to deploy directory
-        run: |
-          mkdir -p /opt/triatlon-bot
-          rm -rf /opt/triatlon-bot/*
-          cp -a . /opt/triatlon-bot/
+        run: rsync -a --delete --exclude='.env' --exclude='.git' ./ /opt/triatlon-bot/
 
       - name: Copy .env
         run: cp /home/deploy/.env.triathlon /opt/triatlon-bot/.env
