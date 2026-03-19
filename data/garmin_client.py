@@ -126,6 +126,15 @@ class GarminClient:
     # Authentication
     # ------------------------------------------------------------------
 
+    @property
+    def _has_tokens(self) -> bool:
+        """Check whether the Garmin client holds valid OAuth tokens."""
+        return bool(
+            self.client
+            and getattr(self.client, "garth", None)
+            and self.client.garth.oauth1_token
+        )
+
     def _login(self) -> None:
         """Create a Garmin client and authenticate.
 
@@ -194,24 +203,19 @@ class GarminClient:
         """Call a Garmin API method with rate limiting and session recovery."""
         if self._check_cooldown():
             return
+        if not self._has_tokens:
+            logger.warning("No OAuth tokens — attempting login before API call")
+            self._login()
+            return
         self._rate_limit()
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
             if "429" in str(exc):
                 self._set_cooldown()
-                return
-            # Session may have expired — re-login once and retry
-            logger.info("API call failed, re-authenticating: %s", exc)
-            self._login()
-            self._rate_limit()
-            try:
-                return fn(*args, **kwargs)
-            except Exception as retry_exc:
-                logger.error("API call failed after re-login: %s", retry_exc)
-                if "429" in str(retry_exc):
-                    self._set_cooldown()
-                return
+            else:
+                logger.error("API call failed: %s", exc)
+            return
 
     # ------------------------------------------------------------------
     # Data fetching methods
