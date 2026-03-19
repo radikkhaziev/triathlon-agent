@@ -135,6 +135,7 @@ async def save_daily_metrics(
     dt: date,
     *,
     sleep_data: SleepData,
+    notify: bool = True,
 ) -> DailyMetricsRow:
     """Insert or update a daily metrics row (upsert by date)."""
 
@@ -164,7 +165,7 @@ async def save_daily_metrics(
         await session.commit()
         await session.refresh(row)
 
-        if is_new:
+        if is_new and notify:
             await _send_telegram_message("Пробуждение зафиксировано")
 
         return row

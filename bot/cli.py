@@ -65,7 +65,7 @@ async def _backfill() -> None:
     while dt <= today:
         print(f"Processing {dt} ...")
         try:
-            await daily_metrics_job(target_date=dt)
+            await daily_metrics_job(target_date=dt, notify=False)
         except Exception as exc:
             print(f"  Error: {exc}")
         dt += timedelta(days=1)
