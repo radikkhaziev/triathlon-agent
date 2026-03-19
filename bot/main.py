@@ -5,6 +5,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTyp
 
 from bot.scheduler import create_scheduler
 from config import settings
+from data.database import set_bot
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -32,6 +33,7 @@ def main() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
     async def post_init(application):
+        set_bot(application.bot)
         scheduler = create_scheduler()
         scheduler.start()
         logging.info("Scheduler started")

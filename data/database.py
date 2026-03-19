@@ -14,6 +14,23 @@ from config import settings
 from data.models import SleepData
 
 # ---------------------------------------------------------------------------
+# Telegram bot reference (set from bot/main.py after app is built)
+# ---------------------------------------------------------------------------
+_bot = None
+
+
+def set_bot(bot) -> None:
+    global _bot
+    _bot = bot
+
+
+async def _send_telegram_message(text: str) -> None:
+    if _bot is None:
+        return
+    await _bot.send_message(chat_id=settings.TELEGRAM_CHAT_ID, text=text)
+
+
+# ---------------------------------------------------------------------------
 # Engine / Session helpers
 # ---------------------------------------------------------------------------
 
@@ -112,7 +129,8 @@ async def save_daily_metrics(
 
     async with get_session() as session:
         row = await session.get(DailyMetricsRow, str(dt))
-        if row is None:
+        is_new = row is None
+        if is_new:
             row = DailyMetricsRow(date=str(dt))
             session.add(row)
 
@@ -134,6 +152,10 @@ async def save_daily_metrics(
 
         await session.commit()
         await session.refresh(row)
+
+        if is_new:
+            await _send_telegram_message("Пробуждение зафиксировано")
+
         return row
 
 
