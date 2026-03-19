@@ -87,14 +87,51 @@ class GarminClient:
 
     Handles authentication with token caching, rate limiting,
     and parsing raw API responses into Pydantic models.
+
+    Singleton: use GarminClient.get_instance(email, password) to obtain
+    the shared instance. Direct construction also enforces a single instance.
     """
 
-    def __init__(self, email: str, password: str) -> None:
+    _instance: "GarminClient | None" = None
+    _login_cooldown_until: float = 0.0
+    _LOGIN_COOLDOWN_SEC = 60 * 60  # 1 hour after a 429
+
+    def __new__(cls, email: str | None = None, password: str | None = None) -> "GarminClient":
+        if cls._instance is not None:
+            return cls._instance
+
+        if email is None or password is None:
+            raise RuntimeError("GarminClient not initialized — provide email and password")
+
+        now = time.monotonic()
+        if now < cls._login_cooldown_until:
+            remaining = int(cls._login_cooldown_until - now)
+            raise RuntimeError(f"Garmin login on cooldown, {remaining}s remaining")
+
+        inst = super().__new__(cls)
+        inst._initialized = False
+        try:
+            cls._instance = inst
+            return inst
+        except Exception:
+            cls._instance = None
+            raise
+
+    def __init__(self, email: str | None = None, password: str | None = None) -> None:
+        if self._initialized:
+            return
+        self._initialized = True
         self.email = email
         self.password = password
         self.client: Garmin | None = None
         self._last_request_time: float = 0.0
-        self._login()
+        try:
+            self._login()
+        except Exception:
+            type(self)._instance = None
+            type(self)._login_cooldown_until = time.monotonic() + self._LOGIN_COOLDOWN_SEC
+            self._initialized = False
+            raise
 
     # ------------------------------------------------------------------
     # Authentication

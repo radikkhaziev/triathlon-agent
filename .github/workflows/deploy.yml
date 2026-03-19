@@ -18,8 +18,8 @@ jobs:
 
       - name: Stop services
         working-directory: /opt/triatlon-bot
-        run: docker compose down
+        run: docker compose stop bot migrate
 
       - name: Deploy
         working-directory: /opt/triatlon-bot
-        run: docker compose up -d --build --remove-orphans
+        run: docker compose up -d --build --no-deps --remove-orphans bot migrate
