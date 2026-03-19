@@ -25,9 +25,20 @@ def set_bot(bot) -> None:
 
 
 async def _send_telegram_message(text: str) -> None:
-    if _bot is None:
+    if _bot is not None:
+        await _bot.send_message(chat_id=settings.TELEGRAM_CHAT_ID, text=text)
         return
-    await _bot.send_message(chat_id=settings.TELEGRAM_CHAT_ID, text=text)
+
+    import httpx
+
+    token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
+    if not token or not settings.TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            url, json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": text}
+        )
 
 
 # ---------------------------------------------------------------------------
