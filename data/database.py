@@ -98,48 +98,6 @@ class DailyMetricsRow(Base):
     # ai_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class ActivityRow(Base):
-    __tablename__ = "activities"
-
-    activity_id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, autoincrement=False
-    )
-    date: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    sport: Mapped[str | None] = mapped_column(String, nullable=True)
-    duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_hr: Mapped[float | None] = mapped_column(Float, nullable=True)
-    max_hr: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_power: Mapped[float | None] = mapped_column(Float, nullable=True)
-    norm_power: Mapped[float | None] = mapped_column(Float, nullable=True)
-    tss: Mapped[float | None] = mapped_column(Float, nullable=True)
-    synced_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class ScheduledWorkoutRow(Base):
-    __tablename__ = "scheduled_workouts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    scheduled_date: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True
-    )
-    sport: Mapped[str | None] = mapped_column(String, nullable=True)
-    workout_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    planned_tss: Mapped[float | None] = mapped_column(Float, nullable=True)
-    source: Mapped[str] = mapped_column(String, default="garmin")
-
-
-class TSSHistoryRow(Base):
-    __tablename__ = "tss_history"
-
-    date: Mapped[str] = mapped_column(String, primary_key=True)
-    sport: Mapped[str] = mapped_column(String, primary_key=True)
-    tss: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-
 # ---------------------------------------------------------------------------
 # CRUD — Daily Metrics
 # ---------------------------------------------------------------------------

@@ -1,19 +1,7 @@
-import asyncio
 import logging
 
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler
+from telegram.ext import ApplicationBuilder
 
-from bot.handlers import (
-    callback_handler,
-    goal_handler,
-    report_handler,
-    settings_handler,
-    start_handler,
-    status_handler,
-    sync_handler,
-    week_handler,
-    zones_handler,
-)
 from bot.scheduler import create_scheduler
 from config import settings
 
@@ -34,16 +22,6 @@ def main() -> None:
         logging.info("Scheduler started")
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
-
-    # app.add_handler(CommandHandler("start", start_handler))
-    # app.add_handler(CommandHandler("report", report_handler))
-    # app.add_handler(CommandHandler("status", status_handler))
-    # app.add_handler(CommandHandler("week", week_handler))
-    # app.add_handler(CommandHandler("goal", goal_handler))
-    # app.add_handler(CommandHandler("zones", zones_handler))
-    # app.add_handler(CommandHandler("settings", settings_handler))
-    # app.add_handler(CommandHandler("sync", sync_handler))
-    # app.add_handler(CallbackQueryHandler(callback_handler))
 
     logging.info("Bot started")
     app.run_polling()

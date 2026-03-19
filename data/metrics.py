@@ -5,17 +5,16 @@ and running, along with CTL/ATL/TSB (fitness/fatigue/form) tracking and
 a composite readiness score based on physiological signals.
 """
 
-from data.models import HRVData, SleepData, ReadinessLevel
-
+from data.models import HRVData, ReadinessLevel, SleepData
 
 # Heart Rate Zones as percentage of LTHR (Lactate Threshold Heart Rate)
 HR_ZONES: dict[str, dict[int, tuple[float, float]]] = {
     "run": {
-        1: (0.00, 0.72),   # Recovery
-        2: (0.72, 0.82),   # Aerobic base
-        3: (0.82, 0.87),   # Tempo
-        4: (0.87, 0.92),   # Sub-threshold
-        5: (0.92, 1.00),   # VO2max
+        1: (0.00, 0.72),  # Recovery
+        2: (0.72, 0.82),  # Aerobic base
+        3: (0.82, 0.87),  # Tempo
+        4: (0.87, 0.92),  # Sub-threshold
+        5: (0.92, 1.00),  # VO2max
     },
     "bike": {
         1: (0.00, 0.68),
@@ -52,7 +51,7 @@ def calc_hr_tss(
     if lthr == resting_hr:
         return 0.0
     intensity_factor = (avg_hr - resting_hr) / (lthr - resting_hr)
-    tss = (duration_sec / 3600) * intensity_factor ** 2 * 100
+    tss = (duration_sec / 3600) * intensity_factor**2 * 100
     return round(tss, 1)
 
 
@@ -103,7 +102,7 @@ def calc_swim_tss(
         return 0.0
     pace_per_100m = (duration_sec / distance_m) * 100
     intensity_factor = css_per_100m / pace_per_100m
-    tss = (duration_sec / 3600) * intensity_factor ** 2 * 100
+    tss = (duration_sec / 3600) * intensity_factor**2 * 100
     return round(tss, 1)
 
 
