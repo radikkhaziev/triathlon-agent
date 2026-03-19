@@ -22,12 +22,8 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
+def start_bot() -> None:
+    """Start the Telegram bot with polling."""
     token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
@@ -39,7 +35,6 @@ def main() -> None:
         logging.info("Scheduler started")
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
-
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
 
     logging.info("Bot started")
@@ -47,4 +42,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    start_bot()

@@ -33,16 +33,15 @@ def create_scheduler() -> AsyncIOScheduler:
     return scheduler
 
 
-async def daily_metrics_job() -> None:
+async def daily_metrics_job(target_date: date | None = None) -> None:
     try:
         garmin = GarminClient()
     except RuntimeError as exc:
         logger.warning("Skipping daily_metrics_job: %s", exc)
         return
 
-    today = date.today()
-    today_str = str(today)
+    dt = target_date or date.today()
 
-    sleep: SleepData = await asyncio.to_thread(garmin.get_sleep, today_str)
+    sleep: SleepData = await asyncio.to_thread(garmin.get_sleep, str(dt))
 
-    await save_daily_metrics(today, sleep_data=sleep)
+    await save_daily_metrics(dt, sleep_data=sleep)

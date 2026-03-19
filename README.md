@@ -79,6 +79,23 @@ alembic current
 alembic history
 ```
 
+## CLI Commands
+
+```bash
+# Send a message to Telegram chat
+python -m bot.cli echo "Hello from CLI"
+
+# Backfill daily metrics for the last 2 months
+python -m bot.cli backfill
+```
+
+Via Docker:
+
+```bash
+docker compose exec bot python -m bot.cli echo "Hello"
+docker compose exec bot python -m bot.cli backfill
+```
+
 ## Running Tests
 
 ```bash
