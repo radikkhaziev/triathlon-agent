@@ -88,34 +88,29 @@ class GarminClient:
     Handles authentication with token caching, rate limiting,
     and parsing raw API responses into Pydantic models.
 
-    Singleton: use GarminClient.get_instance(email, password) to obtain
-    the shared instance. Direct construction also enforces a single instance.
+    Singleton: first call GarminClient(email, password) to create the instance,
+    then GarminClient() to get it anywhere.
     """
 
     _instance: "GarminClient | None" = None
     _login_cooldown_until: float = 0.0
-    _LOGIN_COOLDOWN_SEC = 60 * 60  # 1 hour after a 429
+    _LOGIN_COOLDOWN_SEC = 2 * 60 * 60  # 2 hours after a 429
 
-    def __new__(cls, email: str | None = None, password: str | None = None) -> "GarminClient":
+    def __new__(
+        cls, email: str | None = None, password: str | None = None
+    ) -> "GarminClient":
         if cls._instance is not None:
             return cls._instance
 
         if email is None or password is None:
-            raise RuntimeError("GarminClient not initialized — provide email and password")
-
-        now = time.monotonic()
-        if now < cls._login_cooldown_until:
-            remaining = int(cls._login_cooldown_until - now)
-            raise RuntimeError(f"Garmin login on cooldown, {remaining}s remaining")
+            raise RuntimeError(
+                "GarminClient not initialized — provide email and password"
+            )
 
         inst = super().__new__(cls)
         inst._initialized = False
-        try:
-            cls._instance = inst
-            return inst
-        except Exception:
-            cls._instance = None
-            raise
+        cls._instance = inst
+        return inst
 
     def __init__(self, email: str | None = None, password: str | None = None) -> None:
         if self._initialized:
@@ -125,13 +120,7 @@ class GarminClient:
         self.password = password
         self.client: Garmin | None = None
         self._last_request_time: float = 0.0
-        try:
-            self._login()
-        except Exception:
-            type(self)._instance = None
-            type(self)._login_cooldown_until = time.monotonic() + self._LOGIN_COOLDOWN_SEC
-            self._initialized = False
-            raise
+        self._login()
 
     # ------------------------------------------------------------------
     # Authentication
@@ -153,14 +142,18 @@ class GarminClient:
                 return
             except Exception as exc:
                 if "429" in str(exc):
-                    logger.error("Garmin rate limited (429), not retrying: %s", exc)
-                    raise
+                    self._set_cooldown()
+                    return
                 logger.warning(
                     "Token-based login failed (%s), retrying with credentials", exc
                 )
-        self.client.login()
-        self.client.garth.dump(TOKENSTORE)
-        logger.info("Garmin credential login successful, tokens saved")
+        try:
+            self.client.login()
+            self.client.garth.dump(TOKENSTORE)
+            logger.info("Garmin credential login successful, tokens saved")
+        except Exception as exc:
+            self._set_cooldown()
+            logger.error("Garmin credential login failed: %s", exc)
 
     def _mount_retry_adapter(self) -> None:
         """Mount an HTTPAdapter with retry/backoff on the garth session."""
@@ -168,11 +161,6 @@ class GarminClient:
         sess = self.client.garth.sess
         sess.mount("https://", adapter)
         sess.mount("http://", adapter)
-
-    def _ensure_connected(self) -> None:
-        """Re-login only if the client was never initialized."""
-        if self.client is None:
-            self._login()
 
     # ------------------------------------------------------------------
     # Rate limiting
@@ -186,21 +174,44 @@ class GarminClient:
             time.sleep(1.0 - elapsed)
         self._last_request_time = time.monotonic()
 
+    def _check_cooldown(self) -> bool:
+        """Return True if cooldown is active (skip the request)."""
+        now = time.monotonic()
+        if now < self._login_cooldown_until:
+            remaining = int(self._login_cooldown_until - now)
+            logger.warning(
+                "Garmin API on cooldown, %ds remaining — skipping", remaining
+            )
+            return True
+        return False
+
+    def _set_cooldown(self) -> None:
+        """Activate login cooldown after a 429 error."""
+        type(self)._login_cooldown_until = time.monotonic() + self._LOGIN_COOLDOWN_SEC
+        logger.warning("Garmin 429 — cooldown for %ds", self._LOGIN_COOLDOWN_SEC)
+
     def _call_api(self, fn, *args, **kwargs):
         """Call a Garmin API method with rate limiting and session recovery."""
-        self._ensure_connected()
+        if self._check_cooldown():
+            return
         self._rate_limit()
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
             if "429" in str(exc):
-                logger.warning("Garmin API rate limited (429), not retrying")
-                raise
+                self._set_cooldown()
+                return
             # Session may have expired — re-login once and retry
             logger.info("API call failed, re-authenticating: %s", exc)
             self._login()
             self._rate_limit()
-            return fn(*args, **kwargs)
+            try:
+                return fn(*args, **kwargs)
+            except Exception as retry_exc:
+                logger.error("API call failed after re-login: %s", retry_exc)
+                if "429" in str(retry_exc):
+                    self._set_cooldown()
+                return
 
     # ------------------------------------------------------------------
     # Data fetching methods
@@ -212,11 +223,13 @@ class GarminClient:
         Parses the dailySleepDTO from the Garmin response.
         """
         raw = self._call_api(self.client.get_sleep_data, date_str)
-        logger.debug("Raw sleep data keys: %s", list(raw.keys()) if raw else None)
+        if not raw:
+            return SleepData(date=date.fromisoformat(date_str))
 
-        dto = raw.get("dailySleepDTO", {}) if raw else {}
-        sleep_scores = dto.get("sleepScores", {}) if raw else {}
+        logger.debug("Raw sleep data keys: %s", list(raw.keys()))
 
+        dto = raw.get("dailySleepDTO", {})
+        sleep_scores = dto.get("sleepScores", {})
         sleep_score = sleep_scores.get("overall", {}).get("value", 0)
 
         return SleepData(
@@ -233,9 +246,11 @@ class GarminClient:
     def get_hrv(self, date_str: str) -> HRVData:
         """Fetch HRV summary for a given date (YYYY-MM-DD)."""
         raw = self._call_api(self.client.get_hrv_data, date_str)
-        logger.debug("Raw HRV data keys: %s", list(raw.keys()) if raw else None)
+        if not raw:
+            return HRVData(date=date.fromisoformat(date_str))
 
-        summary = raw.get("hrvSummary", {}) if raw else {}
+        logger.debug("Raw HRV data keys: %s", list(raw.keys()))
+        summary = raw.get("hrvSummary", {})
 
         return HRVData(
             date=date.fromisoformat(date_str),
@@ -342,22 +357,11 @@ class GarminClient:
 
     def get_scheduled_workouts(self, start: str, end: str) -> list[ScheduledWorkout]:
         """Fetch scheduled/planned workouts for a date range (YYYY-MM-DD)."""
-        self._ensure_connected()
-        self._rate_limit()
-
-        try:
-            raw = self._call_api(self.client.get_training_plan_list)
-        except Exception:
-            logger.debug("get_training_plan_list not available, trying calendar")
-            raw = None
+        raw = self._call_api(self.client.get_training_plan_list)
 
         # Try calendar-based approach if training plan list is unavailable
-        if raw is None:
-            try:
-                raw = self._call_api(self.client.get_calendar, start, end)
-            except Exception as exc:
-                logger.warning("Failed to fetch scheduled workouts: %s", exc)
-                return []
+        if not raw:
+            raw = self._call_api(self.client.get_calendar, start, end)
 
         results: list[ScheduledWorkout] = []
         if not raw:
