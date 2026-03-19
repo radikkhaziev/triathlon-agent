@@ -59,7 +59,7 @@ async def _backfill() -> None:
     GarminClient(settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value())
 
     today = date.today()
-    start = today - timedelta(days=60)
+    start = today - timedelta(days=180)
     dt = start
 
     while dt <= today:

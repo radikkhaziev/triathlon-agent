@@ -13,3 +13,5 @@ dist/
 .ruff_cache/
 
 .vscode/
+
+.claude/
