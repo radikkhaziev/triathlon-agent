@@ -22,8 +22,27 @@ def main() -> None:
     echo_parser.add_argument("message", help="Message text to send")
 
     sub.add_parser("backfill", help="Run daily_metrics_job for the last 2 months")
+    sub.add_parser("shell", help="Open interactive Python shell with app context")
+    sub.add_parser(
+        "garmin-login", help="Login to Garmin with credentials and save tokens"
+    )
+    sub.add_parser(
+        "garmin-refresh", help="Refresh Garmin access token using saved refresh token"
+    )
 
     args = parser.parse_args()
+
+    if args.command == "shell":
+        _shell()
+        return
+
+    if args.command == "garmin-login":
+        _garmin_login()
+        return
+
+    if args.command == "garmin-refresh":
+        _garmin_refresh()
+        return
 
     if args.command == "echo":
         asyncio.run(_send_telegram_message(args.message))
@@ -52,6 +71,58 @@ async def _backfill() -> None:
         dt += timedelta(days=1)
 
     print("Backfill completed.")
+
+
+def _garmin_login() -> None:
+    """Full credential login — use when refresh token is expired."""
+    from garminconnect import Garmin
+    from data.garmin_client import TOKENSTORE
+
+    g = Garmin(settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value())
+    g.login()
+    g.garth.dump(TOKENSTORE)
+    print(f"Tokens saved to {TOKENSTORE}")
+
+
+def _garmin_refresh() -> None:
+    """Refresh access token using saved refresh token — no credentials needed."""
+    import garth
+    from data.garmin_client import TOKENSTORE
+
+    garth.resume(TOKENSTORE)
+    garth.client.dump(TOKENSTORE)
+    print(f"Access token refreshed, saved to {TOKENSTORE}")
+
+
+def _shell() -> None:
+    import code
+
+    from data.database import SessionLocal
+    from data.garmin_client import GarminClient
+
+    garmin = GarminClient(
+        settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value()
+    )
+    db = SessionLocal()
+
+    banner = (
+        "Triathlon Agent Shell\n"
+        "Available variables:\n"
+        "  settings  - app settings\n"
+        "  garmin    - GarminClient instance\n"
+        "  db        - SQLAlchemy session\n"
+    )
+    ctx = {
+        "settings": settings,
+        "garmin": garmin,
+        "db": db,
+        "date": date,
+        "timedelta": timedelta,
+    }
+    try:
+        code.interact(banner=banner, local=ctx)
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

@@ -94,6 +94,19 @@ Via Docker:
 ```bash
 docker compose exec bot python -m bot.cli echo "Hello"
 docker compose exec bot python -m bot.cli backfill
+docker compose exec -it bot python -m bot.cli shell
+```
+
+## Garmin Token Management
+
+If the bot gets a 429 (Too Many Requests) from Garmin Connect:
+
+```bash
+# Refresh access token (uses saved refresh token, no credentials needed)
+docker compose exec bot python -m bot.cli garmin-refresh
+
+# Full login (use when refresh token is expired, wait ~2h after 429)
+docker compose exec bot python -m bot.cli garmin-login
 ```
 
 ## Running Tests

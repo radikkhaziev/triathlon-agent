@@ -141,6 +141,9 @@ class GarminClient:
         Uses token store at ~/.garminconnect so we don't need to
         re-authenticate with credentials on every startup.
         """
+        if self._check_cooldown():
+            logger.warning("Skipping login — cooldown active")
+            return
         self.client = Garmin(self.email, self.password)
         self._mount_retry_adapter()
         token_file = Path(TOKENSTORE) / "oauth1_token.json"
@@ -154,8 +157,12 @@ class GarminClient:
                     self._set_cooldown()
                     return
                 logger.warning(
-                    "Token-based login failed (%s), retrying with credentials", exc
+                    "Token-based login failed (%s), will try credentials", exc
                 )
+        # Only attempt credential login if not on cooldown (token login
+        # may have triggered a 429 that we didn't catch above).
+        if self._check_cooldown():
+            return
         try:
             self.client.login()
             self.client.garth.dump(TOKENSTORE)
