@@ -85,15 +85,27 @@ alembic history
 # Send a message to Telegram chat
 python -m bot.cli echo "Hello from CLI"
 
-# Backfill daily metrics for the last 2 months
+# Backfill daily metrics (default: last 180 days)
 python -m bot.cli backfill
+
+# Backfill a specific quarter
+python -m bot.cli backfill 2025Q3
+
+# Backfill a specific month
+python -m bot.cli backfill 2025-03
+
+# Backfill a date range
+python -m bot.cli backfill 2025-01-01:2025-03-31
+
+# Backfill a single day
+python -m bot.cli backfill 2025-09-01
 ```
 
 Via Docker:
 
 ```bash
 docker compose exec bot python -m bot.cli echo "Hello"
-docker compose exec bot python -m bot.cli backfill
+docker compose exec bot python -m bot.cli backfill 2025Q4
 docker compose exec -it bot python -m bot.cli shell
 ```
 
