@@ -5,6 +5,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
+import garth
 from garminconnect import Garmin
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -140,6 +141,10 @@ class GarminClient:
 
         Uses token store at ~/.garminconnect so we don't need to
         re-authenticate with credentials on every startup.
+
+        Prefers lightweight garth.resume() to avoid triggering OAuth
+        exchange on every startup (the exchange endpoint is rate-limited).
+        Falls back to full login() only when resume fails.
         """
         if self._check_cooldown():
             logger.warning("Skipping login — cooldown active")
@@ -148,6 +153,22 @@ class GarminClient:
         self._mount_retry_adapter()
         token_file = Path(TOKENSTORE) / "oauth1_token.json"
         if token_file.exists():
+            try:
+                # Use garth.resume() directly — loads tokens without
+                # hitting the OAuth exchange endpoint that returns 429.
+                garth.resume(TOKENSTORE)
+                self.client.garth = garth.client
+                logger.info(
+                    "Garmin session resumed via garth (token store: %s)",
+                    TOKENSTORE,
+                )
+                return
+            except Exception as exc:
+                if "429" in str(exc):
+                    self._set_cooldown()
+                    return
+                logger.warning("garth.resume() failed (%s), will try full login", exc)
+            # Fall back to full login if resume didn't work
             try:
                 self.client.login(tokenstore=TOKENSTORE)
                 logger.info("Garmin login successful (token store: %s)", TOKENSTORE)

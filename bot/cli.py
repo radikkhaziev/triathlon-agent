@@ -3,6 +3,8 @@ import asyncio
 import logging
 from datetime import date, timedelta
 
+import garth
+
 from config import settings
 from data.database import _send_telegram_message
 
@@ -139,6 +141,7 @@ async def _backfill(period: str | None = None) -> None:
 def _garmin_login() -> None:
     """Full credential login — use when refresh token is expired."""
     from garminconnect import Garmin
+
     from data.garmin_client import TOKENSTORE
 
     g = Garmin(settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value())
@@ -149,7 +152,6 @@ def _garmin_login() -> None:
 
 def _garmin_refresh() -> None:
     """Refresh access token using saved refresh token — no credentials needed."""
-    import garth
     from data.garmin_client import TOKENSTORE
 
     garth.resume(TOKENSTORE)
