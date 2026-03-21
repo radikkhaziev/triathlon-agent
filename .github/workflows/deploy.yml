@@ -11,15 +11,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Sync to deploy directory
-        run: rsync -a --delete --exclude='.env' --exclude='.git' ./ /opt/triatlon-bot/
+        run: rsync -a --delete --exclude='.env' --exclude='.git' ./ /opt/triatlon-bot/src/
 
       - name: Copy .env
-        run: cp /home/deploy/.env.triathlon /opt/triatlon-bot/.env
+        run: cp /opt/triatlon-bot/.env.triathlon /opt/triatlon-bot/src/.env
 
       - name: Stop services
-        working-directory: /opt/triatlon-bot
+        working-directory: /opt/triatlon-bot/src
         run: docker compose stop bot migrate
 
       - name: Deploy
-        working-directory: /opt/triatlon-bot
+        working-directory: /opt/triatlon-bot/src
         run: docker compose up -d --build --no-deps --remove-orphans bot migrate

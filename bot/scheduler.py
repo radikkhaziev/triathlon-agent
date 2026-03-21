@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import date
 
@@ -12,13 +13,16 @@ from data.models import SleepData
 logger = logging.getLogger(__name__)
 
 
-def create_scheduler() -> AsyncIOScheduler:
-    # Initialize the GarminClient singleton with credentials.
-    # All subsequent GarminClient() calls return this instance.
-    try:
-        GarminClient(settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value())
-    except Exception as exc:
-        logger.error("Failed to initialize GarminClient: %s", exc)
+async def create_scheduler(bot) -> AsyncIOScheduler:
+    gc = GarminClient()
+    status = "connected" if gc.profile else "disconnected"
+    if gc.profile:
+        status = json.dumps(gc.profile, indent=2)
+
+    await bot.send_message(
+        chat_id=settings.TELEGRAM_CHAT_ID,
+        text=f"Bot started\nGarmin: {status}",
+    )
 
     scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
@@ -28,6 +32,7 @@ def create_scheduler() -> AsyncIOScheduler:
         hour="5-20",
         minute="*/15",
         id="daily_metrics",
+        kwargs={"bot": bot},
     )
 
     return scheduler
@@ -35,15 +40,12 @@ def create_scheduler() -> AsyncIOScheduler:
 
 async def daily_metrics_job(
     target_date: date | None = None,
+    bot=None,
 ) -> None:
-    try:
-        garmin = GarminClient()
-    except RuntimeError as exc:
-        logger.warning("Skipping daily_metrics_job: %s", exc)
-        return
+    garmin = GarminClient()
 
     dt = target_date or date.today()
 
     sleep: SleepData = await asyncio.to_thread(garmin.get_sleep, str(dt))
 
-    await save_daily_metrics(dt, sleep_data=sleep)
+    await save_daily_metrics(dt, sleep_data=sleep, bot=bot)

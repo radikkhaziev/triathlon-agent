@@ -5,10 +5,16 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from garminconnect import Garmin
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    GarminConnectTooManyRequestsError,
+)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from config import settings
 from data.models import (
     Activity,
     BodyBatteryData,
@@ -33,7 +39,6 @@ from data.models import (
 
 logger = logging.getLogger(__name__)
 
-TOKENSTORE = str(Path.home() / ".garminconnect")
 
 _RETRY_STRATEGY = Retry(
     total=5,
@@ -88,82 +93,77 @@ class GarminClient:
     Handles authentication with token caching, rate limiting,
     and parsing raw API responses into Pydantic models.
 
-    Singleton: first call GarminClient(email, password) to create the instance,
-    then GarminClient() to get it anywhere.
+    Singleton: GarminClient() reads credentials from settings.
     """
 
     _instance: "GarminClient | None" = None
     _login_cooldown_until: float = 0.0
     _LOGIN_COOLDOWN_SEC = 2 * 60 * 60  # 2 hours after a 429
+    _DEFAULT_TIMEOUT_SEC = 180
 
-    def __new__(
-        cls, email: str | None = None, password: str | None = None
-    ) -> "GarminClient":
+    def __new__(cls) -> "GarminClient":
         if cls._instance is not None:
             return cls._instance
-
-        if email is None or password is None:
-            raise RuntimeError(
-                "GarminClient not initialized — provide email and password"
-            )
 
         inst = super().__new__(cls)
         inst._initialized = False
         cls._instance = inst
         return inst
 
-    def __init__(self, email: str | None = None, password: str | None = None) -> None:
+    def __init__(self) -> None:
         if self._initialized:
             return
         self._initialized = True
-        self.email = email
-        self.password = password
-        self.client = Garmin(email, password)
+        self.email = settings.GARMIN_EMAIL
+        self.password = settings.GARMIN_PASSWORD.get_secret_value()
+        self.profile = None
+        self.client = Garmin(self.email, self.password)
         self._last_request_time: float = 0.0
         self._login()
+        self._mount_retry_adapter()
 
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
 
-    @property
-    def _has_tokens(self) -> bool:
-        """Check whether the Garmin client holds valid OAuth tokens."""
-        return bool(
-            self.client
-            and getattr(self.client, "garth", None)
-            and self.client.garth.oauth1_token
-        )
-
     def _login(self) -> None:
-        """Load saved tokens from disk.
+        self.profile = None
 
-        Tokens are managed by CLI commands (garmin-login / garmin-refresh).
-        The bot only loads them — never authenticates or refreshes itself.
-        """
-        token_file = Path(TOKENSTORE) / "oauth1_token.json"
-        if token_file.exists():
-            self.client.garth.resume(TOKENSTORE)
-            logger.info("Garmin tokens loaded from %s", TOKENSTORE)
-            self._refresh_if_expired()
-        else:
+        tokenstore_path = Path(settings.GARMIN_TOKENS).expanduser().resolve()
+        normalized_path = str(tokenstore_path)
+
+        try:
+            self.client.garth.load(normalized_path)
+            if self.client.garth.oauth1_token and self.client.garth.oauth2_token:
+                logger.info("Garmin tokens loaded from %s", normalized_path)
+                self.client.garth.refresh_oauth2()
+
+                _g_settings = self.client.garth.connectapi(self.client.garmin_connect_user_settings_url)
+                if _g_settings and isinstance(_g_settings, dict):
+                    self.client.garth.dump(normalized_path)
+                    self.profile = self.client.garth.profile
+                    return
+        except Exception as exc:
+            logger.warning("Failed to load/refresh Garmin tokens: %s", exc)
+
+        # Tokens missing or invalid — fall back to credential login.
+        # Do NOT pass tokenstore here: garminconnect re-raises
+        # FileNotFoundError if token files are absent, and wraps
+        # pydantic ValidationError into GarminConnectConnectionError
+        # if they are corrupted.
+        try:
             self.client.login()
-            self.client.garth.dump(TOKENSTORE)
-            logger.info(
-                "Garmin credential login successful, tokens saved to %s", TOKENSTORE
-            )
-        self._mount_retry_adapter()
-
-    def _refresh_if_expired(self) -> None:
-        """Refresh OAuth2 access token if it has expired."""
-        token = self.client.garth.oauth2_token
-        if not token:
+        except GarminConnectTooManyRequestsError as exc:
+            self._set_cooldown(self._LOGIN_COOLDOWN_SEC)
+            logger.warning("Failed to login to Garmin: %s", exc)
             return
-        if token.expires_at <= int(time.time()):
-            logger.info("OAuth2 access token expired, refreshing...")
-            self.client.garth.refresh_oauth2()
-            self.client.garth.dump(TOKENSTORE)
-            logger.info("Token refreshed and saved to %s", TOKENSTORE)
+        except GarminConnectConnectionError as exc:
+            self._set_cooldown(self._DEFAULT_TIMEOUT_SEC)
+            logger.error("Authentication failed for Garmin: %s", exc)
+            return
+
+        self.client.garth.dump(normalized_path)
+        self.profile = self.client.garth.profile
 
     def _mount_retry_adapter(self) -> None:
         """Mount an HTTPAdapter with retry/backoff on the garth session."""
@@ -189,34 +189,40 @@ class GarminClient:
         now = time.monotonic()
         if now < self._login_cooldown_until:
             remaining = int(self._login_cooldown_until - now)
-            logger.warning(
-                "Garmin API on cooldown, %ds remaining — skipping", remaining
-            )
+            logger.warning("Garmin API on cooldown, %ds remaining — skipping", remaining)
             return True
         return False
 
-    def _set_cooldown(self) -> None:
+    def _set_cooldown(self, duration: int) -> None:
         """Activate login cooldown after a 429 error."""
-        type(self)._login_cooldown_until = time.monotonic() + self._LOGIN_COOLDOWN_SEC
-        logger.warning("Garmin 429 — cooldown for %ds", self._LOGIN_COOLDOWN_SEC)
+        type(self)._login_cooldown_until = time.monotonic() + duration
+        logger.warning("Garmin 429 — cooldown for %ds", duration)
 
     def _call_api(self, fn, *args, **kwargs):
         """Call a Garmin API method with rate limiting and session recovery."""
         if self._check_cooldown():
             return
-        if not self._has_tokens:
+        if not self.profile:
             logger.warning("No OAuth tokens — attempting login before API call")
             self._login()
+
+        # failed to login
+        if not self.profile:
+            logger.error("Garmin API call failed: no valid authentication")
             return
+
         self._rate_limit()
         try:
             return fn(*args, **kwargs)
+        except GarminConnectAuthenticationError:
+            self.profile = None
+        except GarminConnectTooManyRequestsError:
+            self.profile = None
+            self._set_cooldown(self._LOGIN_COOLDOWN_SEC)
+        except GarminConnectConnectionError:
+            self._set_cooldown(self._DEFAULT_TIMEOUT_SEC)
         except Exception as exc:
-            if "429" in str(exc):
-                self._set_cooldown()
-            else:
-                logger.error("API call failed: %s", exc)
-            return
+            logger.error("Garmin API call error: %s", exc)
 
     # ------------------------------------------------------------------
     # Data fetching methods
@@ -260,9 +266,7 @@ class GarminClient:
         return HRVData(
             date=date.fromisoformat(date_str),
             hrv_weekly_avg=float(summary.get("weeklyAvg", 0) or 0),
-            hrv_last_night=float(
-                summary.get("lastNight", 0) or summary.get("lastNightAvg", 0) or 0
-            ),
+            hrv_last_night=float(summary.get("lastNight", 0) or summary.get("lastNightAvg", 0) or 0),
             hrv_5min_high=summary.get("lastNight5MinHigh"),
             status=str(summary.get("status", "Unknown") or "Unknown"),
         )
@@ -286,26 +290,10 @@ class GarminClient:
                 results.append(
                     BodyBatteryData(
                         date=date.fromisoformat(entry_date_str),
-                        start_value=int(
-                            entry.get("startValue", 0)
-                            or entry.get("bodyBatteryStartOfDay", 0)
-                            or 0
-                        ),
-                        end_value=int(
-                            entry.get("endValue", 0)
-                            or entry.get("bodyBatteryEndOfDay", 0)
-                            or 0
-                        ),
-                        charged=int(
-                            entry.get("charged", 0)
-                            or entry.get("bodyBatteryCharged", 0)
-                            or 0
-                        ),
-                        drained=int(
-                            entry.get("drained", 0)
-                            or entry.get("bodyBatteryDrained", 0)
-                            or 0
-                        ),
+                        start_value=int(entry.get("startValue", 0) or entry.get("bodyBatteryStartOfDay", 0) or 0),
+                        end_value=int(entry.get("endValue", 0) or entry.get("bodyBatteryEndOfDay", 0) or 0),
+                        charged=int(entry.get("charged", 0) or entry.get("bodyBatteryCharged", 0) or 0),
+                        drained=int(entry.get("drained", 0) or entry.get("bodyBatteryDrained", 0) or 0),
                     )
                 )
             except (ValueError, TypeError) as exc:
@@ -330,16 +318,10 @@ class GarminClient:
 
         return StressData(
             date=date.fromisoformat(date_str),
-            avg_stress=float(
-                raw.get("overallStressLevel", 0) or raw.get("avgStressLevel", 0) or 0
-            ),
+            avg_stress=float(raw.get("overallStressLevel", 0) or raw.get("avgStressLevel", 0) or 0),
             max_stress=float(raw.get("maxStressLevel", 0) or 0),
-            stress_duration_seconds=int(
-                raw.get("highStressDuration", 0) or raw.get("stressDuration", 0) or 0
-            ),
-            rest_duration_seconds=int(
-                raw.get("restStressDuration", 0) or raw.get("lowStressDuration", 0) or 0
-            ),
+            stress_duration_seconds=int(raw.get("highStressDuration", 0) or raw.get("stressDuration", 0) or 0),
+            rest_duration_seconds=int(raw.get("restStressDuration", 0) or raw.get("lowStressDuration", 0) or 0),
         )
 
     def get_resting_hr(self, date_str: str) -> float:
@@ -377,11 +359,7 @@ class GarminClient:
 
         for item in items:
             try:
-                sched_date_str = (
-                    item.get("date")
-                    or item.get("calendarDate")
-                    or item.get("scheduledDate")
-                )
+                sched_date_str = item.get("date") or item.get("calendarDate") or item.get("scheduledDate")
                 if not sched_date_str:
                     continue
 
@@ -401,15 +379,10 @@ class GarminClient:
                 results.append(
                     ScheduledWorkout(
                         scheduled_date=sched_date,
-                        workout_name=str(
-                            item.get("title", "")
-                            or item.get("workoutName", "")
-                            or "Workout"
-                        ),
+                        workout_name=str(item.get("title", "") or item.get("workoutName", "") or "Workout"),
                         sport=_map_sport(str(sport_str)),
                         description=item.get("description") or item.get("notes"),
-                        planned_duration_seconds=item.get("duration")
-                        or item.get("plannedDuration"),
+                        planned_duration_seconds=item.get("duration") or item.get("plannedDuration"),
                         planned_tss=item.get("plannedTSS") or item.get("estimatedTSS"),
                     )
                 )
@@ -437,20 +410,12 @@ class GarminClient:
             try:
                 # Parse activity type
                 activity_type = act.get("activityType", {})
-                type_key = (
-                    activity_type.get("typeKey", "")
-                    if isinstance(activity_type, dict)
-                    else str(activity_type)
-                )
+                type_key = activity_type.get("typeKey", "") if isinstance(activity_type, dict) else str(activity_type)
 
                 # Parse start time
-                start_time_str = act.get("startTimeLocal") or act.get(
-                    "startTimeGMT", ""
-                )
+                start_time_str = act.get("startTimeLocal") or act.get("startTimeGMT", "")
                 try:
-                    start_time = datetime.fromisoformat(
-                        start_time_str.replace("Z", "+00:00")
-                    )
+                    start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
                 except (ValueError, AttributeError):
                     start_time = datetime.now()
 
@@ -464,8 +429,7 @@ class GarminClient:
                         avg_hr=act.get("averageHR"),
                         max_hr=act.get("maxHR"),
                         avg_power=act.get("averagePower"),
-                        normalized_power=act.get("normPower")
-                        or act.get("normalizedPower"),
+                        normalized_power=act.get("normPower") or act.get("normalizedPower"),
                         tss=act.get("trainingStressScore"),
                     )
                 )
@@ -488,11 +452,7 @@ class GarminClient:
             )
 
         # The response may be a list with one entry or a dict
-        entry = (
-            raw[0]
-            if isinstance(raw, list) and raw
-            else raw if isinstance(raw, dict) else {}
-        )
+        entry = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
 
         return TrainingReadinessData(
             date=date.fromisoformat(date_str),
@@ -515,22 +475,13 @@ class GarminClient:
             )
 
         # May be a list or dict
-        entry = (
-            raw[0]
-            if isinstance(raw, list) and raw
-            else raw if isinstance(raw, dict) else {}
-        )
+        entry = raw[0] if isinstance(raw, list) and raw else raw if isinstance(raw, dict) else {}
 
         return TrainingStatusData(
             date=date.fromisoformat(date_str),
-            training_status=str(
-                entry.get("trainingStatus")
-                or entry.get("currentDayTrainingStatus")
-                or "UNKNOWN"
-            ),
+            training_status=str(entry.get("trainingStatus") or entry.get("currentDayTrainingStatus") or "UNKNOWN"),
             vo2_max_run=entry.get("vo2MaxPreciseValue") or entry.get("vo2MaxRun"),
-            vo2_max_bike=entry.get("vo2MaxCyclingPreciseValue")
-            or entry.get("vo2MaxBike"),
+            vo2_max_bike=entry.get("vo2MaxCyclingPreciseValue") or entry.get("vo2MaxBike"),
             load_focus=entry.get("loadFocus") or entry.get("trainingLoadFocus"),
         )
 
@@ -553,19 +504,11 @@ class GarminClient:
         for act in raw:
             try:
                 activity_type = act.get("activityType", {})
-                type_key = (
-                    activity_type.get("typeKey", "")
-                    if isinstance(activity_type, dict)
-                    else str(activity_type)
-                )
+                type_key = activity_type.get("typeKey", "") if isinstance(activity_type, dict) else str(activity_type)
 
-                start_time_str = act.get("startTimeLocal") or act.get(
-                    "startTimeGMT", ""
-                )
+                start_time_str = act.get("startTimeLocal") or act.get("startTimeGMT", "")
                 try:
-                    start_time = datetime.fromisoformat(
-                        start_time_str.replace("Z", "+00:00")
-                    )
+                    start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
                 except (ValueError, AttributeError):
                     start_time = datetime.now()
 
@@ -579,8 +522,7 @@ class GarminClient:
                         avg_hr=act.get("averageHR"),
                         max_hr=act.get("maxHR"),
                         avg_power=act.get("averagePower"),
-                        normalized_power=act.get("normPower")
-                        or act.get("normalizedPower"),
+                        normalized_power=act.get("normPower") or act.get("normalizedPower"),
                         tss=act.get("trainingStressScore"),
                     )
                 )
@@ -634,8 +576,7 @@ class GarminClient:
             active_calories=int(raw.get("activeKilocalories", 0) or 0),
             total_calories=int(raw.get("totalKilocalories", 0) or 0),
             intensity_minutes=int(
-                (raw.get("moderateIntensityMinutes", 0) or 0)
-                + (raw.get("vigorousIntensityMinutes", 0) or 0)
+                (raw.get("moderateIntensityMinutes", 0) or 0) + (raw.get("vigorousIntensityMinutes", 0) or 0)
             ),
             floors_climbed=int(raw.get("floorsAscended", 0) or 0),
         )
@@ -649,11 +590,7 @@ class GarminClient:
         if not raw:
             return results
 
-        entries = (
-            raw.get("dateWeightList", [])
-            if isinstance(raw, dict)
-            else raw if isinstance(raw, list) else []
-        )
+        entries = raw.get("dateWeightList", []) if isinstance(raw, dict) else raw if isinstance(raw, list) else []
 
         for entry in entries:
             try:
@@ -695,9 +632,7 @@ class GarminClient:
         return RespirationData(
             date=date.fromisoformat(date_str),
             avg_breathing_rate=float(
-                raw.get("avgWakingRespirationValue", 0)
-                or raw.get("avgSleepRespirationValue", 0)
-                or 0
+                raw.get("avgWakingRespirationValue", 0) or raw.get("avgSleepRespirationValue", 0) or 0
             ),
             lowest_breathing_rate=raw.get("lowestRespirationValue"),
             highest_breathing_rate=raw.get("highestRespirationValue"),
@@ -734,8 +669,7 @@ class GarminClient:
         for entry in entries:
             sport = entry.get("sport", "").lower() if isinstance(entry, dict) else ""
             vo2 = (
-                entry.get("vo2MaxPreciseValue")
-                or entry.get("generic", {}).get("vo2MaxPreciseValue")
+                entry.get("vo2MaxPreciseValue") or entry.get("generic", {}).get("vo2MaxPreciseValue")
                 if isinstance(entry, dict)
                 else None
             )
@@ -765,14 +699,8 @@ class GarminClient:
 
         for entry in entries:
             try:
-                name = (
-                    entry.get("raceName")
-                    or entry.get("distanceName")
-                    or entry.get("name", "Unknown")
-                )
-                time_sec = entry.get("predictedTime") or entry.get(
-                    "predictedTimeInSeconds"
-                )
+                name = entry.get("raceName") or entry.get("distanceName") or entry.get("name", "Unknown")
+                time_sec = entry.get("predictedTime") or entry.get("predictedTimeInSeconds")
                 if time_sec is not None:
                     results.append(
                         RacePrediction(
@@ -792,15 +720,11 @@ class GarminClient:
         logger.debug("Raw endurance score data: %s", raw)
 
         if not raw:
-            return EnduranceScoreData(
-                date=date.fromisoformat(date_str), overall_score=0
-            )
+            return EnduranceScoreData(date=date.fromisoformat(date_str), overall_score=0)
 
         return EnduranceScoreData(
             date=date.fromisoformat(date_str),
-            overall_score=int(
-                raw.get("overallScore", 0) or raw.get("enduranceScore", 0) or 0
-            ),
+            overall_score=int(raw.get("overallScore", 0) or raw.get("enduranceScore", 0) or 0),
             rating=raw.get("enduranceScoreLevel") or raw.get("rating"),
         )
 

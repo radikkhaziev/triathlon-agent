@@ -32,7 +32,7 @@ services:
       migrate:
         condition: service_completed_successfully
     volumes:
-      - /root/.garminconnect:/root/.garminconnect
+      - /opt/triatlon-bot/.garminconnect:/opt/triatlon-bot/.garminconnect
     restart: unless-stopped
 
   # api:

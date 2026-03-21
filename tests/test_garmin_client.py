@@ -18,6 +18,7 @@ from data.models import (
     BodyBatteryData,
     BodyCompositionData,
     CyclingFTPData,
+    DailyStats,
     EnduranceScoreData,
     HeartRateData,
     HRVData,
@@ -30,7 +31,6 @@ from data.models import (
     SpO2Data,
     SportType,
     StressData,
-    DailyStats,
     TrainingReadinessData,
     TrainingStatusData,
 )
@@ -123,7 +123,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def gc() -> GarminClient:
     """Single GarminClient instance shared across all integration tests."""
-    return GarminClient(_email, _password)
+    return GarminClient()
 
 
 # ---------------------------------------------------------------------------

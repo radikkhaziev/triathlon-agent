@@ -114,8 +114,6 @@ docker compose exec -it bot python -m bot.cli shell
 If the bot gets a 429 (Too Many Requests) from Garmin Connect:
 
 ```bash
-# Refresh access token (uses saved refresh token, no credentials needed)
-docker compose exec bot python -m bot.cli garmin-refresh
 
 # Full login (use when refresh token is expired, wait ~2h after 429)
 docker compose exec bot python -m bot.cli garmin-login
@@ -142,29 +140,29 @@ tests/         Unit tests
 
 See `.env.example` for the full list. Key variables:
 
-| Variable | Description |
-|---|---|
-| `GARMIN_EMAIL` | Garmin Connect email |
-| `GARMIN_PASSWORD` | Garmin Connect password |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `DATABASE_URL` | PostgreSQL connection string |
-| `GOAL_EVENT_NAME` | Target race name |
-| `GOAL_EVENT_DATE` | Target race date (YYYY-MM-DD) |
+| Variable             | Description                   |
+| -------------------- | ----------------------------- |
+| `GARMIN_EMAIL`       | Garmin Connect email          |
+| `GARMIN_PASSWORD`    | Garmin Connect password       |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token        |
+| `TELEGRAM_CHAT_ID`   | Your Telegram chat ID         |
+| `ANTHROPIC_API_KEY`  | Anthropic API key             |
+| `DATABASE_URL`       | PostgreSQL connection string  |
+| `GOAL_EVENT_NAME`    | Target race name              |
+| `GOAL_EVENT_DATE`    | Target race date (YYYY-MM-DD) |
 
 ## Bot Commands
 
-| Command | Description |
-|---|---|
-| `/start` | Welcome message |
-| `/report` | Generate morning report |
-| `/status` | Quick status (numbers only) |
-| `/week` | Weekly training summary |
-| `/goal` | Goal progress breakdown |
-| `/zones` | HR threshold zones |
-| `/sync` | Manually sync Garmin data |
-| `/settings` | Current settings |
+| Command     | Description                 |
+| ----------- | --------------------------- |
+| `/start`    | Welcome message             |
+| `/report`   | Generate morning report     |
+| `/status`   | Quick status (numbers only) |
+| `/week`     | Weekly training summary     |
+| `/goal`     | Goal progress breakdown     |
+| `/zones`    | HR threshold zones          |
+| `/sync`     | Manually sync Garmin data   |
+| `/settings` | Current settings            |
 
 ## License
 

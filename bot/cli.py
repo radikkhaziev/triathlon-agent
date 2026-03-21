@@ -3,10 +3,8 @@ import asyncio
 import logging
 from datetime import date, timedelta
 
-import garth
-
 from config import settings
-from data.database import _send_telegram_message
+from data.database import send_telegram_message
 
 
 def main() -> None:
@@ -15,9 +13,7 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    parser = argparse.ArgumentParser(
-        prog="triathlon-agent", description="Triathlon AI Agent CLI"
-    )
+    parser = argparse.ArgumentParser(prog="triathlon-agent", description="Triathlon AI Agent CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     echo_parser = sub.add_parser("echo", help="Send a message to Telegram chat")
@@ -36,12 +32,7 @@ def main() -> None:
         help="Period to backfill (e.g. 2025-09-01, 2025-01-01:2025-03-31, 2025Q3, 2025-03)",
     )
     sub.add_parser("shell", help="Open interactive Python shell with app context")
-    sub.add_parser(
-        "garmin-login", help="Login to Garmin with credentials and save tokens"
-    )
-    sub.add_parser(
-        "garmin-refresh", help="Refresh Garmin access token using saved refresh token"
-    )
+    sub.add_parser("garmin-login", help="Login to Garmin with credentials and save tokens")
 
     args = parser.parse_args()
 
@@ -53,12 +44,11 @@ def main() -> None:
         _garmin_login()
         return
 
-    if args.command == "garmin-refresh":
-        _garmin_refresh()
-        return
-
     if args.command == "echo":
-        asyncio.run(_send_telegram_message(args.message))
+        from telegram import Bot
+
+        tg_bot = Bot(token=settings.TELEGRAM_BOT_TOKEN.get_secret_value())
+        asyncio.run(send_telegram_message(args.message, bot=tg_bot))
         print("Message sent.")
 
     elif args.command == "backfill":
@@ -121,7 +111,7 @@ async def _backfill(period: str | None = None) -> None:
     from bot.scheduler import daily_metrics_job
     from data.garmin_client import GarminClient
 
-    GarminClient(settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value())
+    GarminClient()
 
     start, end = _parse_period(period)
     print(f"Backfill: {start} -> {end}")
@@ -140,23 +130,13 @@ async def _backfill(period: str | None = None) -> None:
 
 def _garmin_login() -> None:
     """Full credential login — use when refresh token is expired."""
-    from garminconnect import Garmin
+    from data.garmin_client import GarminClient
 
-    from data.garmin_client import TOKENSTORE
-
-    g = Garmin(settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value())
-    g.login()
-    g.garth.dump(TOKENSTORE)
-    print(f"Tokens saved to {TOKENSTORE}")
-
-
-def _garmin_refresh() -> None:
-    """Refresh access token using saved refresh token — no credentials needed."""
-    from data.garmin_client import TOKENSTORE
-
-    garth.resume(TOKENSTORE)
-    garth.client.dump(TOKENSTORE)
-    print(f"Access token refreshed, saved to {TOKENSTORE}")
+    gc = GarminClient()
+    if gc.profile:
+        print(f"Logged in. Tokens saved to {settings.GARMIN_TOKENS}")
+    else:
+        print("Login failed.")
 
 
 def _shell() -> None:
@@ -165,9 +145,7 @@ def _shell() -> None:
     from data.database import SessionLocal
     from data.garmin_client import GarminClient
 
-    garmin = GarminClient(
-        settings.GARMIN_EMAIL, settings.GARMIN_PASSWORD.get_secret_value()
-    )
+    garmin = GarminClient()
     db = SessionLocal()
 
     banner = (

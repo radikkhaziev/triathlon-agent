@@ -1,4 +1,5 @@
 from datetime import date
+from pathlib import Path
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +15,7 @@ class Settings(BaseSettings):
     # Garmin
     GARMIN_EMAIL: str = ""
     GARMIN_PASSWORD: SecretStr = SecretStr("")
+    GARMIN_TOKENS: str = str(Path.home() / ".garminconnect")
 
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
@@ -25,9 +27,7 @@ class Settings(BaseSettings):
     # App
     API_BASE_URL: str = "https://your-api.railway.app"
     WEBAPP_URL: str = "https://your-app.vercel.app"
-    DATABASE_URL: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
-    )
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
 
     # Athlete thresholds
     ATHLETE_LTHR_RUN: int = 158
