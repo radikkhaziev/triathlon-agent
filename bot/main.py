@@ -9,6 +9,22 @@ from config import settings
 from data.garmin_client import GarminClient
 
 
+def _format_duration(seconds: int) -> str:
+    if seconds <= 0:
+        return "expired"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, _ = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if mins or not parts:
+        parts.append(f"{mins}m")
+    return " ".join(parts)
+
+
 async def howareyou(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
         return
@@ -38,6 +54,15 @@ async def howareyou(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         last_req = "No requests yet"
 
+    # Token expiration
+    token_info = "No token"
+    oauth2 = gc.client.garth.oauth2_token
+    if oauth2:
+        now_ts = int(time.time())
+        access_left = oauth2.expires_at - now_ts
+        refresh_left = oauth2.refresh_token_expires_at - now_ts
+        token_info = f"Access: {_format_duration(access_left)}\n" f"Refresh: {_format_duration(refresh_left)}"
+
     lines = [
         "*Garmin Client Status*",
         f"Email: `{gc.email}`",
@@ -45,6 +70,7 @@ async def howareyou(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Cooldown: {cooldown}",
         f"Last request: {last_req}",
         f"Token store: `{settings.GARMIN_TOKENS}`",
+        f"\n*OAuth2 Token*\n{token_info}",
     ]
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
