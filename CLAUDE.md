@@ -20,19 +20,19 @@ A personal AI agent for a triathlete that:
 
 ## Tech Stack
 
-| Component         | Technology                                 |
-| ----------------- | ------------------------------------------ |
-| Language          | Python 3.11+                               |
-| Garmin Data       | `garminconnect` (cyberjunky)               |
-| AI Analysis       | Anthropic Claude API (`claude-sonnet-4-6`) |
-| Telegram Bot      | `python-telegram-bot` v21+                 |
-| Scheduler         | `APScheduler`                              |
-| Database          | SQLite + `SQLAlchemy`                      |
-| API Server        | `FastAPI` + `uvicorn`                      |
-| Mini App Frontend | HTML + Chart.js + Tailwind CSS             |
-| Mini App Hosting  | Vercel or GitHub Pages                     |
-| Backend Hosting   | VPS (Ubuntu) or Railway                    |
-| Config            | `pydantic-settings` + `.env`               |
+| Component         | Technology                                    |
+| ----------------- | --------------------------------------------- |
+| Language          | Python 3.12+                                  |
+| Package Manager   | Poetry                                        |
+| Garmin Data       | `garminconnect` (cyberjunky)                  |
+| AI Analysis       | Anthropic Claude API (`claude-sonnet-4-6`)    |
+| Telegram Bot      | `python-telegram-bot` v21+                    |
+| Scheduler         | `APScheduler`                                 |
+| Database          | PostgreSQL 16 + `SQLAlchemy` (async) + Alembic|
+| API Server        | `FastAPI` + `uvicorn`                         |
+| Mini App Frontend | HTML + Chart.js + Tailwind CSS                |
+| Backend Hosting   | Docker Compose on VPS                         |
+| Config            | `pydantic-settings` + `.env`                  |
 
 ---
 
@@ -44,44 +44,83 @@ triathlon-agent/
 ├── CLAUDE.md                    # ← this file
 ├── .env                         # secrets (never commit!)
 ├── .env.example                 # environment variable template
-├── pyproject.toml
+├── pyproject.toml               # Poetry dependencies and tools config
+├── poetry.lock
+├── Dockerfile
+├── docker-compose.yml           # db + migrate + bot services
+├── alembic.ini                  # Alembic migration config
+├── config.py                    # pydantic-settings (centralized config)
 │
 ├── bot/
 │   ├── __init__.py
-│   ├── main.py                  # bot entry point
-│   ├── handlers.py              # commands: /start /report /status
-│   ├── scheduler.py             # morning job at 07:00
-│   └── formatter.py             # Telegram message formatting
+│   ├── main.py                  # bot entry point (polling + scheduler init)
+│   ├── cli.py                   # CLI: echo, backfill, garmin-login, shell
+│   └── scheduler.py             # periodic jobs (daily_metrics_job every 15 min)
 │
 ├── data/
 │   ├── __init__.py
-│   ├── garmin_client.py         # wrapper around garminconnect
-│   ├── metrics.py               # CTL/ATL/TSB/hrTSS calculations
-│   ├── database.py              # SQLAlchemy models and CRUD
-│   └── models.py                # Pydantic data models
+│   ├── garmin_client.py         # wrapper around garminconnect (singleton)
+│   ├── metrics.py               # CTL/ATL/TSB/hrTSS calculations + readiness
+│   ├── database.py              # SQLAlchemy async ORM models and CRUD
+│   └── models.py                # Pydantic data models (20+ models)
 │
 ├── ai/
 │   ├── __init__.py
-│   ├── claude_agent.py          # Claude API — analysis and recommendations
-│   └── prompts.py               # system prompts
+│   ├── claude_agent.py          # Claude API — morning + weekly analysis
+│   └── prompts.py               # system + report prompts (configurable)
 │
 ├── api/
 │   ├── __init__.py
-│   ├── server.py                # FastAPI application
-│   └── routes.py                # endpoints consumed by Mini App
+│   ├── server.py                # FastAPI application + static mount
+│   └── routes.py                # REST endpoints + Telegram initData auth
 │
 ├── webapp/                      # Telegram Mini App
-│   ├── index.html               # main dashboard page
+│   ├── index.html
 │   ├── css/
 │   │   └── style.css
 │   └── js/
-│       ├── app.js               # core logic
-│       └── charts.js            # Chart.js visualizations
+│       ├── app.js
+│       └── charts.js
+│
+├── migrations/                  # Alembic migrations
+│   ├── env.py
+│   ├── script.py.mako
+│   └── versions/
+│       └── 001_initial_schema.py
+│
+├── docs/                        # Design documents
+│   ├── HRV_IMPLEMENTATION_PLAN.md
+│   └── HRV_MODULE_SPEC.md
+│
+├── mockups/                     # Dashboard UI mockups (HTML)
 │
 └── tests/
+    ├── conftest.py
     ├── test_metrics.py
-    └── test_garmin_client.py
+    ├── test_garmin_client.py
+    ├── test_garmin_login.py
+    └── test_database.py
 ```
+
+---
+
+## Current Implementation Status
+
+| Module | Status | Notes |
+|--------|--------|-------|
+| `data/models.py` | Done | 20+ Pydantic models |
+| `data/garmin_client.py` | Done | 16+ methods, singleton, retry, cooldown |
+| `data/metrics.py` | Done | TSS (3 sports), CTL/ATL/TSB, readiness score |
+| `data/database.py` | Partial | Only `DailyMetricsRow` with sleep fields; CTL/ATL/TSB columns commented out; CRUD for activities/workouts/tss_history not implemented |
+| `ai/prompts.py` | Done | System prompt configurable via settings |
+| `ai/claude_agent.py` | Done | Morning + weekly analysis |
+| `bot/main.py` | Partial | Only `whoami` handler; no /start /report /status etc. |
+| `bot/scheduler.py` | Partial | Polls sleep every 15 min; no full morning report pipeline |
+| `bot/cli.py` | Done | echo, backfill, garmin-login, shell |
+| `api/routes.py` | Skeleton | Routes defined but depend on missing CRUD functions in database.py |
+| `webapp/` | Scaffold | HTML/CSS/JS files exist |
+| `bot/formatter.py` | Not started | |
+| `bot/handlers.py` | Not started | |
 
 ---
 
@@ -91,6 +130,7 @@ triathlon-agent/
 # Garmin
 GARMIN_EMAIL=your@email.com
 GARMIN_PASSWORD=yourpassword
+GARMIN_TOKENS=~/.garminconnect    # path to OAuth token store
 
 # Telegram
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
@@ -102,9 +142,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 # App
 API_BASE_URL=https://your-api.railway.app
 WEBAPP_URL=https://your-app.vercel.app
-DATABASE_URL=sqlite:///./triathlon.db
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon
 
-# Athlete Thresholds
+# Athlete Profile
+ATHLETE_AGE=43
 ATHLETE_LTHR_RUN=158          # lactate threshold HR for running
 ATHLETE_LTHR_BIKE=152
 ATHLETE_MAX_HR=182
@@ -130,10 +171,14 @@ TIMEZONE=Europe/Belgrade
 
 ## Module: data/garmin_client.py
 
-Wrapper around `garminconnect`. Must implement:
+Singleton wrapper around `garminconnect` with retry logic, rate limiting (1 req/sec),
+and 2-hour cooldown after 429 errors.
+
+Implemented methods:
 
 ```python
 class GarminClient:
+    # Core data
     def get_sleep(self, date: str) -> SleepData
     def get_hrv(self, date: str) -> HRVData
     def get_body_battery(self, start: str, end: str) -> list[BodyBatteryData]
@@ -141,12 +186,25 @@ class GarminClient:
     def get_resting_hr(self, date: str) -> float
     def get_scheduled_workouts(self, start: str, end: str) -> list[ScheduledWorkout]
     def get_activities(self, start: int, limit: int) -> list[Activity]
+    def get_activities_by_date(self, start: str, end: str) -> list[Activity]
     def get_training_readiness(self, date: str) -> TrainingReadinessData
     def get_training_status(self, date: str) -> TrainingStatusData
+
+    # Extended data
+    def get_heart_rates(self, date: str) -> HeartRateData
+    def get_stats(self, date: str) -> DailyStats
+    def get_body_composition(self, start: str, end: str) -> list[BodyCompositionData]
+    def get_respiration(self, date: str) -> RespirationData
+    def get_spo2(self, date: str) -> SpO2Data
+    def get_max_metrics(self, date: str) -> MaxMetricsData
+    def get_race_predictions(self) -> list[RacePrediction]
+    def get_endurance_score(self, date: str) -> EnduranceScoreData
+    def get_lactate_threshold(self) -> LactateThresholdData
+    def get_cycling_ftp(self) -> CyclingFTPData
 ```
 
-**Important:** Store OAuth tokens in `~/.garminconnect` — do not re-authenticate on every
-request. Implement token refresh logic. Respect rate limits: no more than 1 request per second.
+**Important:** OAuth tokens stored in `~/.garminconnect` (configurable via `GARMIN_TOKENS`).
+Soft login on init (loads tokens without refresh). Full login fallback on auth failure.
 
 ---
 
@@ -157,98 +215,57 @@ request. Implement token refresh logic. Respect rate limits: no more than 1 requ
 **Running (hrTSS — heart rate based):**
 
 ```python
-def calc_hr_tss(duration_sec: float, avg_hr: float,
-                resting_hr: float, max_hr: float, lthr: float) -> float:
-    """
-    Heart Rate TSS calculation.
-    Uses the ratio of average HR to lactate threshold HR
-    to estimate training stress similar to power-based TSS.
-    """
+def calc_hr_tss(duration_sec, avg_hr, resting_hr, max_hr, lthr) -> float:
     intensity_factor = (avg_hr - resting_hr) / (lthr - resting_hr)
     tss = (duration_sec / 3600) * intensity_factor ** 2 * 100
-    return round(tss, 1)
 ```
 
 **Cycling (power-based TSS):**
 
 ```python
-def calc_power_tss(duration_sec: float, normalized_power: float, ftp: float) -> float:
-    """
-    Standard TSS formula used by TrainingPeaks.
-    Requires a power meter on the bike.
-    Falls back to hrTSS if power data is unavailable.
-    """
+def calc_power_tss(duration_sec, normalized_power, ftp) -> float:
     intensity_factor = normalized_power / ftp
     tss = (duration_sec * normalized_power * intensity_factor) / (ftp * 3600) * 100
-    return round(tss, 1)
 ```
 
 **Swimming (ssTSS — swim-specific):**
 
 ```python
-def calc_swim_tss(distance_m: float, duration_sec: float, css_per_100m: float) -> float:
-    """
-    Swim-Specific TSS based on Critical Swim Speed (CSS).
-    CSS is the anaerobic threshold pace for swimming (sec per 100m).
-    Faster than CSS = above threshold.
-    """
-    if distance_m == 0:
-        return 0.0
+def calc_swim_tss(distance_m, duration_sec, css_per_100m) -> float:
     pace_per_100m = (duration_sec / distance_m) * 100
     intensity_factor = css_per_100m / pace_per_100m
     tss = (duration_sec / 3600) * intensity_factor ** 2 * 100
-    return round(tss, 1)
 ```
 
 ### CTL / ATL / TSB Calculation
 
 ```python
-def update_ctl_atl(tss_history: list[float],
-                   ctl_days: int = 42,
-                   atl_days: int = 7) -> tuple[float, float, float]:
-    """
-    Fitness / Fatigue / Form model (Performance Manager Chart).
+def update_ctl_atl(tss_history: list[float], ctl_days=42, atl_days=7) -> (CTL, ATL, TSB):
+    # EMA-based fitness/fatigue/form model
+    # TSB > +10     -> under-training
+    # TSB -10..+10  -> optimal zone
+    # TSB -10..-25  -> productive overreach
+    # TSB < -25     -> overtraining risk
+```
 
-    CTL (Chronic Training Load)   = 42-day EMA of TSS -> "fitness"
-    ATL (Acute Training Load)     = 7-day EMA of TSS  -> "fatigue"
-    TSB (Training Stress Balance) = CTL - ATL         -> "form"
+### Readiness Score
 
-    TSB Interpretation:
-        TSB > +10     -> under-training, fitness declining
-        TSB -10..+10  -> optimal zone, good form
-        TSB -10..-25  -> productive overreach
-        TSB < -25     -> overtraining risk, injury/illness risk
-    """
-    ctl_k = 2 / (ctl_days + 1)
-    atl_k = 2 / (atl_days + 1)
-
-    ctl, atl = 0.0, 0.0
-    for tss in tss_history:
-        ctl = tss * ctl_k + ctl * (1 - ctl_k)
-        atl = tss * atl_k + atl * (1 - atl_k)
-
-    tsb = ctl - atl
-    return round(ctl, 1), round(atl, 1), round(tsb, 1)
+```python
+def calculate_readiness(hrv, sleep, body_battery, resting_hr, resting_hr_baseline) -> (score, level):
+    # Composite 0-100 score from:
+    # - HRV delta from baseline (35%)
+    # - Sleep score (30%)
+    # - Body Battery (20%)
+    # - Resting HR deviation (15%)
+    # Returns ReadinessLevel: GREEN (>=80) / YELLOW (>=60) / RED (<60)
 ```
 
 ### Heart Rate Zones (% of LTHR)
 
 ```python
 HR_ZONES = {
-    "run": {
-        1: (0.00, 0.72),    # Recovery
-        2: (0.72, 0.82),    # Aerobic base
-        3: (0.82, 0.87),    # Tempo
-        4: (0.87, 0.92),    # Sub-threshold
-        5: (0.92, 1.00),    # VO2max
-    },
-    "bike": {
-        1: (0.00, 0.68),
-        2: (0.68, 0.83),
-        3: (0.83, 0.94),
-        4: (0.94, 1.05),
-        5: (1.05, 1.20),
-    }
+    "run": {1: (0.00, 0.72), 2: (0.72, 0.82), 3: (0.82, 0.87), 4: (0.87, 0.92), 5: (0.92, 1.00)},
+    "bike": {1: (0.00, 0.68), 2: (0.68, 0.83), 3: (0.83, 0.94), 4: (0.94, 1.05), 5: (1.05, 1.20)},
 }
 ```
 
@@ -256,205 +273,53 @@ HR_ZONES = {
 
 ## Module: data/models.py
 
-```python
-from pydantic import BaseModel
-from datetime import date, datetime
-from enum import Enum
+Core models (all Pydantic BaseModel):
 
-class SportType(str, Enum):
-    SWIM = "swimming"
-    BIKE = "cycling"
-    RUN = "running"
-    STRENGTH = "strength_training"
-    OTHER = "other"
+```
+SportType          — SWIM, BIKE, RUN, STRENGTH, OTHER
+ReadinessLevel     — GREEN, YELLOW, RED
 
-class ReadinessLevel(str, Enum):
-    GREEN = "green"    # score >= 80 -> train as planned
-    YELLOW = "yellow"  # score 60-79 -> reduce intensity
-    RED = "red"        # score < 60  -> rest or easy only
-
-class SleepData(BaseModel):
-    date: date
-    sleep_score: int               # 0-100
-    duration_seconds: int
-    deep_sleep_seconds: int
-    rem_sleep_seconds: int
-    awake_seconds: int
-    avg_overnight_hrv: float | None
-    avg_stress: float | None
-
-class HRVData(BaseModel):
-    date: date
-    hrv_weekly_avg: float          # 7-day baseline
-    hrv_last_night: float          # last night's HRV
-    hrv_5min_high: float | None
-    status: str                    # "Balanced" | "Low" | "Unbalanced"
-
-class Activity(BaseModel):
-    activity_id: int
-    sport: SportType
-    start_time: datetime
-    duration_seconds: int
-    distance_meters: float | None
-    avg_hr: float | None
-    max_hr: float | None
-    avg_power: float | None
-    normalized_power: float | None
-    tss: float | None              # calculated by metrics.py
-
-class ScheduledWorkout(BaseModel):
-    scheduled_date: date
-    workout_name: str
-    sport: SportType
-    description: str | None
-    planned_duration_seconds: int | None
-    planned_tss: float | None
-
-class DailyMetrics(BaseModel):
-    date: date
-    readiness_score: int           # 0-100, composite calculation
-    readiness_level: ReadinessLevel
-    hrv_delta_pct: float           # % deviation from 7-day baseline
-    sleep_score: int
-    body_battery_morning: int
-    resting_hr: float
-    ctl: float
-    atl: float
-    tsb: float
-    ctl_swim: float
-    ctl_bike: float
-    ctl_run: float
-
-class GoalProgress(BaseModel):
-    event_name: str
-    event_date: date
-    weeks_remaining: int
-    overall_pct: float             # weighted average of 3 sports
-    swim_pct: float                # ctl_swim / GOAL_SWIM_CTL_TARGET * 100
-    bike_pct: float
-    run_pct: float
-    on_track: bool
+SleepData          — date, score, duration, start, end, stress_avg, hrv_avg, heart_rate_avg
+HRVData            — date, hrv_weekly_avg, hrv_last_night, hrv_5min_high, status
+BodyBatteryData    — date, start_value, end_value, charged, drained
+StressData         — date, avg_stress, max_stress, stress_duration_seconds, rest_duration_seconds
+TrainingReadinessData — date, score, level, hrv_status, sleep_score, recovery_time_hours
+TrainingStatusData — date, training_status, vo2_max_run, vo2_max_bike, load_focus
+Activity           — activity_id, sport, start_time, duration_seconds, distance_meters, avg_hr, max_hr, avg_power, normalized_power, tss
+ScheduledWorkout   — scheduled_date, workout_name, sport, description, planned_duration_seconds, planned_tss
+HeartRateData      — date, resting_hr, max_hr, min_hr, avg_hr
+DailyStats         — date, total_steps, total_distance_meters, active_calories, total_calories, intensity_minutes, floors_climbed
+BodyCompositionData— date, weight_kg, bmi, body_fat_pct, muscle_mass_kg, bone_mass_kg, body_water_pct
+RespirationData    — date, avg_breathing_rate, lowest_breathing_rate, highest_breathing_rate
+SpO2Data           — date, avg_spo2, lowest_spo2
+MaxMetricsData     — date, vo2_max_run, vo2_max_bike
+RacePrediction     — distance_name, predicted_time_seconds
+EnduranceScoreData — date, overall_score, rating
+LactateThresholdData — heart_rate, speed
+CyclingFTPData     — ftp, ftp_date
+DailyMetrics       — date, readiness_score, readiness_level, hrv_delta_pct, sleep_score, body_battery_morning, resting_hr, ctl/atl/tsb, ctl_swim/bike/run
+GoalProgress       — event_name, event_date, weeks_remaining, overall_pct, swim/bike/run_pct, on_track
 ```
 
 ---
 
 ## Module: ai/prompts.py
 
-### System Prompt
+System prompt is configurable via `settings.ATHLETE_AGE` and `settings.GOAL_EVENT_NAME`.
+`get_system_prompt()` renders the template at call time.
 
-```python
-SYSTEM_PROMPT = """
-You are a personal AI triathlon coach. Your role is to analyze an athlete's
-physiological data and provide specific, actionable training recommendations.
-
-Athlete profile:
-- Experienced triathlete, age 43
-- Target race: Ironman 70.3
-- Uses Garmin device for all monitoring
-
-Response rules:
-1. Be specific — mention numbers, zones, durations
-2. Always consider training load history when making recommendations
-3. If HRV is more than 15% below baseline -> recommend reducing intensity
-4. If TSB < -25 -> recommend a rest or recovery day
-5. Keep recommendations under 250 words
-6. Use emoji sparingly for readability
-7. Respond in the same language the prompt is written in
-"""
-
-MORNING_REPORT_PROMPT = """
-Analyze today's training readiness and provide recommendations.
-
-Date: {date}
-
-LAST NIGHT SLEEP:
-- Sleep score: {sleep_score}/100
-- Duration: {sleep_duration}
-- Last night HRV: {hrv_last} (7-day baseline: {hrv_baseline}, delta: {hrv_delta:+.0f}%)
-- Resting HR: {resting_hr} bpm (baseline: {resting_hr_baseline} bpm)
-- Body Battery (morning): {body_battery}/100
-- Yesterday stress score: {stress_score}/100
-
-TRAINING LOAD:
-- CTL (fitness): {ctl:.1f}
-- ATL (fatigue): {atl:.1f}
-- TSB (form): {tsb:+.1f}
-- Swimming CTL: {ctl_swim:.1f}
-- Cycling CTL: {ctl_bike:.1f}
-- Running CTL: {ctl_run:.1f}
-
-TODAY'S PLAN (from Garmin/HumanGO calendar):
-{workout_today}
-
-RACE GOAL ({goal_event}, {weeks_remaining} weeks away):
-- Overall readiness: {goal_pct:.0f}%
-- Swim: {swim_pct:.0f}% | Bike: {bike_pct:.0f}% | Run: {run_pct:.0f}%
-
-Please provide:
-1. Readiness assessment (Green / Yellow / Red) with brief reasoning
-2. Specific workout recommendation for today (adjust planned workout if needed)
-3. One observation about the current training load trend
-4. One short note on goal progression
-"""
-```
+Morning report prompt collects: sleep, HRV, body battery, stress, training load (CTL/ATL/TSB by sport), today's workout plan, and goal progress.
 
 ---
 
-## Module: bot/formatter.py
+## Module: bot/formatter.py (NOT YET IMPLEMENTED)
 
-```python
-def format_morning_message(metrics: DailyMetrics,
-                            workout: ScheduledWorkout | None,
-                            goal: GoalProgress,
-                            ai_text: str) -> str:
-
-    level_emoji = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
-    level = level_emoji[metrics.readiness_level]
-
-    hrv_arrow = "↓" if metrics.hrv_delta_pct < -5 else "↑" if metrics.hrv_delta_pct > 5 else "→"
-
-    sport_emoji = {
-        "swimming": "🏊", "cycling": "🚴",
-        "running": "🏃", "strength_training": "💪", "other": "🏋"
-    }
-
-    workout_text = "Rest day / no workout scheduled"
-    if workout:
-        emoji = sport_emoji.get(workout.sport, "🏋")
-        workout_text = f"{emoji} {workout.workout_name}"
-
-    def progress_bar(pct: float, width: int = 8) -> str:
-        filled = int((pct / 100) * width)
-        return "█" * filled + "░" * (width - filled)
-
-    return f"""
-🌅 *Good morning! Report for {metrics.date.strftime('%B %d, %Y')}*
-
-━━━ READINESS ━━━
-{level} *{metrics.readiness_score}/100*
-
-HRV `{metrics.hrv_delta_pct:+.0f}%` {hrv_arrow}  Sleep `{metrics.sleep_score}/100`
-Battery `{metrics.body_battery_morning}/100`  RHR `{metrics.resting_hr:.0f} bpm`
-
-━━━ TODAY'S PLAN ━━━
-{workout_text}
-
-━━━ TRAINING LOAD ━━━
-CTL `{metrics.ctl:.0f}` · ATL `{metrics.atl:.0f}` · TSB `{metrics.tsb:+.0f}`
-
-━━━ GOAL: {goal.event_name} ({goal.weeks_remaining} weeks) ━━━
-🏊 `{progress_bar(goal.swim_pct)}` {goal.swim_pct:.0f}%
-🚴 `{progress_bar(goal.bike_pct)}` {goal.bike_pct:.0f}%
-🏃 `{progress_bar(goal.run_pct)}` {goal.run_pct:.0f}%
-
-━━━ AI RECOMMENDATION ━━━
-{ai_text}
-"""
-```
+Should format the morning report Telegram message with readiness gauge, metrics cards,
+workout plan, training load, goal progress bars, and AI recommendation text.
 
 ---
 
-## Module: bot/handlers.py
+## Module: bot/handlers.py (NOT YET IMPLEMENTED)
 
 Bot commands to implement:
 
@@ -465,25 +330,17 @@ Bot commands to implement:
 /week       — weekly training summary
 /goal       — detailed goal progress breakdown
 /zones      — show current threshold zones
-/settings   — configure report time, goal, zones
+/settings   — current settings display
 /sync       — manually trigger Garmin data sync
 ```
 
-Button layout under every morning report:
-
-```python
-keyboard = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📊 Open Dashboard", web_app=WebAppInfo(url=WEBAPP_URL))],
-    [
-        InlineKeyboardButton("📅 Week Plan", callback_data="week_plan"),
-        InlineKeyboardButton("📈 Load Chart", callback_data="load_chart"),
-    ]
-])
-```
+Currently only `whoami` text handler exists in `bot/main.py`.
 
 ---
 
 ## Module: api/routes.py (FastAPI)
+
+Defined endpoints (require CRUD functions in database.py to be implemented):
 
 ```
 GET  /api/dashboard          -> data for Mini App main page
@@ -495,18 +352,7 @@ GET  /api/scheduled          -> upcoming scheduled workouts
 GET  /health                 -> healthcheck endpoint
 ```
 
-**Security:** Validate Telegram `initData` HMAC signature on every request.
-
-```python
-import hmac, hashlib
-
-def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
-    """
-    Verify that the request comes from a legitimate Telegram Mini App session.
-    Docs: https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
-    """
-    ...
-```
+**Security:** Validates Telegram `initData` HMAC signature via `Authorization` header.
 
 ---
 
@@ -518,38 +364,25 @@ Tabs: [Today] [Load] [Goal] [Week]
 Tab "Today":
   - Circular gauge: readiness score (0-100)
   - 4 metric cards: HRV delta | Sleep score | Body Battery | RHR
-  - Today's workout block (name + description from Garmin calendar)
+  - Today's workout block
   - AI recommendation text
 
 Tab "Load":
-  - Line chart: CTL / ATL / TSB over 12 weeks (3 lines, color-coded)
+  - Line chart: CTL / ATL / TSB over 12 weeks
   - Bar chart: daily TSS for last 4 weeks (color by sport)
 
 Tab "Goal":
   - Progress bars: swim / bike / run (% of target CTL)
   - Countdown: weeks to race day
-  - CTL by sport trend chart
 
 Tab "Week":
   - Table: current week workouts (planned vs actual)
   - TSS summary: planned vs completed
-  - Weekly volume by sport (km / hours)
 ```
 
-Telegram theme integration (automatic dark/light mode):
+Telegram theme integration via CSS variables (`--tg-theme-*`).
 
-```css
-:root {
-  --bg: var(--tg-theme-bg-color, #ffffff);
-  --text: var(--tg-theme-text-color, #000000);
-  --hint: var(--tg-theme-hint-color, #999999);
-  --button: var(--tg-theme-button-color, #2481cc);
-  --button-text: var(--tg-theme-button-text-color, #ffffff);
-  --secondary-bg: var(--tg-theme-secondary-bg-color, #f0f0f0);
-}
-```
-
-Required Telegram SDK (must be first script in `<head>`):
+Required Telegram SDK:
 
 ```html
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -557,258 +390,108 @@ Required Telegram SDK (must be first script in `<head>`):
 
 ---
 
-## Readiness Score Calculation
+## Database (PostgreSQL + Alembic)
 
-Composite score weighted from 4 physiological signals:
-
-```python
-def calculate_readiness(hrv: HRVData,
-                         sleep: SleepData,
-                         body_battery: int,
-                         resting_hr: float,
-                         resting_hr_baseline: float) -> tuple[int, ReadinessLevel]:
-    score = 100
-
-    # HRV component (weight: 35%)
-    hrv_delta = (hrv.hrv_last_night - hrv.hrv_weekly_avg) / hrv.hrv_weekly_avg
-    if hrv_delta < -0.20:    score -= 35
-    elif hrv_delta < -0.10:  score -= 20
-    elif hrv_delta < -0.05:  score -= 10
-    elif hrv_delta > +0.10:  score += 5   # bonus for good recovery
-
-    # Sleep component (weight: 30%)
-    if sleep.sleep_score < 50:    score -= 30
-    elif sleep.sleep_score < 65:  score -= 15
-    elif sleep.sleep_score < 75:  score -= 7
-
-    # Body Battery component (weight: 20%)
-    if body_battery < 30:    score -= 20
-    elif body_battery < 50:  score -= 10
-    elif body_battery < 65:  score -= 5
-
-    # Resting HR component (weight: 15%)
-    hr_delta = resting_hr - resting_hr_baseline
-    if hr_delta > 7:    score -= 15
-    elif hr_delta > 4:  score -= 8
-    elif hr_delta > 2:  score -= 3
-
-    score = max(0, min(100, score))
-
-    if score >= 80:    level = ReadinessLevel.GREEN
-    elif score >= 60:  level = ReadinessLevel.YELLOW
-    else:              level = ReadinessLevel.RED
-
-    return score, level
-```
-
----
-
-## Database Schema (SQLite)
-
-```sql
-CREATE TABLE daily_metrics (
-    date             TEXT PRIMARY KEY,
-    sleep_score      INTEGER,
-    sleep_duration   INTEGER,
-    hrv_last         REAL,
-    hrv_baseline     REAL,
-    body_battery     INTEGER,
-    resting_hr       REAL,
-    stress_score     INTEGER,
-    readiness_score  INTEGER,
-    readiness_level  TEXT,
-    ctl              REAL,
-    atl              REAL,
-    tsb              REAL,
-    ctl_swim         REAL,
-    ctl_bike         REAL,
-    ctl_run          REAL,
-    ai_recommendation TEXT,
-    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE activities (
-    activity_id   INTEGER PRIMARY KEY,
-    date          TEXT,
-    sport         TEXT,
-    duration_sec  INTEGER,
-    distance_m    REAL,
-    avg_hr        REAL,
-    max_hr        REAL,
-    avg_power     REAL,
-    norm_power    REAL,
-    tss           REAL,
-    synced_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE scheduled_workouts (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    scheduled_date TEXT,
-    sport          TEXT,
-    workout_name   TEXT,
-    description    TEXT,
-    planned_tss    REAL,
-    source         TEXT DEFAULT 'garmin'
-);
-
-CREATE TABLE tss_history (
-    date  TEXT,
-    sport TEXT,
-    tss   REAL,
-    PRIMARY KEY (date, sport)
-);
-```
-
----
-
-## Scheduler Setup
+Current ORM model in `data/database.py`:
 
 ```python
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import os
-
-scheduler = AsyncIOScheduler(timezone=os.getenv("TIMEZONE", "UTC"))
-
-# Morning report
-scheduler.add_job(
-    morning_report_job,
-    trigger="cron",
-    hour=int(os.getenv("MORNING_REPORT_HOUR", 7)),
-    minute=int(os.getenv("MORNING_REPORT_MINUTE", 0)),
-    id="morning_report",
-    replace_existing=True,
-)
-
-# Garmin data sync (runs 30 min before report to ensure fresh data)
-scheduler.add_job(
-    garmin_sync_job,
-    trigger="cron",
-    hour=int(os.getenv("MORNING_REPORT_HOUR", 7)),
-    minute=max(0, int(os.getenv("MORNING_REPORT_MINUTE", 0)) - 30),
-    id="garmin_sync",
-    replace_existing=True,
-)
+class DailyMetricsRow(Base):
+    __tablename__ = "daily_metrics"
+    date: str (PK)
+    created_at: datetime
+    sleep_score, sleep_duration, sleep_start, sleep_end
+    sleep_stress_avg, sleep_hrv_avg, sleep_heart_rate_avg
+    # TODO: hrv_last, hrv_baseline, body_battery, resting_hr, stress_score
+    # TODO: readiness_score, readiness_level
+    # TODO: ctl, atl, tsb, ctl_swim, ctl_bike, ctl_run
+    # TODO: ai_recommendation
 ```
+
+Tables still needed as ORM models:
+- `activities` — synced Garmin activities with TSS
+- `scheduled_workouts` — planned workouts from Garmin calendar
+- `tss_history` — daily TSS by sport for CTL/ATL calculation
+
+Migrations managed via Alembic (`alembic upgrade head`).
 
 ---
 
-## requirements.txt
+## Scheduler (bot/scheduler.py)
 
-```
-# Garmin
-garminconnect>=0.2.38
+Current implementation:
+- `daily_metrics_job` runs every 15 minutes from 5:00 to 20:00
+- Fetches sleep data from Garmin and saves to DB
+- Sends "Пробуждение зафиксировано" when new sleep_end matches today
 
-# AI
-anthropic>=0.40.0
-
-# Telegram
-python-telegram-bot>=21.0
-
-# Scheduling
-apscheduler>=3.10.0
-
-# API
-fastapi>=0.115.0
-uvicorn>=0.30.0
-
-# Database
-sqlalchemy>=2.0.0
-
-# Config & validation
-pydantic>=2.7.0
-pydantic-settings>=2.3.0
-
-# HTTP
-httpx>=0.27.0
-
-# Utils
-python-dotenv>=1.0.0
-```
+Planned:
+- Full morning report pipeline (sync all data -> calculate metrics -> AI analysis -> send report)
+- Configurable report time via `MORNING_REPORT_HOUR` / `MORNING_REPORT_MINUTE`
 
 ---
 
-## Recommended Development Order
-
-Build in this sequence to enable testing at each step:
-
-1. `data/models.py` — Pydantic models (no dependencies)
-2. `data/database.py` — SQLite + SQLAlchemy setup
-3. `data/metrics.py` — TSS/CTL/ATL/TSB calculations + unit tests
-4. `data/garmin_client.py` — Garmin connection, test data fetch
-5. `ai/prompts.py` + `ai/claude_agent.py` — Claude API integration
-6. `bot/formatter.py` — message formatting
-7. `bot/handlers.py` + `bot/main.py` — basic working bot
-8. `bot/scheduler.py` — automated morning job
-9. `api/server.py` + `api/routes.py` — FastAPI data endpoints
-10. `webapp/index.html` — Mini App dashboard with Chart.js
-11. Deploy — backend to Railway/VPS, frontend to Vercel
-
----
-
-## How to Use with Claude Code
+## CLI (bot/cli.py)
 
 ```bash
-# Install Claude Code (if not installed)
-npm install -g @anthropic/claude-code
-
-# Navigate to project folder
-cd triathlon-agent
-
-# Start Claude Code — it will automatically read CLAUDE.md
-claude
+python -m bot.cli echo "message"           # send Telegram message
+python -m bot.cli backfill                  # backfill last 180 days
+python -m bot.cli backfill 2025Q3           # backfill quarter
+python -m bot.cli backfill 2025-03          # backfill month
+python -m bot.cli backfill 2025-01-01:2025-03-31  # backfill range
+python -m bot.cli backfill 2025-09-01       # backfill single day
+python -m bot.cli garmin-login              # full Garmin credential login
+python -m bot.cli shell                     # interactive Python shell
 ```
 
-### Example prompts inside Claude Code
+---
 
-```
-# Bootstrap the project
-> Create the full project structure as defined in CLAUDE.md
-
-# Build individual modules
-> Implement data/models.py with all Pydantic models from the spec
-> Implement data/metrics.py with TSS, CTL/ATL/TSB formulas and full test coverage
-> Implement data/garmin_client.py with token caching and all required methods
-> Implement ai/claude_agent.py that calls Claude API with the morning report prompt
-> Build the FastAPI server with all endpoints from the spec
-> Create the Telegram Mini App dashboard in webapp/index.html using Chart.js
-> Write a Dockerfile and docker-compose.yml for local development
-> Generate a README.md with setup and contribution guide
-```
-
-### Useful Claude Code flags
+## Docker
 
 ```bash
-claude                               # interactive mode (recommended)
-claude "implement data/metrics.py"   # single task, then exit
-claude --continue                    # resume previous session
-claude --model claude-opus-4-6       # use Opus for complex architecture tasks
+docker compose up -d db          # start PostgreSQL only
+docker compose up -d             # start all (db + migrate + bot)
+docker compose exec bot python -m bot.cli backfill 2025Q4
 ```
+
+API service is defined but commented out in `docker-compose.yml`.
 
 ---
 
 ## Key Implementation Notes
 
-- **Garmin API is unofficial** — max 1 request/second, cache everything in SQLite
-- **OAuth tokens** live in `~/.garminconnect`, never in `.env`
-- **Claude API** is called once per day (morning report) to minimize token costs
+- **Garmin API is unofficial** — max 1 request/second, 2h cooldown after 429, cache in PostgreSQL
+- **OAuth tokens** live in `~/.garminconnect` (configurable via `GARMIN_TOKENS`), never in `.env`
+- **Claude API** called once per day (morning report) to minimize token costs
 - **Mini App** should gracefully degrade if API is unreachable (show cached data)
 - **All timestamps** stored as UTC in DB, converted to local timezone for display
-- **Garmin data sync** runs 30 minutes before the morning report
 - When deploying, ensure `.env.example` is complete and `.env` is in `.gitignore`
+
+---
+
+## Next Steps (Priority Order)
+
+1. Expand `DailyMetricsRow` — uncomment and add missing columns + Alembic migration
+2. Add `ActivityRow`, `ScheduledWorkoutRow`, `TSSHistoryRow` ORM models + migration
+3. Implement CRUD functions in `database.py` (needed by `api/routes.py`)
+4. Build full morning report pipeline in `scheduler.py` (sync all data -> metrics -> AI -> Telegram)
+5. Implement `bot/formatter.py` — Telegram message formatting
+6. Implement `bot/handlers.py` — /start /report /status /week /goal /zones /sync commands
+7. Wire up API endpoints with real data
+8. Finalize Mini App dashboard
 
 ---
 
 ## Contributing
 
-This project is open source. When adding features:
+When adding features:
 
 - Follow the existing module structure
-- Add Pydantic models for any new data types
+- Add Pydantic models for any new data types in `data/models.py`
 - Write tests for all metric calculations (they must be deterministic)
 - Keep the Claude API prompt modular — add new sections to `prompts.py`
 - Document any new environment variables in `.env.example`
-- The athlete profile in `SYSTEM_PROMPT` should be configurable via `.env`, not hardcoded
+- Create Alembic migrations for any schema changes: `alembic revision --autogenerate -m "description"`
+- The athlete profile in `SYSTEM_PROMPT` is configurable via `.env` (ATHLETE_AGE, GOAL_EVENT_NAME)
 
 ---
 
-_Last updated: February 2026_
+_Last updated: March 2026_

@@ -29,7 +29,7 @@ async def create_scheduler(bot) -> AsyncIOScheduler:
     scheduler.add_job(
         daily_metrics_job,
         trigger="cron",
-        hour="5-20",
+        hour="6-23",
         minute="*/15",
         id="daily_metrics",
         kwargs={"bot": bot},

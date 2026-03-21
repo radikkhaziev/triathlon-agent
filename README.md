@@ -99,6 +99,12 @@ python -m bot.cli backfill 2025-01-01:2025-03-31
 
 # Backfill a single day
 python -m bot.cli backfill 2025-09-01
+
+# Full Garmin credential login (use when refresh token is expired)
+python -m bot.cli garmin-login
+
+# Interactive Python shell with app context
+python -m bot.cli shell
 ```
 
 Via Docker:
@@ -106,16 +112,14 @@ Via Docker:
 ```bash
 docker compose exec bot python -m bot.cli echo "Hello"
 docker compose exec bot python -m bot.cli backfill 2025Q4
-docker compose exec -it bot python -m bot.cli shell
+docker compose exec bot python -m bot.cli garmin-login
 ```
 
 ## Garmin Token Management
 
-If the bot gets a 429 (Too Many Requests) from Garmin Connect:
+If the bot gets a 429 (Too Many Requests) from Garmin Connect, it enters a 2-hour cooldown automatically. To manually re-authenticate after the cooldown:
 
 ```bash
-
-# Full login (use when refresh token is expired, wait ~2h after 429)
 docker compose exec bot python -m bot.cli garmin-login
 ```
 
@@ -128,41 +132,34 @@ pytest
 ## Project Structure
 
 ```
-bot/           Telegram bot (handlers, scheduler, formatter)
-data/          Garmin client, metrics calculations, database
+bot/           Telegram bot (main, scheduler, CLI)
+data/          Garmin client, metrics calculations, database ORM
 ai/            Claude API integration and prompts
 api/           FastAPI server for the Mini App
 webapp/        Telegram Mini App (HTML + Chart.js)
+migrations/    Alembic database migrations
+docs/          Design documents (HRV spec)
+mockups/       Dashboard UI mockups
 tests/         Unit tests
+config.py      Centralized settings (pydantic-settings)
 ```
 
 ## Environment Variables
 
 See `.env.example` for the full list. Key variables:
 
-| Variable             | Description                   |
-| -------------------- | ----------------------------- |
-| `GARMIN_EMAIL`       | Garmin Connect email          |
-| `GARMIN_PASSWORD`    | Garmin Connect password       |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token        |
-| `TELEGRAM_CHAT_ID`   | Your Telegram chat ID         |
-| `ANTHROPIC_API_KEY`  | Anthropic API key             |
-| `DATABASE_URL`       | PostgreSQL connection string  |
-| `GOAL_EVENT_NAME`    | Target race name              |
-| `GOAL_EVENT_DATE`    | Target race date (YYYY-MM-DD) |
-
-## Bot Commands
-
-| Command     | Description                 |
-| ----------- | --------------------------- |
-| `/start`    | Welcome message             |
-| `/report`   | Generate morning report     |
-| `/status`   | Quick status (numbers only) |
-| `/week`     | Weekly training summary     |
-| `/goal`     | Goal progress breakdown     |
-| `/zones`    | HR threshold zones          |
-| `/sync`     | Manually sync Garmin data   |
-| `/settings` | Current settings            |
+| Variable             | Description                          |
+| -------------------- | ------------------------------------ |
+| `GARMIN_EMAIL`       | Garmin Connect email                 |
+| `GARMIN_PASSWORD`    | Garmin Connect password              |
+| `GARMIN_TOKENS`      | Path to OAuth token store (default: ~/.garminconnect) |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token              |
+| `TELEGRAM_CHAT_ID`   | Your Telegram chat ID              |
+| `ANTHROPIC_API_KEY`  | Anthropic API key                   |
+| `DATABASE_URL`       | PostgreSQL connection string        |
+| `ATHLETE_AGE`        | Athlete age for AI prompt           |
+| `GOAL_EVENT_NAME`    | Target race name                    |
+| `GOAL_EVENT_DATE`    | Target race date (YYYY-MM-DD)       |
 
 ## License
 
