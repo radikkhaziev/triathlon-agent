@@ -163,6 +163,10 @@ class GarminClient:
                 # Re-load into garminconnect client with fresh tokens
                 garth.resume(TOKENSTORE)
                 self.client.garth = garth.client
+                # display_name is normally set by login() — fill it
+                # from the garth profile so URL paths don't get None.
+                profile = garth.client.profile
+                self.client.display_name = profile.get("displayName")
                 logger.info(
                     "Garmin session resumed via garth (token store: %s)",
                     TOKENSTORE,
