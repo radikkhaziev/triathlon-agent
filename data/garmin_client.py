@@ -156,15 +156,13 @@ class GarminClient:
             try:
                 # Use garth.resume() to load tokens, then proactively
                 # refresh oauth2 so API calls don't trigger exchange.
+                # Use garth directly (same as CLI garmin-refresh) —
+                # garth's own client handles refresh without 429.
+                garth.resume(TOKENSTORE)
+                garth.client.dump(TOKENSTORE)
+                # Re-load into garminconnect client with fresh tokens
                 garth.resume(TOKENSTORE)
                 self.client.garth = garth.client
-                # Refresh oauth2 token now (instead of on first API call)
-                # so we can catch 429 here and set cooldown properly.
-                if self.client.garth.oauth2_token and self.client.garth.oauth2_token.expired:
-                    logger.info("OAuth2 token expired, refreshing...")
-                    self.client.garth.refresh_oauth2()
-                    self.client.garth.dump(TOKENSTORE)
-                    logger.info("OAuth2 token refreshed and saved")
                 logger.info(
                     "Garmin session resumed via garth (token store: %s)",
                     TOKENSTORE,
