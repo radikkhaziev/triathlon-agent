@@ -154,10 +154,17 @@ class GarminClient:
         token_file = Path(TOKENSTORE) / "oauth1_token.json"
         if token_file.exists():
             try:
-                # Use garth.resume() directly — loads tokens without
-                # hitting the OAuth exchange endpoint that returns 429.
+                # Use garth.resume() to load tokens, then proactively
+                # refresh oauth2 so API calls don't trigger exchange.
                 garth.resume(TOKENSTORE)
                 self.client.garth = garth.client
+                # Refresh oauth2 token now (instead of on first API call)
+                # so we can catch 429 here and set cooldown properly.
+                if self.client.garth.oauth2_token and self.client.garth.oauth2_token.expired:
+                    logger.info("OAuth2 token expired, refreshing...")
+                    self.client.garth.refresh_oauth2()
+                    self.client.garth.dump(TOKENSTORE)
+                    logger.info("OAuth2 token refreshed and saved")
                 logger.info(
                     "Garmin session resumed via garth (token store: %s)",
                     TOKENSTORE,
