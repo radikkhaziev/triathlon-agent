@@ -11,7 +11,7 @@ from data.database import set_bot
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     lines = [
-        f"*Who Am I*",
+        "*Who Am I*",
         f"ID: `{user.id}`",
         f"First name: {user.first_name or '—'}",
         f"Last name: {user.last_name or '—'}",
@@ -33,6 +33,22 @@ def start_bot() -> None:
         scheduler = create_scheduler()
         scheduler.start()
         logging.info("Scheduler started")
+
+        # Startup health check: verify Garmin connection and notify
+        from data.garmin_client import GarminClient
+        garmin = GarminClient()
+        garmin_ok = False
+        try:
+            if garmin.client and garmin.client.get_full_name():
+                garmin_ok = True
+        except Exception:
+            pass
+
+        chat_id = settings.TELEGRAM_CHAT_ID
+        status = "connected" if garmin_ok else "disconnected"
+        await application.bot.send_message(
+            chat_id=chat_id, text=f"Bot started\nGarmin: {status}"
+        )
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
