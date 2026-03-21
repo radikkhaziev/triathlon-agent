@@ -119,14 +119,14 @@ class GarminClient:
         self.profile = None
         self.client = Garmin(self.email, self.password)
         self._last_request_time: float = 0.0
-        self._login()
+        self._login(soft=True)
         self._mount_retry_adapter()
 
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
 
-    def _login(self) -> None:
+    def _login(self, soft: bool = False) -> None:
         self.profile = None
 
         tokenstore_path = Path(settings.GARMIN_TOKENS).expanduser().resolve()
@@ -136,7 +136,8 @@ class GarminClient:
             self.client.garth.load(normalized_path)
             if self.client.garth.oauth1_token and self.client.garth.oauth2_token:
                 logger.info("Garmin tokens loaded from %s", normalized_path)
-                self.client.garth.refresh_oauth2()
+                if not soft:
+                    self.client.garth.refresh_oauth2()
 
                 _g_settings = self.client.garth.connectapi(self.client.garmin_connect_user_settings_url)
                 if _g_settings and isinstance(_g_settings, dict):
