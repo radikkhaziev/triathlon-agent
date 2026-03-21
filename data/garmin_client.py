@@ -5,7 +5,6 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-import garth
 from garminconnect import Garmin
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -119,7 +118,7 @@ class GarminClient:
         self._initialized = True
         self.email = email
         self.password = password
-        self.client: Garmin | None = None
+        self.client = Garmin(email, password)
         self._last_request_time: float = 0.0
         self._login()
 
@@ -137,69 +136,34 @@ class GarminClient:
         )
 
     def _login(self) -> None:
-        """Create a Garmin client and authenticate.
+        """Load saved tokens from disk.
 
-        Uses token store at ~/.garminconnect so we don't need to
-        re-authenticate with credentials on every startup.
-
-        Prefers lightweight garth.resume() to avoid triggering OAuth
-        exchange on every startup (the exchange endpoint is rate-limited).
-        Falls back to full login() only when resume fails.
+        Tokens are managed by CLI commands (garmin-login / garmin-refresh).
+        The bot only loads them — never authenticates or refreshes itself.
         """
-        if self._check_cooldown():
-            logger.warning("Skipping login — cooldown active")
-            return
-        self.client = Garmin(self.email, self.password)
-        self._mount_retry_adapter()
         token_file = Path(TOKENSTORE) / "oauth1_token.json"
         if token_file.exists():
-            try:
-                # Use garth.resume() to load tokens, then proactively
-                # refresh oauth2 so API calls don't trigger exchange.
-                # Use garth directly (same as CLI garmin-refresh) —
-                # garth's own client handles refresh without 429.
-                garth.resume(TOKENSTORE)
-                garth.client.dump(TOKENSTORE)
-                # Re-load into garminconnect client with fresh tokens
-                garth.resume(TOKENSTORE)
-                self.client.garth = garth.client
-                # display_name is normally set by login() — fill it
-                # from the garth profile so URL paths don't get None.
-                profile = garth.client.profile
-                self.client.display_name = profile.get("displayName")
-                logger.info(
-                    "Garmin session resumed via garth (token store: %s)",
-                    TOKENSTORE,
-                )
-                return
-            except Exception as exc:
-                if "429" in str(exc):
-                    self._set_cooldown()
-                    return
-                logger.warning("garth.resume() failed (%s), will try full login", exc)
-            # Fall back to full login if resume didn't work
-            try:
-                self.client.login(tokenstore=TOKENSTORE)
-                logger.info("Garmin login successful (token store: %s)", TOKENSTORE)
-                return
-            except Exception as exc:
-                if "429" in str(exc):
-                    self._set_cooldown()
-                    return
-                logger.warning(
-                    "Token-based login failed (%s), will try credentials", exc
-                )
-        # Only attempt credential login if not on cooldown (token login
-        # may have triggered a 429 that we didn't catch above).
-        if self._check_cooldown():
-            return
-        try:
+            self.client.garth.resume(TOKENSTORE)
+            logger.info("Garmin tokens loaded from %s", TOKENSTORE)
+            self._refresh_if_expired()
+        else:
             self.client.login()
             self.client.garth.dump(TOKENSTORE)
-            logger.info("Garmin credential login successful, tokens saved")
-        except Exception as exc:
-            self._set_cooldown()
-            logger.error("Garmin credential login failed: %s", exc)
+            logger.info(
+                "Garmin credential login successful, tokens saved to %s", TOKENSTORE
+            )
+        self._mount_retry_adapter()
+
+    def _refresh_if_expired(self) -> None:
+        """Refresh OAuth2 access token if it has expired."""
+        token = self.client.garth.oauth2_token
+        if not token:
+            return
+        if token.expires_at <= int(time.time()):
+            logger.info("OAuth2 access token expired, refreshing...")
+            self.client.garth.refresh_oauth2()
+            self.client.garth.dump(TOKENSTORE)
+            logger.info("Token refreshed and saved to %s", TOKENSTORE)
 
     def _mount_retry_adapter(self) -> None:
         """Mount an HTTPAdapter with retry/backoff on the garth session."""
