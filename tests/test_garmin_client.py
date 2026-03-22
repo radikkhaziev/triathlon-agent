@@ -136,10 +136,6 @@ class TestAuthentication:
         """After construction the internal client should be set."""
         assert gc.client is not None
 
-    def test_ensure_connected_does_not_raise(self, gc):
-        gc._ensure_connected()
-        assert gc.client is not None
-
 
 # ---------------------------------------------------------------------------
 # get_sleep

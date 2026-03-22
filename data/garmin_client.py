@@ -345,7 +345,7 @@ class GarminClient:
 
     def get_scheduled_workouts(self, start: str, end: str) -> list[ScheduledWorkout]:
         """Fetch scheduled/planned workouts for a date range (YYYY-MM-DD)."""
-        raw = self._call_api(self.client.get_training_plan_list)
+        raw = self._call_api(self.client.get_training_plans)
 
         # Try calendar-based approach if training plan list is unavailable
         if not raw:

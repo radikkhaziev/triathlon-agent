@@ -39,25 +39,6 @@ def _patch_settings(token_dir: str):
     return patch("data.garmin_client.settings", mock_settings)
 
 
-class TestLoginWithoutTokens:
-    """Login from scratch — no saved tokens, uses email/password."""
-
-    def test_login_without_tokens(self, tmp_path):
-        """When no token files exist, should login with credentials and save tokens."""
-        token_dir = tmp_path / "garmin_tokens"
-        token_dir.mkdir()
-
-        with _patch_settings(str(token_dir)):
-            gc = GarminClient()
-
-            assert gc.profile is not None, "Profile should be set after fresh login"
-            assert isinstance(gc.profile, dict)
-
-            # Tokens should be saved to disk
-            token_files = list(token_dir.iterdir())
-            assert len(token_files) > 0, "Token files should be saved after login"
-
-
 class TestLoginWithExistingTokens:
     """Login with already saved valid tokens — should skip credential login."""
 

@@ -51,5 +51,8 @@ class Settings(BaseSettings):
     MORNING_REPORT_MINUTE: int = 0
     TIMEZONE: str = "Europe/Belgrade"
 
+    # HRV Algorithm
+    HRV_ALGORITHM: str = "flatt_esco"  # "flatt_esco" | "ai_endurance"
+
 
 settings = Settings()

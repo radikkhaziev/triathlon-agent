@@ -1,12 +1,15 @@
 import logging
 import time
+from datetime import date
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from bot.scheduler import create_scheduler
+from bot.formatter import build_morning_report
+from bot.scheduler import _fetch_garmin_data, create_scheduler
 from config import settings
 from data.garmin_client import GarminClient
+from data.metrics import calculate_rhr_status, calculate_rmssd_status, combined_recovery_score
 
 
 def _format_duration(seconds: int) -> str:
@@ -23,6 +26,41 @@ def _format_duration(seconds: int) -> str:
     if mins or not parts:
         parts.append(f"{mins}m")
     return " ".join(parts)
+
+
+async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle 'report' message — fetch Garmin data and send morning report."""
+    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        return
+
+    await update.message.reply_text("⏳ Собираю данные...")
+
+    garmin = GarminClient()
+    dt = date.today()
+    data = await _fetch_garmin_data(garmin, dt)
+
+    rmssd = await calculate_rmssd_status()
+    rhr = await calculate_rhr_status()
+    recovery = combined_recovery_score(
+        rmssd_status=rmssd,
+        rhr_status=rhr,
+        banister_recovery=100.0,
+        sleep_score=data["sleep"].score or 0,
+        body_battery=data["body_battery_morning"] or 50,
+    )
+
+    msg = build_morning_report(
+        sleep_data=data["sleep"],
+        rmssd=rmssd,
+        rhr=rhr,
+        recovery=recovery,
+        hrv_data=data["hrv"],
+        body_battery_morning=data["body_battery_morning"],
+        resting_hr=data["resting_hr"],
+        readiness=data["readiness"],
+        workouts=data["workouts"],
+    )
+    await update.message.reply_text(msg)
 
 
 async def howareyou(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -101,6 +139,7 @@ def start_bot() -> None:
         logging.info("Scheduler started")
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^report$"), report))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^howareyou$"), howareyou))
 
