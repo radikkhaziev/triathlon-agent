@@ -133,7 +133,7 @@ async def save_daily_metrics(
         await session.commit()
         await session.refresh(row)
 
-        if not had_sleep_score and row.sleep_score:
+        if not had_sleep_score and row.sleep_score and row.sleep_end.date() == dt:
             await send_telegram_message("Пробуждение зафиксировано", bot=bot)
 
         return row
