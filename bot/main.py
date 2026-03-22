@@ -31,6 +31,7 @@ def _format_duration(seconds: int) -> str:
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle 'report' message — fetch Garmin data and send morning report."""
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        await update.message.reply_text("У вас нет доступа к этому боту.")
         return
 
     await update.message.reply_text("⏳ Собираю данные...")
@@ -57,6 +58,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def howareyou(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        await update.message.reply_text("У вас нет доступа к этому боту.")
         return
 
     gc = GarminClient()
