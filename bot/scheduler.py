@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from datetime import date
 
@@ -15,8 +14,6 @@ logger = logging.getLogger(__name__)
 async def create_scheduler(bot) -> AsyncIOScheduler:
     gc = GarminClient()
     status = "connected" if gc.profile else "disconnected"
-    if gc.profile:
-        status = json.dumps(gc.profile, indent=2)
 
     await bot.send_message(
         chat_id=settings.TELEGRAM_CHAT_ID,
