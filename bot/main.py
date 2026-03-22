@@ -2,10 +2,10 @@ import logging
 import time
 from datetime import date
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-from bot.formatter import build_morning_report
+from bot.formatter import build_report_summary
 from bot.scheduler import _fetch_garmin_data, create_scheduler
 from config import settings
 from data.garmin_client import GarminClient
@@ -49,18 +49,10 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         body_battery=data["body_battery_morning"] or 50,
     )
 
-    msg = build_morning_report(
-        sleep_data=data["sleep"],
-        rmssd=rmssd,
-        rhr=rhr,
-        recovery=recovery,
-        hrv_data=data["hrv"],
-        body_battery_morning=data["body_battery_morning"],
-        resting_hr=data["resting_hr"],
-        readiness=data["readiness"],
-        workouts=data["workouts"],
-    )
-    await update.message.reply_text(msg)
+    summary = build_report_summary(recovery=recovery, sleep_data=data["sleep"])
+    webapp_url = f"{settings.API_BASE_URL}/app/report.html"
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
+    await update.message.reply_text(summary, reply_markup=keyboard)
 
 
 async def howareyou(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

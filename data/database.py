@@ -21,6 +21,21 @@ async def send_telegram_message(text: str, *, bot) -> None:
     await bot.send_message(chat_id=settings.TELEGRAM_CHAT_ID, text=text)
 
 
+async def send_report_webapp(summary: str, *, bot) -> None:
+    """Send a morning report summary with a Mini App button to view the full report."""
+    if bot is None:
+        return
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+    webapp_url = f"{settings.API_BASE_URL}/app/report.html"
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
+    await bot.send_message(
+        chat_id=settings.TELEGRAM_CHAT_ID,
+        text=summary,
+        reply_markup=keyboard,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Engine / Session helpers
 # ---------------------------------------------------------------------------
@@ -370,20 +385,10 @@ async def save_daily_metrics(
 
             await session.commit()
 
-            # Send morning report
-            from bot.formatter import build_morning_report
+            # Send morning report as Mini App button
+            from bot.formatter import build_report_summary
 
-            report = build_morning_report(
-                sleep_data=sleep_data,
-                rmssd=rmssd,
-                rhr=rhr,
-                recovery=recovery,
-                hrv_data=hrv_data,
-                body_battery_morning=body_battery_morning,
-                resting_hr=resting_hr,
-                readiness=readiness,
-                workouts=workouts,
-            )
-            await send_telegram_message(report, bot=bot)
+            summary = build_report_summary(recovery=recovery, sleep_data=sleep_data)
+            await send_report_webapp(summary, bot=bot)
 
         return row

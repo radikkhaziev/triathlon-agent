@@ -5,14 +5,9 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, HTTPException
 
+from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from config import settings
-from data.database import (
-    get_activities,
-    get_daily_metrics,
-    get_daily_metrics_range,
-    get_scheduled_workouts_range,
-    get_tss_history,
-)
+from data.database import get_activities, get_daily_metrics, get_daily_metrics_range, get_scheduled_workouts_range
 
 router = APIRouter()
 
@@ -25,9 +20,7 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
 
     data_check_string = "\n".join(f"{k}={v[0]}" for k, v in sorted(parsed.items()))
     secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-    computed_hash = hmac.new(
-        secret_key, data_check_string.encode(), hashlib.sha256
-    ).hexdigest()
+    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(computed_hash, received_hash)
 
 
@@ -165,6 +158,135 @@ async def weekly_summary(authorization: str | None = Header(default=None)) -> di
         by_sport[sport]["count"] += 1
 
     return {"week_start": str(week_start), "by_sport": by_sport}
+
+
+@router.get("/api/report")
+async def morning_report(authorization: str | None = Header(default=None)) -> dict:
+    """Full morning report data for the Mini App report page."""
+    _verify_request(authorization)
+    today = date.today()
+    row = await get_daily_metrics(today)
+
+    if row is None:
+        return {"date": str(today), "has_data": False}
+
+    # Recovery
+    category = row.recovery_category or "moderate"
+    emoji, title = CATEGORY_DISPLAY.get(category, ("⚪", "СТАТУС НЕИЗВЕСТЕН"))
+    recommendation_key = row.recovery_recommendation or ""
+    recommendation_text = RECOMMENDATION_TEXT.get(recommendation_key, recommendation_key)
+
+    # HRV
+    hrv_status = row.hrv_status or "insufficient_data"
+    hrv_delta_pct = None
+    if row.hrv_rmssd_last and row.hrv_mean_7d and row.hrv_mean_7d > 0:
+        hrv_delta_pct = round((row.hrv_rmssd_last - row.hrv_mean_7d) / row.hrv_mean_7d * 100, 0)
+
+    # SWC verdict
+    swc_verdict = None
+    rmssd_60d = None
+    if row.hrv_rmssd_last and row.hrv_swc:
+        # Approximate 60d from stored data
+        import statistics
+
+        from data.database import get_hrv_history
+
+        hist = await get_hrv_history(60)
+        if len(hist) >= 60:
+            rmssd_60d = round(statistics.mean(hist), 1)
+            delta = row.hrv_rmssd_last - rmssd_60d
+            if abs(delta) < row.hrv_swc:
+                swc_verdict = "в пределах шума"
+            elif delta > row.hrv_swc:
+                swc_verdict = "значимое улучшение"
+            else:
+                swc_verdict = "значимое снижение"
+
+    # CV verdict
+    cv_verdict = None
+    if row.hrv_cv_7d is not None:
+        if row.hrv_cv_7d < 5:
+            cv_verdict = "высокая"
+        elif row.hrv_cv_7d < 10:
+            cv_verdict = "нормальная"
+        else:
+            cv_verdict = "нестабильная"
+
+    # RHR
+    rhr_delta = None
+    rhr_mean_30d = None
+    if row.rhr_status and row.rhr_status != "insufficient_data" and row.resting_hr:
+        import statistics
+
+        from data.database import get_rhr_history
+
+        rhr_hist = await get_rhr_history(30)
+        if rhr_hist:
+            rhr_mean_30d = round(statistics.mean(rhr_hist), 0)
+            rhr_delta = round(row.resting_hr - rhr_mean_30d, 0)
+
+    # Sleep duration formatting
+    sleep_duration_str = None
+    if row.sleep_duration:
+        h, m = divmod(row.sleep_duration // 60, 60)
+        sleep_duration_str = f"{h}ч {m}м" if h else f"{m}м"
+
+    # Scheduled workouts
+    workouts_data = []
+    workout_rows = await get_scheduled_workouts_range(today, today)
+    for w in workout_rows:
+        workouts_data.append(
+            {
+                "sport": w.sport,
+                "workout_name": w.workout_name,
+                "description": w.description,
+                "planned_tss": w.planned_tss,
+            }
+        )
+
+    return {
+        "date": str(today),
+        "has_data": True,
+        # Recovery header
+        "recovery_score": row.recovery_score,
+        "recovery_category": category,
+        "recovery_emoji": emoji,
+        "recovery_title": title,
+        "recovery_recommendation": recommendation_text,
+        # HRV
+        "hrv_status": hrv_status,
+        "hrv_status_emoji": STATUS_EMOJI.get(hrv_status, "⚪"),
+        "hrv_today": row.hrv_rmssd_last,
+        "hrv_7d": row.hrv_mean_7d,
+        "hrv_60d": rmssd_60d,
+        "hrv_delta_pct": hrv_delta_pct,
+        "hrv_swc": row.hrv_swc,
+        "hrv_swc_verdict": swc_verdict,
+        "hrv_cv_7d": row.hrv_cv_7d,
+        "hrv_cv_verdict": cv_verdict,
+        # RHR
+        "rhr_status": row.rhr_status,
+        "rhr_status_emoji": STATUS_EMOJI.get(row.rhr_status or "", "⚪"),
+        "rhr_today": row.resting_hr,
+        "rhr_30d": rhr_mean_30d,
+        "rhr_delta": rhr_delta,
+        # Sleep
+        "sleep_score": row.sleep_score,
+        "sleep_duration": sleep_duration_str,
+        # Body Battery
+        "body_battery": row.body_battery,
+        # ESS / Banister
+        "ess_today": row.ess_today,
+        "banister_recovery": row.banister_recovery,
+        # Training load
+        "ctl": row.ctl,
+        "atl": row.atl,
+        "tsb": row.tsb,
+        # AI
+        "ai_recommendation": row.ai_recommendation,
+        # Workouts
+        "workouts": workouts_data,
+    }
 
 
 @router.get("/api/scheduled")
