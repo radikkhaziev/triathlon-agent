@@ -120,6 +120,8 @@ async def save_daily_metrics(
             row = DailyMetricsRow(date=str(dt))
             session.add(row)
 
+        had_sleep_score = bool(row.sleep_score)
+
         for key, val in sleep_data.model_dump(exclude_none=True, exclude={"date", "start", "end"}).items():
             setattr(row, f"sleep_{key}", val)
 
@@ -131,7 +133,7 @@ async def save_daily_metrics(
         await session.commit()
         await session.refresh(row)
 
-        if is_new and row.sleep_end is not None and row.sleep_end.date() == dt:
+        if not had_sleep_score and row.sleep_score:
             await send_telegram_message("Пробуждение зафиксировано", bot=bot)
 
         return row
