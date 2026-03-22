@@ -50,7 +50,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     summary = build_report_summary(recovery=recovery, sleep_data=data["sleep"])
-    webapp_url = f"{settings.API_BASE_URL}/app/report.html"
+    webapp_url = f"{settings.API_BASE_URL}/report.html"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await update.message.reply_text(summary, reply_markup=keyboard)
 

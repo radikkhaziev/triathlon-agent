@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Triathlon Dashboard</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Tabs -->
+<div class="tabs">
+    <button class="tab-btn active" data-tab="today">Today</button>
+    <button class="tab-btn" data-tab="load">Load</button>
+    <button class="tab-btn" data-tab="goal">Goal</button>
+    <button class="tab-btn" data-tab="week">Week</button>
+</div>
+
+<!-- Tab: Today -->
+<div id="tab-today" class="tab-content active">
+    <div class="gauge-container">
+        <div class="gauge">
+            <canvas id="readiness-gauge" width="160" height="160"></canvas>
+            <div class="gauge-label">
+                <div id="gauge-score" class="gauge-score">—</div>
+                <div class="gauge-text">Readiness</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <div id="metric-hrv" class="metric-value">—</div>
+            <div class="metric-label">HRV delta</div>
+        </div>
+        <div class="metric-card">
+            <div id="metric-sleep" class="metric-value">—</div>
+            <div class="metric-label">Sleep Score</div>
+        </div>
+        <div class="metric-card">
+            <div id="metric-battery" class="metric-value">—</div>
+            <div class="metric-label">Body Battery</div>
+        </div>
+        <div class="metric-card">
+            <div id="metric-rhr" class="metric-value">—</div>
+            <div class="metric-label">Resting HR</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Training Load</div>
+        <div class="metrics-grid" style="margin-bottom:0">
+            <div class="metric-card">
+                <div id="metric-ctl" class="metric-value">—</div>
+                <div class="metric-label">CTL (Fitness)</div>
+            </div>
+            <div class="metric-card">
+                <div id="metric-atl" class="metric-value">—</div>
+                <div class="metric-label">ATL (Fatigue)</div>
+            </div>
+        </div>
+        <div style="text-align:center;padding-top:8px">
+            <span class="metric-label">TSB (Form): </span>
+            <span id="metric-tsb" style="font-weight:700">—</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">AI Recommendation</div>
+        <p id="ai-recommendation">Loading...</p>
+    </div>
+</div>
+
+<!-- Tab: Load -->
+<div id="tab-load" class="tab-content">
+    <div class="chart-container" style="height:280px">
+        <canvas id="load-chart"></canvas>
+    </div>
+    <div class="chart-container" style="height:250px">
+        <canvas id="tss-chart"></canvas>
+    </div>
+</div>
+
+<!-- Tab: Goal -->
+<div id="tab-goal" class="tab-content">
+    <div class="card">
+        <div class="countdown">
+            <span id="goal-event-name">—</span><br>
+            <span id="goal-weeks">—</span> <span style="font-size:14px;font-weight:400">weeks remaining</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Progress to Target CTL</div>
+        <div class="progress-row">
+            <span class="progress-label">🏊 Swim</span>
+            <div class="progress-bar"><div class="progress-fill swim" style="width:0%"></div></div>
+            <span id="pct-swim" class="progress-pct">0%</span>
+        </div>
+        <div class="progress-row">
+            <span class="progress-label">🚴 Bike</span>
+            <div class="progress-bar"><div class="progress-fill bike" style="width:0%"></div></div>
+            <span id="pct-bike" class="progress-pct">0%</span>
+        </div>
+        <div class="progress-row">
+            <span class="progress-label">🏃 Run</span>
+            <div class="progress-bar"><div class="progress-fill run" style="width:0%"></div></div>
+            <span id="pct-run" class="progress-pct">0%</span>
+        </div>
+    </div>
+
+    <div class="chart-container" style="height:250px">
+        <canvas id="goal-trend-chart"></canvas>
+    </div>
+</div>
+
+<!-- Tab: Week -->
+<div id="tab-week" class="tab-content">
+    <div class="card">
+        <div class="card-title">This Week's Workouts</div>
+        <table class="week-table">
+            <thead>
+                <tr><th>Date</th><th>Workout</th><th>TSS</th></tr>
+            </thead>
+            <tbody id="week-tbody">
+                <tr><td colspan="3" class="loading">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Weekly Summary</div>
+        <pre id="week-summary">Loading...</pre>
+    </div>
+</div>
+
+<script src="js/charts.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

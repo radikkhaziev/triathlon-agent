@@ -33,7 +33,6 @@ services:
         condition: service_completed_successfully
     volumes:
       - /opt/triatlon-bot/.garminconnect:/opt/triatlon-bot/.garminconnect
-      - ./webapp:/var/www/webapp
     restart: unless-stopped
 
   api:

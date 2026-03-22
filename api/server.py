@@ -25,10 +25,10 @@ app.add_middleware(
 
 app.include_router(router)
 
+# Serve webapp locally — on prod nginx handles static files
 webapp_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "webapp")
-
 if os.path.isdir(webapp_path):
-    app.mount("/app", StaticFiles(directory=webapp_path, html=True), name="webapp")
+    app.mount("/", StaticFiles(directory=webapp_path, html=True), name="webapp")
 
 
 if __name__ == "__main__":
