@@ -143,6 +143,13 @@ class GarminClient:
                 if _g_settings and isinstance(_g_settings, dict):
                     self.client.garth.dump(normalized_path)
                     self.profile = self.client.garth.profile
+                    # The garminconnect library sets display_name during login(),
+                    # but we bypassed login() by loading tokens directly via garth.
+                    # Methods like get_stats() use display_name in the URL path,
+                    # so we must set it here to avoid /daily/None 403 errors.
+                    if isinstance(self.profile, dict):
+                        self.client.display_name = self.profile.get("displayName")
+                        self.client.full_name = self.profile.get("fullName")
                     return
         except Exception as exc:
             logger.warning("Failed to load/refresh Garmin tokens: %s", exc)
