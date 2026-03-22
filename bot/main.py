@@ -44,7 +44,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     recovery = combined_recovery_score(
         rmssd_status=rmssd,
         rhr_status=rhr,
-        banister_recovery=100.0,
+        banister_recovery=50.0,
         sleep_score=data["sleep"].score or 0,
         body_battery=data["body_battery_morning"] or 50,
     )

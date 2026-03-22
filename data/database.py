@@ -370,7 +370,7 @@ async def save_daily_metrics(
             recovery = combined_recovery_score(
                 rmssd_status=rmssd,
                 rhr_status=rhr,
-                banister_recovery=row.banister_recovery or 100.0,
+                banister_recovery=row.banister_recovery or 50.0,
                 sleep_score=row.sleep_score or 0,
                 body_battery=row.body_battery or 50,
                 sleep_start_hour=sleep_start_hour,
