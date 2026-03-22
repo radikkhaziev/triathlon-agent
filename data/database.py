@@ -25,6 +25,7 @@ async def send_report_webapp(summary: str, *, bot) -> None:
     """Send a morning report summary with a Mini App button to view the full report."""
     if bot is None:
         return
+
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
     webapp_url = f"{settings.API_BASE_URL}/report.html"
@@ -174,6 +175,7 @@ class ScheduledWorkoutRow(Base):
     sport: Mapped[str] = mapped_column(String)
     workout_name: Mapped[str] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    planned_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     planned_tss: Mapped[float | None] = mapped_column(Float, nullable=True)
     source: Mapped[str] = mapped_column(String, default="garmin")
 
@@ -313,18 +315,20 @@ async def save_daily_metrics(
     from data.metrics import calculate_rhr_status, calculate_rmssd_status, combined_recovery_score
 
     async with get_session() as session:
-        row = await session.get(DailyMetricsRow, str(dt))
+        # SELECT ... FOR UPDATE to prevent race between cron and manual /report
+        result = await session.execute(select(DailyMetricsRow).where(DailyMetricsRow.date == str(dt)).with_for_update())
+        row = result.scalar_one_or_none()
         is_new = row is None
         if is_new:
             row = DailyMetricsRow(date=str(dt))
             session.add(row)
 
-        had_sleep_score = bool(row.sleep_score)
-
         # --- Sleep fields ---
         for key, val in sleep_data.model_dump(exclude_none=True, exclude={"date", "start", "end"}).items():
             setattr(row, f"sleep_{key}", val)
 
+        # NB: Garmin's sleepStartTimestampLocal is a "fake" epoch shifted to
+        # device-local time, so .hour already gives the local hour regardless of TZ.
         if sleep_data.start is not None:
             row.sleep_start = datetime.fromtimestamp(sleep_data.start / 1000, tz=timezone.utc)
         if sleep_data.end is not None:
@@ -339,14 +343,17 @@ async def save_daily_metrics(
         await session.commit()
         await session.refresh(row)
 
-        # --- Wake-up detected: full recovery pipeline & morning report ---
-        if not had_sleep_score and row.sleep_score and row.sleep_end and row.sleep_end.date() == dt:
+        # --- Recovery pipeline: run if sleep data available but recovery not yet computed ---
+        # NB: sleep_end is stored as "fake UTC" (device-local time), so .date()
+        # gives the local date — safe to compare with dt (also local).
+        if row.sleep_score and row.sleep_end and row.sleep_end.date() == dt and row.recovery_score is None:
 
             # 1. RMSSD Level 1
             rmssd = await calculate_rmssd_status()
             if rmssd.status != "insufficient_data":
                 row.hrv_rmssd_last = float(row.sleep_hrv_avg) if row.sleep_hrv_avg else None
                 row.hrv_mean_7d = rmssd.rmssd_7d
+                row.hrv_sd_7d = rmssd.rmssd_sd_7d
                 row.hrv_lower_bound = rmssd.lower_bound
                 row.hrv_upper_bound = rmssd.upper_bound
                 row.hrv_cv_7d = rmssd.cv_7d
@@ -363,6 +370,7 @@ async def save_daily_metrics(
                 row.rhr_upper_bound = rhr.upper_bound
 
             # 3. Combined recovery score
+            # sleep_start is "fake UTC" — .hour is already local hour
             sleep_start_hour = None
             if row.sleep_start:
                 sleep_start_hour = row.sleep_start.hour + row.sleep_start.minute / 60.0
@@ -370,9 +378,9 @@ async def save_daily_metrics(
             recovery = combined_recovery_score(
                 rmssd_status=rmssd,
                 rhr_status=rhr,
-                banister_recovery=row.banister_recovery or 50.0,
-                sleep_score=row.sleep_score or 0,
-                body_battery=row.body_battery or 50,
+                banister_recovery=row.banister_recovery if row.banister_recovery is not None else 50.0,
+                sleep_score=row.sleep_score if row.sleep_score is not None else 0,
+                body_battery=row.body_battery if row.body_battery is not None else 50,
                 sleep_start_hour=sleep_start_hour,
             )
             row.recovery_score = recovery.score

@@ -173,6 +173,7 @@ class RmssdStatus(BaseModel):
     days_needed: int = 0  # 0 if ready, else days remaining
 
     rmssd_7d: float | None = None
+    rmssd_sd_7d: float | None = None
     rmssd_60d: float | None = None
     rmssd_sd_60d: float | None = None
     lower_bound: float | None = None

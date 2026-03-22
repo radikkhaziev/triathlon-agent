@@ -41,6 +41,14 @@ TEST_DATE = "2026-03-15"
 TEST_DATE_OBJ = date(2026, 3, 15)
 
 
+def today_str() -> str:
+    return str(date.today())
+
+
+def today_obj() -> date:
+    return date.today()
+
+
 # ---------------------------------------------------------------------------
 # Pure function tests (no API needed)
 # ---------------------------------------------------------------------------
@@ -237,16 +245,16 @@ class TestGetStress:
 
 
 class TestGetRestingHr:
-    def test_returns_float(self, gc):
+    def test_returns_float_or_none(self, gc):
         result = gc.get_resting_hr(TEST_DATE)
 
-        assert isinstance(result, float)
+        assert result is None or isinstance(result, float)
 
     def test_resting_hr_in_plausible_range(self, gc):
         result = gc.get_resting_hr(TEST_DATE)
 
-        # 0 means no data; otherwise should be plausible
-        assert result == 0.0 or 25.0 <= result <= 120.0
+        # None means no data; otherwise should be plausible
+        assert result is None or 25.0 <= result <= 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -553,3 +561,33 @@ class TestGetCyclingFTP:
 
         if result.ftp is not None:
             assert 50.0 <= result.ftp <= 500.0
+
+
+# ---------------------------------------------------------------------------
+# Today's data — verify body_battery and resting_hr are populated
+# ---------------------------------------------------------------------------
+
+
+class TestTodayBodyBattery:
+    def test_today_returns_non_empty_list(self, gc):
+        results = gc.get_body_battery(today_str(), today_str())
+
+        assert len(results) > 0, "No body battery data for today"
+
+    def test_today_start_value_is_positive(self, gc):
+        results = gc.get_body_battery(today_str(), today_str())
+
+        assert results[0].start_value > 0, f"body_battery start_value is {results[0].start_value}, expected > 0"
+
+
+class TestTodayRestingHr:
+    def test_today_returns_value(self, gc):
+        result = gc.get_resting_hr(today_str())
+
+        assert result is not None, "get_resting_hr returned None for today"
+
+    def test_today_value_is_plausible(self, gc):
+        result = gc.get_resting_hr(today_str())
+
+        assert result is not None, "get_resting_hr returned None — cannot check range"
+        assert 25.0 <= result <= 120.0, f"resting_hr is {result}, expected 25-120"

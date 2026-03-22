@@ -8,9 +8,11 @@ RHR baseline, ESS (Banister TRIMP), and combined recovery scoring.
 
 import math
 import statistics
+from datetime import date as date_type
 
 import numpy as np
 
+from config import settings
 from data.models import (
     HRVData,
     ReadinessLevel,
@@ -300,12 +302,13 @@ def _rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatus:
         days_available=n,
         days_needed=0,
         rmssd_7d=round(mean_7, 1),
+        rmssd_sd_7d=round(std_7, 2),
         rmssd_60d=round(rmssd_60d, 1) if rmssd_60d else None,
         rmssd_sd_60d=round(rmssd_sd_60d, 2) if rmssd_sd_60d else None,
         lower_bound=round(lower_bound, 1),
         upper_bound=round(upper_bound, 1),
-        cv_7d=round(cv_7d, 1) if cv_7d else None,
-        swc=round(swc, 2) if swc else None,
+        cv_7d=round(cv_7d, 1) if cv_7d is not None else None,
+        swc=round(swc, 2) if swc is not None else None,
         trend=trend,
     )
 
@@ -340,6 +343,7 @@ def _rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatus:
         days_available=n,
         days_needed=0,
         rmssd_7d=round(mean_7, 1),
+        rmssd_sd_7d=round(std_7, 2),
         rmssd_60d=round(mean_60, 1),
         rmssd_sd_60d=round(sd_60, 2),
         lower_bound=round(lower_bound, 1),
@@ -357,7 +361,6 @@ async def calculate_rmssd_status() -> RmssdStatus:
         "flatt_esco"   — today vs 7d baseline, asymmetric bounds (default)
         "ai_endurance" — 7d mean vs 60d baseline, symmetric bounds
     """
-    from config import settings
     from data.database import get_hrv_history
 
     hrv_history = await get_hrv_history(days=60)
@@ -453,8 +456,6 @@ def calculate_ess(
     if hr_max <= hr_rest or avg_hr <= hr_rest or duration_min <= 0:
         return 0.0
 
-    from config import settings
-
     hr_ratio = (avg_hr - hr_rest) / (hr_max - hr_rest)
     trimp = duration_min * hr_ratio * 0.64 * math.exp(1.92 * hr_ratio)
 
@@ -487,8 +488,6 @@ def calculate_banister_recovery(
         tau: Recovery time constant in days (0.5–7.0). Higher = slower recovery.
         initial_recovery: Starting recovery % (default 100).
     """
-    from datetime import date as date_type
-
     decay = math.exp(-1.0 / tau)
     r = initial_recovery
     results: list[RecoveryState] = []

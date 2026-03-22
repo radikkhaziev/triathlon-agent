@@ -38,6 +38,8 @@ async def _fetch_garmin_data(garmin: GarminClient, dt: date) -> dict:
     """Fetch all morning data from Garmin in parallel threads."""
     date_str = str(dt)
 
+    # Parallel threads are safe: GarminClient._rate_limit() uses threading.Lock
+    # to serialize requests with 1s spacing even when called from multiple threads.
     sleep, hrv, body_battery, resting_hr, readiness, workouts = await asyncio.gather(
         asyncio.to_thread(garmin.get_sleep, date_str),
         asyncio.to_thread(garmin.get_hrv, date_str),

@@ -1,6 +1,7 @@
 """Wrapper around the garminconnect library for fetching athlete data."""
 
 import logging
+import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -119,6 +120,7 @@ class GarminClient:
         self.profile = None
         self.client = Garmin(self.email, self.password)
         self._last_request_time: float = 0.0
+        self._rate_lock = threading.Lock()
         self._login(soft=True)
         self._mount_retry_adapter()
 
@@ -186,11 +188,12 @@ class GarminClient:
 
     def _rate_limit(self) -> None:
         """Ensure at least 1 second between consecutive API requests."""
-        now = time.monotonic()
-        elapsed = now - self._last_request_time
-        if elapsed < 1.0:
-            time.sleep(1.0 - elapsed)
-        self._last_request_time = time.monotonic()
+        with self._rate_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_request_time
+            if elapsed < 1.0:
+                time.sleep(1.0 - elapsed)
+            self._last_request_time = time.monotonic()
 
     def _check_cooldown(self) -> bool:
         """Return True if cooldown is active (skip the request)."""
@@ -295,11 +298,27 @@ class GarminClient:
                 entry_date_str = entry.get("calendarDate") or entry.get("date")
                 if not entry_date_str:
                     continue
+                # Extract start/end from explicit fields or bodyBatteryValuesArray
+                start_val = entry.get("startValue")
+                if start_val is None:
+                    start_val = entry.get("bodyBatteryStartOfDay")
+                end_val = entry.get("endValue")
+                if end_val is None:
+                    end_val = entry.get("bodyBatteryEndOfDay")
+
+                if start_val is None or end_val is None:
+                    bb_array = entry.get("bodyBatteryValuesArray") or []
+                    # Each element is [timestamp_ms, battery_level]
+                    values = [v[1] for v in bb_array if v and len(v) >= 2 and v[1] is not None]
+                    if values:
+                        start_val = start_val if start_val is not None else values[0]
+                        end_val = end_val if end_val is not None else values[-1]
+
                 results.append(
                     BodyBatteryData(
                         date=date.fromisoformat(entry_date_str),
-                        start_value=int(entry.get("startValue", 0) or entry.get("bodyBatteryStartOfDay", 0) or 0),
-                        end_value=int(entry.get("endValue", 0) or entry.get("bodyBatteryEndOfDay", 0) or 0),
+                        start_value=int(start_val) if start_val is not None else 0,
+                        end_value=int(end_val) if end_val is not None else 0,
                         charged=int(entry.get("charged", 0) or entry.get("bodyBatteryCharged", 0) or 0),
                         drained=int(entry.get("drained", 0) or entry.get("bodyBatteryDrained", 0) or 0),
                     )
@@ -332,13 +351,13 @@ class GarminClient:
             rest_duration_seconds=int(raw.get("restStressDuration", 0) or raw.get("lowStressDuration", 0) or 0),
         )
 
-    def get_resting_hr(self, date_str: str) -> float:
+    def get_resting_hr(self, date_str: str) -> float | None:
         """Fetch resting heart rate for a given date (YYYY-MM-DD)."""
         raw = self._call_api(self.client.get_rhr_day, date_str)
         logger.debug("Raw resting HR data: %s", raw)
 
         if not raw:
-            return 0.0
+            return None
 
         # The response may nest the value in different structures
         value = raw.get("restingHeartRate")
@@ -346,9 +365,16 @@ class GarminClient:
             stats = raw.get("statisticsDTO", {})
             value = stats.get("restingHeartRate")
         if value is None:
+            # Newer API: allMetrics.metricsMap.WELLNESS_RESTING_HEART_RATE
+            try:
+                metrics = raw["allMetrics"]["metricsMap"]["WELLNESS_RESTING_HEART_RATE"]
+                value = metrics[0]["value"]
+            except (KeyError, IndexError, TypeError):
+                pass
+        if value is None:
             value = raw.get("value")
 
-        return float(value or 0)
+        return float(value) if value is not None else None
 
     def get_scheduled_workouts(self, start: str, end: str) -> list[ScheduledWorkout]:
         """Fetch scheduled/planned workouts for a date range (YYYY-MM-DD)."""

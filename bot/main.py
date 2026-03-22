@@ -1,6 +1,7 @@
 import logging
 import time
-from datetime import date
+import zoneinfo
+from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -8,11 +9,12 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from bot.formatter import build_report_summary
 from bot.scheduler import _fetch_garmin_data, create_scheduler
 from config import settings
+from data.database import get_daily_metrics, save_daily_metrics
 from data.garmin_client import GarminClient
-from data.metrics import calculate_rhr_status, calculate_rmssd_status, combined_recovery_score
+from data.models import RecoveryScore
 
 
-def _format_duration(seconds: int) -> str:
+def _format_token_ttl(seconds: int) -> str:
     if seconds <= 0:
         return "expired"
     days, rem = divmod(seconds, 86400)
@@ -29,7 +31,7 @@ def _format_duration(seconds: int) -> str:
 
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle 'report' message — fetch Garmin data and send morning report."""
+    """Handle 'report' message — fetch Garmin data, persist, and send morning report."""
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
         await update.message.reply_text("У вас нет доступа к этому боту.")
         return
@@ -37,20 +39,34 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("⏳ Собираю данные...")
 
     garmin = GarminClient()
-    dt = date.today()
+    dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
     data = await _fetch_garmin_data(garmin, dt)
 
-    rmssd = await calculate_rmssd_status()
-    rhr = await calculate_rhr_status()
-    recovery = combined_recovery_score(
-        rmssd_status=rmssd,
-        rhr_status=rhr,
-        banister_recovery=50.0,
-        sleep_score=data["sleep"].score or 0,
-        body_battery=data["body_battery_morning"] or 50,
+    # Persist to DB (runs recovery pipeline if wake-up detected)
+    await save_daily_metrics(
+        dt,
+        sleep_data=data["sleep"],
+        hrv_data=data["hrv"],
+        body_battery_morning=data["body_battery_morning"],
+        resting_hr=data["resting_hr"],
+        readiness=data["readiness"],
+        workouts=data["workouts"],
     )
 
-    summary = build_report_summary(recovery=recovery, sleep_data=data["sleep"])
+    # Read persisted row for the report
+    row = await get_daily_metrics(dt)
+
+    recovery = None
+    if row and row.recovery_score is not None:
+        recovery = RecoveryScore(
+            score=row.recovery_score,
+            category=row.recovery_category or "moderate",
+            recommendation=row.recovery_recommendation or "zone1_long",
+            # flags/components not persisted in DB yet — defaults from model
+        )
+
+    sleep_data = data["sleep"]
+    summary = build_report_summary(recovery=recovery, sleep_data=sleep_data)
     webapp_url = f"{settings.API_BASE_URL}/report.html"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await update.message.reply_text(summary, reply_markup=keyboard)
@@ -93,7 +109,7 @@ async def howareyou(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         now_ts = int(time.time())
         access_left = oauth2.expires_at - now_ts
         refresh_left = oauth2.refresh_token_expires_at - now_ts
-        token_info = f"Access: {_format_duration(access_left)}\n" f"Refresh: {_format_duration(refresh_left)}"
+        token_info = f"Access: {_format_token_ttl(access_left)}\n" f"Refresh: {_format_token_ttl(refresh_left)}"
 
     lines = [
         "*Garmin Client Status*",
