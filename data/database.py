@@ -27,7 +27,7 @@ async def send_report_webapp(summary: str, *, bot) -> None:
         return
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-    webapp_url = f"{settings.API_BASE_URL}/app/report.html"
+    webapp_url = f"{settings.API_BASE_URL}/report.html"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await bot.send_message(
         chat_id=settings.TELEGRAM_CHAT_ID,
