@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: 123456
-      POSTGRES_DB: triathlon
+      POSTGRES_DB: triathlon-intervals
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -31,8 +31,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    volumes:
-      - /opt/triatlon-bot/.garminconnect:/opt/triatlon-bot/.garminconnect
     restart: unless-stopped
 
   api:

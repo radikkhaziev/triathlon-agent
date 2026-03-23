@@ -20,7 +20,7 @@ from data.metrics import (
     combined_recovery_score,
     update_ctl_atl,
 )
-from data.models import HRVData, ReadinessLevel, RhrStatus, RmssdStatus, SleepData, TrendResult
+from data.models import HRVData, ReadinessLevel, RhrStatus, RmssdStatus, TrendResult, Wellness
 
 # ---------------------------------------------------------------------------
 # TSS Calculations
@@ -115,37 +115,37 @@ class TestCalculateReadiness:
     def _hrv(self, last: float, avg: float) -> HRVData:
         return HRVData(date=date(2026, 1, 1), hrv_weekly_avg=avg, hrv_last_night=last, status="Balanced")
 
-    def _sleep(self, score: int) -> SleepData:
-        return SleepData(date=date(2026, 1, 1), score=score, duration=28800)
+    def _sleep(self, score: int) -> Wellness:
+        return Wellness(sleep_score=score, sleep_secs=28800)
 
     def test_perfect_conditions(self):
-        score, level = calculate_readiness(self._hrv(60, 55), self._sleep(90), 85, 42, 42)
+        score, level = calculate_readiness(self._hrv(60, 55), self._sleep(90), 42, 42)
         assert score >= 80
         assert level == ReadinessLevel.GREEN
 
     def test_poor_hrv(self):
-        score, _ = calculate_readiness(self._hrv(40, 60), self._sleep(80), 70, 43, 42)
+        score, _ = calculate_readiness(self._hrv(40, 60), self._sleep(80), 43, 42)
         assert score < 80
 
     def test_poor_sleep(self):
-        score, _ = calculate_readiness(self._hrv(55, 55), self._sleep(40), 70, 42, 42)
+        score, _ = calculate_readiness(self._hrv(55, 55), self._sleep(40), 42, 42)
         assert score < 80
 
     def test_red_zone(self):
-        _, level = calculate_readiness(self._hrv(30, 55), self._sleep(40), 20, 52, 42)
+        _, level = calculate_readiness(self._hrv(30, 55), self._sleep(40), 52, 42)
         assert level == ReadinessLevel.RED
 
     def test_score_clamped(self):
-        score, _ = calculate_readiness(self._hrv(60, 50), self._sleep(95), 90, 40, 42)
+        score, _ = calculate_readiness(self._hrv(60, 50), self._sleep(95), 40, 42)
         assert 0 <= score <= 100
 
     def test_zero_hrv_weekly_avg(self):
-        score, _ = calculate_readiness(self._hrv(50, 0), self._sleep(80), 70, 42, 42)
+        score, _ = calculate_readiness(self._hrv(50, 0), self._sleep(80), 42, 42)
         assert 0 <= score <= 100
 
     def test_none_sleep_score(self):
-        sleep = SleepData(date=date(2026, 1, 1), score=None, duration=28800)
-        score, _ = calculate_readiness(self._hrv(55, 55), sleep, 70, 42, 42)
+        sleep = Wellness(sleep_score=None, sleep_secs=28800)
+        score, _ = calculate_readiness(self._hrv(55, 55), sleep, 42, 42)
         assert 0 <= score <= 100
 
 
@@ -471,7 +471,6 @@ class TestCombinedRecoveryScore:
             self._rhr("green"),
             banister_recovery=90,
             sleep_score=85,
-            body_battery=80,
         )
         assert result.score > 80
         assert result.category in ("excellent", "good")
@@ -483,7 +482,6 @@ class TestCombinedRecoveryScore:
             self._rhr("red"),
             banister_recovery=20,
             sleep_score=30,
-            body_battery=20,
         )
         assert result.score < 40
         assert result.recommendation == "skip"  # red RMSSD overrides
@@ -494,7 +492,6 @@ class TestCombinedRecoveryScore:
             self._rhr("green"),
             banister_recovery=95,
             sleep_score=95,
-            body_battery=95,
         )
         assert result.recommendation == "skip"
 
@@ -504,14 +501,12 @@ class TestCombinedRecoveryScore:
             self._rhr(),
             banister_recovery=70,
             sleep_score=70,
-            body_battery=70,
         )
         late = combined_recovery_score(
             self._rmssd(),
             self._rhr(),
             banister_recovery=70,
             sleep_score=70,
-            body_battery=70,
             sleep_start_hour=23.5,
         )
         assert late.score < base.score
@@ -523,14 +518,12 @@ class TestCombinedRecoveryScore:
             self._rhr(),
             banister_recovery=70,
             sleep_score=70,
-            body_battery=70,
         )
         unstable = combined_recovery_score(
             self._rmssd(cv=18.0),
             self._rhr(),
             banister_recovery=70,
             sleep_score=70,
-            body_battery=70,
         )
         assert unstable.score < base.score
         assert "hrv_unstable" in unstable.flags
@@ -541,13 +534,11 @@ class TestCombinedRecoveryScore:
             self._rhr(),
             banister_recovery=70,
             sleep_score=70,
-            body_battery=70,
         )
         assert "rmssd" in result.components
         assert "banister" in result.components
         assert "rhr" in result.components
         assert "sleep" in result.components
-        assert "body_battery" in result.components
 
     def test_score_clamped(self):
         result = combined_recovery_score(
@@ -555,6 +546,5 @@ class TestCombinedRecoveryScore:
             self._rhr("green"),
             banister_recovery=100,
             sleep_score=100,
-            body_battery=100,
         )
         assert 0 <= result.score <= 100

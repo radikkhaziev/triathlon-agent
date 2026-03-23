@@ -1,13 +1,13 @@
 import hashlib
 import hmac
-from datetime import date, timedelta
+from datetime import date
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, HTTPException
 
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from config import settings
-from data.database import get_activities, get_daily_metrics, get_daily_metrics_range, get_scheduled_workouts_range
+from data.database import get_hrv_analysis, get_rhr_analysis, get_wellness
 
 router = APIRouter()
 
@@ -32,132 +32,131 @@ def _verify_request(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid Telegram init data")
 
 
+def _extract_sport_ctl(sport_info) -> dict:
+    """Extract per-sport CTL from Intervals.icu sport_info JSON."""
+    result = {"swim": None, "bike": None, "run": None}
+    if not sport_info:
+        return result
+    info = sport_info if isinstance(sport_info, list) else []
+    for entry in info:
+        sport = (entry.get("type") or entry.get("sport") or "").lower()
+        ctl_val = entry.get("ctl") or entry.get("ctlLoad")
+        if ctl_val is None:
+            continue
+        if sport in ("swim", "swimming"):
+            result["swim"] = round(float(ctl_val), 1)
+        elif sport in ("ride", "bike", "cycling"):
+            result["bike"] = round(float(ctl_val), 1)
+        elif sport in ("run", "running"):
+            result["run"] = round(float(ctl_val), 1)
+    return result
+
+
+def _cv_verdict(cv: float | None) -> str | None:
+    if cv is None:
+        return None
+    if cv < 5:
+        return "высокая"
+    if cv < 10:
+        return "нормальная"
+    return "нестабильная"
+
+
+def _swc_verdict(today_val: float | None, baseline_60d: float | None, swc: float | None) -> str | None:
+    if not today_val or not baseline_60d or not swc:
+        return None
+    delta = today_val - baseline_60d
+    if abs(delta) < swc:
+        return "в пределах шума"
+    if delta > 0:
+        return "значимое улучшение"
+    return "значимое снижение"
+
+
+def _format_sleep_duration(secs: int | None) -> str | None:
+    if not secs:
+        return None
+    h, m = divmod(secs // 60, 60)
+    return f"{h}ч {m}м" if h else f"{m}м"
+
+
+def _hrv_block(hrv_row, hrv_today: float | None) -> dict:
+    """Build HRV section for a single algorithm."""
+    if not hrv_row:
+        return {"status": "insufficient_data", "status_emoji": "⚪"}
+
+    delta_pct = None
+    if hrv_today and hrv_row.rmssd_7d and hrv_row.rmssd_7d > 0:
+        delta_pct = round((hrv_today - hrv_row.rmssd_7d) / hrv_row.rmssd_7d * 100, 1)
+
+    return {
+        "status": hrv_row.status,
+        "status_emoji": STATUS_EMOJI.get(hrv_row.status, "⚪"),
+        "today": hrv_today,
+        "mean_7d": hrv_row.rmssd_7d,
+        "sd_7d": hrv_row.rmssd_sd_7d,
+        "mean_60d": hrv_row.rmssd_60d,
+        "sd_60d": hrv_row.rmssd_sd_60d,
+        "delta_pct": delta_pct,
+        "lower_bound": hrv_row.lower_bound,
+        "upper_bound": hrv_row.upper_bound,
+        "swc": hrv_row.swc,
+        "swc_verdict": _swc_verdict(hrv_today, hrv_row.rmssd_60d, hrv_row.swc),
+        "cv_7d": hrv_row.cv_7d,
+        "cv_verdict": _cv_verdict(hrv_row.cv_7d),
+        "days_available": hrv_row.days_available,
+        "trend": (
+            {
+                "direction": hrv_row.trend_direction,
+                "slope": hrv_row.trend_slope,
+                "r_squared": hrv_row.trend_r_squared,
+            }
+            if hrv_row.trend_direction
+            else None
+        ),
+    }
+
+
+def _rhr_block(rhr_row) -> dict:
+    """Build RHR section."""
+    if not rhr_row:
+        return {"status": "insufficient_data", "status_emoji": "⚪"}
+
+    delta_30d = None
+    if rhr_row.rhr_today and rhr_row.rhr_30d:
+        delta_30d = round(rhr_row.rhr_today - rhr_row.rhr_30d, 1)
+
+    return {
+        "status": rhr_row.status,
+        "status_emoji": STATUS_EMOJI.get(rhr_row.status, "⚪"),
+        "today": rhr_row.rhr_today,
+        "mean_7d": rhr_row.rhr_7d,
+        "sd_7d": rhr_row.rhr_sd_7d,
+        "mean_30d": rhr_row.rhr_30d,
+        "sd_30d": rhr_row.rhr_sd_30d,
+        "mean_60d": rhr_row.rhr_60d,
+        "sd_60d": rhr_row.rhr_sd_60d,
+        "delta_30d": delta_30d,
+        "lower_bound": rhr_row.lower_bound,
+        "upper_bound": rhr_row.upper_bound,
+        "cv_7d": rhr_row.cv_7d,
+        "cv_verdict": _cv_verdict(rhr_row.cv_7d),
+        "days_available": rhr_row.days_available,
+        "trend": (
+            {
+                "direction": rhr_row.trend_direction,
+                "slope": rhr_row.trend_slope,
+                "r_squared": rhr_row.trend_r_squared,
+            }
+            if rhr_row.trend_direction
+            else None
+        ),
+    }
+
+
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
-
-
-@router.get("/api/dashboard")
-async def dashboard(authorization: str | None = Header(default=None)) -> dict:
-    _verify_request(authorization)
-    today = date.today()
-    row = await get_daily_metrics(today)
-
-    if row is None:
-        return {"date": str(today), "has_data": False}
-
-    return {
-        "date": row.date,
-        "has_data": True,
-        "readiness_score": row.readiness_score,
-        "readiness_level": row.readiness_level,
-        "sleep_score": row.sleep_score,
-        "hrv_last": row.hrv_last,
-        "hrv_baseline": row.hrv_baseline,
-        "body_battery": row.body_battery,
-        "resting_hr": row.resting_hr,
-        "ctl": row.ctl,
-        "atl": row.atl,
-        "tsb": row.tsb,
-        "ctl_swim": row.ctl_swim,
-        "ctl_bike": row.ctl_bike,
-        "ctl_run": row.ctl_run,
-        "ai_recommendation": row.ai_recommendation,
-    }
-
-
-@router.get("/api/training-load")
-async def training_load(
-    days: int = 84,
-    authorization: str | None = Header(default=None),
-) -> dict:
-    _verify_request(authorization)
-    today = date.today()
-    start = today - timedelta(days=days)
-    rows = await get_daily_metrics_range(start, today)
-
-    return {
-        "dates": [r.date for r in rows],
-        "ctl": [r.ctl for r in rows],
-        "atl": [r.atl for r in rows],
-        "tsb": [r.tsb for r in rows],
-    }
-
-
-@router.get("/api/activities")
-async def activities_list(
-    days: int = 28,
-    authorization: str | None = Header(default=None),
-) -> dict:
-    _verify_request(authorization)
-    today = date.today()
-    start = today - timedelta(days=days)
-    rows = await get_activities(start, today)
-
-    return {
-        "activities": [
-            {
-                "activity_id": r.activity_id,
-                "date": r.date,
-                "sport": r.sport,
-                "duration_sec": r.duration_sec,
-                "distance_m": r.distance_m,
-                "avg_hr": r.avg_hr,
-                "tss": r.tss,
-            }
-            for r in rows
-        ]
-    }
-
-
-@router.get("/api/goal")
-async def goal_progress(authorization: str | None = Header(default=None)) -> dict:
-    _verify_request(authorization)
-    event_date = settings.GOAL_EVENT_DATE
-    weeks_remaining = max(0, (event_date - date.today()).days // 7)
-
-    swim_target = settings.GOAL_SWIM_CTL_TARGET
-    bike_target = settings.GOAL_BIKE_CTL_TARGET
-    run_target = settings.GOAL_RUN_CTL_TARGET
-
-    row = await get_daily_metrics(date.today())
-    ctl_swim = (row.ctl_swim or 0) if row else 0
-    ctl_bike = (row.ctl_bike or 0) if row else 0
-    ctl_run = (row.ctl_run or 0) if row else 0
-
-    swim_pct = min(100, (ctl_swim / swim_target) * 100) if swim_target else 0
-    bike_pct = min(100, (ctl_bike / bike_target) * 100) if bike_target else 0
-    run_pct = min(100, (ctl_run / run_target) * 100) if run_target else 0
-
-    return {
-        "event_name": settings.GOAL_EVENT_NAME,
-        "event_date": str(event_date),
-        "weeks_remaining": weeks_remaining,
-        "swim_pct": round(swim_pct, 1),
-        "bike_pct": round(bike_pct, 1),
-        "run_pct": round(run_pct, 1),
-        "overall_pct": round((swim_pct + bike_pct + run_pct) / 3, 1),
-    }
-
-
-@router.get("/api/weekly-summary")
-async def weekly_summary(authorization: str | None = Header(default=None)) -> dict:
-    _verify_request(authorization)
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    rows = await get_activities(week_start, today)
-
-    by_sport: dict[str, dict] = {}
-    for r in rows:
-        sport = r.sport or "other"
-        if sport not in by_sport:
-            by_sport[sport] = {"duration_sec": 0, "distance_m": 0, "tss": 0, "count": 0}
-        by_sport[sport]["duration_sec"] += r.duration_sec or 0
-        by_sport[sport]["distance_m"] += r.distance_m or 0
-        by_sport[sport]["tss"] += r.tss or 0
-        by_sport[sport]["count"] += 1
-
-    return {"week_start": str(week_start), "by_sport": by_sport}
 
 
 @router.get("/api/report")
@@ -165,149 +164,79 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
     """Full morning report data for the Mini App report page."""
     _verify_request(authorization)
     today = date.today()
-    row = await get_daily_metrics(today)
+    today_str = str(today)
+    row = await get_wellness(today)
 
     if row is None:
-        return {"date": str(today), "has_data": False}
+        return {"date": today_str, "has_data": False}
 
     # Recovery
     category = row.recovery_category or "moderate"
     emoji, title = CATEGORY_DISPLAY.get(category, ("⚪", "СТАТУС НЕИЗВЕСТЕН"))
-    recommendation_key = row.recovery_recommendation or ""
-    recommendation_text = RECOMMENDATION_TEXT.get(recommendation_key, recommendation_key)
+    recommendation_text = RECOMMENDATION_TEXT.get(row.recovery_recommendation or "", row.recovery_recommendation or "")
 
-    # HRV
-    hrv_status = row.hrv_status or "insufficient_data"
-    hrv_delta_pct = None
-    if row.hrv_rmssd_last and row.hrv_mean_7d and row.hrv_mean_7d > 0:
-        hrv_delta_pct = round((row.hrv_rmssd_last - row.hrv_mean_7d) / row.hrv_mean_7d * 100, 0)
-
-    # SWC verdict
-    swc_verdict = None
-    rmssd_60d = None
-    if row.hrv_rmssd_last and row.hrv_swc:
-        # Approximate 60d from stored data
-        import statistics
-
-        from data.database import get_hrv_history
-
-        hist = await get_hrv_history(60)
-        if len(hist) >= 60:
-            rmssd_60d = round(statistics.mean(hist), 1)
-            delta = row.hrv_rmssd_last - rmssd_60d
-            if abs(delta) < row.hrv_swc:
-                swc_verdict = "в пределах шума"
-            elif delta > row.hrv_swc:
-                swc_verdict = "значимое улучшение"
-            else:
-                swc_verdict = "значимое снижение"
-
-    # CV verdict
-    cv_verdict = None
-    if row.hrv_cv_7d is not None:
-        if row.hrv_cv_7d < 5:
-            cv_verdict = "высокая"
-        elif row.hrv_cv_7d < 10:
-            cv_verdict = "нормальная"
-        else:
-            cv_verdict = "нестабильная"
+    # HRV — both algorithms
+    hrv_flatt = await get_hrv_analysis(today_str, "flatt_esco")
+    hrv_aie = await get_hrv_analysis(today_str, "ai_endurance")
+    hrv_today = float(row.hrv) if row.hrv else None
 
     # RHR
-    rhr_delta = None
-    rhr_mean_30d = None
-    if row.rhr_status and row.rhr_status != "insufficient_data" and row.resting_hr:
-        import statistics
+    rhr_row = await get_rhr_analysis(today_str)
 
-        from data.database import get_rhr_history
+    # Training load
+    tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
 
-        rhr_hist = await get_rhr_history(30)
-        if rhr_hist:
-            rhr_mean_30d = round(statistics.mean(rhr_hist), 0)
-            rhr_delta = round(row.resting_hr - rhr_mean_30d, 0)
-
-    # Sleep duration formatting
-    sleep_duration_str = None
-    if row.sleep_duration:
-        h, m = divmod(row.sleep_duration // 60, 60)
-        sleep_duration_str = f"{h}ч {m}м" if h else f"{m}м"
-
-    # Scheduled workouts
-    workouts_data = []
-    workout_rows = await get_scheduled_workouts_range(today, today)
-    for w in workout_rows:
-        workouts_data.append(
-            {
-                "sport": w.sport,
-                "workout_name": w.workout_name,
-                "description": w.description,
-                "planned_tss": w.planned_tss,
-            }
-        )
+    # Per-sport CTL from sport_info JSON
+    sport_ctl = _extract_sport_ctl(row.sport_info)
 
     return {
-        "date": str(today),
+        "date": today_str,
         "has_data": True,
-        # Recovery header
-        "recovery_score": row.recovery_score,
-        "recovery_category": category,
-        "recovery_emoji": emoji,
-        "recovery_title": title,
-        "recovery_recommendation": recommendation_text,
-        # HRV
-        "hrv_status": hrv_status,
-        "hrv_status_emoji": STATUS_EMOJI.get(hrv_status, "⚪"),
-        "hrv_today": row.hrv_rmssd_last,
-        "hrv_7d": row.hrv_mean_7d,
-        "hrv_60d": rmssd_60d,
-        "hrv_delta_pct": hrv_delta_pct,
-        "hrv_swc": row.hrv_swc,
-        "hrv_swc_verdict": swc_verdict,
-        "hrv_cv_7d": row.hrv_cv_7d,
-        "hrv_cv_verdict": cv_verdict,
-        # RHR
-        "rhr_status": row.rhr_status,
-        "rhr_status_emoji": STATUS_EMOJI.get(row.rhr_status or "", "⚪"),
-        "rhr_today": row.resting_hr,
-        "rhr_30d": rhr_mean_30d,
-        "rhr_delta": rhr_delta,
-        # Sleep
-        "sleep_score": row.sleep_score,
-        "sleep_duration": sleep_duration_str,
-        # Body Battery
-        "body_battery": row.body_battery,
-        # ESS / Banister
-        "ess_today": row.ess_today,
-        "banister_recovery": row.banister_recovery,
-        # Training load
-        "ctl": row.ctl,
-        "atl": row.atl,
-        "tsb": row.tsb,
-        # AI
+        # --- Recovery ---
+        "recovery": {
+            "score": row.recovery_score,
+            "category": category,
+            "emoji": emoji,
+            "title": title,
+            "recommendation": recommendation_text,
+            "readiness_score": row.readiness_score,
+            "readiness_level": row.readiness_level,
+        },
+        # --- HRV (both algorithms) ---
+        "hrv": {
+            "primary_algorithm": settings.HRV_ALGORITHM,
+            "flatt_esco": _hrv_block(hrv_flatt, hrv_today),
+            "ai_endurance": _hrv_block(hrv_aie, hrv_today),
+        },
+        # --- Resting HR ---
+        "rhr": _rhr_block(rhr_row),
+        # --- Sleep ---
+        "sleep": {
+            "score": row.sleep_score,
+            "quality": row.sleep_quality,
+            "duration": _format_sleep_duration(row.sleep_secs),
+            "duration_secs": row.sleep_secs,
+        },
+        # --- Training load ---
+        "training_load": {
+            "ctl": row.ctl,
+            "atl": row.atl,
+            "tsb": tsb,
+            "ramp_rate": row.ramp_rate,
+            "sport_ctl": sport_ctl,
+        },
+        # --- Body ---
+        "body": {
+            "weight": row.weight,
+            "body_fat": row.body_fat,
+            "vo2max": row.vo2max,
+            "steps": row.steps,
+        },
+        # --- ESS / Banister ---
+        "stress": {
+            "ess_today": row.ess_today,
+            "banister_recovery": row.banister_recovery,
+        },
+        # --- AI ---
         "ai_recommendation": row.ai_recommendation,
-        # Workouts
-        "workouts": workouts_data,
-    }
-
-
-@router.get("/api/scheduled")
-async def scheduled_workouts(
-    days: int = 7,
-    authorization: str | None = Header(default=None),
-) -> dict:
-    _verify_request(authorization)
-    today = date.today()
-    end = today + timedelta(days=days)
-    rows = await get_scheduled_workouts_range(today, end)
-
-    return {
-        "workouts": [
-            {
-                "date": r.scheduled_date,
-                "sport": r.sport,
-                "workout_name": r.workout_name,
-                "description": r.description,
-                "planned_tss": r.planned_tss,
-            }
-            for r in rows
-        ]
     }

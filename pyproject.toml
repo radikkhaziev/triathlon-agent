@@ -8,7 +8,6 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "garminconnect>=0.2.38",
     "anthropic>=0.40.0",
     "python-telegram-bot>=21.0",
     "apscheduler>=3.10.0",
@@ -25,6 +24,7 @@ dependencies = [
     "scipy>=1.12.0",
     "pandas>=2.2.0",
     "psycopg2-binary>=2.9.0",
+    "mcp[cli] (>=1.0.0)",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +45,7 @@ packages = [
     { include = "data" },
     { include = "ai" },
     { include = "api" },
+    { include = "mcp_server" },
 ]
 
 [build-system]
@@ -62,6 +63,7 @@ line_length = 120
 [tool.flake8]
 max-line-length = 120
 extend-ignore = ["E203", "W503"]
+per-file-ignores = ["ai/prompts.py:E501"]
 exclude = [".git", "__pycache__", ".venv", "alembic/versions"]
 
 [tool.pytest.ini_options]

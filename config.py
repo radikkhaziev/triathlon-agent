@@ -1,5 +1,4 @@
 from datetime import date
-from pathlib import Path
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,14 +11,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Garmin
-    GARMIN_EMAIL: str = ""
-    GARMIN_PASSWORD: SecretStr = SecretStr("")
-    GARMIN_TOKENS: str = str(Path.home() / ".garminconnect")
-
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
     TELEGRAM_CHAT_ID: str = ""
+
+    # Intervals.icu
+    INTERVALS_API_KEY: SecretStr = SecretStr("")
+    INTERVALS_ATHLETE_ID: str = ""
 
     # Anthropic
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
@@ -53,6 +51,9 @@ class Settings(BaseSettings):
 
     # HRV Algorithm
     HRV_ALGORITHM: str = "flatt_esco"  # "flatt_esco" | "ai_endurance"
+
+    # MCP
+    MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access
 
 
 settings = Settings()
