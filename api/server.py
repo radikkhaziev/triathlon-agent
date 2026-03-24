@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,7 @@ logging.basicConfig(
 class MCPAuthMiddleware:
     """Pure ASGI middleware for Bearer token auth on /mcp endpoints.
 
-    Uses raw ASGI instead of BaseHTTPMiddleware to support SSE streaming.
+    Uses raw ASGI instead of BaseHTTPMiddleware to support streaming.
     """
 
     def __init__(self, app):
@@ -26,23 +27,45 @@ class MCPAuthMiddleware:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["path"].startswith("/mcp"):
             token = settings.MCP_AUTH_TOKEN.get_secret_value()
-            if token:
-                headers = dict(scope.get("headers", []))
-                auth = headers.get(b"authorization", b"").decode()
-                if auth != f"Bearer {token}":
-                    await send(
-                        {
-                            "type": "http.response.start",
-                            "status": 401,
-                            "headers": [(b"content-type", b"application/json")],
-                        }
-                    )
-                    await send({"type": "http.response.body", "body": b'{"detail":"Invalid MCP token"}'})
-                    return
+            if not token:
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 503,
+                        "headers": [(b"content-type", b"application/json")],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b'{"detail":"MCP auth not configured"}'})
+                return
+            headers = dict(scope.get("headers", []))
+            auth = headers.get(b"authorization", b"").decode()
+            if auth != f"Bearer {token}":
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [(b"content-type", b"application/json")],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b'{"detail":"Invalid MCP token"}'})
+                return
         await self.app(scope, receive, send)
 
 
-app = FastAPI(title="Triathlon Agent API", version="0.1.0")
+# Mount MCP server on /mcp (Streamable HTTP transport — stateless, no session expiry issues)
+from mcp_server.server import mcp as mcp_server  # noqa: E402
+
+_mcp_app = mcp_server.streamable_http_app()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    """Run MCP sub-app lifespan (initializes streamable HTTP task group)."""
+    async with _mcp_app.router.lifespan_context(_mcp_app):
+        yield
+
+
+app = FastAPI(title="Triathlon Agent API", version="0.1.0", lifespan=lifespan)
 
 _allowed_origins = [settings.WEBAPP_URL] if settings.WEBAPP_URL else []
 app.add_middleware(
@@ -56,10 +79,7 @@ app.add_middleware(MCPAuthMiddleware)
 
 app.include_router(router)
 
-# Mount MCP server on /mcp (SSE transport for Claude Desktop via mcp-remote)
-from mcp_server.server import mcp as mcp_server  # noqa: E402
-
-app.mount("/mcp", mcp_server.sse_app())
+app.mount("/mcp", _mcp_app)
 
 # Serve webapp locally — on prod nginx handles static files
 webapp_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "webapp")

@@ -280,113 +280,113 @@ async def save_wellness(
         await session.commit()
         await session.refresh(row)
 
-        # --- Recovery pipeline: run if sleep data available ---
-        # Recompute when sleep arrives later or data changes
-        if row.sleep_score:
+        # --- Recovery pipeline ---
+        # HRV and RHR baselines don't depend on sleep — always compute them.
+        # Combined recovery score uses sleep when available (defaults to 0).
 
-            # 1. RMSSD — run both algorithms, save to hrv_analysis
-            algorithms = ["flatt_esco", "ai_endurance"]
-            rmssd_results: dict[str, RmssdStatus] = {}
-            for algo in algorithms:
-                rmssd = await calculate_rmssd_status(algorithm=algo, session=session)
-                rmssd_results[algo] = rmssd
-                if rmssd.status != "insufficient_data":
-                    hrv_row = await session.get(HrvAnalysisRow, (row.id, algo))
-                    if hrv_row is None:
-                        hrv_row = HrvAnalysisRow(date=row.id, algorithm=algo)
-                        session.add(hrv_row)
-                    hrv_row.status = rmssd.status
-                    hrv_row.rmssd_7d = rmssd.rmssd_7d
-                    hrv_row.rmssd_sd_7d = rmssd.rmssd_sd_7d
-                    hrv_row.rmssd_60d = rmssd.rmssd_60d
-                    hrv_row.rmssd_sd_60d = rmssd.rmssd_sd_60d
-                    hrv_row.lower_bound = rmssd.lower_bound
-                    hrv_row.upper_bound = rmssd.upper_bound
-                    hrv_row.cv_7d = rmssd.cv_7d
-                    hrv_row.swc = rmssd.swc
-                    hrv_row.days_available = rmssd.days_available
-                    if rmssd.trend:
-                        hrv_row.trend_direction = rmssd.trend.direction
-                        hrv_row.trend_slope = rmssd.trend.slope
-                        hrv_row.trend_r_squared = rmssd.trend.r_squared
+        # 1. RMSSD — run both algorithms, save to hrv_analysis
+        algorithms = ["flatt_esco", "ai_endurance"]
+        rmssd_results: dict[str, RmssdStatus] = {}
+        for algo in algorithms:
+            rmssd = await calculate_rmssd_status(algorithm=algo, session=session)
+            rmssd_results[algo] = rmssd
+            if rmssd.status != "insufficient_data":
+                hrv_row = await session.get(HrvAnalysisRow, (row.id, algo))
+                if hrv_row is None:
+                    hrv_row = HrvAnalysisRow(date=row.id, algorithm=algo)
+                    session.add(hrv_row)
+                hrv_row.status = rmssd.status
+                hrv_row.rmssd_7d = rmssd.rmssd_7d
+                hrv_row.rmssd_sd_7d = rmssd.rmssd_sd_7d
+                hrv_row.rmssd_60d = rmssd.rmssd_60d
+                hrv_row.rmssd_sd_60d = rmssd.rmssd_sd_60d
+                hrv_row.lower_bound = rmssd.lower_bound
+                hrv_row.upper_bound = rmssd.upper_bound
+                hrv_row.cv_7d = rmssd.cv_7d
+                hrv_row.swc = rmssd.swc
+                hrv_row.days_available = rmssd.days_available
+                if rmssd.trend:
+                    hrv_row.trend_direction = rmssd.trend.direction
+                    hrv_row.trend_slope = rmssd.trend.slope
+                    hrv_row.trend_r_squared = rmssd.trend.r_squared
 
-            # Use primary algorithm for recovery score
-            rmssd = rmssd_results.get(settings.HRV_ALGORITHM, rmssd_results.get("flatt_esco"))
+        # Use primary algorithm for recovery score
+        rmssd = rmssd_results.get(settings.HRV_ALGORITHM, rmssd_results.get("flatt_esco"))
 
-            # 2. RHR baseline → rhr_analysis table
-            rhr: RhrStatus = await calculate_rhr_status(session=session)
-            if rhr.status != "insufficient_data":
+        # 2. RHR baseline → rhr_analysis table
+        rhr: RhrStatus = await calculate_rhr_status(session=session)
+        if rhr.status != "insufficient_data":
+            rhr_row = await session.get(RhrAnalysisRow, row.id)
+            if rhr_row is None:
+                rhr_row = RhrAnalysisRow(date=row.id)
+                session.add(rhr_row)
+            rhr_row.status = rhr.status
+            rhr_row.rhr_today = rhr.rhr_today
+            rhr_row.rhr_7d = rhr.rhr_7d
+            rhr_row.rhr_sd_7d = rhr.rhr_sd_7d
+            rhr_row.rhr_30d = rhr.rhr_30d
+            rhr_row.rhr_sd_30d = rhr.rhr_sd_30d
+            rhr_row.rhr_60d = rhr.rhr_60d
+            rhr_row.rhr_sd_60d = rhr.rhr_sd_60d
+            rhr_row.lower_bound = rhr.lower_bound
+            rhr_row.upper_bound = rhr.upper_bound
+            rhr_row.cv_7d = rhr.cv_7d
+            rhr_row.days_available = rhr.days_available
+            if rhr.trend:
+                rhr_row.trend_direction = rhr.trend.direction
+                rhr_row.trend_slope = rhr.trend.slope
+                rhr_row.trend_r_squared = rhr.trend.r_squared
+
+        # 3. Combined recovery score (sleep defaults to 0 if not yet available)
+        recovery: RecoveryScore = combined_recovery_score(
+            rmssd_status=rmssd,
+            rhr_status=rhr,
+            banister_recovery=row.banister_recovery if row.banister_recovery is not None else 50.0,
+            sleep_score=int(row.sleep_score) if row.sleep_score is not None else 0,
+        )
+        row.recovery_score = recovery.score
+        row.recovery_category = recovery.category
+        row.recovery_recommendation = recovery.recommendation
+
+        # 4. Readiness (derived from recovery)
+        row.readiness_score = int(recovery.score)
+        _CATEGORY_TO_READINESS = {"excellent": "green", "good": "green", "moderate": "yellow", "low": "red"}
+        row.readiness_level = _CATEGORY_TO_READINESS.get(recovery.category, "yellow")
+
+        # TODO: ESS/Banister pipeline
+
+        # 5. AI recommendation (only for today, not backfill)
+        if run_ai and row.ai_recommendation is None:
+            try:
+                from ai.claude_agent import ClaudeAgent
+
+                agent = ClaudeAgent()
+                hrv_flatt = await session.get(HrvAnalysisRow, (row.id, "flatt_esco"))
+                hrv_aie = await session.get(HrvAnalysisRow, (row.id, "ai_endurance"))
                 rhr_row = await session.get(RhrAnalysisRow, row.id)
-                if rhr_row is None:
-                    rhr_row = RhrAnalysisRow(date=row.id)
-                    session.add(rhr_row)
-                rhr_row.status = rhr.status
-                rhr_row.rhr_today = rhr.rhr_today
-                rhr_row.rhr_7d = rhr.rhr_7d
-                rhr_row.rhr_sd_7d = rhr.rhr_sd_7d
-                rhr_row.rhr_30d = rhr.rhr_30d
-                rhr_row.rhr_sd_30d = rhr.rhr_sd_30d
-                rhr_row.rhr_60d = rhr.rhr_60d
-                rhr_row.rhr_sd_60d = rhr.rhr_sd_60d
-                rhr_row.lower_bound = rhr.lower_bound
-                rhr_row.upper_bound = rhr.upper_bound
-                rhr_row.cv_7d = rhr.cv_7d
-                rhr_row.days_available = rhr.days_available
-                if rhr.trend:
-                    rhr_row.trend_direction = rhr.trend.direction
-                    rhr_row.trend_slope = rhr.trend.slope
-                    rhr_row.trend_r_squared = rhr.trend.r_squared
 
-            # 3. Combined recovery score
-            recovery: RecoveryScore = combined_recovery_score(
-                rmssd_status=rmssd,
-                rhr_status=rhr,
-                banister_recovery=row.banister_recovery if row.banister_recovery is not None else 50.0,
-                sleep_score=int(row.sleep_score) if row.sleep_score is not None else 0,
-            )
-            row.recovery_score = recovery.score
-            row.recovery_category = recovery.category
-            row.recovery_recommendation = recovery.recommendation
-
-            # 4. Readiness (derived from recovery)
-            row.readiness_score = int(recovery.score)
-            _CATEGORY_TO_READINESS = {"excellent": "green", "good": "green", "moderate": "yellow", "low": "red"}
-            row.readiness_level = _CATEGORY_TO_READINESS.get(recovery.category, "yellow")
-
-            # TODO: ESS/Banister pipeline
-
-            # 5. AI recommendation (only for today, not backfill)
-            if run_ai and row.ai_recommendation is None:
-                try:
-                    from ai.claude_agent import ClaudeAgent
-
-                    agent = ClaudeAgent()
-                    hrv_flatt = await session.get(HrvAnalysisRow, (row.id, "flatt_esco"))
-                    hrv_aie = await session.get(HrvAnalysisRow, (row.id, "ai_endurance"))
-                    rhr_row = await session.get(RhrAnalysisRow, row.id)
-
-                    # Fetch today's scheduled workouts
-                    today_workouts = (
-                        (
-                            await session.execute(
-                                select(ScheduledWorkoutRow).where(ScheduledWorkoutRow.start_date_local == row.id)
-                            )
+                # Fetch today's scheduled workouts
+                today_workouts = (
+                    (
+                        await session.execute(
+                            select(ScheduledWorkoutRow).where(ScheduledWorkoutRow.start_date_local == row.id)
                         )
-                        .scalars()
-                        .all()
                     )
+                    .scalars()
+                    .all()
+                )
 
-                    row.ai_recommendation = await agent.get_morning_recommendation(
-                        wellness_row=row,
-                        hrv_flatt=hrv_flatt,
-                        hrv_aie=hrv_aie,
-                        rhr_row=rhr_row,
-                        scheduled_workouts=today_workouts,
-                    )
-                except Exception:
-                    logger.exception("AI recommendation failed")
+                row.ai_recommendation = await agent.get_morning_recommendation(
+                    wellness_row=row,
+                    hrv_flatt=hrv_flatt,
+                    hrv_aie=hrv_aie,
+                    rhr_row=rhr_row,
+                    scheduled_workouts=today_workouts,
+                )
+            except Exception:
+                logger.exception("AI recommendation failed")
 
-            await session.commit()
+        await session.commit()
 
         return row
 

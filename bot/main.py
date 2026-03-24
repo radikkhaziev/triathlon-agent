@@ -66,7 +66,15 @@ def start_bot() -> None:
         scheduler.start()
         logging.info("Scheduler started")
 
-    app = ApplicationBuilder().token(token).post_init(post_init).build()
+    async def post_shutdown(application):
+        from data.intervals_client import IntervalsClient
+
+        client = IntervalsClient()
+        if client._initialized:
+            await client.close()
+            logging.info("IntervalsClient closed")
+
+    app = ApplicationBuilder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
     app.add_handler(CommandHandler("morning", morning))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
 

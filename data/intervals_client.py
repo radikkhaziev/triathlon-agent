@@ -59,6 +59,12 @@ class IntervalsClient:
         )
         self._athlete_id = settings.INTERVALS_ATHLETE_ID
 
+    async def close(self) -> None:
+        """Close the underlying httpx session."""
+        await self._client.aclose()
+        IntervalsClient._instance = None
+        self._initialized = False
+
     # ------------------------------------------------------------------
     # Retry
     # ------------------------------------------------------------------

@@ -46,7 +46,11 @@ class ClaudeAgent:
         # Goal progress
         event_date = settings.GOAL_EVENT_DATE
         weeks_remaining = max(0, (event_date - date.today()).days // 7)
-        goal_pct = min(100, (wellness_row.ctl / settings.GOAL_CTL_TARGET * 100)) if wellness_row.ctl else 0
+        goal_pct = (
+            min(100, (wellness_row.ctl / settings.GOAL_CTL_TARGET * 100))
+            if wellness_row.ctl and settings.GOAL_CTL_TARGET
+            else 0
+        )
 
         # Per-sport CTL from sport_info JSON
         ctl_swim, ctl_bike, ctl_run = _extract_sport_ctl(wellness_row.sport_info)
