@@ -35,4 +35,6 @@ async def get_recovery(date: str) -> dict:
         "readiness_level": row.readiness_level,
         "sleep_score": row.sleep_score,
         "sleep_duration": sleep_duration,
+        "ess_today": row.ess_today,
+        "banister_recovery": row.banister_recovery,
     }

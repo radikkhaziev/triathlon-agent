@@ -2,12 +2,12 @@
 
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import httpx
 
 from config import settings
-from data.models import ScheduledWorkout, Wellness
+from data.models import Activity, ScheduledWorkout, Wellness
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,11 @@ class IntervalsClient:
         inst._initialized = False
         cls._instance = inst
         return inst
+
+    @property
+    def is_active(self) -> bool:
+        """Whether this client has been initialized and not yet closed."""
+        return self._initialized
 
     def __init__(self) -> None:
         if self._initialized:
@@ -107,6 +112,64 @@ class IntervalsClient:
     # ------------------------------------------------------------------
     # Scheduled Workouts (Events)
     # ------------------------------------------------------------------
+
+    async def get_activities(
+        self,
+        oldest: date | None = None,
+        newest: date | None = None,
+    ) -> list[Activity]:
+        """Fetch completed activities with training load and sport type.
+
+        Args:
+            oldest: Start date (default: 90 days ago).
+            newest: End date (default: today).
+        """
+        if oldest is None:
+            oldest = date.today() - timedelta(days=90)
+        if newest is None:
+            newest = date.today()
+
+        params: dict[str, str] = {
+            "oldest": oldest.strftime("%Y-%m-%d"),
+            "newest": newest.strftime("%Y-%m-%d"),
+            "fields": "id,start_date_local,type,icu_training_load,moving_time,average_heartrate",
+        }
+        resp = await self._request(
+            "GET",
+            f"/athlete/{self._athlete_id}/activities",
+            params=params,
+        )
+        activities = []
+        for raw in resp.json():
+            data = {_to_snake(k): v for k, v in raw.items()}
+            # Intervals.icu returns averageHeartrate → average_heartrate, model uses average_hr
+            if "average_heartrate" in data:
+                data["average_hr"] = data.pop("average_heartrate")
+            activities.append(Activity.model_validate(data))
+        return activities
+
+    # ------------------------------------------------------------------
+    # FIT file download (Level 2: DFA alpha 1)
+    # ------------------------------------------------------------------
+
+    async def download_fit(self, activity_id: str) -> bytes | None:
+        """Download original FIT file for an activity.
+
+        Returns raw bytes or None if not available (404).
+        Uses _request() for retry on 429/5xx.
+        """
+        try:
+            resp = await self._request(
+                "GET",
+                f"/activity/{activity_id}/file",
+                headers={"Accept": "application/octet-stream"},
+                timeout=60.0,
+            )
+            return resp.content
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
 
     async def get_events(
         self,

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
     TELEGRAM_CHAT_ID: str = ""
+    TELEGRAM_WEBHOOK_URL: str = ""  # base URL, e.g. "https://your-api.example.com"; empty = polling mode
 
     # Intervals.icu
     INTERVALS_API_KEY: SecretStr = SecretStr("")
@@ -27,13 +28,12 @@ class Settings(BaseSettings):
     WEBAPP_URL: str = "https://your-app.vercel.app"
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
 
-    # Athlete thresholds
-    ATHLETE_LTHR_RUN: int = 158
-    ATHLETE_LTHR_BIKE: int = 152
-    ATHLETE_MAX_HR: int = 182
-    ATHLETE_RESTING_HR: float = 42
-    ATHLETE_FTP: float = 245
-    ATHLETE_CSS: float = 98
+    # Athlete thresholds (from HumanGo tests, Nov-Dec 2025 + Mar 2026)
+    ATHLETE_LTHR_RUN: int = 153
+    ATHLETE_LTHR_BIKE: int = 153
+    ATHLETE_MAX_HR: int = 179
+    ATHLETE_FTP: float = 233
+    ATHLETE_CSS: float = 141  # 2:21/100m from HumanGo, Mar 2026
     ATHLETE_AGE: int = 43
 
     # Race goal
@@ -44,9 +44,6 @@ class Settings(BaseSettings):
     GOAL_BIKE_CTL_TARGET: float = 35
     GOAL_RUN_CTL_TARGET: float = 25
 
-    # Scheduler
-    MORNING_REPORT_HOUR: int = 7
-    MORNING_REPORT_MINUTE: int = 0
     TIMEZONE: str = "Europe/Belgrade"
 
     # HRV Algorithm

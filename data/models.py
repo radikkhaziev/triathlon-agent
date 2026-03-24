@@ -19,16 +19,23 @@ class HRVData(BaseModel):
 
 
 class Activity(BaseModel):
-    activity_id: int
-    sport: str
-    start_time: datetime
-    duration_seconds: int
-    distance_meters: float | None = None
-    avg_hr: float | None = None
-    max_hr: float | None = None
-    avg_power: float | None = None
-    normalized_power: float | None = None
-    tss: float | None = None
+    """Completed activity from Intervals.icu activities endpoint."""
+
+    id: str  # Intervals.icu activity ID (e.g. "i12345")
+    start_date_local: date
+    type: str | None = None  # Ride, Run, Swim, VirtualRide, etc.
+    icu_training_load: float | None = None
+    moving_time: int | None = None  # seconds
+    average_hr: float | None = None  # average heart rate (from average_heartrate API field)
+
+    @field_validator("start_date_local", mode="before")
+    @classmethod
+    def _parse_date(cls, v: str | date | None) -> date | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return datetime.fromisoformat(v).date()
+        return v
 
 
 class ScheduledWorkout(BaseModel):

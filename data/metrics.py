@@ -8,12 +8,15 @@ RHR baseline, ESS (Banister TRIMP), and combined recovery scoring.
 
 import math
 import statistics
+from collections import defaultdict
 from datetime import date as date_type
+from datetime import timedelta
 
 import numpy as np
 
 from config import settings
 from data.models import (
+    Activity,
     HRVData,
     ReadinessLevel,
     RecoveryScore,
@@ -23,6 +26,7 @@ from data.models import (
     TrendResult,
     Wellness,
 )
+from data.utils import SPORT_MAP
 
 # Heart Rate Zones as percentage of LTHR (Lactate Threshold Heart Rate)
 HR_ZONES: dict[str, dict[int, tuple[float, float]]] = {
@@ -485,6 +489,35 @@ def calculate_ess(
 
 
 # ---------------------------------------------------------------------------
+# Daily ESS Aggregation
+# ---------------------------------------------------------------------------
+
+
+def calculate_daily_ess(activities: list, hr_rest: float, hr_max: float) -> float:
+    """Sum ESS for all activities on a given day.
+
+    Args:
+        activities: List of Activity/ActivityRow for one day.
+            Each must have `moving_time` (int, seconds) and `average_hr` (float|None).
+        hr_rest: Athlete resting HR.
+        hr_max: Athlete max HR.
+
+    Returns:
+        Total ESS for the day. 0.0 if no activities or no HR data.
+
+    Note:
+        Delegates to calculate_ess() which reads settings.ATHLETE_LTHR_RUN
+        for TRIMP normalisation.
+    """
+    total = 0.0
+    for act in activities:
+        if act.moving_time and act.average_hr and act.average_hr > 0:
+            duration_min = act.moving_time / 60.0
+            total += calculate_ess(duration_min, act.average_hr, hr_rest, hr_max)
+    return round(total, 1)
+
+
+# ---------------------------------------------------------------------------
 # Banister Recovery Model
 # ---------------------------------------------------------------------------
 
@@ -495,7 +528,12 @@ def calculate_banister_recovery(
     tau: float = 2.0,
     initial_recovery: float = 100.0,
 ) -> list[RecoveryState]:
-    """Banister recursive recovery model: R(t+1) = R(t) * exp(-1/τ) + k * ESS(t).
+    """Banister recovery model with exponential return to baseline.
+
+    R(t+1) = R(t) + (100 - R(t)) * (1 - exp(-1/τ)) - k * ESS(t)
+
+    On rest days (ESS=0), R recovers toward 100%.
+    On training days, k*ESS pulls R down proportionally to load.
 
     Args:
         training_log: List of {"date": ..., "ess": ...} dicts.
@@ -503,13 +541,13 @@ def calculate_banister_recovery(
         tau: Recovery time constant in days (0.5–7.0). Higher = slower recovery.
         initial_recovery: Starting recovery % (default 100).
     """
-    decay = math.exp(-1.0 / tau)
+    recovery_rate = 1.0 - math.exp(-1.0 / tau)
     r = initial_recovery
     results: list[RecoveryState] = []
 
     for entry in training_log:
         ess = entry.get("ess", 0)
-        r = r * decay - k * ess
+        r = r + (100.0 - r) * recovery_rate - k * ess
         r = max(0.0, min(100.0, r))
 
         dt = entry["date"]
@@ -527,6 +565,118 @@ def calculate_banister_recovery(
     return results
 
 
+def calculate_banister_for_date(
+    activities_by_date: dict[str, list],
+    target_date: date_type,
+    hr_rest: float,
+    hr_max: float,
+    lookback_days: int = 90,
+    k: float = 0.1,
+    tau: float = 2.0,
+) -> tuple[float, float]:
+    """Calculate Banister recovery and today's ESS for a specific date.
+
+    Args:
+        activities_by_date: Mapping "YYYY-MM-DD" → list of activity objects.
+        target_date: The date to calculate recovery for.
+        hr_rest: Athlete resting HR.
+        hr_max: Athlete max HR.
+        lookback_days: How many days of history to use.
+        k: Load sensitivity (0.01-1.0).
+        tau: Recovery time constant in days (0.5-7.0).
+
+    Returns:
+        (banister_recovery_pct, ess_today)
+    """
+    start = target_date - timedelta(days=lookback_days)
+
+    training_log = []
+    current = start
+    while current <= target_date:
+        date_str = current.isoformat()
+        day_acts = activities_by_date.get(date_str, [])
+        ess = calculate_daily_ess(day_acts, hr_rest, hr_max)
+        training_log.append({"date": date_str, "ess": ess})
+        current += timedelta(days=1)
+
+    states = calculate_banister_recovery(training_log, k=k, tau=tau)
+
+    if not states:
+        return 50.0, 0.0
+
+    last = states[-1]
+    return last.recovery_pct, last.ess
+
+
+# ---------------------------------------------------------------------------
+# Per-Sport CTL from Activities
+# ---------------------------------------------------------------------------
+
+
+def calculate_sport_ctl(
+    activities: list[Activity],
+    tau: int = 42,
+) -> dict[str, float]:
+    """Calculate per-sport CTL (Chronic Training Load) from activity history.
+
+    Uses exponential moving average (EMA) with tau=42 days, matching Intervals.icu's
+    impulse-response model. Activities must span at least 42+ days for reliable values.
+
+    Args:
+        activities: Objects with attrs: type (str|None), icu_training_load (float|None),
+                    start_date_local (str|date). Accepts Activity model or ActivityRow ORM.
+        tau: Time constant in days (default 42, matching Intervals.icu CTL).
+
+    Returns:
+        {"swim": float, "bike": float, "run": float} — CTL per sport.
+        Returns 0.0 for sports with no activities.
+    """
+    if not activities:
+        return {"swim": 0.0, "bike": 0.0, "run": 0.0}
+
+    # Group daily load by sport
+    daily_load: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for act in activities:
+        raw_type = (act.type or "").lower().replace(" ", "")
+        sport = SPORT_MAP.get(raw_type)
+        if not sport:
+            continue
+        if act.icu_training_load is None:
+            continue
+        date_str = str(act.start_date_local)[:10]
+        daily_load[sport][date_str] += act.icu_training_load
+
+    if not daily_load:
+        return {"swim": 0.0, "bike": 0.0, "run": 0.0}
+
+    # Find date range across all sports
+    all_dates = set()
+    for sport_dates in daily_load.values():
+        all_dates.update(sport_dates.keys())
+
+    min_date = date_type.fromisoformat(min(all_dates))
+    max_date = date_type.fromisoformat(max(all_dates))
+
+    # Calculate EMA for each sport day by day
+    k = 1.0 / tau  # rate constant
+
+    decay = math.exp(-k)
+
+    result = {}
+    for sport in ("swim", "bike", "run"):
+        ctl = 0.0
+        sport_loads = daily_load.get(sport, {})
+        current = min_date
+        while current <= max_date:
+            ds = current.strftime("%Y-%m-%d")
+            tss = sport_loads.get(ds, 0.0)
+            ctl = ctl * decay + tss * (1 - decay)
+            current += timedelta(days=1)
+        result[sport] = round(ctl, 1)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Combined Recovery Score
 # ---------------------------------------------------------------------------
@@ -538,16 +688,19 @@ def combined_recovery_score(
     rmssd_status: RmssdStatus,
     rhr_status: RhrStatus,
     banister_recovery: float,
-    sleep_score: int,
+    sleep_score: int | None,
     sleep_start_hour: float | None = None,
 ) -> RecoveryScore:
     """Weighted integration of 4 recovery signals into a single 0-100 score.
 
-    Weights:
+    Weights (when all signals available):
         RMSSD status      35%
         Banister R(t)     25%
         Resting HR status 20%
         Sleep score       20%
+
+    When sleep_score is None, sleep is excluded and remaining weights are
+    renormalised (RMSSD 43.75%, Banister 31.25%, RHR 25%).
 
     Modifiers:
         sleep_start > 23:00  →  -10 pts
@@ -556,9 +709,13 @@ def combined_recovery_score(
     rmssd_score = _STATUS_TO_SCORE.get(rmssd_status.status, 50)
     rhr_score = _STATUS_TO_SCORE.get(rhr_status.status, 50)
     banister_pct = max(0.0, min(100.0, banister_recovery))
-    sleep_pct = max(0.0, min(100.0, float(sleep_score)))
 
-    score = rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.20 + sleep_pct * 0.20
+    if sleep_score is not None:
+        sleep_pct = max(0.0, min(100.0, float(sleep_score)))
+        score = rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.20 + sleep_pct * 0.20
+    else:
+        # No sleep data — renormalise weights (0.35 + 0.25 + 0.20 = 0.80)
+        score = (rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.20) / 0.80
 
     flags: list[str] = []
     if sleep_start_hour is not None and sleep_start_hour > 23.0:
@@ -600,6 +757,6 @@ def combined_recovery_score(
             "rmssd": rmssd_score,
             "banister": round(banister_pct, 1),
             "rhr": rhr_score,
-            "sleep": round(sleep_pct, 1),
+            "sleep": round(sleep_pct, 1) if sleep_score is not None else None,
         },
     )

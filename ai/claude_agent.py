@@ -5,6 +5,7 @@ import anthropic
 
 from ai.prompts import MORNING_REPORT_PROMPT, get_system_prompt
 from config import settings
+from data.utils import extract_sport_ctl_tuple
 
 logger = logging.getLogger(__name__)
 
@@ -52,19 +53,32 @@ class ClaudeAgent:
             else 0
         )
 
-        # Per-sport CTL from sport_info JSON
-        ctl_swim, ctl_bike, ctl_run = _extract_sport_ctl(wellness_row.sport_info)
-        swim_pct = min(100, ctl_swim / settings.GOAL_SWIM_CTL_TARGET * 100) if settings.GOAL_SWIM_CTL_TARGET else 0
-        bike_pct = min(100, ctl_bike / settings.GOAL_BIKE_CTL_TARGET * 100) if settings.GOAL_BIKE_CTL_TARGET else 0
-        run_pct = min(100, ctl_run / settings.GOAL_RUN_CTL_TARGET * 100) if settings.GOAL_RUN_CTL_TARGET else 0
+        # Per-sport CTL from sport_info JSON (enriched with calculated CTL)
+        ctl_swim, ctl_bike, ctl_run = extract_sport_ctl_tuple(wellness_row.sport_info)
+        swim_pct = (
+            min(100, ctl_swim / settings.GOAL_SWIM_CTL_TARGET * 100)
+            if settings.GOAL_SWIM_CTL_TARGET and ctl_swim
+            else 0
+        )
+        bike_pct = (
+            min(100, ctl_bike / settings.GOAL_BIKE_CTL_TARGET * 100)
+            if settings.GOAL_BIKE_CTL_TARGET and ctl_bike
+            else 0
+        )
+        run_pct = (
+            min(100, ctl_run / settings.GOAL_RUN_CTL_TARGET * 100) if settings.GOAL_RUN_CTL_TARGET and ctl_run else 0
+        )
 
         planned_text = _format_planned_workouts(scheduled_workouts)
+        yesterday_dfa_text = await _format_yesterday_dfa()
 
         prompt = MORNING_REPORT_PROMPT.format(
             date=date.today().strftime("%d.%m.%Y"),
             recovery_score=wellness_row.recovery_score or 0,
             recovery_category=wellness_row.recovery_category or "unknown",
             recovery_recommendation=wellness_row.recovery_recommendation or "—",
+            ess_today=wellness_row.ess_today or 0,
+            banister_recovery=(wellness_row.banister_recovery if wellness_row.banister_recovery is not None else 50.0),
             sleep_score=wellness_row.sleep_score or 0,
             sleep_duration=sleep_duration,
             hrv_today=f"{hrv_today:.0f}" if hrv_today else "—",
@@ -95,6 +109,7 @@ class ClaudeAgent:
             bike_pct=bike_pct,
             run_pct=run_pct,
             planned_workouts=planned_text,
+            yesterday_dfa_summary=yesterday_dfa_text,
         )
 
         try:
@@ -140,24 +155,51 @@ class ClaudeAgent:
             return "AI analysis unavailable."
 
 
-def _extract_sport_ctl(sport_info: list[dict] | None) -> tuple[float, float, float]:
-    """Extract per-sport CTL from Intervals.icu sport_info JSON.
+async def _format_yesterday_dfa() -> str:
+    """Format yesterday's DFA data for the morning AI prompt."""
+    import zoneinfo
+    from datetime import datetime, timedelta
 
-    Returns (swim, bike, run) CTL values. Defaults to 0.0 if missing.
-    """
-    swim = bike = run = 0.0
-    if not sport_info:
-        return swim, bike, run
-    for entry in sport_info:
-        sport = (entry.get("type") or entry.get("sport") or "").lower()
-        ctl_val = entry.get("ctl") or entry.get("ctlLoad") or 0.0
-        if sport in ("swim", "swimming"):
-            swim = float(ctl_val)
-        elif sport in ("ride", "bike", "cycling"):
-            bike = float(ctl_val)
-        elif sport in ("run", "running"):
-            run = float(ctl_val)
-    return swim, bike, run
+    from bot.formatter import _format_duration, _sport_emoji
+    from data.database import get_activities_for_date, get_activity_hrv_for_date
+
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    yesterday = datetime.now(tz).date() - timedelta(days=1)
+    activities = await get_activities_for_date(yesterday)
+    if not activities:
+        return "Нет данных DFA за вчера"
+
+    hrv_analyses = await get_activity_hrv_for_date(yesterday)
+    hrv_map = {h.activity_id: h for h in hrv_analyses}
+
+    lines = []
+    for a in activities:
+        emoji = _sport_emoji(a.type)
+        dur_str = _format_duration(a.moving_time)
+
+        hrv = hrv_map.get(a.id)
+        if hrv and hrv.processing_status == "processed":
+            detail_parts: list[str] = []
+            if hrv.ra_pct is not None:
+                detail_parts.append(f"Ra {hrv.ra_pct:+.1f}%")
+            if hrv.da_pct is not None:
+                detail_parts.append(f"Da {hrv.da_pct:+.1f}%")
+            if hrv.hrvt1_hr is not None:
+                hrvt1 = f"HRVT1 {hrv.hrvt1_hr:.0f}bpm"
+                if hrv.hrvt1_power is not None:
+                    hrvt1 += f"/{hrv.hrvt1_power:.0f}W"
+                if hrv.hrvt1_pace is not None:
+                    hrvt1 += f"/{hrv.hrvt1_pace}"
+                detail_parts.append(hrvt1)
+            if hrv.hrv_quality:
+                detail_parts.append(f"quality: {hrv.hrv_quality}")
+            details = ", ".join(detail_parts)
+            lines.append(f"- {emoji} {a.type or '?'} {dur_str}: {details}")
+        elif hrv:
+            lines.append(f"- {emoji} {a.type or '?'} {dur_str}: {hrv.processing_status}")
+        # Activities without HRV row (not eligible) — skip
+
+    return "\n".join(lines) if lines else "Нет данных DFA за вчера"
 
 
 def _format_planned_workouts(workouts: list | None) -> str:

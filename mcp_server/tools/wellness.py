@@ -25,6 +25,8 @@ def _row_to_dict(row: WellnessRow) -> dict:
         "body_fat": row.body_fat,
         "vo2max": row.vo2max,
         "steps": row.steps,
+        "ess_today": row.ess_today,
+        "banister_recovery": row.banister_recovery,
         "recovery_score": row.recovery_score,
         "recovery_category": row.recovery_category,
         "recovery_recommendation": row.recovery_recommendation,

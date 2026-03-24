@@ -6,6 +6,8 @@ as MCP tools for Claude Desktop and future integrations.
 Run: python -m mcp_server.server
 """
 
+import mcp_server.tools.activities  # noqa: F401
+import mcp_server.tools.activity_hrv  # noqa: F401
 import mcp_server.tools.goal  # noqa: F401
 import mcp_server.tools.hrv  # noqa: F401
 import mcp_server.tools.recovery  # noqa: F401

@@ -44,6 +44,18 @@ def main() -> None:
         help="Number of days ahead to sync (default: 14)",
     )
 
+    activities_parser = sub.add_parser(
+        "sync-activities",
+        help="Sync completed activities from Intervals.icu. Default: 90 days back.",
+    )
+    activities_parser.add_argument(
+        "days",
+        nargs="?",
+        type=int,
+        default=90,
+        help="Number of days back to sync (default: 90)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -52,6 +64,8 @@ def main() -> None:
         asyncio.run(_backfill(args.period))
     elif args.command == "sync-workouts":
         asyncio.run(_sync_workouts(args.days))
+    elif args.command == "sync-activities":
+        asyncio.run(_sync_activities(args.days))
 
 
 def _parse_period(period: str | None) -> tuple[date, date]:
@@ -128,6 +142,14 @@ async def _backfill(period: str | None = None) -> None:
     print("Backfill completed.")
 
 
+async def _sync_activities(days: int = 90) -> None:
+    from bot.scheduler import sync_activities_job
+
+    print(f"Syncing activities: last {days} days")
+    count = await sync_activities_job(days=days)
+    print(f"Synced {count} activities.")
+
+
 async def _sync_workouts(days: int = 14) -> None:
     from data.database import save_scheduled_workouts
     from data.intervals_client import IntervalsClient
@@ -138,7 +160,7 @@ async def _sync_workouts(days: int = 14) -> None:
 
     client = IntervalsClient()
     workouts = await client.get_events(oldest=today, newest=newest)
-    count = await save_scheduled_workouts(workouts)
+    count = await save_scheduled_workouts(workouts, oldest=today, newest=newest)
     print(f"Synced {count} workouts.")
 
 

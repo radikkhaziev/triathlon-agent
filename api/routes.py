@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, HTTPException
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from config import settings
 from data.database import get_hrv_analysis, get_rhr_analysis, get_wellness
+from data.utils import extract_sport_ctl
 
 router = APIRouter()
 
@@ -30,26 +31,6 @@ def _verify_request(authorization: str | None) -> None:
         return
     if not authorization or not verify_telegram_init_data(authorization, bot_token):
         raise HTTPException(status_code=401, detail="Invalid Telegram init data")
-
-
-def _extract_sport_ctl(sport_info) -> dict:
-    """Extract per-sport CTL from Intervals.icu sport_info JSON."""
-    result = {"swim": None, "bike": None, "run": None}
-    if not sport_info:
-        return result
-    info = sport_info if isinstance(sport_info, list) else []
-    for entry in info:
-        sport = (entry.get("type") or entry.get("sport") or "").lower()
-        ctl_val = entry.get("ctl") or entry.get("ctlLoad")
-        if ctl_val is None:
-            continue
-        if sport in ("swim", "swimming"):
-            result["swim"] = round(float(ctl_val), 1)
-        elif sport in ("ride", "bike", "cycling"):
-            result["bike"] = round(float(ctl_val), 1)
-        elif sport in ("run", "running"):
-            result["run"] = round(float(ctl_val), 1)
-    return result
 
 
 def _cv_verdict(cv: float | None) -> str | None:
@@ -187,7 +168,7 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
     tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
 
     # Per-sport CTL from sport_info JSON
-    sport_ctl = _extract_sport_ctl(row.sport_info)
+    sport_ctl = extract_sport_ctl(row.sport_info)
 
     return {
         "date": today_str,

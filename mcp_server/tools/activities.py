@@ -1,0 +1,91 @@
+"""MCP tools for completed activities from Intervals.icu."""
+
+from datetime import date, timedelta
+
+from sqlalchemy import select
+
+from data.database import ActivityHrvRow, ActivityRow, get_session
+from mcp_server.app import mcp
+
+
+@mcp.tool()
+async def get_activities(target_date: str = "", days_back: int = 7) -> dict:
+    """Get completed activities from Intervals.icu.
+
+    Returns activities for a specific date or a date range looking backwards.
+    Includes sport type, training load (TSS), duration, and whether DFA alpha 1
+    analysis is available (has_hrv_analysis, dfa_a1_mean).
+
+    Note: Training load values (TSS/hrTSS/ssTSS) come from Intervals.icu
+    and are calibrated for its impulse-response model, not TrainingPeaks.
+
+    Args:
+        target_date: Date in YYYY-MM-DD format. Default: today.
+        days_back: Number of days to look back (0 = single day, 7 = last week, 30 = last month).
+    """
+    end = date.fromisoformat(target_date) if target_date else date.today()
+    start = end - timedelta(days=days_back)
+
+    async with get_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ActivityRow)
+                    .where(ActivityRow.start_date_local >= str(start))
+                    .where(ActivityRow.start_date_local <= str(end))
+                    .order_by(ActivityRow.start_date_local.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        # Fetch HRV analysis for these activities
+        if rows:
+            activity_ids = [r.id for r in rows]
+            hrv_rows = (
+                (await session.execute(select(ActivityHrvRow).where(ActivityHrvRow.activity_id.in_(activity_ids))))
+                .scalars()
+                .all()
+            )
+            hrv_map = {h.activity_id: h for h in hrv_rows}
+        else:
+            hrv_map = {}
+
+    if not rows:
+        return {"count": 0, "from": str(start), "to": str(end), "activities": []}
+
+    activities = []
+    for r in rows:
+        duration = None
+        if r.moving_time:
+            h, m = divmod(r.moving_time // 60, 60)
+            duration = f"{h}h {m}m" if h else f"{m}m"
+
+        entry = {
+            "id": r.id,
+            "date": r.start_date_local,
+            "type": r.type,
+            "training_load": r.icu_training_load,
+            "duration": duration,
+            "duration_secs": r.moving_time,
+        }
+
+        hrv = hrv_map.get(r.id)
+        if hrv and hrv.processing_status == "processed":
+            entry["has_hrv_analysis"] = True
+            entry["dfa_a1_mean"] = hrv.dfa_a1_mean
+        else:
+            entry["has_hrv_analysis"] = False
+
+        activities.append(entry)
+
+    total_load = sum(a["training_load"] or 0 for a in activities)
+
+    return {
+        "count": len(activities),
+        "from": str(start),
+        "to": str(end),
+        "total_training_load": round(total_load, 1),
+        "activities": activities,
+    }

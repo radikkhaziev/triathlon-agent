@@ -26,7 +26,7 @@ A personal AI agent for a triathlete that:
 | Language          | Python 3.12+                                   |
 | Package Manager   | Poetry                                         |
 | Data Source       | Intervals.icu API                              |
-| AI Analysis       | Anthropic Claude API (`claude-sonnet-4-6`)     |
+| AI Analysis       | Anthropic Claude API (`claude-sonnet-4-6`) + Google Gemini (optional) |
 | Telegram Bot      | `python-telegram-bot` v21+                     |
 | Scheduler         | `APScheduler`                                  |
 | Database          | PostgreSQL 16 + `SQLAlchemy` (async) + Alembic |
@@ -49,24 +49,27 @@ triathlon-agent/
 ├── config.py                    # pydantic-settings
 │
 ├── bot/
-│   ├── main.py                  # bot entry point (polling + scheduler init)
+│   ├── main.py                  # bot entry point (polling + webhook modes)
 │   ├── cli.py                   # CLI: shell, backfill, sync-workouts
-│   ├── scheduler.py             # periodic jobs (wellness every 15 min, workouts every 1 hr)
+│   ├── scheduler.py             # periodic jobs (wellness every 10 min, workouts every 1 hr)
 │   └── formatter.py             # report summary formatting
 │
 ├── data/
-│   ├── intervals_client.py      # Intervals.icu API client (wellness + events)
-│   ├── metrics.py               # dual HRV, RHR baseline, CTL/ATL/TSB, recovery
+│   ├── intervals_client.py      # Intervals.icu API client (wellness + events + download_fit)
+│   ├── metrics.py               # dual HRV, RHR baseline, CTL/ATL/TSB, ESS/Banister, recovery
+│   ├── hrv_activity.py          # Level 2: DFA a1 pipeline (FIT → RR → DFA → thresholds → Ra/Da)
 │   ├── database.py              # SQLAlchemy async ORM models and CRUD
 │   ├── models.py                # Pydantic data models
+│   ├── utils.py                 # SPORT_MAP, extract_sport_ctl, extract_sport_ctl_tuple
 │   └── openapi-spec.json        # Intervals.icu OpenAPI spec (reference)
 │
 ├── ai/
 │   ├── claude_agent.py          # Claude API — morning + weekly analysis
-│   └── prompts.py               # system + report prompts (configurable)
+│   ├── gemini_agent.py          # Gemini API — optional second opinion (same prompts)
+│   └── prompts.py               # system + report prompts (configurable, shared by both AI)
 │
 ├── api/
-│   ├── server.py                # FastAPI application + static mount
+│   ├── server.py                # FastAPI application + static mount + Telegram webhook
 │   └── routes.py                # REST endpoints + Telegram initData auth
 │
 ├── mcp_server/
@@ -81,7 +84,9 @@ triathlon-agent/
 │   │   ├── training_load.py     # get_training_load
 │   │   ├── recovery.py          # get_recovery
 │   │   ├── goal.py              # get_goal_progress
-│   │   └── scheduled_workouts.py # get_scheduled_workouts
+│   │   ├── scheduled_workouts.py # get_scheduled_workouts
+│   │   ├── activities.py        # get_activities (with has_hrv_analysis)
+│   │   └── activity_hrv.py      # get_activity_hrv, get_thresholds_history, get_readiness_history
 │   └── resources/
 │       └── athlete_profile.py   # read-only: thresholds, zones, goal config
 │
@@ -96,7 +101,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Four tables:
+Seven tables:
 
 ### `wellness` — daily data from Intervals.icu
 | Column | Type | Notes |
@@ -110,13 +115,14 @@ Four tables:
 | `hrv` | Float, nullable | RMSSD from wearable |
 | `sleep_secs`, `sleep_score`, `sleep_quality` | nullable | sleep data |
 | `steps` | Integer, nullable | daily steps |
-| `ess_today`, `banister_recovery` | Float, nullable | stress/recovery (TODO) |
+| `ess_today`, `banister_recovery` | Float, nullable | stress/recovery |
 | `recovery_score` | Float, nullable | combined 0-100 |
 | `recovery_category` | String, nullable | excellent/good/moderate/low |
 | `recovery_recommendation` | String, nullable | zone2_ok/zone1_long/zone1_short/skip |
 | `readiness_score` | Integer, nullable | derived from recovery_score |
 | `readiness_level` | String, nullable | green/yellow/red |
 | `ai_recommendation` | Text, nullable | Claude AI output |
+| `ai_recommendation_gemini` | Text, nullable | Gemini AI output (optional, only if GOOGLE_AI_API_KEY set) |
 
 ### `hrv_analysis` — dual-algorithm HRV baselines
 | Column | Type | Notes |
@@ -165,24 +171,73 @@ Both algorithms are **always computed** on every save. `settings.HRV_ALGORITHM` 
 
 Synced every hour via scheduler. Upserted by Intervals.icu event ID.
 
+### `activities` — completed activities from Intervals.icu
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | Intervals.icu activity ID (e.g. "i12345") |
+| `start_date_local` | String | "YYYY-MM-DD" |
+| `type` | String, nullable | sport type: Ride, Run, Swim, VirtualRide, etc. |
+| `icu_training_load` | Float, nullable | TSS/hrTSS/ssTSS from Intervals.icu |
+| `moving_time` | Integer, nullable | duration in seconds |
+| `average_hr` | Float, nullable | average heart rate during activity |
+
+Synced every hour at :30 via scheduler. Used for per-sport CTL calculation (EMA τ=42d).
+Indexed on `start_date_local` for range queries.
+
+### `activity_hrv` — post-activity DFA alpha 1 analysis (Level 2)
+| Column | Type | Notes |
+|---|---|---|
+| `activity_id` | String PK, FK → activities | |
+| `date` | String | "YYYY-MM-DD" |
+| `activity_type` | String | "Ride" or "Run" |
+| `hrv_quality` | String, nullable | good/moderate/poor |
+| `artifact_pct` | Float, nullable | % of corrected RR intervals |
+| `rr_count` | Integer, nullable | total RR intervals extracted |
+| `dfa_a1_mean` | Float, nullable | mean DFA alpha 1 across activity |
+| `dfa_a1_warmup` | Float, nullable | DFA alpha 1 during first 15 min |
+| `hrvt1_hr`, `hrvt1_power`, `hrvt1_pace` | nullable | aerobic threshold (a1=0.75) |
+| `hrvt2_hr` | Float, nullable | anaerobic threshold HR (a1=0.50) |
+| `threshold_r_squared`, `threshold_confidence` | nullable | regression quality |
+| `ra_pct`, `pa_today` | Float, nullable | Readiness (Ra) vs baseline |
+| `da_pct` | Float, nullable | Durability (Da) first vs second half |
+| `processing_status` | String | processed/no_rr_data/low_quality/too_short/error |
+| `dfa_timeseries` | JSON, nullable | sampled every 30s for charts |
+
+Processed every 5 min via scheduler. Only bike/run activities ≥15 min with chest strap HRM (ANT+).
+
+### `pa_baseline` — Pa baseline for Readiness (Ra) calculation
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK | autoincrement |
+| `activity_type` | String | "Ride" or "Run" |
+| `date` | String | "YYYY-MM-DD" |
+| `pa_value` | Float | power (bike) or speed (run) at fixed DFA a1 during warmup |
+| `dfa_a1_ref` | Float, nullable | reference DFA a1 level |
+| `quality` | String, nullable | good/moderate/poor |
+
+Ra baseline = average Pa over last 14 days (≥3 data points required).
+
 ---
 
 ## Current Implementation Status
 
 | Module                    | Status      | Notes                                                                     |
 | ------------------------- | ----------- | ------------------------------------------------------------------------- |
-| `data/models.py`          | Done        | Pydantic models: `Wellness`, `ScheduledWorkout`, `RecoveryScore`, `RmssdStatus`, `RhrStatus`, `TrendResult` |
-| `data/intervals_client.py`| Done        | Intervals.icu API client: wellness + events (scheduled workouts)          |
-| `data/metrics.py`         | Done        | Dual HRV (Flatt & Esco + AIEndurance), RHR 7d/30d/60d, recovery score    |
-| `data/database.py`        | Done        | `WellnessRow`, `HrvAnalysisRow`, `RhrAnalysisRow`, `ScheduledWorkoutRow` + CRUD |
-| `ai/prompts.py`           | Done        | System + morning report prompts; includes planned workout block            |
-| `ai/claude_agent.py`      | Done        | Morning AI recommendation (sonnet-4-6); evaluates planned workouts        |
-| `bot/main.py`             | Partial     | `/morning`, `whoami` handlers; no /start /status /week /goal /zones       |
-| `bot/scheduler.py`        | Done        | Wellness every 15 min (7-23h); workouts sync every 1 hr (4-23h)          |
-| `bot/cli.py`              | Done        | shell, backfill, sync-workouts                                            |
-| `bot/formatter.py`        | Done        | Report summary with recovery score                                        |
+| `data/models.py`          | Done        | Pydantic models: `Wellness`, `Activity`, `ScheduledWorkout`, `RecoveryScore`, `RmssdStatus`, `RhrStatus`, `TrendResult` |
+| `data/intervals_client.py`| Done        | Intervals.icu API client: wellness, activities, events, download_fit      |
+| `data/metrics.py`         | Done        | Dual HRV, RHR, recovery score, per-sport CTL, ESS/Banister pipeline      |
+| `data/hrv_activity.py`    | Done        | Level 2: DFA a1 pipeline — RR extraction, artifact correction, DFA timeseries, thresholds, Ra/Da |
+| `data/database.py`        | Done        | `WellnessRow`, `HrvAnalysisRow`, `RhrAnalysisRow`, `ActivityRow`, `ScheduledWorkoutRow`, `ActivityHrvRow`, `PaBaselineRow` + CRUD |
+| `data/utils.py`           | Done        | `SPORT_MAP`, `extract_sport_ctl`, `extract_sport_ctl_tuple`               |
+| `ai/prompts.py`           | Done        | System + morning report prompts; includes planned workouts + yesterday DFA |
+| `ai/claude_agent.py`      | Done        | Morning AI recommendation (sonnet-4-6); evaluates planned workouts + DFA context |
+| `ai/gemini_agent.py`      | Not started | Optional Gemini second opinion; same prompts, `google-genai` SDK; gated by `GOOGLE_AI_API_KEY` |
+| `bot/main.py`             | Done        | `/morning`, `whoami` handlers; `build_application()` shared by polling + webhook; no /start /status /week /goal /zones |
+| `bot/scheduler.py`        | Done        | Wellness every 10 min; workouts every 1 hr; activities at :30; DFA every 5 min + post-activity TG notification; evening report at 21:00; 5 cron jobs total |
+| `bot/cli.py`              | Done        | shell, backfill, sync-workouts, sync-activities, process-fit              |
+| `bot/formatter.py`        | Done        | Report summary, post-activity DFA notification, evening report + tomorrow's plan |
 | `api/routes.py`           | Done        | `/api/report` with grouped JSON (recovery, hrv, rhr, sleep, training_load, body, stress) |
-| `mcp_server/`             | Done        | 7 tools + 3 resources; read-only access to all athlete data               |
+| `mcp_server/`             | Done        | 12 tools + 3 resources; includes get_activities + Level 2 DFA tools (activity_hrv, thresholds_history, readiness_history) |
 | `webapp/`                 | Scaffold    | HTML/CSS/JS files exist, needs update for new API structure                |
 
 ---
@@ -197,23 +252,26 @@ INTERVALS_ATHLETE_ID=i12345
 # Telegram
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 TELEGRAM_CHAT_ID=123456789
+TELEGRAM_WEBHOOK_URL=                 # base URL for webhook mode, e.g. "https://bot.example.com"; empty = polling
 
 # Anthropic
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Google AI (optional — enables Gemini second opinion in dashboard)
+GOOGLE_AI_API_KEY=                    # empty = Gemini disabled
 
 # App
 API_BASE_URL=https://your-api.railway.app
 WEBAPP_URL=https://your-app.vercel.app
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon
 
-# Athlete Profile
+# Athlete Profile (from HumanGo tests, Nov-Dec 2025 + Mar 2026)
 ATHLETE_AGE=43
-ATHLETE_LTHR_RUN=158          # lactate threshold HR for running
-ATHLETE_LTHR_BIKE=152
-ATHLETE_MAX_HR=182
-ATHLETE_RESTING_HR=42         # updated automatically from Intervals.icu
-ATHLETE_FTP=245               # functional threshold power (watts)
-ATHLETE_CSS=98                # critical swim speed (sec per 100m)
+ATHLETE_LTHR_RUN=153          # lactate threshold HR for running
+ATHLETE_LTHR_BIKE=153         # lactate threshold HR for cycling
+ATHLETE_MAX_HR=179            # max HR (bike test, Dec 2025)
+ATHLETE_FTP=233               # functional threshold power (watts, Dec 2025)
+ATHLETE_CSS=141               # critical swim speed (sec per 100m = 2:21, Mar 2026)
 
 # Race Goal
 GOAL_EVENT_NAME=Ironman 70.3
@@ -223,14 +281,14 @@ GOAL_SWIM_CTL_TARGET=15
 GOAL_BIKE_CTL_TARGET=35
 GOAL_RUN_CTL_TARGET=25
 
-# Scheduler
-MORNING_REPORT_HOUR=7
-MORNING_REPORT_MINUTE=0
 TIMEZONE=Europe/Belgrade
 
 # HRV primary algorithm for recovery score: "flatt_esco" (default) | "ai_endurance"
 # Note: both algorithms are always computed and stored in hrv_analysis
 HRV_ALGORITHM=flatt_esco
+
+# MCP
+MCP_AUTH_TOKEN=your-secret-token    # Bearer token for remote MCP access via /mcp endpoint
 ```
 
 ---
@@ -289,7 +347,7 @@ Banister TRIMP-based, normalised so 1 hour at LTHR ≈ 100. Sport-agnostic.
 
 ### Banister Recovery Model
 
-`R(t+1) = R(t) * exp(-1/τ) + k * ESS(t)` — defaults: k=0.1, τ=2.0 (conservative).
+`R(t+1) = R(t) + (100 - R(t)) * (1 - exp(-1/τ)) - k * ESS(t)` — defaults: k=0.1, τ=2.0 (conservative).
 Re-calibrate every 4-6 weeks via `scipy.optimize.minimize` against actual RMSSD.
 
 ### Combined Recovery Score (0-100)
@@ -362,6 +420,7 @@ The `MORNING_REPORT_PROMPT` template in `ai/prompts.py` assembles:
 | **Per-Sport CTL** | `ctl_swim`, `ctl_bike`, `ctl_run` + targets from settings | `WellnessRow.sport_info` JSON → `_extract_sport_ctl()` |
 | **Race Goal** | `goal_event`, `weeks_remaining`, `goal_pct`, `swim/bike/run_pct` | Calculated from settings + current CTL |
 | **Planned Workouts** | `planned_workouts` (formatted text: type, name, duration, description with intervals) | `ScheduledWorkoutRow` for today |
+| **Yesterday DFA** | `yesterday_dfa_summary` (Ra, Da, HRVT1, quality per activity) | `ActivityHrvRow` + `ActivityRow` for yesterday |
 
 ### System Prompt — Persona & Rules
 
@@ -402,6 +461,24 @@ Defined in `SYSTEM_PROMPT` (`ai/prompts.py`). Key constraints:
 - On failure: logs exception, `ai_recommendation` stays `None`
 - Prompt receives pre-interpreted deltas, not raw HRV bounds
 
+### Gemini Second Opinion (optional)
+
+Enabled when `GOOGLE_AI_API_KEY` is set in `.env`. Disabled otherwise — no Gemini code runs, no tab in dashboard.
+
+**Architecture:**
+- Module: `ai/gemini_agent.py` — same prompt from `prompts.py`, called via `google-genai` SDK
+- Model: `gemini-2.5-flash` (or `gemini-2.5-pro`)
+- Both AI calls run in parallel via `asyncio.gather` during `save_wellness(run_ai=True)`
+- Each call is independent — if one fails, the other still saves
+- Result persisted to `wellness.ai_recommendation_gemini`
+- Skipped if `ai_recommendation_gemini` is already set (idempotent)
+
+**Display rules:**
+- **Telegram morning report**: only Claude recommendation (no change)
+- **Dashboard**: two tabs — Claude | Gemini (Gemini tab hidden if `GOOGLE_AI_API_KEY` not configured)
+- **`/api/report`**: returns both `ai_recommendation` and `ai_recommendation_gemini` (latter is `null` if disabled)
+- **MCP**: `get_recovery` returns both fields
+
 ---
 
 ## Bot Commands (bot/main.py)
@@ -413,15 +490,34 @@ Defined in `SYSTEM_PROMPT` (`ai/prompts.py`). Key constraints:
 /week     — weekly training summary (not yet implemented)
 /goal     — goal progress breakdown (not yet implemented)
 /zones    — current threshold zones (not yet implemented)
+/iqos     — increment daily IQOS stick counter (not yet implemented)
 ```
+
+### `/iqos` — Daily IQOS Counter
+
+Цель: отслеживание количества выкуренных стиков IQOS за день (помощь в отказе от курения).
+
+**Поведение:**
+- `/iqos` (без аргументов) — инкремент +1, ответ: `🚬 Сегодня: {count}`
+- Счётчик привязан к дате (сбрасывается каждый день)
+- Показывается в вечернем отчёте: `🚬 IQOS: {count}` (если count > 0)
+
+**Реализация:**
+- Новая таблица `iqos_daily`: `date` (String PK, "YYYY-MM-DD"), `count` (Integer), `updated_at` (DateTime)
+- Alembic migration
+- Bot handler: `CommandHandler("iqos", iqos_handler)` в `bot/main.py`
+- MCP tools: `get_iqos_count(date)`, `set_iqos_count(date, count)` для доступа из Claude Desktop
+- Интеграция в `build_evening_message` — строка `🚬 IQOS: {count}` перед блоком "Завтра"
 
 ---
 
-## API Endpoints (api/routes.py)
+## API Endpoints (api/server.py + api/routes.py)
 
 ```
-GET /api/report         — full morning report (grouped JSON)
-GET /health             — healthcheck
+GET  /api/report         — full morning report (grouped JSON)
+GET  /health             — healthcheck
+POST /telegram/webhook   — Telegram update receiver (webhook mode only)
+POST /mcp                — MCP server (Streamable HTTP transport, Bearer auth)
 ```
 
 **`/api/report` response structure:**
@@ -440,7 +536,8 @@ GET /health             — healthcheck
   "training_load": { "ctl", "atl", "tsb", "ramp_rate" },
   "body": { "weight", "body_fat", "vo2max", "steps" },
   "stress": { "ess_today", "banister_recovery" },
-  "ai_recommendation": "..."
+  "ai_recommendation": "...",
+  "ai_recommendation_gemini": "..."
 }
 ```
 
@@ -495,23 +592,60 @@ docker compose up -d             # all (db + migrate + bot)
 
 ## Key Implementation Notes
 
-- **Intervals.icu API** — official REST API; wellness synced every 15 min (7-23h), scheduled workouts every 1 hr (4-23h)
+- **Intervals.icu API** — official REST API; wellness synced every 10 min (5-23h), scheduled workouts every 1 hr (4-23h), DFA processing every 5 min (4-23h), evening report at 21:00
 - **Both HRV algorithms** are always computed and stored; `HRV_ALGORITHM` selects primary for recovery
 - **Claude API** once per day (morning report) to minimize costs
 - **All timestamps** UTC in DB, local timezone for display
 - **HRV algorithm** never changes mid-season without re-baselining
 - **Mini App** should degrade gracefully if API unreachable
+- **Telegram bot** supports two modes: polling (local dev) and webhook (production) — controlled by `TELEGRAM_WEBHOOK_URL`
+
+### Telegram Bot — Polling vs Webhook
+
+| | Polling (default) | Webhook |
+|---|---|---|
+| When | `TELEGRAM_WEBHOOK_URL` empty | `TELEGRAM_WEBHOOK_URL` set |
+| Entry point | `bot/main.py` → `start_bot()` → `run_polling()` | `api/server.py` lifespan → `build_application()` |
+| How it runs | Standalone process | Embedded in FastAPI server |
+| Updates | Bot polls Telegram API | Telegram POSTs to `/telegram/webhook` |
+| Auth | — | `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 hex chars) |
+| Updater | Built-in PTB Updater | Disabled (`.updater(None)`), manual `process_update()` |
+| Use case | Local development | Production (VPS with HTTPS) |
+
+Webhook lifecycle in `api/server.py` lifespan:
+- **Startup**: `initialize()` → `post_init()` (starts scheduler) → `start()` → `set_webhook()`
+- **Shutdown**: `delete_webhook()` → `stop()` → `shutdown()` → `post_shutdown()` (closes IntervalsClient)
+
+---
+
+## Documentation (docs/)
+
+Detailed design documents and implementation plans:
+
+| Document | Description |
+|---|---|
+| `docs/HRV_MODULE_SPEC.md` | HRV module architecture — Level 1 (RMSSD recovery, done) + Level 2 (DFA alpha 1, deferred) |
+| `docs/HRV_IMPLEMENTATION_PLAN.md` | Level 1 implementation steps — all completed |
+| `docs/ESS_BANISTER_PLAN.md` | ESS/Banister pipeline — implemented |
+| `docs/DFA_ALPHA1_PLAN.md` | Level 2: DFA alpha 1 — post-activity HRV pipeline (FIT → RR → DFA → thresholds → Ra/Da) — implemented |
+| `docs/PROCESS_FIT_JOB.md` | process_fit_job pipeline docs — steps, quality testing (ANT+ vs BLE), hardware config |
+| `docs/MCP_INTEGRATION_PLAN.md` | MCP roadmap — Phase 1 (done), Phase 2-3 (future) |
+| `docs/PROGRESS_TRACKING_PLAN.md` | Progress tracking — Efficiency Factor (bike/run) + swim pace/SWOLF trends |
 
 ---
 
 ## Next Steps (Priority Order)
 
-1. **Update webapp** — adapt report.html to new grouped API response structure
-2. **Implement bot commands** — /start /status /week /goal /zones
-3. **ESS/Banister pipeline** — sync activities → ESS per activity → Banister → persist
-4. **Additional API endpoints** — /api/dashboard, /api/training-load, /api/goal, /api/weekly-summary
-5. **MCP Phase 2** — replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
-6. **MCP Phase 3** — free-form Telegram chat — user asks any question, Claude queries tools as needed
+1. ~~**ESS/Banister pipeline**~~ — Done. `average_hr` added, ESS/Banister integrated into recovery pipeline.
+2. ~~**DFA Alpha 1 pipeline (Level 2)**~~ — Done. Post-activity HRV: FIT→RR→DFA a1→thresholds→Ra/Da. Cron every 5 min, 3 MCP tools.
+3. ~~**Post-activity Telegram notification**~~ — Done. DFA summary sent after FIT processing (Ra, Da, thresholds).
+4. ~~**Evening report**~~ — Done. Daily summary at 21:00 via Telegram (activities, recovery, DFA).
+5. ~~**Morning prompt + DFA context**~~ — Done. Yesterday's DFA data added to MORNING_REPORT_PROMPT.
+6. **Activity Details** — расширенная статистика per activity (HR, power, pace, splits). Новая таблица `activity_details`, MCP tool, Intervals.icu API + FIT parsing.
+7. **Web Dashboard** — full dashboard с вкладками: Today, Calendar (activities + plan), Stats. Manual job triggers (sync plan, sync activities, morning report). Вертикальные срезы: API + frontend за один раз.
+8. **Implement bot commands** — /start /status /week /goal /zones /iqos
+9. **MCP Phase 2** — replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
+10. **MCP Phase 3** — free-form Telegram chat — user asks any question, Claude queries tools as needed
 
 ---
 
@@ -523,20 +657,25 @@ docker compose up -d             # all (db + migrate + bot)
 
 MCP server exposes athlete data as read-only tools. Parallel access channel for Claude Desktop and future integrations — does NOT change the existing pipeline.
 
-Run: `python -m mcp_server`
+Run standalone: `python -m mcp_server`
+Production: mounted at `/mcp` in FastAPI (Streamable HTTP transport), protected by Bearer token (`MCP_AUTH_TOKEN`). Auth middleware (`MCPAuthMiddleware`) validates tokens on all `/mcp*` paths.
 
-### Tools (7)
+### Tools (12)
 
 | Tool | Description |
 |---|---|
 | `get_wellness(date)` | All wellness fields for a day |
 | `get_wellness_range(from, to)` | Multi-day wellness for trends |
+| `get_activities(date?, days_back?)` | Completed activities with TSS, duration, has_hrv_analysis flag |
 | `get_hrv_analysis(date, algorithm?)` | HRV status + baselines + SWC + CV + trend |
 | `get_rhr_analysis(date)` | RHR status + 7d/30d/60d baselines + trend |
 | `get_training_load(date)` | CTL/ATL/TSB/ramp_rate + per-sport CTL (Intervals.icu) |
 | `get_recovery(date)` | Recovery score, category, recommendation |
 | `get_goal_progress()` | Race goal, weeks remaining, per-sport CTL vs target % |
 | `get_scheduled_workouts(date?, days_ahead?)` | Planned workouts from Intervals.icu calendar with full description |
+| `get_activity_hrv(activity_id)` | DFA a1 analysis: quality, thresholds (HRVT1/HRVT2), Ra, Da |
+| `get_thresholds_history(sport?, days_back?)` | HRVT1/HRVT2 trend over time (fitness progression) |
+| `get_readiness_history(sport?, days_back?)` | Readiness (Ra) trend — warmup power/pace vs baseline |
 
 ### Resources (3)
 
@@ -549,6 +688,130 @@ Run: `python -m mcp_server`
 ### Key constraint
 
 All tools must document in docstrings that CTL/ATL/TSB come from Intervals.icu and thresholds are calibrated for its model, not TrainingPeaks.
+
+### Phase 2-3 (future)
+
+- Phase 2: Replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
+- Phase 3: Free-form Telegram chat — user asks any question, Claude queries tools as needed
+
+---
+
+## Activity Details (#6)
+
+Расширенная статистика per activity — HR, power, pace, laps/intervals, cadence.
+
+### Источники данных
+
+1. **Intervals.icu API** (`GET /api/v1/activity/{id}`) — summary: avg/max HR, avg/max power, NP, distance, speed, cadence, elevation, calories, laps
+2. **FIT file** (уже скачиваем для DFA) — raw секундные записи, lap markers. Используем только для данных, которых нет в API
+
+### Новая таблица `activity_details`
+
+| Column | Type | Notes |
+|---|---|---|
+| `activity_id` | String PK, FK → activities | |
+| `max_hr` | Float, nullable | max heart rate |
+| `avg_power` | Float, nullable | average power (bike) |
+| `max_power` | Float, nullable | max power |
+| `normalized_power` | Float, nullable | NP (bike) |
+| `avg_speed` | Float, nullable | m/s |
+| `max_speed` | Float, nullable | m/s |
+| `distance` | Float, nullable | meters |
+| `elevation_gain` | Float, nullable | meters |
+| `avg_cadence` | Float, nullable | rpm (bike) or spm (run) |
+| `calories` | Integer, nullable | kcal |
+| `efficiency_factor` | Float, nullable | NP/avgHR (bike) or speed/avgHR (run) |
+| `laps` | JSON, nullable | per-lap breakdown: [{lap, duration, distance, avg_hr, avg_power, avg_pace}] |
+| `intervals` | JSON, nullable | structured intervals from Intervals.icu workout_doc matching |
+
+### MCP Tool
+
+```
+get_activity_details(activity_id) → full activity stats + laps + DFA (if available)
+```
+
+Combines `activity_details` + `activity_hrv` в один ответ. Если `activity_details` не заполнен — запрашивает Intervals.icu API на лету и кеширует.
+
+### Заполнение
+
+- При `sync_activities_job` — запрашивать detail endpoint для новых активностей
+- Backfill CLI command: `python -m bot.cli backfill-details`
+- Lazy load через MCP tool: если нет в БД — запросить и сохранить
+
+---
+
+## Web Dashboard (#7)
+
+Полноценный дашборд с управлением, не только просмотр.
+
+### Архитектура
+
+Single-page app: `dashboard.html` + `app.js` + `charts.js` + `style.css`.
+Telegram Mini App (через WebAppInfo) или standalone (прямой URL).
+Стек: HTML + Chart.js + Tailwind CSS (CDN). Без фреймворков.
+
+### Вкладки
+
+**Today** — утренний отчёт
+- Recovery gauge + score
+- HRV/RHR/Sleep метрики
+- CTL/ATL/TSB
+- AI рекомендация
+- Источник: `GET /api/report` (уже есть)
+
+**Calendar** — активности и план по дням
+- Календарь-сетка с иконками спорта
+- Клик по дню → список активностей + запланированные тренировки
+- Клик по активности → детальная статистика (HR, power, pace, laps) из `get_activity_details`
+- Источник: `GET /api/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+**Load** — графики тренировочной нагрузки
+- CTL/ATL/TSB line chart (12 недель)
+- Daily TSS stacked bar chart по видам спорта
+- Ramp rate indicator
+- Источник: `GET /api/training-load?days=84`
+
+**Goal** — прогресс к Ironman 70.3
+- Countdown (weeks remaining)
+- Per-sport CTL progress bars vs targets
+- CTL trend chart per sport
+- Источник: `GET /api/goal`
+
+### Manual Job Triggers
+
+Кнопки в UI для ручного запуска джобов (без ожидания cron):
+
+| Кнопка | API endpoint | Что делает |
+|---|---|---|
+| 🔄 Синхронизировать план | `POST /api/jobs/sync-workouts` | `scheduled_workouts_job()` |
+| 🔄 Загрузить активности | `POST /api/jobs/sync-activities` | `sync_activities_job()` + `process_fit_job()` |
+| 📊 Утренний отчёт | `POST /api/jobs/morning-report` | `daily_metrics_job(run_ai=True)` |
+| 🔄 Обновить wellness | `POST /api/jobs/sync-wellness` | `daily_metrics_job()` |
+
+**Безопасность:** Job endpoints защищены Telegram initData (как `/api/report`) — только авторизованный пользователь.
+
+**Ответ:** `202 Accepted` + job запускается async. Опционально: WebSocket/SSE для статуса выполнения (v2).
+
+### API Endpoints (новые)
+
+```
+GET  /api/calendar?from=&to=       — активности + planned workouts по дням
+GET  /api/training-load?days=84    — CTL/ATL/TSB/TSS timeseries
+GET  /api/goal                     — race goal progress
+GET  /api/activity/{id}/details    — full activity stats + laps
+POST /api/jobs/sync-workouts       — trigger plan sync
+POST /api/jobs/sync-activities     — trigger activity sync + DFA
+POST /api/jobs/morning-report      — trigger morning report
+POST /api/jobs/sync-wellness       — trigger wellness sync
+```
+
+### Порядок реализации (вертикальные срезы)
+
+1. **Today tab** — адаптировать `app.js` под `/api/report` (минимум работы)
+2. **Job triggers** — POST endpoints + кнопки в UI (максимальная польза сразу)
+3. **Load tab** — `/api/training-load` + Chart.js графики
+4. **Goal tab** — `/api/goal` + progress bars
+5. **Calendar tab** — `/api/calendar` + activity details drill-down (самый объёмный)
 
 ### Phase 2-3 (future)
 
