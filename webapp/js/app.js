@@ -72,7 +72,6 @@ async function loadToday() {
     const hrvDelta = data.hrv_baseline ? ((data.hrv_last - data.hrv_baseline) / data.hrv_baseline * 100).toFixed(0) : '—';
     document.getElementById('metric-hrv').textContent = `${hrvDelta > 0 ? '+' : ''}${hrvDelta}%`;
     document.getElementById('metric-sleep').textContent = data.sleep_score ?? '—';
-    document.getElementById('metric-battery').textContent = data.body_battery ?? '—';
     document.getElementById('metric-rhr').textContent = data.resting_hr ? `${data.resting_hr.toFixed(0)}` : '—';
 
     // Training load

@@ -20,8 +20,8 @@ from data.models import (
     RecoveryState,
     RhrStatus,
     RmssdStatus,
-    SleepData,
     TrendResult,
+    Wellness,
 )
 
 # Heart Rate Zones as percentage of LTHR (Lactate Threshold Heart Rate)
@@ -120,18 +120,16 @@ def update_ctl_atl(
 
 def calculate_readiness(
     hrv: HRVData,
-    sleep: SleepData,
-    body_battery: int,
+    sleep: Wellness,
     resting_hr: float,
     resting_hr_baseline: float,
 ) -> tuple[int, ReadinessLevel]:
     """Calculate composite readiness score from physiological signals.
 
-    Weighted from 4 components:
+    Weighted from 3 components:
     - HRV delta from baseline (35%)
-    - Sleep score (30%)
-    - Body Battery morning value (20%)
-    - Resting HR deviation from baseline (15%)
+    - Sleep score (40%)
+    - Resting HR deviation from baseline (25%)
     """
     score = 100
 
@@ -146,31 +144,23 @@ def calculate_readiness(
     elif hrv_delta > +0.10:
         score += 5  # bonus for good recovery
 
-    # Sleep component (weight: 30%)
-    sleep_score = sleep.score or 0
+    # Sleep component (weight: 40%)
+    sleep_score = sleep.sleep_score or 0
     if sleep_score < 50:
-        score -= 30
+        score -= 40
     elif sleep_score < 65:
-        score -= 15
-    elif sleep_score < 75:
-        score -= 7
-
-    # Body Battery component (weight: 20%)
-    if body_battery < 30:
         score -= 20
-    elif body_battery < 50:
+    elif sleep_score < 75:
         score -= 10
-    elif body_battery < 65:
-        score -= 5
 
-    # Resting HR component (weight: 15%)
+    # Resting HR component (weight: 25%)
     hr_delta = resting_hr - resting_hr_baseline
     if hr_delta > 7:
-        score -= 15
+        score -= 25
     elif hr_delta > 4:
-        score -= 8
+        score -= 13
     elif hr_delta > 2:
-        score -= 3
+        score -= 5
 
     score = max(0, min(100, score))
 
@@ -354,16 +344,17 @@ def _rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatus:
     )
 
 
-async def calculate_rmssd_status() -> RmssdStatus:
+async def calculate_rmssd_status(algorithm: str | None = None, *, session=None) -> RmssdStatus:
     """Dispatcher: loads HRV history from DB, delegates to selected algorithm.
 
-    Algorithm controlled by settings.HRV_ALGORITHM:
-        "flatt_esco"   — today vs 7d baseline, asymmetric bounds (default)
-        "ai_endurance" — 7d mean vs 60d baseline, symmetric bounds
+    Args:
+        algorithm: "flatt_esco" or "ai_endurance". Defaults to settings.HRV_ALGORITHM.
+        session: optional AsyncSession to reuse an existing transaction.
     """
     from data.database import get_hrv_history
 
-    hrv_history = await get_hrv_history(days=60)
+    algo = algorithm or settings.HRV_ALGORITHM
+    hrv_history = await get_hrv_history(days=60, session=session)
     n = len(hrv_history)
     MIN_DAYS = 14
 
@@ -374,10 +365,10 @@ async def calculate_rmssd_status() -> RmssdStatus:
             days_needed=MIN_DAYS - n,
         )
 
-    if settings.HRV_ALGORITHM == "ai_endurance":
+    if algo == "ai_endurance":
         return _rmssd_ai_endurance(hrv_history)
 
-    return _rmssd_flatt_esco(hrv_history)  # default
+    return _rmssd_flatt_esco(hrv_history)
 
 
 # ---------------------------------------------------------------------------
@@ -385,15 +376,19 @@ async def calculate_rmssd_status() -> RmssdStatus:
 # ---------------------------------------------------------------------------
 
 
-async def calculate_rhr_status() -> RhrStatus:
+async def calculate_rhr_status(*, session=None) -> RhrStatus:
     """Resting HR baseline analysis.
 
     Compares today's RHR vs 30-day rolling baseline.
     Inverted vs RMSSD: elevated RHR = under-recovered.
+    Computes 7d, 30d, and 60d baselines.
+
+    Args:
+        session: optional AsyncSession to reuse an existing transaction.
     """
     from data.database import get_rhr_history
 
-    rhr_history = await get_rhr_history(days=30)
+    rhr_history = await get_rhr_history(days=60, session=session)
     n = len(rhr_history)
     MIN_DAYS = 7
 
@@ -404,13 +399,24 @@ async def calculate_rhr_status() -> RhrStatus:
             days_needed=MIN_DAYS - n,
         )
 
+    today_rhr = rhr_history[-1]
+
+    # 7-day baseline
+    last_7 = rhr_history[-7:]
+    mean_7 = statistics.mean(last_7)
+    sd_7 = statistics.stdev(last_7) if len(last_7) >= 2 else 1.0
+
+    # 30-day baseline (used for status bounds)
     last_30 = rhr_history[-30:] if n >= 30 else rhr_history
     mean_30 = statistics.mean(last_30)
     sd_30 = statistics.stdev(last_30) if len(last_30) >= 2 else 1.0
 
     lower_bound = mean_30 - 0.5 * sd_30
     upper_bound = mean_30 + 0.5 * sd_30
-    today_rhr = rhr_history[-1]
+
+    # 60-day baseline (context only)
+    rhr_60d = statistics.mean(rhr_history[-60:]) if n >= 60 else None
+    rhr_sd_60d = statistics.stdev(rhr_history[-60:]) if n >= 60 else None
 
     # Inverted: high RHR = red, low RHR = green
     if today_rhr > upper_bound:
@@ -420,15 +426,24 @@ async def calculate_rhr_status() -> RhrStatus:
     else:
         status = "yellow"
 
+    cv_7d = (sd_7 / mean_7 * 100) if mean_7 > 0 else None
+    trend = _calculate_trend(last_7, window=7, **TREND_THRESHOLDS["resting_hr"])
+
     return RhrStatus(
         status=status,
         days_available=n,
         days_needed=0,
         rhr_today=round(today_rhr, 1),
+        rhr_7d=round(mean_7, 1),
+        rhr_sd_7d=round(sd_7, 2),
         rhr_30d=round(mean_30, 1),
         rhr_sd_30d=round(sd_30, 2),
+        rhr_60d=round(rhr_60d, 1) if rhr_60d else None,
+        rhr_sd_60d=round(rhr_sd_60d, 2) if rhr_sd_60d else None,
         lower_bound=round(lower_bound, 1),
         upper_bound=round(upper_bound, 1),
+        cv_7d=round(cv_7d, 1) if cv_7d is not None else None,
+        trend=trend,
     )
 
 
@@ -518,30 +533,21 @@ def calculate_banister_recovery(
 
 _STATUS_TO_SCORE = {"green": 100, "yellow": 65, "red": 20, "insufficient_data": 50}
 
-RECOMMENDATION_TEXT = {
-    "zone2_ok": "тренировка Z2 — полный объём",
-    "zone1_long": "только аэробная база, Z1-Z2",
-    "zone1_short": "лёгкая активность, 30-45 мин",
-    "skip": "отдых — не тренироваться",
-}
-
 
 def combined_recovery_score(
     rmssd_status: RmssdStatus,
     rhr_status: RhrStatus,
     banister_recovery: float,
     sleep_score: int,
-    body_battery: int,
     sleep_start_hour: float | None = None,
 ) -> RecoveryScore:
-    """Weighted integration of 5 recovery signals into a single 0-100 score.
+    """Weighted integration of 4 recovery signals into a single 0-100 score.
 
     Weights:
         RMSSD status      35%
         Banister R(t)     25%
-        Resting HR status 15%
-        Sleep score       15%
-        Body Battery      10%
+        Resting HR status 20%
+        Sleep score       20%
 
     Modifiers:
         sleep_start > 23:00  →  -10 pts
@@ -551,9 +557,8 @@ def combined_recovery_score(
     rhr_score = _STATUS_TO_SCORE.get(rhr_status.status, 50)
     banister_pct = max(0.0, min(100.0, banister_recovery))
     sleep_pct = max(0.0, min(100.0, float(sleep_score)))
-    battery_pct = max(0.0, min(100.0, float(body_battery)))
 
-    score = rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.15 + sleep_pct * 0.15 + battery_pct * 0.10
+    score = rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.20 + sleep_pct * 0.20
 
     flags: list[str] = []
     if sleep_start_hour is not None and sleep_start_hour > 23.0:
@@ -596,6 +601,5 @@ def combined_recovery_score(
             "banister": round(banister_pct, 1),
             "rhr": rhr_score,
             "sleep": round(sleep_pct, 1),
-            "body_battery": round(battery_pct, 1),
         },
     )

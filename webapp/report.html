@@ -199,38 +199,45 @@
             font-size: 12px;
         }
 
-        /* Workouts */
-        .workout-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px 0;
-            border-bottom: 1px solid var(--bg);
-        }
-
-        .workout-item:last-child { border-bottom: none; }
-
-        .workout-sport {
-            font-size: 20px;
-        }
-
-        .workout-name {
-            flex: 1;
-            font-size: 13px;
-            font-weight: 500;
-        }
-
-        .workout-tss {
-            font-size: 12px;
-            color: var(--hint);
-            font-weight: 600;
-        }
-
         /* AI card */
         .ai-text {
             font-size: 13px;
-            line-height: 1.6;
-            white-space: pre-wrap;
+            line-height: 1.7;
+        }
+
+        .ai-text p {
+            margin: 0 0 10px;
+        }
+
+        .ai-text p:last-child {
+            margin-bottom: 0;
+        }
+
+        .ai-text strong {
+            font-weight: 700;
+        }
+
+        .ai-text em {
+            font-style: italic;
+        }
+
+        .ai-text ul, .ai-text ol {
+            margin: 4px 0 10px;
+            padding-left: 20px;
+        }
+
+        .ai-text li {
+            margin-bottom: 4px;
+        }
+
+        .ai-text h3, .ai-text h4 {
+            font-size: 13px;
+            font-weight: 700;
+            margin: 12px 0 4px;
+        }
+
+        .ai-text h3:first-child, .ai-text h4:first-child {
+            margin-top: 0;
         }
 
         /* Loading */
@@ -319,10 +326,6 @@
             <div class="mini-value" id="q-sleep">--</div>
             <div class="mini-label">Оценка сна</div>
         </div>
-        <div class="mini-card">
-            <div class="mini-value" id="q-battery">--</div>
-            <div class="mini-label">Body Battery</div>
-        </div>
     </div>
 
     <!-- HRV Section -->
@@ -338,11 +341,11 @@
             <span class="value" id="hrv-today">--</span>
         </div>
         <div class="metric-row">
-            <span class="label">Базлайн 7д</span>
+            <span class="label">Норма 7д</span>
             <span class="value" id="hrv-7d">--</span>
         </div>
         <div class="metric-row" id="hrv-60d-row" style="display:none">
-            <span class="label">Базлайн 60д</span>
+            <span class="label">Норма 60д</span>
             <span class="value" id="hrv-60d">--</span>
         </div>
         <div class="metric-row" id="hrv-swc-row" style="display:none">
@@ -412,15 +415,24 @@
             <span class="label">TSB (Форма)</span>
             <span class="value" id="load-tsb">--</span>
         </div>
-    </div>
-
-    <!-- Workouts Section -->
-    <div class="section" id="workouts-section" style="display:none">
-        <div class="section-header">
-            <span class="section-icon">🏋️</span>
-            <span class="section-title">План на сегодня</span>
+        <div class="metric-row" id="load-ramp-row" style="display:none">
+            <span class="label">Ramp Rate</span>
+            <span class="value" id="load-ramp">--</span>
         </div>
-        <div id="workouts-list"></div>
+        <div id="sport-ctl-section" style="display:none; padding-top:10px; border-top: 1px solid var(--bg); margin-top: 10px">
+            <div class="metric-row">
+                <span class="label">🏊 Swim CTL</span>
+                <span class="value" id="ctl-swim">--</span>
+            </div>
+            <div class="metric-row">
+                <span class="label">🚴 Bike CTL</span>
+                <span class="value" id="ctl-bike">--</span>
+            </div>
+            <div class="metric-row">
+                <span class="label">🏃 Run CTL</span>
+                <span class="value" id="ctl-run">--</span>
+            </div>
+        </div>
     </div>
 
     <!-- AI Section -->
@@ -501,13 +513,6 @@ const STATUS_BADGE = {
     red: ['badge-red', 'Тревога'],
 };
 
-const SPORT_EMOJI = {
-    swimming: '🏊',
-    cycling: '🚴',
-    running: '🏃',
-    strength_training: '🏋️',
-};
-
 function formatDate(dateStr) {
     const d = new Date(dateStr + 'T00:00:00');
     const days = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
@@ -527,6 +532,39 @@ function setBadge(elId, status) {
     }
 }
 
+function renderMarkdown(text) {
+    // Sanitize HTML
+    let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Headers: ### and ####
+    html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+
+    // Bold: **text**
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // Italic: *text*
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+    // Numbered sections: "1. text" at start of line → bold heading
+    html = html.replace(/^(\d+)\.\s+(.+)$/gm, '<strong>$1. $2</strong>');
+
+    // Bullet lists: - item or * item
+    html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
+    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+    // Paragraphs: split by double newline
+    html = html.split(/\n{2,}/).map(block => {
+        block = block.trim();
+        if (!block) return '';
+        // Don't wrap if already an HTML block element
+        if (/^<(h[34]|ul|ol|li)/.test(block)) return block;
+        return '<p>' + block.replace(/\n/g, '<br>') + '</p>';
+    }).join('\n');
+
+    return html;
+}
+
 async function loadReport() {
     try {
         const d = await apiFetch('/api/report');
@@ -535,7 +573,7 @@ async function loadReport() {
 
         if (!d.has_data) {
             document.getElementById('content').style.display = 'block';
-            document.getElementById('content').innerHTML = '<div class="no-data-state">Нет данных на сегодня.<br>Отправьте /sync в боте.</div>';
+            document.getElementById('content').innerHTML = '<div class="no-data-state">Нет данных на сегодня.<br>Данные обновляются автоматически.</div>';
             return;
         }
 
@@ -545,112 +583,113 @@ async function loadReport() {
         document.getElementById('report-date').textContent = formatDate(d.date);
 
         // Recovery header
-        const cat = d.recovery_category || 'moderate';
+        const rec = d.recovery || {};
+        const cat = rec.category || 'moderate';
         const color = CATEGORY_COLORS[cat] || CATEGORY_COLORS.moderate;
-        document.getElementById('recovery-category').textContent = d.recovery_title;
+        document.getElementById('recovery-category').textContent = rec.title || '';
         document.getElementById('recovery-category').style.color = color;
-        document.getElementById('score-number').textContent = d.recovery_score != null ? Math.round(d.recovery_score) : '--';
+        document.getElementById('score-number').textContent = rec.score != null ? Math.round(rec.score) : '--';
         document.getElementById('score-number').style.color = color;
-        document.getElementById('recovery-rec').textContent = d.recovery_recommendation || '';
-        drawGauge('score-canvas', d.recovery_score || 0, color);
+        document.getElementById('recovery-rec').textContent = rec.recommendation || '';
+        drawGauge('score-canvas', rec.score || 0, color);
 
         // Quick metrics
-        document.getElementById('q-sleep').textContent = d.sleep_score != null ? `${d.sleep_score}` : '--';
-        document.getElementById('q-battery').textContent = d.body_battery != null ? `${d.body_battery}` : '--';
+        const sleep = d.sleep || {};
+        document.getElementById('q-sleep').textContent = sleep.score != null ? `${sleep.score}` : '--';
 
-        // HRV
-        if (d.hrv_status && d.hrv_status !== 'insufficient_data') {
-            const hrvSec = document.getElementById('hrv-section');
-            hrvSec.style.display = 'block';
-            setBadge('hrv-badge', d.hrv_status);
+        // HRV — use primary algorithm
+        const hrvData = d.hrv || {};
+        const primaryAlgo = hrvData.primary_algorithm || 'flatt_esco';
+        const hrv = hrvData[primaryAlgo] || {};
 
-            if (d.hrv_delta_pct != null) {
-                const sign = d.hrv_delta_pct >= 0 ? '+' : '';
+        if (hrv.status && hrv.status !== 'insufficient_data') {
+            document.getElementById('hrv-section').style.display = 'block';
+            setBadge('hrv-badge', hrv.status);
+
+            if (hrv.delta_pct != null) {
+                const sign = hrv.delta_pct >= 0 ? '+' : '';
                 const el = document.getElementById('hrv-delta');
-                el.textContent = `${sign}${d.hrv_delta_pct}%`;
-                el.style.color = d.hrv_delta_pct >= 0 ? 'var(--green)' : 'var(--red)';
+                el.textContent = `${sign}${hrv.delta_pct}%`;
+                el.style.color = hrv.delta_pct >= 0 ? 'var(--green)' : 'var(--red)';
             }
 
-            if (d.hrv_today != null) document.getElementById('hrv-today').textContent = `${d.hrv_today.toFixed(0)} мс`;
-            if (d.hrv_7d != null) document.getElementById('hrv-7d').textContent = `${d.hrv_7d.toFixed(0)} мс`;
+            if (hrv.today != null) document.getElementById('hrv-today').textContent = `${hrv.today.toFixed(0)} мс`;
+            if (hrv.mean_7d != null) document.getElementById('hrv-7d').textContent = `${hrv.mean_7d.toFixed(0)} мс`;
 
-            if (d.hrv_60d != null) {
+            if (hrv.mean_60d != null) {
                 document.getElementById('hrv-60d-row').style.display = 'flex';
-                document.getElementById('hrv-60d').textContent = `${d.hrv_60d.toFixed(0)} мс`;
+                document.getElementById('hrv-60d').textContent = `${hrv.mean_60d.toFixed(0)} мс`;
             }
 
-            if (d.hrv_swc != null && d.hrv_swc_verdict) {
+            if (hrv.swc != null && hrv.swc_verdict) {
                 document.getElementById('hrv-swc-row').style.display = 'flex';
-                document.getElementById('hrv-swc').textContent = `${d.hrv_swc.toFixed(1)} мс — ${d.hrv_swc_verdict}`;
+                document.getElementById('hrv-swc').textContent = `${hrv.swc.toFixed(1)} мс — ${hrv.swc_verdict}`;
             }
 
-            if (d.hrv_cv_7d != null && d.hrv_cv_verdict) {
+            if (hrv.cv_7d != null && hrv.cv_verdict) {
                 document.getElementById('hrv-cv-row').style.display = 'flex';
-                document.getElementById('hrv-cv').textContent = `${d.hrv_cv_verdict} (CV ${d.hrv_cv_7d.toFixed(1)}%)`;
+                document.getElementById('hrv-cv').textContent = `${hrv.cv_verdict} (CV ${hrv.cv_7d.toFixed(1)}%)`;
             }
         }
 
         // RHR
-        if (d.rhr_status && d.rhr_status !== 'insufficient_data' && d.rhr_today != null) {
+        const rhr = d.rhr || {};
+        if (rhr.status && rhr.status !== 'insufficient_data' && rhr.today != null) {
             document.getElementById('rhr-section').style.display = 'block';
-            setBadge('rhr-badge', d.rhr_status);
-            document.getElementById('rhr-today').textContent = `${d.rhr_today.toFixed(0)} уд`;
+            setBadge('rhr-badge', rhr.status);
+            document.getElementById('rhr-today').textContent = `${rhr.today.toFixed(0)} уд`;
 
-            if (d.rhr_30d != null) {
+            if (rhr.mean_30d != null) {
                 document.getElementById('rhr-30d-row').style.display = 'flex';
-                document.getElementById('rhr-30d').textContent = `${d.rhr_30d.toFixed(0)} уд`;
+                document.getElementById('rhr-30d').textContent = `${rhr.mean_30d.toFixed(0)} уд`;
             }
-            if (d.rhr_delta != null) {
+            if (rhr.delta_30d != null) {
                 document.getElementById('rhr-delta-row').style.display = 'flex';
                 const el = document.getElementById('rhr-delta');
-                const sign = d.rhr_delta >= 0 ? '+' : '';
-                el.textContent = `${sign}${d.rhr_delta.toFixed(0)} уд`;
-                el.className = 'value ' + (d.rhr_delta > 0 ? 'negative' : d.rhr_delta < 0 ? 'positive' : '');
+                const sign = rhr.delta_30d >= 0 ? '+' : '';
+                el.textContent = `${sign}${rhr.delta_30d.toFixed(0)} уд`;
+                el.className = 'value ' + (rhr.delta_30d > 0 ? 'negative' : rhr.delta_30d < 0 ? 'positive' : '');
             }
         }
 
         // Sleep
-        if (d.sleep_score != null) {
+        if (sleep.score != null) {
             document.getElementById('sleep-section').style.display = 'block';
-            document.getElementById('sleep-score').textContent = `${d.sleep_score}/100`;
-            document.getElementById('sleep-duration').textContent = d.sleep_duration || '--';
+            document.getElementById('sleep-score').textContent = `${sleep.score}/100`;
+            document.getElementById('sleep-duration').textContent = sleep.duration || '--';
         }
 
         // Training load
-        if (d.ctl != null || d.atl != null) {
+        const load = d.training_load || {};
+        if (load.ctl != null || load.atl != null) {
             document.getElementById('load-section').style.display = 'block';
-            document.getElementById('load-ctl').textContent = d.ctl != null ? d.ctl.toFixed(0) : '--';
-            document.getElementById('load-atl').textContent = d.atl != null ? d.atl.toFixed(0) : '--';
-            if (d.tsb != null) {
+            document.getElementById('load-ctl').textContent = load.ctl != null ? load.ctl.toFixed(0) : '--';
+            document.getElementById('load-atl').textContent = load.atl != null ? load.atl.toFixed(0) : '--';
+            if (load.tsb != null) {
                 const el = document.getElementById('load-tsb');
-                const sign = d.tsb >= 0 ? '+' : '';
-                el.textContent = `${sign}${d.tsb.toFixed(0)}`;
-                el.className = 'value ' + (d.tsb > 10 ? 'positive' : d.tsb < -25 ? 'negative' : '');
+                const sign = load.tsb >= 0 ? '+' : '';
+                el.textContent = `${sign}${load.tsb.toFixed(0)}`;
+                el.className = 'value ' + (load.tsb > 10 ? 'positive' : load.tsb < -25 ? 'negative' : '');
             }
-        }
-
-        // Workouts
-        if (d.workouts && d.workouts.length > 0) {
-            document.getElementById('workouts-section').style.display = 'block';
-            const list = document.getElementById('workouts-list');
-            for (const w of d.workouts) {
-                const emoji = SPORT_EMOJI[w.sport] || '🏋️';
-                const tssStr = w.planned_tss ? `TSS ${w.planned_tss.toFixed(0)}` : '';
-                const div = document.createElement('div');
-                div.className = 'workout-item';
-                div.innerHTML = `
-                    <span class="workout-sport">${emoji}</span>
-                    <span class="workout-name">${w.workout_name}</span>
-                    <span class="workout-tss">${tssStr}</span>
-                `;
-                list.appendChild(div);
+            if (load.ramp_rate != null) {
+                document.getElementById('load-ramp-row').style.display = 'flex';
+                const el = document.getElementById('load-ramp');
+                el.textContent = `${load.ramp_rate.toFixed(1)} TSS/нед`;
+                el.className = 'value ' + (load.ramp_rate > 7 ? 'negative' : '');
+            }
+            const sc = load.sport_ctl || {};
+            if (sc.swim != null || sc.bike != null || sc.run != null) {
+                document.getElementById('sport-ctl-section').style.display = 'block';
+                if (sc.swim != null) document.getElementById('ctl-swim').textContent = sc.swim.toFixed(1);
+                if (sc.bike != null) document.getElementById('ctl-bike').textContent = sc.bike.toFixed(1);
+                if (sc.run != null) document.getElementById('ctl-run').textContent = sc.run.toFixed(1);
             }
         }
 
         // AI recommendation
         if (d.ai_recommendation) {
             document.getElementById('ai-section').style.display = 'block';
-            document.getElementById('ai-text').textContent = d.ai_recommendation;
+            document.getElementById('ai-text').innerHTML = renderMarkdown(d.ai_recommendation);
         }
 
     } catch (err) {
