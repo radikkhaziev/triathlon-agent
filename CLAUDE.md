@@ -231,19 +231,22 @@ Ra baseline = average Pa over last 14 days (≥3 data points required).
 | `data/hrv_activity.py`    | Done        | Level 2: DFA a1 pipeline — RR extraction, artifact correction, DFA timeseries, thresholds, Ra/Da |
 | `data/database.py`        | Done        | `WellnessRow`, `HrvAnalysisRow`, `RhrAnalysisRow`, `ActivityRow`, `ScheduledWorkoutRow`, `ActivityHrvRow`, `PaBaselineRow` + CRUD |
 | `data/utils.py`           | Done        | `SPORT_MAP`, `extract_sport_ctl`, `extract_sport_ctl_tuple`               |
-| `ai/prompts.py`           | Done        | System + morning report prompts; includes planned workouts + yesterday DFA |
-| `ai/claude_agent.py`      | Done        | Morning AI recommendation (sonnet-4-6); evaluates planned workouts + DFA context |
-| `ai/gemini_agent.py`      | Done        | Optional Gemini second opinion; same prompts, `google-genai` SDK; gated by `GOOGLE_AI_API_KEY` |
+| `ai/prompts.py`           | Done        | System prompt + two morning report templates: `MORNING_REPORT_PROMPT` (Claude) + `MORNING_REPORT_PROMPT_GEMINI` (stricter Markdown, deeper analysis style) |
+| `ai/claude_agent.py`      | Done        | `build_morning_prompt()` shared async function (accepts `template` param); `ClaudeAgent` (sonnet-4-6, max_tokens=1024); raises on failure |
+| `ai/gemini_agent.py`      | Done        | Optional Gemini second opinion; dedicated prompt template; `google-genai` SDK (optional dep); streaming + retry (2 attempts, 5s backoff) + thinking_config; gated by `GOOGLE_AI_API_KEY` |
 | `bot/main.py`             | Done        | `/morning`, `whoami` handlers; `build_application()` shared by polling + webhook; no /start /status /week /goal /zones |
 | `bot/scheduler.py`        | Done        | Wellness every 10 min; workouts every 1 hr; activities at :30; DFA every 5 min + post-activity TG notification; evening report at 21:00; 5 cron jobs total |
 | `bot/cli.py`              | Done        | shell, backfill, sync-workouts, sync-activities, process-fit              |
 | `bot/formatter.py`        | Done        | Report summary, post-activity DFA notification, evening report + tomorrow's plan |
-| `api/routes.py`           | Done        | `/api/report`, `/api/scheduled-workouts`, `/api/jobs/sync-workouts` + `/health` |
+| `api/routes.py`           | Done        | `/api/report`, `/api/wellness-day`, `/api/scheduled-workouts`, `/api/activities-week`, `/api/activity/{id}/details`, `/api/jobs/*`, `/health` |
 | `api/dashboard_routes.py` | Scaffold    | Mock data endpoints for dashboard visual preview: `/api/dashboard`, `/api/training-load`, `/api/goal`, job stubs |
 | `mcp_server/`             | Done        | 12 tools + 3 resources; includes get_activities + Level 2 DFA tools (activity_hrv, thresholds_history, readiness_history) |
-| `webapp/index.html`       | Done        | Public landing page                                                        |
+| `webapp/index.html`       | Done        | Public landing page + Wellness/Plan/Activities buttons for auth users      |
 | `webapp/report.html`      | Done        | Morning report (single-page, calls `/api/report`)                          |
-| `webapp/plan.html`        | Done        | Scheduled workouts by week, sync button, collapsible HumanGo descriptions  |
+| `webapp/plan.html`        | Done        | Scheduled workouts by week, sync button, nav limits (DB boundary)          |
+| `webapp/activities.html`  | Done        | Completed activities by week, inline details, nav limits (current week max)|
+| `webapp/activity.html`    | Done        | Full activity detail — zones, intervals, DFA Alpha 1                       |
+| `webapp/wellness.html`    | Done        | Daily wellness with day navigation — recovery, HRV, RHR, load, AI         |
 | `webapp/dashboard.html`   | Scaffold    | Multi-tab dashboard, needs API endpoints                                   |
 
 ---
@@ -469,20 +472,26 @@ Defined in `SYSTEM_PROMPT` (`ai/prompts.py`). Key constraints:
 
 ### Gemini Second Opinion (optional)
 
-Enabled when `GOOGLE_AI_API_KEY` is set in `.env`. Disabled otherwise — no Gemini code runs, no tab in dashboard.
+Enabled when `GOOGLE_AI_API_KEY` is set in `.env`. Disabled otherwise — no Gemini code runs, no tab in webapp.
+
+**Installation:** `google-genai` is an optional dependency — `pip install .[gemini]` or `poetry install -E gemini`. Not required for core functionality.
 
 **Architecture:**
-- Module: `ai/gemini_agent.py` — same prompt from `prompts.py`, called via `google-genai` SDK
-- Model: `gemini-2.5-flash` (or `gemini-2.5-pro`)
-- Both AI calls run in parallel via `asyncio.gather` during `save_wellness(run_ai=True)`
+- Module: `ai/gemini_agent.py` — optional import of `google-genai` with `_HAS_GENAI` flag; `is_gemini_enabled()` checks both import and API key
+- Prompt: `MORNING_REPORT_PROMPT_GEMINI` — dedicated template with stricter Markdown formatting (`##` headers, `---` separators), emphasis on interpreting data relationships rather than listing numbers, and explicit analysis instructions per section
+- Prompt building: shared `build_morning_prompt(template=MORNING_REPORT_PROMPT_GEMINI)` from `claude_agent.py`
+- Model: `gemini-2.5-flash`, max_output_tokens=8192, thinking_config with 4096 budget
+- Streaming: `generate_content_stream` with chunk accumulation; detects `MAX_TOKENS` truncation
+- Retry: 2 attempts with 5s backoff delay; raises on exhaustion (no silent fallback)
+- Both AI calls run in parallel via `asyncio.gather(return_exceptions=True)` during `save_wellness(run_ai=True)`
 - Each call is independent — if one fails, the other still saves
 - Result persisted to `wellness.ai_recommendation_gemini`
 - Skipped if `ai_recommendation_gemini` is already set (idempotent)
 
 **Display rules:**
 - **Telegram morning report**: only Claude recommendation (no change)
-- **Dashboard**: two tabs — Claude | Gemini (Gemini tab hidden if `GOOGLE_AI_API_KEY` not configured)
-- **`/api/report`**: returns both `ai_recommendation` and `ai_recommendation_gemini` (latter is `null` if disabled)
+- **Webapp pages** (`report.html`, `wellness.html`): two tabs — Claude | Gemini (Gemini tab hidden if `ai_recommendation_gemini` is `null`)
+- **`/api/report`** and **`/api/wellness-day`**: return both `ai_recommendation` and `ai_recommendation_gemini` (latter is `null` if disabled)
 - **MCP**: `get_recovery` returns both fields
 
 ---
@@ -520,9 +529,11 @@ Enabled when `GOOGLE_AI_API_KEY` is set in `.env`. Disabled otherwise — no Gem
 ## API Endpoints (api/server.py + api/routes.py)
 
 ```
-GET  /api/report                        — full morning report (grouped JSON)
-GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun), 7 days with workouts
+GET  /api/report                        — full morning report (grouped JSON, today only)
+GET  /api/wellness-day?date=YYYY-MM-DD  — full wellness data for any date (navigable, has_prev/has_next/is_today)
+GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun), has_prev/has_next for nav limits
 GET  /api/activities-week?week_offset=0 — weekly activities (Mon-Sun), 7 days with completed activities
+GET  /api/activity/{id}/details         — full activity stats: zones, intervals, DFA alpha 1
 POST /api/jobs/sync-workouts            — trigger scheduled workouts sync (initData auth)
 POST /api/jobs/sync-activities          — trigger activities sync (initData auth)
 GET  /health                            — healthcheck
@@ -572,13 +583,15 @@ Multiple standalone pages (dark theme, Inter font, mobile-first):
 
 | Page | Status | Description |
 |---|---|---|
-| `index.html` | Done | Public landing page — features, how it works, links to dashboard/plan/Telegram |
-| `report.html` | Done | Morning report — recovery gauge, HRV/RHR/sleep metrics, AI recommendation. Source: `/api/report` |
-| `plan.html` | Done | Scheduled workouts by week (Mon-Sun), prev/next navigation, sync button with `last_synced_at`, collapsible HumanGo descriptions. Source: `/api/scheduled-workouts` |
-| `activities.html` | Planned | Completed activities by week, sync button. Source: `/api/activities-week` |
+| `index.html` | Done | Public landing page — features, how it works. Auth users see: Dashboard/Plan/Activities/Wellness buttons |
+| `report.html` | Done | Morning report — recovery gauge, HRV/RHR/sleep metrics, AI recommendation (Claude/Gemini tabs). Source: `/api/report` |
+| `plan.html` | Done | Scheduled workouts by week (Mon-Sun), prev/next with DB boundary limits, sync button, collapsible HumanGo descriptions, ← Главная. Source: `/api/scheduled-workouts` |
+| `activities.html` | Done | Completed activities by week (Mon-Sun), inline detail expansion, sync button, no future week nav, future days empty, ← Главная. Source: `/api/activities-week` |
+| `activity.html` | Done | Full activity detail page — zones, intervals, DFA Alpha 1, ← back to activities. Source: `/api/activity/{id}/details` |
+| `wellness.html` | Done | Daily wellness with day nav (no future), recovery, sleep, HRV (dual algo tabs), RHR, load, per-sport CTL, body, AI (Claude/Gemini tabs), ← Главная. Source: `/api/wellness-day` |
 | `dashboard.html` | Scaffold | Multi-tab dashboard (Today, Calendar, Load, Goal). Needs API endpoints |
 
-Telegram Mini App support via `--tg-theme-*` CSS variables (report.html, plan.html). Landing page is standalone (no Telegram SDK).
+Telegram Mini App support via `--tg-theme-*` CSS variables. Landing page is standalone (no Telegram SDK).
 
 ---
 

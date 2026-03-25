@@ -165,7 +165,7 @@
 </head>
 <body>
 
-<a href="/report.html" onclick="this.href='/report.html'+location.hash" class="back-link">&larr; Утренний отчёт</a>
+<a href="/" onclick="this.href='/'+location.hash" class="back-link">&larr; Главная</a>
 
 <div class="page-header">
     <h1>Активности</h1>
@@ -466,8 +466,12 @@ async function loadWeek(offset) {
             if (isToday) html += `<span class="today-badge">СЕГОДНЯ</span>`;
             html += `</div>`;
 
+            const isFuture = day.date > todayStr;
             if (day.activities.length === 0) {
-                html += `<div class="rest-day">День отдыха</div>`;
+                if (!isFuture) {
+                    html += `<div class="rest-day">День отдыха</div>`;
+                }
+                // Future days with no activities: leave empty (workout not done yet)
             } else {
                 for (const a of day.activities) {
                     const icon = SPORT_ICONS[a.type] || '\u{1F3C6}';
@@ -496,6 +500,10 @@ async function loadWeek(offset) {
         container.innerHTML = html;
         loading.style.display = 'none';
         container.style.display = 'block';
+
+        // Navigation limits: no future weeks, no weeks before earliest data
+        document.getElementById('next-week').disabled = offset >= 0;
+        document.getElementById('prev-week').disabled = data.has_prev === false;
     } catch (err) {
         console.error('Failed to load activities:', err);
         loading.innerHTML = '<div style="text-align:center;color:var(--text-dim);padding:40px 20px;">Не удалось загрузить активности.<br>Попробуйте позже.</div>';

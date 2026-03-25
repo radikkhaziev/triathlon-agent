@@ -421,9 +421,14 @@ if (hasAuth) {
     actBtn.href = '/activities.html' + location.hash;
     actBtn.className = 'btn btn-secondary';
     actBtn.textContent = '\uD83C\uDFC3 Activities';
+    const wellBtn = document.createElement('a');
+    wellBtn.href = '/wellness.html' + location.hash;
+    wellBtn.className = 'btn btn-secondary';
+    wellBtn.textContent = '\uD83D\uDC9A Wellness';
     group.insertBefore(dashBtn, tgBtn);
     group.insertBefore(planBtn, tgBtn);
     group.insertBefore(actBtn, tgBtn);
+    group.insertBefore(wellBtn, tgBtn);
     // Demote Telegram button to secondary
     tgBtn.className = 'btn btn-secondary';
 }

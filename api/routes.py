@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from bot.scheduler import scheduled_workouts_job, sync_activities_job
@@ -17,6 +17,7 @@ from data.database import (
     ActivityHrvRow,
     ActivityRow,
     ScheduledWorkoutRow,
+    WellnessRow,
     get_activities_range,
     get_hrv_analysis,
     get_rhr_analysis,
@@ -198,16 +199,9 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@router.get("/api/report")
-async def morning_report(authorization: str | None = Header(default=None)) -> dict:
-    """Full morning report data for the Mini App report page."""
-    role = _require_viewer(authorization)
-    today = date.today()
-    today_str = str(today)
-    row = await get_wellness(today)
-
-    if row is None:
-        return {"date": today_str, "has_data": False, "role": role}
+async def _build_wellness_response(row, target_date: date) -> dict:
+    """Build the wellness data payload shared by morning_report and wellness_day."""
+    target_str = str(target_date)
 
     # Recovery
     category = row.recovery_category or "moderate"
@@ -215,12 +209,12 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
     recommendation_text = RECOMMENDATION_TEXT.get(row.recovery_recommendation or "", row.recovery_recommendation or "")
 
     # HRV — both algorithms
-    hrv_flatt = await get_hrv_analysis(today_str, "flatt_esco")
-    hrv_aie = await get_hrv_analysis(today_str, "ai_endurance")
+    hrv_flatt = await get_hrv_analysis(target_str, "flatt_esco")
+    hrv_aie = await get_hrv_analysis(target_str, "ai_endurance")
     hrv_today = float(row.hrv) if row.hrv else None
 
     # RHR
-    rhr_row = await get_rhr_analysis(today_str)
+    rhr_row = await get_rhr_analysis(target_str)
 
     # Training load
     tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
@@ -229,9 +223,8 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
     sport_ctl = extract_sport_ctl(row.sport_info)
 
     return {
-        "date": today_str,
+        "date": target_str,
         "has_data": True,
-        "role": role,
         # --- Recovery ---
         "recovery": {
             "score": row.recovery_score,
@@ -281,6 +274,81 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
         "ai_recommendation": row.ai_recommendation,
         "ai_recommendation_gemini": row.ai_recommendation_gemini,
     }
+
+
+async def _wellness_has_prev(target_date: date) -> bool:
+    """Check if wellness records exist before the target date."""
+    target_str = str(target_date)
+    async with get_session() as session:
+        result = await session.execute(select(exists().where(WellnessRow.id < target_str)))
+        return result.scalar_one()
+
+
+@router.get("/api/report")
+async def morning_report(authorization: str | None = Header(default=None)) -> dict:
+    """Full morning report data for the Mini App report page."""
+    role = _require_viewer(authorization)
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+    today_str = str(today)
+    row = await get_wellness(today)
+
+    if row is None:
+        return {"date": today_str, "has_data": False, "role": role}
+
+    result = await _build_wellness_response(row, today)
+    result["role"] = role
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Wellness Day (arbitrary date, navigable)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/wellness-day")
+async def wellness_day(
+    dt: str = Query(default="", alias="date", description="Date YYYY-MM-DD, default=today"),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Full wellness data for a specific date (navigable by day)."""
+    role = _require_viewer(authorization)
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+
+    if dt:
+        try:
+            target = date.fromisoformat(dt)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format, use YYYY-MM-DD")
+    else:
+        target = today
+
+    # Don't allow future dates
+    if target > today:
+        target = today
+
+    target_str = str(target)
+    row = await get_wellness(target)
+    has_prev = await _wellness_has_prev(target)
+    has_next = target < today
+
+    if row is None:
+        return {
+            "date": target_str,
+            "has_data": False,
+            "is_today": target == today,
+            "has_prev": has_prev,
+            "has_next": has_next,
+            "role": role,
+        }
+
+    result = await _build_wellness_response(row, target)
+    result["is_today"] = target == today
+    result["has_prev"] = has_prev
+    result["has_next"] = has_next
+    result["role"] = role
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -337,12 +405,33 @@ async def scheduled_workouts(
             }
         )
 
+    # Check if data exists beyond this week (for navigation limits)
+    next_monday = monday + timedelta(weeks=1)
+    prev_sunday = monday - timedelta(days=1)
+
+    async with get_session() as session:
+        has_next_result = await session.execute(
+            select(func.count())
+            .select_from(ScheduledWorkoutRow)
+            .where(ScheduledWorkoutRow.start_date_local >= str(next_monday))
+        )
+        has_next = has_next_result.scalar_one() > 0
+
+        has_prev_result = await session.execute(
+            select(func.count())
+            .select_from(ScheduledWorkoutRow)
+            .where(ScheduledWorkoutRow.start_date_local <= str(prev_sunday))
+        )
+        has_prev = has_prev_result.scalar_one() > 0
+
     return {
         "week_start": str(monday),
         "week_end": str(sunday),
         "week_offset": week_offset,
         "today": str(today),
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+        "has_prev": has_prev,
+        "has_next": has_next,
         "role": role,
         "days": days,
     }
@@ -424,12 +513,20 @@ async def activities_week(
             }
         )
 
+    # Check if activities exist before this week (for navigation limits)
+    prev_sunday = monday - timedelta(days=1)
+
+    async with get_session() as session:
+        prev_result = await session.execute(select(exists().where(ActivityRow.start_date_local <= str(prev_sunday))))
+        has_prev = prev_result.scalar_one()
+
     return {
         "week_start": str(monday),
         "week_end": str(sunday),
         "week_offset": week_offset,
         "today": str(today),
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+        "has_prev": has_prev,
         "role": role,
         "days": days,
     }

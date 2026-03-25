@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Wellness</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #13131a;
+            --surface-2: #1c1c27;
+            --border: #2a2a3a;
+            --text: #e8e8ed;
+            --text-dim: #8888a0;
+            --accent: #3b82f6;
+            --green: #22c55e;
+            --yellow: #f59e0b;
+            --red: #ef4444;
+            --button: var(--tg-theme-button-color, #3b82f6);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--tg-theme-bg-color, var(--bg));
+            color: var(--tg-theme-text-color, var(--text));
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            padding: 0 16px 32px;
+            max-width: 540px;
+            margin: 0 auto;
+        }
+
+        .back-link {
+            display: inline-block;
+            padding: 12px 0 0;
+            font-size: 13px;
+            color: var(--button);
+            text-decoration: none;
+        }
+
+        .page-header {
+            text-align: center;
+            padding: 12px 0 8px;
+        }
+
+        .page-header h1 { font-size: 20px; font-weight: 700; }
+
+        /* Day nav */
+        .day-nav {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 8px 0 16px;
+        }
+
+        .day-nav button {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--tg-theme-text-color, var(--text));
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: inherit;
+        }
+        .day-nav button:hover { background: var(--border); }
+        .day-nav button:active { transform: scale(0.97); }
+        .day-nav button:disabled { opacity: 0.3; cursor: default; }
+
+        .day-label {
+            font-size: 14px;
+            font-weight: 600;
+            min-width: 140px;
+            text-align: center;
+        }
+        .day-label .today-badge {
+            display: inline-block;
+            background: var(--button);
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
+        /* Section */
+        .section {
+            background: var(--tg-theme-secondary-bg-color, var(--surface));
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .section-icon { font-size: 18px; }
+        .section-title { font-size: 15px; font-weight: 700; }
+
+        /* Metric rows */
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .metric-row:last-child { border-bottom: none; }
+
+        .metric-label {
+            font-size: 13px;
+            color: var(--tg-theme-hint-color, var(--text-dim));
+        }
+        .metric-value {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        .warning { color: var(--yellow); }
+        .neutral { color: var(--tg-theme-text-color, var(--text)); }
+
+        /* Status badge */
+        .status-badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-green { background: #22c55e20; color: var(--green); }
+        .status-yellow { background: #f59e0b20; color: var(--yellow); }
+        .status-red { background: #ef444420; color: var(--red); }
+        .status-gray { background: #88888820; color: var(--tg-theme-hint-color, var(--text-dim)); }
+
+        /* Recovery gauge */
+        .recovery-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .recovery-score {
+            font-size: 36px;
+            font-weight: 700;
+            line-height: 1;
+        }
+        .recovery-details {
+            flex: 1;
+        }
+        .recovery-category {
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .recovery-rec {
+            font-size: 12px;
+            color: var(--tg-theme-hint-color, var(--text-dim));
+            margin-top: 2px;
+        }
+
+        /* Gauge bar */
+        .gauge-bar {
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .gauge-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        /* Grid 2-col */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .grid-card {
+            background: var(--tg-theme-bg-color, var(--bg));
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+        .grid-card-label {
+            font-size: 11px;
+            color: var(--tg-theme-hint-color, var(--text-dim));
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .grid-card-value {
+            font-size: 18px;
+            font-weight: 700;
+            margin-top: 2px;
+        }
+        .grid-card-sub {
+            font-size: 11px;
+            color: var(--tg-theme-hint-color, var(--text-dim));
+            margin-top: 1px;
+        }
+
+        /* HRV algo tabs */
+        .algo-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+        .algo-tab {
+            padding: 4px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--tg-theme-text-color, var(--text));
+            font-size: 12px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.15s;
+        }
+        .algo-tab.active {
+            background: var(--button);
+            color: var(--tg-theme-button-text-color, #fff);
+            border-color: var(--button);
+        }
+        .algo-tab .primary-dot {
+            display: inline-block;
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--green);
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+
+        /* AI section */
+        .ai-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+        .ai-tab {
+            padding: 5px 14px;
+            border-radius: 7px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--tg-theme-text-color, var(--text));
+            font-size: 12px;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all 0.15s;
+        }
+        .ai-tab.active {
+            background: var(--button);
+            color: var(--tg-theme-button-text-color, #fff);
+            border-color: var(--button);
+        }
+        .ai-text {
+            font-size: 13px;
+            line-height: 1.7;
+        }
+        .ai-text p { margin: 0 0 10px; }
+        .ai-text p:last-child { margin-bottom: 0; }
+        .ai-text strong { font-weight: 700; }
+        .ai-text em { font-style: italic; }
+        .ai-text ul, .ai-text ol { margin: 4px 0 10px; padding-left: 20px; }
+        .ai-text li { margin-bottom: 4px; }
+        .ai-text h2, .ai-text h3, .ai-text h4 { font-size: 13px; font-weight: 700; margin: 12px 0 4px; }
+        .ai-text h2:first-child, .ai-text h3:first-child, .ai-text h4:first-child { margin-top: 0; }
+        .ai-text hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+
+        /* Sport CTL bar */
+        .sport-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 0;
+        }
+        .sport-emoji { font-size: 16px; width: 24px; text-align: center; }
+        .sport-name { font-size: 13px; width: 40px; }
+        .sport-bar-wrap {
+            flex: 1;
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .sport-bar {
+            height: 100%;
+            border-radius: 3px;
+            background: var(--button);
+            transition: width 0.4s ease;
+        }
+        .sport-val {
+            font-size: 13px;
+            font-weight: 600;
+            width: 40px;
+            text-align: right;
+        }
+
+        /* Loading / no-data */
+        .loading-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--tg-theme-hint-color, var(--text-dim));
+        }
+        .no-data-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--tg-theme-hint-color, var(--text-dim));
+            font-size: 14px;
+        }
+
+        @media (max-width: 360px) {
+            .grid-2 { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<a href="/" onclick="this.href='/'+location.hash" class="back-link">&larr; Главная</a>
+
+<div class="page-header">
+    <h1>Wellness</h1>
+</div>
+
+<div class="day-nav">
+    <button id="prev-day">&larr; Пред</button>
+    <span class="day-label" id="day-label">...</span>
+    <button id="next-day">След &rarr;</button>
+</div>
+
+<div id="loading" class="loading-state">Загрузка...</div>
+<div id="content" style="display:none">
+
+    <!-- Recovery -->
+    <div class="section" id="recovery-section">
+        <div class="section-header">
+            <span class="section-icon" id="recovery-emoji">🟢</span>
+            <span class="section-title">Восстановление</span>
+        </div>
+        <div class="recovery-header">
+            <div class="recovery-score" id="recovery-score">--</div>
+            <div class="recovery-details">
+                <div class="recovery-category" id="recovery-title"></div>
+                <div class="recovery-rec" id="recovery-rec"></div>
+            </div>
+        </div>
+        <div class="gauge-bar"><div class="gauge-fill" id="recovery-gauge" style="width:0"></div></div>
+        <div style="margin-top:10px">
+            <div class="metric-row">
+                <span class="metric-label">Readiness</span>
+                <span class="metric-value" id="readiness-val">--</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">ESS</span>
+                <span class="metric-value" id="ess-val">--</span>
+            </div>
+            <div class="metric-row">
+                <span class="metric-label">Banister Recovery</span>
+                <span class="metric-value" id="banister-val">--</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sleep -->
+    <div class="section" id="sleep-section">
+        <div class="section-header">
+            <span class="section-icon">😴</span>
+            <span class="section-title">Сон</span>
+        </div>
+        <div class="grid-2">
+            <div class="grid-card">
+                <div class="grid-card-label">Sleep Score</div>
+                <div class="grid-card-value" id="sleep-score">--</div>
+            </div>
+            <div class="grid-card">
+                <div class="grid-card-label">Длительность</div>
+                <div class="grid-card-value" id="sleep-duration">--</div>
+                <div class="grid-card-sub" id="sleep-quality"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HRV -->
+    <div class="section" id="hrv-section">
+        <div class="section-header">
+            <span class="section-icon">💓</span>
+            <span class="section-title">HRV (RMSSD)</span>
+        </div>
+        <div class="algo-tabs" id="hrv-tabs">
+            <button class="algo-tab active" data-algo="flatt_esco" onclick="switchHrvTab(this)">Flatt & Esco<span class="primary-dot" id="dot-flatt"></span></button>
+            <button class="algo-tab" data-algo="ai_endurance" onclick="switchHrvTab(this)">AIEndurance<span class="primary-dot" id="dot-aie" style="display:none"></span></button>
+        </div>
+        <div id="hrv-flatt" class="hrv-algo-content">
+            <div class="grid-2" style="margin-bottom:8px">
+                <div class="grid-card">
+                    <div class="grid-card-label">Сегодня</div>
+                    <div class="grid-card-value" id="hrv-today-f">--</div>
+                    <div class="grid-card-sub" id="hrv-delta-f"></div>
+                </div>
+                <div class="grid-card">
+                    <div class="grid-card-label">Статус</div>
+                    <div class="grid-card-value" id="hrv-status-f">--</div>
+                </div>
+            </div>
+            <div class="metric-row"><span class="metric-label">Среднее 7д</span><span class="metric-value" id="hrv-7d-f">--</span></div>
+            <div class="metric-row"><span class="metric-label">Среднее 60д</span><span class="metric-value" id="hrv-60d-f">--</span></div>
+            <div class="metric-row"><span class="metric-label">Bounds</span><span class="metric-value" id="hrv-bounds-f">--</span></div>
+            <div class="metric-row"><span class="metric-label">CV 7д</span><span class="metric-value" id="hrv-cv-f">--</span></div>
+            <div class="metric-row"><span class="metric-label">SWC</span><span class="metric-value" id="hrv-swc-f">--</span></div>
+            <div class="metric-row" id="hrv-trend-row-f" style="display:none"><span class="metric-label">Тренд</span><span class="metric-value" id="hrv-trend-f">--</span></div>
+        </div>
+        <div id="hrv-aie" class="hrv-algo-content" style="display:none">
+            <div class="grid-2" style="margin-bottom:8px">
+                <div class="grid-card">
+                    <div class="grid-card-label">Сегодня</div>
+                    <div class="grid-card-value" id="hrv-today-a">--</div>
+                    <div class="grid-card-sub" id="hrv-delta-a"></div>
+                </div>
+                <div class="grid-card">
+                    <div class="grid-card-label">Статус</div>
+                    <div class="grid-card-value" id="hrv-status-a">--</div>
+                </div>
+            </div>
+            <div class="metric-row"><span class="metric-label">Среднее 7д</span><span class="metric-value" id="hrv-7d-a">--</span></div>
+            <div class="metric-row"><span class="metric-label">Среднее 60д</span><span class="metric-value" id="hrv-60d-a">--</span></div>
+            <div class="metric-row"><span class="metric-label">Bounds</span><span class="metric-value" id="hrv-bounds-a">--</span></div>
+            <div class="metric-row"><span class="metric-label">CV 7д</span><span class="metric-value" id="hrv-cv-a">--</span></div>
+            <div class="metric-row"><span class="metric-label">SWC</span><span class="metric-value" id="hrv-swc-a">--</span></div>
+            <div class="metric-row" id="hrv-trend-row-a" style="display:none"><span class="metric-label">Тренд</span><span class="metric-value" id="hrv-trend-a">--</span></div>
+        </div>
+    </div>
+
+    <!-- RHR -->
+    <div class="section" id="rhr-section">
+        <div class="section-header">
+            <span class="section-icon">❤️</span>
+            <span class="section-title">Пульс в покое</span>
+        </div>
+        <div class="grid-2" style="margin-bottom:8px">
+            <div class="grid-card">
+                <div class="grid-card-label">Сегодня</div>
+                <div class="grid-card-value" id="rhr-today">--</div>
+                <div class="grid-card-sub" id="rhr-delta"></div>
+            </div>
+            <div class="grid-card">
+                <div class="grid-card-label">Статус</div>
+                <div class="grid-card-value" id="rhr-status">--</div>
+            </div>
+        </div>
+        <div class="metric-row"><span class="metric-label">Среднее 7д</span><span class="metric-value" id="rhr-7d">--</span></div>
+        <div class="metric-row"><span class="metric-label">Среднее 30д</span><span class="metric-value" id="rhr-30d">--</span></div>
+        <div class="metric-row"><span class="metric-label">Среднее 60д</span><span class="metric-value" id="rhr-60d">--</span></div>
+        <div class="metric-row"><span class="metric-label">Bounds</span><span class="metric-value" id="rhr-bounds">--</span></div>
+        <div class="metric-row"><span class="metric-label">CV 7д</span><span class="metric-value" id="rhr-cv">--</span></div>
+        <div class="metric-row" id="rhr-trend-row" style="display:none"><span class="metric-label">Тренд</span><span class="metric-value" id="rhr-trend">--</span></div>
+    </div>
+
+    <!-- Training Load -->
+    <div class="section" id="load-section">
+        <div class="section-header">
+            <span class="section-icon">📈</span>
+            <span class="section-title">Тренировочная нагрузка</span>
+        </div>
+        <div class="grid-2" style="margin-bottom:8px">
+            <div class="grid-card">
+                <div class="grid-card-label">CTL (фитнес)</div>
+                <div class="grid-card-value" id="load-ctl">--</div>
+            </div>
+            <div class="grid-card">
+                <div class="grid-card-label">ATL (усталость)</div>
+                <div class="grid-card-value" id="load-atl">--</div>
+            </div>
+            <div class="grid-card">
+                <div class="grid-card-label">TSB (форма)</div>
+                <div class="grid-card-value" id="load-tsb">--</div>
+            </div>
+            <div class="grid-card">
+                <div class="grid-card-label">Ramp Rate</div>
+                <div class="grid-card-value" id="load-ramp">--</div>
+            </div>
+        </div>
+        <div id="sport-ctl-section" style="display:none">
+            <div style="font-size:12px;color:var(--tg-theme-hint-color,var(--text-dim));margin:10px 0 6px;text-transform:uppercase;letter-spacing:0.3px">Per-sport CTL</div>
+            <div id="sport-ctl-bars"></div>
+        </div>
+    </div>
+
+    <!-- Body -->
+    <div class="section" id="body-section" style="display:none">
+        <div class="section-header">
+            <span class="section-icon">🏋️</span>
+            <span class="section-title">Тело</span>
+        </div>
+        <div class="grid-2" id="body-grid"></div>
+    </div>
+
+    <!-- AI -->
+    <div class="section" id="ai-section" style="display:none">
+        <div class="section-header">
+            <span class="section-icon">🤖</span>
+            <span class="section-title">AI Рекомендация</span>
+        </div>
+        <div class="ai-tabs" id="ai-tabs" style="display:none">
+            <button class="ai-tab active" data-target="ai-claude" onclick="switchAiTab(this)">Claude</button>
+            <button class="ai-tab" data-target="ai-gemini" onclick="switchAiTab(this)">Gemini</button>
+        </div>
+        <div class="ai-text" id="ai-claude"></div>
+        <div class="ai-text" id="ai-gemini" style="display:none"></div>
+    </div>
+
+</div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.expand(); tg.ready(); }
+if (tg?.initData) sessionStorage.setItem('tg_init_data', tg.initData);
+
+const API_BASE = window.API_BASE_URL || '';
+
+function getInitData() { return tg?.initData || sessionStorage.getItem('tg_init_data') || ''; }
+
+const hasAuth = !!getInitData();
+if (!hasAuth) {
+    document.getElementById('loading').innerHTML = '<div class="no-data-state">Доступ только через Telegram Mini App.</div>';
+    throw new Error('No Telegram initData');
+}
+
+async function apiFetch(endpoint) {
+    const headers = {};
+    const d = getInitData();
+    if (d) headers['Authorization'] = d;
+    const res = await fetch(`${API_BASE}${endpoint}`, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+}
+
+// --- Date navigation ---
+let currentDate = new Date();
+// Reset to midnight local
+currentDate.setHours(0, 0, 0, 0);
+
+function todayLocal() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+
+function fmtDate(d) {
+    return d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+}
+
+function fmtDateDisplay(d) {
+    const months = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    const days = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+    return `${days[d.getDay()]}, ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function updateNav() {
+    const today = todayLocal();
+    const isToday = fmtDate(currentDate) === fmtDate(today);
+    const label = document.getElementById('day-label');
+    label.innerHTML = fmtDateDisplay(currentDate) + (isToday ? '<span class="today-badge">сегодня</span>' : '');
+    document.getElementById('next-day').disabled = isToday;
+}
+
+document.getElementById('prev-day').addEventListener('click', () => {
+    currentDate.setDate(currentDate.getDate() - 1);
+    updateNav();
+    loadDay();
+});
+
+document.getElementById('next-day').addEventListener('click', () => {
+    const today = todayLocal();
+    if (fmtDate(currentDate) < fmtDate(today)) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        updateNav();
+        loadDay();
+    }
+});
+
+// --- Rendering helpers ---
+function statusBadge(status) {
+    const map = { green: 'status-green', yellow: 'status-yellow', red: 'status-red' };
+    const labels = { green: 'Норма', yellow: 'Внимание', red: 'Снижен', insufficient_data: 'Нет данных' };
+    const cls = map[status] || 'status-gray';
+    return `<span class="status-badge ${cls}">${labels[status] || status}</span>`;
+}
+
+function deltaClass(val) {
+    if (val > 0) return 'positive';
+    if (val < 0) return 'negative';
+    return 'neutral';
+}
+
+function gaugeColor(score) {
+    if (score >= 70) return 'var(--green)';
+    if (score >= 40) return 'var(--yellow)';
+    return 'var(--red)';
+}
+
+function num(v, decimals = 1) {
+    if (v == null) return '--';
+    return Number(v).toFixed(decimals);
+}
+
+function escapeHtml(text) {
+    const el = document.createElement('div');
+    el.textContent = text;
+    return el.innerHTML;
+}
+
+function renderMarkdown(text) {
+    if (!text) return '';
+    // Escape HTML entities first to prevent XSS
+    return escapeHtml(text)
+        .replace(/---/g, '<hr>')
+        .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+        .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/^\- (.+)$/gm, '<li>$1</li>')
+        .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
+        .replace(/<\/ul>\s*<ul>/g, '')
+        .replace(/\n{2,}/g, '</p><p>')
+        .replace(/\n/g, '<br>')
+        .replace(/^(.+)/, '<p>$1')
+        .replace(/(.+)$/, '$1</p>');
+}
+
+// --- HRV tab ---
+function switchHrvTab(btn) {
+    const algo = btn.dataset.algo;
+    document.querySelectorAll('.algo-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('hrv-flatt').style.display = algo === 'flatt_esco' ? '' : 'none';
+    document.getElementById('hrv-aie').style.display = algo === 'ai_endurance' ? '' : 'none';
+}
+
+// --- AI tab ---
+function switchAiTab(btn) {
+    const target = btn.dataset.target;
+    document.querySelectorAll('.ai-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('ai-claude').style.display = target === 'ai-claude' ? '' : 'none';
+    document.getElementById('ai-gemini').style.display = target === 'ai-gemini' ? '' : 'none';
+}
+
+// --- Fill HRV block ---
+function fillHrv(data, suffix) {
+    const today = data.today;
+    document.getElementById(`hrv-today-${suffix}`).textContent = today != null ? `${num(today, 0)} мс` : '--';
+
+    if (data.delta_pct != null) {
+        const el = document.getElementById(`hrv-delta-${suffix}`);
+        el.textContent = `${data.delta_pct > 0 ? '+' : ''}${num(data.delta_pct)}%`;
+        el.className = 'grid-card-sub ' + deltaClass(data.delta_pct);
+    }
+
+    document.getElementById(`hrv-status-${suffix}`).innerHTML = statusBadge(data.status);
+    document.getElementById(`hrv-7d-${suffix}`).textContent = data.mean_7d != null ? `${num(data.mean_7d, 0)} ± ${num(data.sd_7d, 1)}` : '--';
+    document.getElementById(`hrv-60d-${suffix}`).textContent = data.mean_60d != null ? `${num(data.mean_60d, 0)} ± ${num(data.sd_60d, 1)}` : '--';
+    document.getElementById(`hrv-bounds-${suffix}`).textContent = data.lower_bound != null ? `${num(data.lower_bound, 0)} — ${num(data.upper_bound, 0)}` : '--';
+    document.getElementById(`hrv-cv-${suffix}`).innerHTML = data.cv_7d != null ? `${num(data.cv_7d)}% <span style="font-size:11px;font-weight:400;color:var(--text-dim)">${data.cv_verdict || ''}</span>` : '--';
+    document.getElementById(`hrv-swc-${suffix}`).textContent = data.swc_verdict || '--';
+
+    if (data.trend) {
+        const row = document.getElementById(`hrv-trend-row-${suffix}`);
+        row.style.display = 'flex';
+        document.getElementById(`hrv-trend-${suffix}`).textContent = data.trend.direction || '--';
+    }
+}
+
+// --- Reset all sections to default state ---
+function resetSections() {
+    // HRV trend rows
+    document.getElementById('hrv-trend-row-f').style.display = 'none';
+    document.getElementById('hrv-trend-row-a').style.display = 'none';
+    document.getElementById('hrv-trend-f').textContent = '--';
+    document.getElementById('hrv-trend-a').textContent = '--';
+    // HRV deltas
+    ['hrv-delta-f', 'hrv-delta-a'].forEach(id => {
+        const el = document.getElementById(id);
+        el.textContent = '';
+        el.className = 'grid-card-sub';
+    });
+    // RHR trend
+    document.getElementById('rhr-trend-row').style.display = 'none';
+    document.getElementById('rhr-trend').textContent = '--';
+    document.getElementById('rhr-delta').textContent = '';
+    document.getElementById('rhr-delta').className = 'grid-card-sub';
+    // Sport CTL
+    document.getElementById('sport-ctl-section').style.display = 'none';
+    document.getElementById('sport-ctl-bars').innerHTML = '';
+    // Body
+    document.getElementById('body-section').style.display = 'none';
+    // AI
+    document.getElementById('ai-section').style.display = 'none';
+    document.getElementById('ai-tabs').style.display = 'none';
+    document.getElementById('ai-claude').innerHTML = '';
+    document.getElementById('ai-gemini').innerHTML = '';
+    document.getElementById('ai-gemini').style.display = 'none';
+    // Reset AI tabs to Claude active
+    document.querySelectorAll('.ai-tab').forEach((t, i) => {
+        t.classList.toggle('active', i === 0);
+    });
+    document.getElementById('ai-claude').style.display = '';
+    // Reset HRV tabs to Flatt active
+    document.querySelectorAll('.algo-tab').forEach((t, i) => {
+        t.classList.toggle('active', i === 0);
+    });
+    document.getElementById('hrv-flatt').style.display = '';
+    document.getElementById('hrv-aie').style.display = 'none';
+}
+
+// --- Main load ---
+async function loadDay() {
+    document.getElementById('loading').style.display = '';
+    document.getElementById('content').style.display = 'none';
+
+    try {
+        const d = await apiFetch(`/api/wellness-day?date=${fmtDate(currentDate)}`);
+
+        // Update nav buttons based on server response
+        document.getElementById('prev-day').disabled = d.has_prev === false;
+        document.getElementById('next-day').disabled = d.has_next === false;
+
+        if (!d.has_data) {
+            document.getElementById('loading').innerHTML = '<div class="no-data-state">Нет данных за эту дату</div>';
+            return;
+        }
+
+        resetSections();
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('content').style.display = '';
+
+        // Recovery
+        const r = d.recovery || {};
+        document.getElementById('recovery-emoji').textContent = r.emoji || '⚪';
+        document.getElementById('recovery-score').textContent = r.score != null ? Math.round(r.score) : '--';
+        document.getElementById('recovery-title').textContent = r.title || '';
+        document.getElementById('recovery-rec').textContent = r.recommendation || '';
+        const score = r.score || 0;
+        const gauge = document.getElementById('recovery-gauge');
+        gauge.style.width = `${Math.min(100, score)}%`;
+        gauge.style.background = gaugeColor(score);
+
+        document.getElementById('readiness-val').innerHTML = r.readiness_level ? statusBadge(r.readiness_level === 'green' ? 'green' : r.readiness_level === 'yellow' ? 'yellow' : 'red') : '--';
+        document.getElementById('ess-val').textContent = d.stress?.ess_today != null ? num(d.stress.ess_today) : '--';
+        document.getElementById('banister-val').textContent = d.stress?.banister_recovery != null ? `${num(d.stress.banister_recovery)}%` : '--';
+
+        // Sleep
+        const s = d.sleep || {};
+        document.getElementById('sleep-score').textContent = s.score != null ? s.score : '--';
+        document.getElementById('sleep-duration').textContent = s.duration || '--';
+        document.getElementById('sleep-quality').textContent = s.quality ? `Качество: ${s.quality}` : '';
+
+        // HRV
+        const hrv = d.hrv || {};
+        const primary = hrv.primary_algorithm || 'flatt_esco';
+        document.getElementById('dot-flatt').style.display = primary === 'flatt_esco' ? '' : 'none';
+        document.getElementById('dot-aie').style.display = primary === 'ai_endurance' ? '' : 'none';
+
+        if (hrv.flatt_esco) fillHrv(hrv.flatt_esco, 'f');
+        if (hrv.ai_endurance) fillHrv(hrv.ai_endurance, 'a');
+
+        // RHR
+        const rhr = d.rhr || {};
+        document.getElementById('rhr-today').textContent = rhr.today != null ? `${num(rhr.today, 0)} bpm` : '--';
+        document.getElementById('rhr-status').innerHTML = statusBadge(rhr.status);
+        if (rhr.delta_30d != null) {
+            const el = document.getElementById('rhr-delta');
+            el.textContent = `δ ${rhr.delta_30d > 0 ? '+' : ''}${num(rhr.delta_30d)}`;
+            // RHR inverted: high = bad
+            el.className = 'grid-card-sub ' + (rhr.delta_30d > 0 ? 'negative' : rhr.delta_30d < 0 ? 'positive' : 'neutral');
+        }
+        document.getElementById('rhr-7d').textContent = rhr.mean_7d != null ? `${num(rhr.mean_7d, 0)} ± ${num(rhr.sd_7d, 1)}` : '--';
+        document.getElementById('rhr-30d').textContent = rhr.mean_30d != null ? `${num(rhr.mean_30d, 0)} ± ${num(rhr.sd_30d, 1)}` : '--';
+        document.getElementById('rhr-60d').textContent = rhr.mean_60d != null ? `${num(rhr.mean_60d, 0)} ± ${num(rhr.sd_60d, 1)}` : '--';
+        document.getElementById('rhr-bounds').textContent = rhr.lower_bound != null ? `${num(rhr.lower_bound, 0)} — ${num(rhr.upper_bound, 0)}` : '--';
+        document.getElementById('rhr-cv').innerHTML = rhr.cv_7d != null ? `${num(rhr.cv_7d)}% <span style="font-size:11px;font-weight:400;color:var(--text-dim)">${rhr.cv_verdict || ''}</span>` : '--';
+        if (rhr.trend) {
+            document.getElementById('rhr-trend-row').style.display = 'flex';
+            document.getElementById('rhr-trend').textContent = rhr.trend.direction || '--';
+        }
+
+        // Training Load
+        const load = d.training_load || {};
+        document.getElementById('load-ctl').textContent = load.ctl != null ? num(load.ctl) : '--';
+        document.getElementById('load-atl').textContent = load.atl != null ? num(load.atl) : '--';
+
+        if (load.tsb != null) {
+            const el = document.getElementById('load-tsb');
+            el.textContent = `${load.tsb > 0 ? '+' : ''}${num(load.tsb)}`;
+            el.className = 'grid-card-value ' + (load.tsb < -25 ? 'negative' : load.tsb > 10 ? 'warning' : 'neutral');
+        } else {
+            document.getElementById('load-tsb').textContent = '--';
+        }
+
+        if (load.ramp_rate != null) {
+            const el = document.getElementById('load-ramp');
+            el.textContent = `${num(load.ramp_rate)} TSS/нед`;
+            el.className = 'grid-card-value ' + (load.ramp_rate > 7 ? 'negative' : 'neutral');
+        }
+
+        // Per-sport CTL
+        const sc = load.sport_ctl;
+        if (sc && (sc.swim != null || sc.bike != null || sc.run != null)) {
+            document.getElementById('sport-ctl-section').style.display = '';
+            const sportMap = [
+                { key: 'swim', emoji: '🏊', name: 'Swim' },
+                { key: 'bike', emoji: '🚴', name: 'Bike' },
+                { key: 'run', emoji: '🏃', name: 'Run' },
+            ];
+            let barsHtml = '';
+            const maxCtl = Math.max(sc.swim || 0, sc.bike || 0, sc.run || 0, 1);
+            for (const s of sportMap) {
+                const v = sc[s.key];
+                if (v == null) continue;
+                const pct = Math.min(100, (v / maxCtl) * 100);
+                barsHtml += `<div class="sport-row">
+                    <span class="sport-emoji">${s.emoji}</span>
+                    <span class="sport-name">${s.name}</span>
+                    <div class="sport-bar-wrap"><div class="sport-bar" style="width:${pct}%"></div></div>
+                    <span class="sport-val">${num(v)}</span>
+                </div>`;
+            }
+            document.getElementById('sport-ctl-bars').innerHTML = barsHtml;
+        }
+
+        // Body
+        const body = d.body || {};
+        const bodyItems = [];
+        if (body.weight != null) bodyItems.push({ label: 'Вес', value: `${num(body.weight)} кг` });
+        if (body.body_fat != null) bodyItems.push({ label: 'Body Fat', value: `${num(body.body_fat)}%` });
+        if (body.vo2max != null) bodyItems.push({ label: 'VO2max', value: num(body.vo2max) });
+        if (body.steps != null) bodyItems.push({ label: 'Шаги', value: body.steps.toLocaleString() });
+        if (bodyItems.length > 0) {
+            document.getElementById('body-section').style.display = '';
+            document.getElementById('body-grid').innerHTML = bodyItems.map(b =>
+                `<div class="grid-card"><div class="grid-card-label">${b.label}</div><div class="grid-card-value">${b.value}</div></div>`
+            ).join('');
+        } else {
+            document.getElementById('body-section').style.display = 'none';
+        }
+
+        // AI
+        if (d.ai_recommendation) {
+            document.getElementById('ai-section').style.display = '';
+            document.getElementById('ai-claude').innerHTML = renderMarkdown(d.ai_recommendation);
+            if (d.ai_recommendation_gemini) {
+                document.getElementById('ai-tabs').style.display = 'flex';
+                document.getElementById('ai-gemini').innerHTML = renderMarkdown(d.ai_recommendation_gemini);
+            } else {
+                document.getElementById('ai-tabs').style.display = 'none';
+                document.getElementById('ai-gemini').style.display = 'none';
+            }
+        } else {
+            document.getElementById('ai-section').style.display = 'none';
+        }
+
+    } catch (err) {
+        console.error('Failed to load wellness:', err);
+        document.getElementById('loading').innerHTML = '<div class="no-data-state">Не удалось загрузить данные.<br>Попробуйте позже.</div>';
+    }
+}
+
+updateNav();
+loadDay();
+</script>
+</body>
+</html>
