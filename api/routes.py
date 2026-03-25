@@ -12,6 +12,8 @@ from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from bot.scheduler import scheduled_workouts_job, sync_activities_job
 from config import settings
 from data.database import (
+    ActivityDetailRow,
+    ActivityHrvRow,
     ActivityRow,
     ScheduledWorkoutRow,
     get_activities_range,
@@ -21,7 +23,7 @@ from data.database import (
     get_session,
     get_wellness,
 )
-from data.utils import extract_sport_ctl
+from data.utils import extract_sport_ctl, format_duration, serialize_activity_details, serialize_activity_hrv
 
 logger = logging.getLogger(__name__)
 
@@ -245,18 +247,6 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
 _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def _format_duration(secs: int | None) -> str | None:
-    if secs is None:
-        return None
-    if secs <= 0:
-        return "0m"
-    h, remainder = divmod(secs, 3600)
-    m = remainder // 60
-    if h:
-        return f"{h}h {m:02d}m" if m else f"{h}h"
-    return f"{m}m"
-
-
 @router.get("/api/scheduled-workouts")
 async def scheduled_workouts(week_offset: int = Query(default=0, ge=-52, le=52)) -> dict:
     """Weekly training plan (Mon-Sun) with navigation."""
@@ -286,7 +276,7 @@ async def scheduled_workouts(week_offset: int = Query(default=0, ge=-52, le=52))
                     "type": w.type,
                     "name": w.name,
                     "category": w.category,
-                    "duration": _format_duration(w.moving_time),
+                    "duration": format_duration(w.moving_time),
                     "duration_secs": w.moving_time,
                     "distance_km": w.distance,
                     "description": w.description,
@@ -369,7 +359,7 @@ async def activities_week(week_offset: int = Query(default=0, ge=-52, le=52)) ->
                     "id": a.id,
                     "type": a.type,
                     "moving_time": a.moving_time,
-                    "duration": _format_duration(a.moving_time),
+                    "duration": format_duration(a.moving_time),
                     "icu_training_load": round(a.icu_training_load, 1) if a.icu_training_load is not None else None,
                     "average_hr": round(a.average_hr) if a.average_hr is not None else None,
                 }
@@ -415,4 +405,41 @@ async def job_sync_activities(authorization: str | None = Header(default=None)) 
         "status": "ok",
         "synced_count": synced_count,
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Activity Details
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/activity/{activity_id}/details")
+async def activity_details(
+    activity_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Full activity details: summary + extended stats + DFA HRV analysis."""
+    _verify_request(authorization)
+
+    if not activity_id or not activity_id.startswith("i") or not activity_id[1:].isdigit():
+        raise HTTPException(status_code=400, detail="Invalid activity ID format")
+
+    async with get_session() as session:
+        activity = await session.get(ActivityRow, activity_id)
+        if activity is None:
+            raise HTTPException(status_code=404, detail="Activity not found")
+
+        detail = await session.get(ActivityDetailRow, activity_id)
+        hrv = await session.get(ActivityHrvRow, activity_id)
+
+    return {
+        "activity_id": activity.id,
+        "type": activity.type,
+        "date": activity.start_date_local,
+        "moving_time": activity.moving_time,
+        "duration": format_duration(activity.moving_time),
+        "icu_training_load": round(activity.icu_training_load, 1) if activity.icu_training_load is not None else None,
+        "average_hr": round(activity.average_hr) if activity.average_hr is not None else None,
+        "details": serialize_activity_details(detail) if detail else None,
+        "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
     }

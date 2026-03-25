@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Activity Details</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #13131a;
+            --surface-2: #1c1c27;
+            --border: #2a2a3a;
+            --text: #e8e8ed;
+            --text-dim: #8888a0;
+            --accent: #3b82f6;
+            --green: #22c55e;
+            --yellow: #f59e0b;
+            --orange: #f97316;
+            --red: #ef4444;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            padding: 0 16px 40px;
+            max-width: 540px;
+            margin: 0 auto;
+        }
+
+        .back-link {
+            display: inline-flex; align-items: center; gap: 4px;
+            font-size: 13px; color: var(--accent); text-decoration: none; padding: 12px 0 0;
+        }
+        .back-link:hover { text-decoration: underline; }
+
+        .activity-header {
+            padding: 16px 0 12px;
+        }
+        .activity-title {
+            font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px;
+        }
+        .activity-subtitle {
+            font-size: 13px; color: var(--text-dim); margin-top: 4px;
+        }
+
+        .cards-grid {
+            display: grid; grid-template-columns: 1fr 1fr;
+            gap: 8px; margin-bottom: 16px;
+        }
+        .card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 12px 14px;
+        }
+        .card-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+        .card-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+        .card-sub { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+
+        .section { margin-bottom: 16px; }
+        .section-title {
+            font-size: 14px; font-weight: 700; margin-bottom: 8px;
+            padding-bottom: 4px; border-bottom: 1px solid var(--border);
+        }
+
+        /* Zone chart */
+        .zone-chart-wrap {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 14px; margin-bottom: 10px;
+        }
+        .zone-chart-wrap canvas { max-height: 60px; }
+
+        /* Intervals table */
+        .intervals-table {
+            width: 100%; border-collapse: collapse; font-size: 12px;
+        }
+        .intervals-table th {
+            text-align: left; font-weight: 600; color: var(--text-dim);
+            padding: 6px 8px; border-bottom: 1px solid var(--border);
+            font-size: 11px; text-transform: uppercase;
+        }
+        .intervals-table td {
+            padding: 6px 8px; border-bottom: 1px solid var(--border);
+        }
+        .intervals-table tr:last-child td { border-bottom: none; }
+        .intervals-scroll {
+            overflow-x: auto; background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 4px 0;
+        }
+
+        /* DFA block */
+        .dfa-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+        }
+        .dfa-item {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 10px; padding: 10px 12px;
+        }
+        .dfa-label { font-size: 11px; color: var(--text-dim); }
+        .dfa-value { font-size: 16px; font-weight: 700; margin-top: 1px; }
+        .dfa-value.positive { color: var(--green); }
+        .dfa-value.negative { color: var(--red); }
+        .dfa-value.neutral { color: var(--yellow); }
+
+        .loading-state {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 60vh; color: var(--text-dim); gap: 12px;
+        }
+        .spinner {
+            width: 28px; height: 28px; border: 3px solid var(--surface-2);
+            border-top-color: var(--accent); border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .error-state {
+            text-align: center; color: var(--text-dim); padding: 60px 20px;
+        }
+    </style>
+</head>
+<body>
+
+<a href="/activities.html" onclick="this.href='/activities.html'+location.hash" class="back-link">&larr; Назад к активностям</a>
+
+<div id="loading" class="loading-state">
+    <div class="spinner"></div>
+    <span>Загрузка...</span>
+</div>
+
+<div id="content" style="display:none"></div>
+
+<script>
+const API_BASE = window.API_BASE_URL || '';
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.expand(); tg.ready(); }
+if (tg?.initData) sessionStorage.setItem('tg_init_data', tg.initData);
+
+function getInitData() {
+    return tg?.initData || sessionStorage.getItem('tg_init_data') || '';
+}
+
+const hasAuth = !!getInitData();
+if (!hasAuth) {
+    document.getElementById('loading').innerHTML =
+        '<div class="error-state">Доступ только через Telegram Mini App.</div>';
+    throw new Error('No Telegram initData');
+}
+
+async function apiFetch(endpoint) {
+    const headers = {};
+    const initData = getInitData();
+    if (initData) headers['Authorization'] = initData;
+    const res = await fetch(`${API_BASE}${endpoint}`, { headers });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+}
+
+const SPORT_ICONS = {
+    Swim: '\u{1F3CA}', Ride: '\u{1F6B4}', VirtualRide: '\u{1F6B4}',
+    GravelRide: '\u{1F6B4}', MountainBikeRide: '\u{26F0}\uFE0F',
+    Run: '\u{1F3C3}', VirtualRun: '\u{1F3C3}', TrailRun: '\u{26F0}\uFE0F',
+    WeightTraining: '\u{1F3CB}\uFE0F',
+};
+const BIKE_TYPES = ['Ride', 'VirtualRide', 'GravelRide', 'MountainBikeRide'];
+const RUN_TYPES = ['Run', 'VirtualRun', 'TrailRun'];
+const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+const ZONE_COLORS = ['#6b7280', '#22c55e', '#f59e0b', '#f97316', '#ef4444'];
+const ZONE_LABELS = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5'];
+
+function fmtDate(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+function fmtPace(v) {
+    if (!v || v <= 0) return null;
+    const m = Math.floor(v / 60);
+    const s = Math.round(v % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+}
+function fmtDuration(secs) {
+    if (!secs) return '-';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    if (h) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${m}:${String(s).padStart(2,'0')}`;
+}
+function fmtSpeed(ms) {
+    if (!ms || ms <= 0) return null;
+    return (ms * 3.6).toFixed(1);
+}
+
+function sportLabel(type) {
+    if (!type) return 'Activity';
+    return type.replace(/([A-Z])/g, ' $1').trim();
+}
+
+function esc(s) {
+    if (!s) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+}
+
+// ----- Render -----
+
+function renderZoneChart(canvasId, zones, label) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const total = zones.reduce((a, b) => a + (b || 0), 0);
+    if (total <= 0) return;
+
+    const data = [];
+    const colors = [];
+    const labels = [];
+    for (let i = 0; i < zones.length && i < 5; i++) {
+        const v = zones[i] || 0;
+        data.push(v);
+        colors.push(ZONE_COLORS[i]);
+        const pct = Math.round(v / total * 100);
+        const mins = Math.round(v / 60);
+        labels.push(`${ZONE_LABELS[i]}: ${mins}m (${pct}%)`);
+    }
+
+    new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels: [label],
+            datasets: data.map((v, i) => ({
+                label: labels[i],
+                data: [v / 60],
+                backgroundColor: colors[i],
+                borderRadius: 0,
+                barPercentage: 1.0,
+                categoryPercentage: 1.0,
+            })),
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { stacked: true, display: false },
+                y: { stacked: true, display: false },
+            },
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: { color: '#8888a0', font: { size: 10, family: 'Inter' }, boxWidth: 10, padding: 8 },
+                },
+                tooltip: { enabled: false },
+            },
+        },
+    });
+}
+
+function renderPage(data) {
+    const d = data.details;
+    const hrv = data.hrv;
+    const isBike = BIKE_TYPES.includes(data.type);
+    const isRun = RUN_TYPES.includes(data.type);
+    const isSwim = data.type === 'Swim';
+
+    let html = '';
+
+    // Header
+    const icon = SPORT_ICONS[data.type] || '\u{1F3C6}';
+    html += `<div class="activity-header">`;
+    html += `<div class="activity-title">${icon} ${esc(sportLabel(data.type))}</div>`;
+    const subParts = [fmtDate(data.date)];
+    if (data.duration) subParts.push(data.duration);
+    if (data.icu_training_load != null) subParts.push(`TSS ${data.icu_training_load}`);
+    if (data.average_hr != null) subParts.push(`\u2764\uFE0F ${data.average_hr} bpm`);
+    html += `<div class="activity-subtitle">${esc(subParts.join(' \u00B7 '))}</div>`;
+    html += `</div>`;
+
+    if (!d) {
+        html += `<div class="error-state">Нет детальных данных для этой активности.</div>`;
+        document.getElementById('content').innerHTML = html;
+        return;
+    }
+
+    // Summary cards
+    html += `<div class="cards-grid">`;
+
+    // Power card (bike)
+    if (isBike && (d.avg_power || d.normalized_power)) {
+        html += `<div class="card">`;
+        html += `<div class="card-label">Power</div>`;
+        html += `<div class="card-value">${d.normalized_power || d.avg_power}W</div>`;
+        const ps = [];
+        if (d.avg_power && d.normalized_power) ps.push(`Avg ${d.avg_power}W`);
+        if (d.intensity_factor) ps.push(`IF ${d.intensity_factor.toFixed(2)}`);
+        if (d.variability_index) ps.push(`VI ${d.variability_index.toFixed(2)}`);
+        if (ps.length) html += `<div class="card-sub">${ps.join(' \u00B7 ')}</div>`;
+        html += `</div>`;
+    }
+
+    // Speed card (bike) / Pace card (run)
+    if (isBike && d.avg_speed) {
+        html += `<div class="card">`;
+        html += `<div class="card-label">Speed</div>`;
+        html += `<div class="card-value">${fmtSpeed(d.avg_speed)} km/h</div>`;
+        const ps = [];
+        if (d.max_speed) ps.push(`Max ${fmtSpeed(d.max_speed)}`);
+        if (ps.length) html += `<div class="card-sub">${ps.join(' \u00B7 ')}</div>`;
+        html += `</div>`;
+    }
+    if (isRun && d.pace) {
+        html += `<div class="card">`;
+        html += `<div class="card-label">Pace</div>`;
+        html += `<div class="card-value">${fmtPace(d.pace)}/km</div>`;
+        const ps = [];
+        if (d.gap) ps.push(`GAP ${fmtPace(d.gap)}/km`);
+        if (ps.length) html += `<div class="card-sub">${ps.join(' \u00B7 ')}</div>`;
+        html += `</div>`;
+    }
+    if (isSwim && d.pace) {
+        const p100 = d.pace / 10;
+        html += `<div class="card">`;
+        html += `<div class="card-label">Pace</div>`;
+        html += `<div class="card-value">${fmtPace(p100)}/100m</div>`;
+        html += `</div>`;
+    }
+
+    // HR card
+    if (data.average_hr || d.max_hr) {
+        html += `<div class="card">`;
+        html += `<div class="card-label">Heart Rate</div>`;
+        html += `<div class="card-value">${data.average_hr || '-'} bpm</div>`;
+        if (d.max_hr) html += `<div class="card-sub">Max ${d.max_hr} bpm</div>`;
+        html += `</div>`;
+    }
+
+    // Efficiency card
+    if (d.efficiency_factor || d.power_hr || d.decoupling != null) {
+        html += `<div class="card">`;
+        html += `<div class="card-label">Efficiency</div>`;
+        const v = d.efficiency_factor ? d.efficiency_factor.toFixed(2) : (d.power_hr ? d.power_hr.toFixed(2) : '-');
+        html += `<div class="card-value">${v}</div>`;
+        const ps = [];
+        if (d.efficiency_factor) ps.push('EF');
+        if (d.power_hr && d.efficiency_factor) ps.push(`P:HR ${d.power_hr.toFixed(2)}`);
+        if (d.decoupling != null) ps.push(`Decouple ${d.decoupling.toFixed(1)}%`);
+        if (ps.length) html += `<div class="card-sub">${ps.join(' \u00B7 ')}</div>`;
+        html += `</div>`;
+    }
+
+    // Cadence card
+    if (d.avg_cadence) {
+        html += `<div class="card">`;
+        html += `<div class="card-label">Cadence</div>`;
+        if (isRun) {
+            html += `<div class="card-value">${Math.round(d.avg_cadence * 2)} spm</div>`;
+            if (d.avg_stride) html += `<div class="card-sub">Stride ${d.avg_stride.toFixed(2)}m</div>`;
+        } else {
+            html += `<div class="card-value">${Math.round(d.avg_cadence)} rpm</div>`;
+        }
+        html += `</div>`;
+    }
+
+    // Distance / Elevation / Calories card
+    {
+        const ps = [];
+        if (d.distance) ps.push(`${(d.distance / 1000).toFixed(1)} km`);
+        if (d.elevation_gain) ps.push(`\u2B06 ${Math.round(d.elevation_gain)}m`);
+        if (d.calories) ps.push(`${d.calories} kcal`);
+        if (d.trimp) ps.push(`TRIMP ${Math.round(d.trimp)}`);
+        if (ps.length) {
+            html += `<div class="card">`;
+            html += `<div class="card-label">Distance & More</div>`;
+            html += `<div class="card-value">${ps[0]}</div>`;
+            if (ps.length > 1) html += `<div class="card-sub">${ps.slice(1).join(' \u00B7 ')}</div>`;
+            html += `</div>`;
+        }
+    }
+
+    html += `</div>`; // cards-grid
+
+    // Zone charts
+    if (d.hr_zones && d.hr_zones.some(v => v > 0)) {
+        html += `<div class="zone-chart-wrap"><canvas id="hrZoneChart" height="50"></canvas></div>`;
+    }
+    if (d.power_zones && d.power_zones.some(v => v > 0)) {
+        html += `<div class="zone-chart-wrap"><canvas id="powerZoneChart" height="50"></canvas></div>`;
+    }
+    if (d.pace_zones && d.pace_zones.some(v => v > 0)) {
+        html += `<div class="zone-chart-wrap"><canvas id="paceZoneChart" height="50"></canvas></div>`;
+    }
+
+    // Intervals table
+    if (d.intervals && d.intervals.length > 0) {
+        html += `<div class="section">`;
+        html += `<div class="section-title">Intervals</div>`;
+        html += `<div class="intervals-scroll"><table class="intervals-table">`;
+        html += `<thead><tr><th>#</th><th>Duration</th>`;
+        if (isBike) html += `<th>Power</th>`;
+        if (isRun) html += `<th>Pace</th>`;
+        html += `<th>HR</th>`;
+        if (!isSwim) html += `<th>Cadence</th>`;
+        html += `</tr></thead><tbody>`;
+
+        for (let i = 0; i < d.intervals.length; i++) {
+            const iv = d.intervals[i];
+            html += `<tr>`;
+            html += `<td>${i + 1}</td>`;
+            html += `<td>${fmtDuration(iv.moving_time || iv.elapsed_time)}</td>`;
+            if (isBike) html += `<td>${iv.average_watts || iv.weighted_average_watts || '-'}W</td>`;
+            if (isRun) {
+                const p = iv.gap || (iv.average_speed > 0 ? 1000 / iv.average_speed : null);
+                html += `<td>${p ? fmtPace(p) : '-'}</td>`;
+            }
+            html += `<td>${iv.average_heartrate ? Math.round(iv.average_heartrate) : '-'}</td>`;
+            if (!isSwim) html += `<td>${iv.average_cadence ? Math.round(iv.average_cadence) : '-'}</td>`;
+            html += `</tr>`;
+        }
+
+        html += `</tbody></table></div></div>`;
+    }
+
+    // DFA Alpha 1 block
+    if (hrv) {
+        html += `<div class="section">`;
+        html += `<div class="section-title">DFA Alpha 1</div>`;
+        html += `<div class="dfa-grid">`;
+
+        if (hrv.ra_pct != null) {
+            const cls = hrv.ra_pct > 5 ? 'positive' : hrv.ra_pct < -5 ? 'negative' : 'neutral';
+            html += `<div class="dfa-item"><div class="dfa-label">Readiness (Ra)</div>`;
+            html += `<div class="dfa-value ${cls}">${hrv.ra_pct > 0 ? '+' : ''}${hrv.ra_pct.toFixed(1)}%</div></div>`;
+        }
+        if (hrv.da_pct != null) {
+            const cls = hrv.da_pct > 0 ? 'positive' : hrv.da_pct < -5 ? 'negative' : 'neutral';
+            html += `<div class="dfa-item"><div class="dfa-label">Durability (Da)</div>`;
+            html += `<div class="dfa-value ${cls}">${hrv.da_pct > 0 ? '+' : ''}${hrv.da_pct.toFixed(1)}%</div></div>`;
+        }
+        if (hrv.hrvt1_hr) {
+            html += `<div class="dfa-item"><div class="dfa-label">HRVT1</div>`;
+            let v = `${Math.round(hrv.hrvt1_hr)} bpm`;
+            if (hrv.hrvt1_power) v += ` / ${Math.round(hrv.hrvt1_power)}W`;
+            if (hrv.hrvt1_pace) v += ` / ${esc(hrv.hrvt1_pace)}`;
+            html += `<div class="dfa-value">${v}</div></div>`;
+        }
+        if (hrv.hrvt2_hr) {
+            html += `<div class="dfa-item"><div class="dfa-label">HRVT2</div>`;
+            html += `<div class="dfa-value">${Math.round(hrv.hrvt2_hr)} bpm</div></div>`;
+        }
+        if (hrv.dfa_a1_mean != null) {
+            html += `<div class="dfa-item"><div class="dfa-label">DFA a1 Mean</div>`;
+            html += `<div class="dfa-value">${hrv.dfa_a1_mean.toFixed(2)}</div></div>`;
+        }
+        if (hrv.hrv_quality) {
+            html += `<div class="dfa-item"><div class="dfa-label">Quality</div>`;
+            html += `<div class="dfa-value">${esc(hrv.hrv_quality)}</div></div>`;
+        }
+
+        html += `</div></div>`;
+    }
+
+    document.getElementById('content').innerHTML = html;
+
+    // Render charts after DOM is ready
+    if (d.hr_zones && d.hr_zones.some(v => v > 0)) {
+        renderZoneChart('hrZoneChart', d.hr_zones, 'HR Zones');
+    }
+    if (d.power_zones && d.power_zones.some(v => v > 0)) {
+        renderZoneChart('powerZoneChart', d.power_zones, 'Power Zones');
+    }
+    if (d.pace_zones && d.pace_zones.some(v => v > 0)) {
+        renderZoneChart('paceZoneChart', d.pace_zones, 'Pace Zones');
+    }
+}
+
+// ---- Init ----
+
+const params = new URLSearchParams(window.location.search);
+const activityId = params.get('id');
+
+if (!activityId || !/^i\d+$/.test(activityId)) {
+    document.getElementById('loading').innerHTML =
+        '<div class="error-state">Invalid or missing activity ID.</div>';
+} else {
+    apiFetch(`/api/activity/${activityId}/details`)
+        .then(data => {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('content').style.display = 'block';
+            renderPage(data);
+        })
+        .catch(err => {
+            console.error('Failed to load activity:', err);
+            document.getElementById('loading').innerHTML =
+                '<div class="error-state">Не удалось загрузить активность.</div>';
+        });
+}
+</script>
+</body>
+</html>

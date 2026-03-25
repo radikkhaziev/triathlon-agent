@@ -19,6 +19,7 @@
             --accent-glow: #3b82f620;
             --green: #22c55e;
             --yellow: #f59e0b;
+            --orange: #f97316;
             --red: #ef4444;
         }
 
@@ -88,7 +89,14 @@
         .activity-item { border-top: 1px solid var(--border); }
         .activity-row {
             display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+            cursor: pointer; transition: background 0.15s;
         }
+        .activity-row:hover { background: var(--surface-2); }
+        .activity-row .chevron {
+            color: var(--text-dim); font-size: 12px; transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+        .activity-row.expanded .chevron { transform: rotate(90deg); }
         .sport-icon { font-size: 18px; flex-shrink: 0; width: 24px; text-align: center; }
         .activity-info { flex: 1; min-width: 0; }
         .activity-name {
@@ -96,6 +104,48 @@
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .activity-meta { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+
+        /* Inline detail panel */
+        .detail-panel {
+            padding: 0 16px 14px;
+            animation: fadeIn 0.15s ease-out;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .detail-metrics {
+            font-size: 12px; color: var(--text-dim); line-height: 1.8;
+        }
+        .detail-metrics strong { color: var(--text); font-weight: 600; }
+
+        /* Zone bar */
+        .zone-bar-container { margin: 6px 0 4px; }
+        .zone-bar-label { font-size: 11px; color: var(--text-dim); margin-bottom: 3px; }
+        .zone-bar {
+            display: flex; height: 16px; border-radius: 4px; overflow: hidden;
+            background: var(--surface-2);
+        }
+        .zone-bar .seg {
+            display: flex; align-items: center; justify-content: center;
+            font-size: 9px; font-weight: 600; color: #fff; min-width: 0;
+            white-space: nowrap; overflow: hidden;
+        }
+        .zone-legend {
+            display: flex; gap: 8px; flex-wrap: wrap; margin-top: 3px;
+        }
+        .zone-legend span { font-size: 10px; color: var(--text-dim); }
+        .zone-legend .dot {
+            display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+            margin-right: 2px; vertical-align: middle;
+        }
+
+        .detail-link {
+            display: inline-block; margin-top: 8px;
+            font-size: 12px; color: var(--accent); text-decoration: none;
+        }
+        .detail-link:hover { text-decoration: underline; }
+
+        .detail-loading {
+            font-size: 12px; color: var(--text-dim); padding: 8px 16px 14px;
+        }
 
         .loading-state {
             display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -180,11 +230,17 @@ const SPORT_ICONS = {
     WeightTraining: '\u{1F3CB}\uFE0F',
 };
 
+const BIKE_TYPES = ['Ride', 'VirtualRide', 'GravelRide', 'MountainBikeRide'];
+const RUN_TYPES = ['Run', 'VirtualRun', 'TrailRun'];
+
 const WEEKDAY_RU = {
     Mon: 'Пн', Tue: 'Вт', Wed: 'Ср', Thu: 'Чт', Fri: 'Пт', Sat: 'Сб', Sun: 'Вс',
 };
 
 const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+const ZONE_COLORS = ['#6b7280', '#22c55e', '#f59e0b', '#f97316', '#ef4444'];
+const ZONE_LABELS = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5'];
 
 function formatWeekLabel(start, end) {
     const s = new Date(start + 'T00:00:00');
@@ -219,6 +275,165 @@ function escapeHtml(text) {
 function sportLabel(type) {
     if (!type) return 'Activity';
     return type.replace(/([A-Z])/g, ' $1').trim();
+}
+
+function fmtPace(secPerKm) {
+    if (!secPerKm || secPerKm <= 0) return null;
+    const m = Math.floor(secPerKm / 60);
+    const s = Math.round(secPerKm % 60);
+    return `${m}:${String(s).padStart(2, '0')}/km`;
+}
+
+function fmtSpeed(ms) {
+    if (!ms || ms <= 0) return null;
+    return (ms * 3.6).toFixed(1) + ' km/h';
+}
+
+// ---- Detail cache ----
+const detailCache = {};
+
+function buildZoneBar(zones, label) {
+    if (!zones || !zones.length) return '';
+    const total = zones.reduce((a, b) => a + (b || 0), 0);
+    if (total <= 0) return '';
+
+    let html = `<div class="zone-bar-container">`;
+    html += `<div class="zone-bar-label">${label}</div>`;
+    html += `<div class="zone-bar">`;
+    for (let i = 0; i < zones.length && i < 5; i++) {
+        const v = zones[i] || 0;
+        const pct = (v / total * 100);
+        if (pct < 1) continue;
+        const lbl = pct >= 8 ? `${ZONE_LABELS[i]} ${Math.round(pct)}%` : '';
+        html += `<div class="seg" style="width:${pct}%;background:${ZONE_COLORS[i]}">${lbl}</div>`;
+    }
+    html += `</div>`;
+    html += `<div class="zone-legend">`;
+    for (let i = 0; i < zones.length && i < 5; i++) {
+        const v = zones[i] || 0;
+        if (v <= 0) continue;
+        const mins = Math.round(v / 60);
+        html += `<span><span class="dot" style="background:${ZONE_COLORS[i]}"></span>${ZONE_LABELS[i]} ${mins}m</span>`;
+    }
+    html += `</div></div>`;
+    return html;
+}
+
+function buildInlineDetail(data) {
+    const d = data.details;
+    const type = data.type;
+    if (!d) return '<div class="detail-metrics">Нет детальных данных</div>';
+
+    let lines = [];
+
+    if (BIKE_TYPES.includes(type)) {
+        const parts = [];
+        if (d.normalized_power) parts.push(`<strong>NP ${d.normalized_power}W</strong>`);
+        if (d.intensity_factor) parts.push(`IF ${d.intensity_factor.toFixed(2)}`);
+        if (d.efficiency_factor) parts.push(`EF ${d.efficiency_factor.toFixed(2)}`);
+        if (d.decoupling != null) parts.push(`Decouple ${d.decoupling.toFixed(1)}%`);
+        if (parts.length) lines.push(parts.join(' \u00B7 '));
+
+        const parts2 = [];
+        if (d.elevation_gain) parts2.push(`\u2B06\uFE0F ${Math.round(d.elevation_gain)}m`);
+        if (d.avg_cadence) parts2.push(`\uD83D\uDD04 ${Math.round(d.avg_cadence)}rpm`);
+        if (d.calories) parts2.push(`\uD83D\uDD25 ${d.calories}kcal`);
+        if (parts2.length) lines.push(parts2.join(' \u00B7 '));
+    } else if (RUN_TYPES.includes(type)) {
+        const parts = [];
+        const pace = fmtPace(d.pace);
+        if (pace) parts.push(`<strong>Pace ${pace}</strong>`);
+        const gap = fmtPace(d.gap);
+        if (gap) parts.push(`GAP ${gap}`);
+        if (d.efficiency_factor) parts.push(`EF ${d.efficiency_factor.toFixed(2)}`);
+        if (d.decoupling != null) parts.push(`Decouple ${d.decoupling.toFixed(1)}%`);
+        if (parts.length) lines.push(parts.join(' \u00B7 '));
+
+        const parts2 = [];
+        if (d.elevation_gain) parts2.push(`\u2B06\uFE0F ${Math.round(d.elevation_gain)}m`);
+        if (d.avg_cadence) parts2.push(`\uD83D\uDC63 ${Math.round(d.avg_cadence * 2)}spm`);
+        if (d.avg_stride) parts2.push(`Stride ${d.avg_stride.toFixed(2)}m`);
+        if (parts2.length) lines.push(parts2.join(' \u00B7 '));
+    } else if (type === 'Swim') {
+        const parts = [];
+        if (d.pace) {
+            // Intervals.icu pace is sec/km; divide by 10 for sec/100m
+            const p100 = d.pace / 10;
+            const m = Math.floor(p100 / 60);
+            const s = Math.round(p100 % 60);
+            parts.push(`<strong>Pace ${m}:${String(s).padStart(2, '0')}/100m</strong>`);
+        }
+        if (d.calories) parts.push(`\uD83D\uDD25 ${d.calories}kcal`);
+        if (parts.length) lines.push(parts.join(' \u00B7 '));
+    } else {
+        // Generic
+        const parts = [];
+        if (d.calories) parts.push(`\uD83D\uDD25 ${d.calories}kcal`);
+        if (d.distance) parts.push(`${(d.distance / 1000).toFixed(1)}km`);
+        if (parts.length) lines.push(parts.join(' \u00B7 '));
+    }
+
+    let html = '<div class="detail-metrics">';
+    html += lines.join('<br>');
+    html += '</div>';
+
+    html += buildZoneBar(d.hr_zones, 'HR Zones');
+    html += buildZoneBar(d.power_zones, 'Power Zones');
+    html += buildZoneBar(d.pace_zones, 'Pace Zones');
+
+    html += `<a class="detail-link" href="/activity.html?id=${encodeURIComponent(data.activity_id)}${location.hash}">Details \u2192</a>`;
+    return html;
+}
+
+const _loadingIds = new Set();
+
+async function toggleDetail(activityId) {
+    const panel = document.getElementById(`detail-${activityId}`);
+    const row = document.getElementById(`row-${activityId}`);
+
+    if (panel) {
+        // Toggle off
+        panel.remove();
+        row?.classList.remove('expanded');
+        return;
+    }
+
+    // Prevent double-click while loading
+    if (_loadingIds.has(activityId)) return;
+    _loadingIds.add(activityId);
+
+    row?.classList.add('expanded');
+
+    // Show loading
+    const item = row?.closest('.activity-item');
+    if (!item) return;
+    const loadEl = document.createElement('div');
+    loadEl.id = `detail-${activityId}`;
+    loadEl.className = 'detail-loading';
+    loadEl.textContent = 'Загрузка...';
+    item.appendChild(loadEl);
+
+    try {
+        let data = detailCache[activityId];
+        if (!data) {
+            data = await apiFetch(`/api/activity/${activityId}/details`);
+            detailCache[activityId] = data;
+        }
+
+        const el = document.getElementById(`detail-${activityId}`);
+        if (!el) return; // was toggled off while loading
+        el.className = 'detail-panel';
+        el.innerHTML = buildInlineDetail(data);
+    } catch (err) {
+        console.error('Failed to load details:', err);
+        const el = document.getElementById(`detail-${activityId}`);
+        if (el) {
+            el.className = 'detail-panel';
+            el.innerHTML = '<div class="detail-metrics">Не удалось загрузить детали</div>';
+        }
+    } finally {
+        _loadingIds.delete(activityId);
+    }
 }
 
 let currentOffset = 0;
@@ -260,13 +475,16 @@ async function loadWeek(offset) {
                     if (a.average_hr != null) metaParts.push(`\u2764\uFE0F ${a.average_hr}`);
                     const meta = metaParts.join(' \u00B7 ');
 
+                    const safeId = escapeHtml(a.id);
                     html += `<div class="activity-item">`;
-                    html += `<div class="activity-row">`;
+                    html += `<div class="activity-row" id="row-${safeId}" onclick="toggleDetail('${safeId}')">`;
                     html += `<span class="sport-icon">${icon}</span>`;
                     html += `<div class="activity-info">`;
                     html += `<div class="activity-name">${escapeHtml(label)}</div>`;
                     if (meta) html += `<div class="activity-meta">${escapeHtml(meta)}</div>`;
-                    html += `</div></div></div>`;
+                    html += `</div>`;
+                    html += `<span class="chevron">\u25B6</span>`;
+                    html += `</div></div>`;
                 }
             }
             html += `</div>`;

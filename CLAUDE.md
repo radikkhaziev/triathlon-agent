@@ -679,6 +679,7 @@ Detailed design documents and implementation plans:
 | `docs/SCHEDULED_WORKOUTS_PAGE.md` | Scheduled workouts dashboard page — architecture doc (implemented) |
 | `docs/ACTIVITIES_PAGE.md` | Activities dashboard page — architecture doc |
 | `docs/ACTIVITY_DETAILS_PHASE1.md` | Activity Details Phase 1 — fetch from Intervals.icu API & store in DB |
+| `docs/ACTIVITY_DETAILS_PHASE2.md` | Activity Details Phase 2 — web display (inline + full page) + MCP tool |
 
 ---
 

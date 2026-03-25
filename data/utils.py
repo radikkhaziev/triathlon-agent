@@ -1,4 +1,11 @@
-"""Shared utilities for sport type mapping and CTL extraction."""
+"""Shared utilities for sport type mapping, CTL extraction, and serialization."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from data.database import ActivityDetailRow, ActivityHrvRow
 
 # Canonical mapping: Intervals.icu activity/sport type → swim/bike/run
 SPORT_MAP: dict[str, str] = {
@@ -56,3 +63,70 @@ def extract_sport_ctl_tuple(sport_info: list[dict] | None) -> tuple[float, float
     """
     d = extract_sport_ctl(sport_info)
     return (d["swim"] or 0.0, d["bike"] or 0.0, d["run"] or 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def format_duration(secs: int | None) -> str | None:
+    """Format seconds into a human-readable duration string (e.g. '1h 30m')."""
+    if secs is None:
+        return None
+    if secs <= 0:
+        return "0m"
+    h, remainder = divmod(secs, 3600)
+    m = remainder // 60
+    if h:
+        return f"{h}h {m:02d}m" if m else f"{h}h"
+    return f"{m}m"
+
+
+# ---------------------------------------------------------------------------
+# Serialization helpers (activity details / HRV)
+# ---------------------------------------------------------------------------
+
+
+def serialize_activity_details(detail: ActivityDetailRow) -> dict:
+    """Convert ActivityDetailRow to a plain dict for JSON response."""
+    return {
+        "max_hr": detail.max_hr,
+        "avg_power": detail.avg_power,
+        "normalized_power": detail.normalized_power,
+        "avg_speed": detail.avg_speed,
+        "max_speed": detail.max_speed,
+        "pace": detail.pace,
+        "gap": detail.gap,
+        "distance": detail.distance,
+        "elevation_gain": detail.elevation_gain,
+        "avg_cadence": detail.avg_cadence,
+        "avg_stride": detail.avg_stride,
+        "calories": detail.calories,
+        "intensity_factor": detail.intensity_factor,
+        "variability_index": detail.variability_index,
+        "efficiency_factor": detail.efficiency_factor,
+        "power_hr": detail.power_hr,
+        "decoupling": detail.decoupling,
+        "trimp": detail.trimp,
+        "hr_zones": detail.hr_zones,
+        "power_zones": detail.power_zones,
+        "pace_zones": detail.pace_zones,
+        "intervals": detail.intervals,
+    }
+
+
+def serialize_activity_hrv(hrv: ActivityHrvRow) -> dict:
+    """Convert ActivityHrvRow to a plain dict for JSON response."""
+    return {
+        "dfa_a1_mean": hrv.dfa_a1_mean,
+        "dfa_a1_warmup": hrv.dfa_a1_warmup,
+        "hrv_quality": hrv.hrv_quality,
+        "ra_pct": hrv.ra_pct,
+        "da_pct": hrv.da_pct,
+        "hrvt1_hr": hrv.hrvt1_hr,
+        "hrvt1_power": hrv.hrvt1_power,
+        "hrvt1_pace": hrv.hrvt1_pace,
+        "hrvt2_hr": hrv.hrvt2_hr,
+        "processing_status": hrv.processing_status,
+    }
