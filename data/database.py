@@ -14,8 +14,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from ai.gemini_agent import GeminiAgent, is_gemini_enabled
-from ai.prompts import MORNING_REPORT_PROMPT_GEMINI
 from config import settings
 from data.models import Activity, RecoveryScore, RhrStatus, RmssdStatus, ScheduledWorkout, Wellness
 
@@ -363,9 +361,7 @@ async def save_wellness(
 
         # --- Skip if data hasn't changed AND all computed fields are populated ---
         pipeline_complete = row.recovery_score is not None and row.ess_today is not None
-        ai_pending = run_ai and (
-            row.ai_recommendation is None or (row.ai_recommendation_gemini is None and is_gemini_enabled())
-        )
+        ai_pending = run_ai and (row.ai_recommendation is None or row.ai_recommendation_gemini is None)
         if (
             row.updated
             and wellness.updated
@@ -555,7 +551,14 @@ async def save_wellness(
                     tasks["claude"] = asyncio.ensure_future(_claude())
 
                 # Gemini — only if GOOGLE_AI_API_KEY is configured
-                if need_gemini and is_gemini_enabled():
+                if need_gemini:
+                    from ai.gemini_agent import GeminiAgent, is_gemini_enabled
+
+                    if not is_gemini_enabled():
+                        need_gemini = False
+                if need_gemini:
+                    from ai.prompts import MORNING_REPORT_PROMPT_GEMINI
+
                     prompt_gemini = await build_morning_prompt(**prompt_kwargs, template=MORNING_REPORT_PROMPT_GEMINI)
                     gemini = GeminiAgent()
 
@@ -577,6 +580,7 @@ async def save_wellness(
                             ai_is_new = True
                         elif name == "gemini":
                             row.ai_recommendation_gemini = result
+                            ai_is_new = True
             except Exception:
                 logger.exception("AI recommendation failed")
 

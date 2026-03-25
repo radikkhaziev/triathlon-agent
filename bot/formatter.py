@@ -69,7 +69,7 @@ def build_report_summary(
     return "\n".join(lines)
 
 
-def _format_duration(seconds: int | None) -> str:
+def format_duration(seconds: int | None) -> str:
     """Format seconds as 'Xh Ym' or 'Ym'."""
     if not seconds:
         return "—"
@@ -80,7 +80,7 @@ def _format_duration(seconds: int | None) -> str:
     return f"{m}m"
 
 
-def _sport_emoji(activity_type: str | None) -> str:
+def sport_emoji(activity_type: str | None) -> str:
     """Return sport emoji based on activity type."""
     if not activity_type:
         return "🏋️"
@@ -96,8 +96,8 @@ def _sport_emoji(activity_type: str | None) -> str:
 
 def build_post_activity_message(activity: ActivityRow, hrv: ActivityHrvRow) -> str:
     """Build short post-activity DFA notification (3-4 lines max)."""
-    emoji = _sport_emoji(activity.type)
-    dur = _format_duration(activity.moving_time)
+    emoji = sport_emoji(activity.type)
+    dur = format_duration(activity.moving_time)
     tss = f" | TSS {activity.icu_training_load:.0f}" if activity.icu_training_load else ""
 
     lines: list[str] = [f"{emoji} {activity.type or '?'} {dur}{tss}"]
@@ -149,7 +149,7 @@ def _format_workout_short(w) -> str:
         parts = w.name.split(":", 1)
         name_part = parts[1].strip() if len(parts) > 1 else parts[0].strip()
 
-    dur = _format_duration(w.moving_time)
+    dur = format_duration(w.moving_time)
 
     if name_part:
         return f"{sport} {name_part} {dur}"
@@ -173,8 +173,8 @@ def build_evening_message(
         total_tss = sum(a.icu_training_load or 0 for a in activities)
         lines.append(f"Тренировки: {len(activities)} | TSS: {total_tss:.0f}")
         for a in activities:
-            emoji = _sport_emoji(a.type)
-            dur = _format_duration(a.moving_time)
+            emoji = sport_emoji(a.type)
+            dur = format_duration(a.moving_time)
             tss = f" (TSS {a.icu_training_load:.0f})" if a.icu_training_load else ""
             lines.append(f"  {emoji} {a.type or '?'} {dur}{tss}")
     else:

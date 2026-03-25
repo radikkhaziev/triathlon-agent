@@ -5,9 +5,8 @@ from datetime import date, datetime, timedelta
 import anthropic
 
 from ai.prompts import MORNING_REPORT_PROMPT, get_system_prompt
-from bot.formatter import _format_duration, _sport_emoji
+from bot.formatter import format_duration, sport_emoji
 from config import settings
-from data.database import get_activities_for_date, get_activity_hrv_for_date
 from data.utils import extract_sport_ctl_tuple
 
 logger = logging.getLogger(__name__)
@@ -182,6 +181,8 @@ class ClaudeAgent:
 
 async def _format_yesterday_dfa() -> str:
     """Format yesterday's DFA data for the morning AI prompt."""
+    from data.database import get_activities_for_date, get_activity_hrv_for_date
+
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     yesterday = datetime.now(tz).date() - timedelta(days=1)
     activities = await get_activities_for_date(yesterday)
@@ -193,8 +194,8 @@ async def _format_yesterday_dfa() -> str:
 
     lines = []
     for a in activities:
-        emoji = _sport_emoji(a.type)
-        dur_str = _format_duration(a.moving_time)
+        emoji = sport_emoji(a.type)
+        dur_str = format_duration(a.moving_time)
 
         hrv = hrv_map.get(a.id)
         if hrv and hrv.processing_status == "processed":

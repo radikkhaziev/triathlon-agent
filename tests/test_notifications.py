@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bot.formatter import _format_duration, _sport_emoji, build_evening_message, build_post_activity_message
+from bot.formatter import build_evening_message, build_post_activity_message, format_duration, sport_emoji
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,42 +84,42 @@ def _make_wellness(**overrides):
 
 class TestFormatDuration:
     def test_hours_and_minutes(self):
-        assert _format_duration(4800) == "1h20m"
+        assert format_duration(4800) == "1h20m"
 
     def test_minutes_only(self):
-        assert _format_duration(2400) == "40m"
+        assert format_duration(2400) == "40m"
 
     def test_none(self):
-        assert _format_duration(None) == "—"
+        assert format_duration(None) == "—"
 
     def test_zero(self):
-        assert _format_duration(0) == "—"
+        assert format_duration(0) == "—"
 
     def test_exact_hour(self):
-        assert _format_duration(3600) == "1h00m"
+        assert format_duration(3600) == "1h00m"
 
 
 class TestSportEmoji:
     def test_ride(self):
-        assert _sport_emoji("Ride") == "🚴"
+        assert sport_emoji("Ride") == "🚴"
 
     def test_virtual_ride(self):
-        assert _sport_emoji("VirtualRide") == "🚴"
+        assert sport_emoji("VirtualRide") == "🚴"
 
     def test_run(self):
-        assert _sport_emoji("Run") == "🏃"
+        assert sport_emoji("Run") == "🏃"
 
     def test_trail_run(self):
-        assert _sport_emoji("TrailRun") == "🏃"
+        assert sport_emoji("TrailRun") == "🏃"
 
     def test_swim(self):
-        assert _sport_emoji("Swim") == "🏊"
+        assert sport_emoji("Swim") == "🏊"
 
     def test_none(self):
-        assert _sport_emoji(None) == "🏋️"
+        assert sport_emoji(None) == "🏋️"
 
     def test_unknown(self):
-        assert _sport_emoji("Yoga") == "🏋️"
+        assert sport_emoji("Yoga") == "🏋️"
 
 
 # ---------------------------------------------------------------------------
