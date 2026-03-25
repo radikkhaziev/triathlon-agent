@@ -121,16 +121,16 @@ async def create_scheduler(bot: Bot | None = None) -> AsyncIOScheduler:
     scheduler.add_job(
         scheduled_workouts_job,
         trigger="cron",
-        hour="5-22",
-        minute="*/30",
+        hour="4-23",
+        minute=0,
         id="scheduled_workouts",
     )
 
     scheduler.add_job(
         sync_activities_job,
         trigger="cron",
-        hour="5-22",
-        minute="*/15",
+        hour="4-23",
+        minute=30,
         id="sync_activities",
     )
 
@@ -197,8 +197,10 @@ async def sync_activities_job(days: int = 90) -> int:
     Returns count of upserted activities.
     """
     intervals = IntervalsClient()
-    oldest = date.today() - timedelta(days=days)
-    newest = date.today()
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+    oldest = today - timedelta(days=days)
+    newest = today
 
     activities = await intervals.get_activities(oldest=oldest, newest=newest)
     count = await save_activities(activities)
@@ -212,8 +214,9 @@ async def daily_metrics_job(
 ) -> None:
     intervals = IntervalsClient()
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
-    dt = target_date or date.today()
-    is_today = dt == date.today()
+    today = datetime.now(tz).date()
+    dt = target_date or today
+    is_today = dt == today
 
     wellness = await intervals.get_wellness(dt)
 
@@ -235,7 +238,7 @@ async def daily_metrics_job(
     except Exception:
         logger.warning("Failed to enrich sport_info with per-sport CTL", exc_info=True)
 
-    # Delay AI until sleep data is available, with 8:00 deadline
+    # Delay AI until sleep data is available, with 11:00 deadline
     has_sleep = wellness.sleep_score is not None
     past_deadline = datetime.now(tz).hour >= 11
     run_ai = is_today and (has_sleep or past_deadline)
@@ -253,7 +256,8 @@ async def daily_metrics_job(
 async def scheduled_workouts_job() -> None:
     """Fetch planned workouts for the next 14 days and upsert into DB."""
     intervals = IntervalsClient()
-    today = date.today()
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).date()
     newest = today + timedelta(days=14)
 
     workouts = await intervals.get_events(oldest=today, newest=newest)

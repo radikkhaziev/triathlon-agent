@@ -33,28 +33,29 @@ class MCPAuthMiddleware:
         if scope["type"] in ("http", "websocket") and scope["path"].startswith("/mcp"):
             token = settings.MCP_AUTH_TOKEN.get_secret_value()
             if not token:
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 503,
-                        "headers": [(b"content-type", b"application/json")],
-                    }
-                )
-                await send({"type": "http.response.body", "body": b'{"detail":"MCP auth not configured"}'})
+                await self._reject(scope, receive, send, 503, b'{"detail":"MCP auth not configured"}')
                 return
             headers = dict(scope.get("headers", []))
             auth = headers.get(b"authorization", b"").decode()
             if auth != f"Bearer {token}":
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 401,
-                        "headers": [(b"content-type", b"application/json")],
-                    }
-                )
-                await send({"type": "http.response.body", "body": b'{"detail":"Invalid MCP token"}'})
+                await self._reject(scope, receive, send, 401, b'{"detail":"Invalid MCP token"}')
                 return
         await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _reject(scope, receive, send, status: int, body: bytes):
+        if scope["type"] == "websocket":
+            await receive()  # wait for websocket.connect
+            await send({"type": "websocket.close", "code": 4001})
+        else:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": status,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
 
 
 # Mount MCP server on /mcp (Streamable HTTP transport — stateless, no session expiry issues)

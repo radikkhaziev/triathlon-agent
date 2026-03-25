@@ -545,8 +545,6 @@ async def get_activities_for_ctl(days: int = 90, as_of: date | None = None) -> l
     Returned objects are detached from session — safe to access simple columns
     but not lazy-loaded relationships.
     """
-    from datetime import timedelta
-
     ref = as_of or date.today()
     cutoff = str(ref - timedelta(days=days))
     newest = str(ref)

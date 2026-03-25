@@ -158,6 +158,7 @@ class IntervalsClient:
         Returns raw bytes or None if not available (404).
         Uses _request() for retry on 429/5xx.
         """
+        max_size = 50 * 1024 * 1024  # 50 MB
         try:
             resp = await self._request(
                 "GET",
@@ -165,6 +166,13 @@ class IntervalsClient:
                 headers={"Accept": "application/octet-stream"},
                 timeout=60.0,
             )
+            content_length = resp.headers.get("content-length")
+            if content_length and int(content_length) > max_size:
+                logger.warning("FIT file too large (%s bytes), skipping %s", content_length, activity_id)
+                return None
+            if len(resp.content) > max_size:
+                logger.warning("FIT file too large (%d bytes), skipping %s", len(resp.content), activity_id)
+                return None
             return resp.content
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:

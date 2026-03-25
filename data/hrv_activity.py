@@ -12,8 +12,11 @@ References:
 
 from __future__ import annotations
 
+import asyncio
+import bisect
 import io
 import logging
+from datetime import date as date_cls
 from typing import Any
 
 import numpy as np
@@ -235,8 +238,6 @@ class _RecordIndex:
     def _closest(self, time_sec: float, max_gap: float = 10.0) -> dict | None:
         if not self._times:
             return None
-        import bisect
-
         idx = bisect.bisect_left(self._times, time_sec)
         best = None
         best_dist = max_gap + 1
@@ -577,24 +578,122 @@ def calculate_durability_da(
 # ---------------------------------------------------------------------------
 
 
+def _compute_hrv(
+    fit_bytes: bytes,
+    activity_type: str,
+    baseline_pa: float | None,
+) -> dict[str, Any]:
+    """CPU-bound HRV computation — runs in executor to avoid blocking the event loop.
+
+    Returns a dict with processing results: status, row fields, pa_baseline info, etc.
+    """
+    # 2. Parse FIT once — extract both RR and records
+    rr_ms, records = parse_fit(fit_bytes)
+    if len(rr_ms) < 300:  # < ~5 min of data
+        status = "too_short" if rr_ms else "no_rr_data"
+        return {"status": status, "rr_count": len(rr_ms)}
+
+    # 3. Artifact correction
+    corrected = correct_rr_artifacts(rr_ms)
+    if corrected["quality"] == "poor":
+        return {
+            "status": "low_quality",
+            "hrv_quality": "poor",
+            "artifact_pct": corrected["artifact_pct"],
+            "rr_count": len(rr_ms),
+        }
+
+    # 5. DFA timeseries
+    timeseries = calculate_dfa_timeseries(
+        corrected["rr_corrected"],
+        records=records,
+    )
+
+    if not timeseries:
+        return {
+            "status": "too_short",
+            "hrv_quality": corrected["quality"],
+            "artifact_pct": corrected["artifact_pct"],
+            "rr_count": len(rr_ms),
+        }
+
+    # DFA a1 summary
+    a1_values = [p["dfa_a1"] for p in timeseries]
+    dfa_a1_mean = float(np.mean(a1_values))
+
+    # Warmup a1 (first 15 min)
+    warmup_points = [p for p in timeseries if p["time_sec"] <= 900]
+    dfa_a1_warmup = float(np.mean([p["dfa_a1"] for p in warmup_points])) if warmup_points else None
+
+    # 6. Threshold detection
+    thresholds = detect_hrv_thresholds(timeseries, activity_type=activity_type)
+
+    # 7. Readiness (Ra)
+    ra_result = None
+    pa_today = None
+    if baseline_pa is not None:
+        ra_result = calculate_readiness_ra(timeseries, baseline_pa, activity_type=activity_type)
+        if ra_result:
+            pa_today = ra_result["pa_today"]
+
+    # Pa baseline data for saving
+    pa_baseline_data = None
+    if warmup_points:
+        if activity_type in ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"):
+            warmup_perf = [
+                p["power"]
+                for p in warmup_points
+                if p.get("power") is not None and p["power"] > 0 and 0.6 <= p.get("dfa_a1", 0) <= 1.1
+            ]
+        else:
+            warmup_perf = [
+                p["speed"]
+                for p in warmup_points
+                if p.get("speed") is not None and p["speed"] > 0 and 0.6 <= p.get("dfa_a1", 0) <= 1.1
+            ]
+        if len(warmup_perf) >= 3:
+            pa_baseline_data = {
+                "pa_value": float(np.mean(warmup_perf)),
+                "dfa_a1_ref": dfa_a1_warmup,
+                "quality": corrected["quality"],
+            }
+
+    # 8. Durability (Da)
+    da_result = calculate_durability_da(timeseries, activity_type=activity_type)
+
+    # Trim timeseries for storage (keep every 30s instead of 5s)
+    stored_timeseries = [p for p in timeseries if p["time_sec"] % 30 == 0]
+
+    return {
+        "status": "processed",
+        "hrv_quality": corrected["quality"],
+        "artifact_pct": corrected["artifact_pct"],
+        "rr_count": len(rr_ms),
+        "dfa_a1_mean": round(dfa_a1_mean, 3),
+        "dfa_a1_warmup": round(dfa_a1_warmup, 3) if dfa_a1_warmup is not None else None,
+        "dfa_timeseries": stored_timeseries,
+        "thresholds": thresholds,
+        "ra_result": ra_result,
+        "pa_today": pa_today,
+        "pa_baseline_data": pa_baseline_data,
+        "da_result": da_result,
+    }
+
+
 async def process_activity_hrv(activity: ActivityRow) -> str:
     """Full post-activity HRV pipeline for a single activity.
 
     Steps:
     1. Download FIT file from Intervals.icu
-    2. Extract RR intervals
-    3. Artifact correction
-    4. DFA alpha 1 timeseries
-    5. Threshold detection (HRVT1/HRVT2)
-    6. Readiness (Ra) — if baseline exists
-    7. Durability (Da) — if ≥40 min
-    8. Save to activity_hrv table
+    2-8. CPU-bound HRV computation (runs in executor)
+    9. Save to activity_hrv table
 
     Returns processing_status: processed | no_rr_data | low_quality | too_short | error
     """
     activity_id = activity.id
     activity_type = activity.type or "Ride"
     activity_date = activity.start_date_local
+    loop = asyncio.get_running_loop()
 
     try:
         # 1. Download FIT
@@ -610,122 +709,60 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
             await save_activity_hrv(row)
             return "no_rr_data"
 
-        # 2. Parse FIT once — extract both RR and records
-        rr_ms, records = parse_fit(fit_bytes)
-        if len(rr_ms) < 300:  # < ~5 min of data
-            status = "too_short" if rr_ms else "no_rr_data"
+        # 2-8. CPU-bound computation in executor
+        baseline_pa = await get_pa_baseline(activity_type, as_of=date_cls.fromisoformat(activity_date))
+        result = await loop.run_in_executor(
+            None,
+            _compute_hrv,
+            fit_bytes,
+            activity_type,
+            baseline_pa,
+        )
+
+        status = result["status"]
+
+        # Early exit for non-processed results
+        if status != "processed":
             row = ActivityHrvRow(
                 activity_id=activity_id,
                 date=activity_date,
                 activity_type=activity_type,
-                rr_count=len(rr_ms),
+                hrv_quality=result.get("hrv_quality"),
+                artifact_pct=result.get("artifact_pct"),
+                rr_count=result.get("rr_count"),
                 processing_status=status,
             )
             await save_activity_hrv(row)
             return status
 
-        # 3. Artifact correction
-        corrected = correct_rr_artifacts(rr_ms)
-        if corrected["quality"] == "poor":
-            row = ActivityHrvRow(
-                activity_id=activity_id,
-                date=activity_date,
-                activity_type=activity_type,
-                hrv_quality="poor",
-                artifact_pct=corrected["artifact_pct"],
-                rr_count=len(rr_ms),
-                processing_status="low_quality",
-            )
-            await save_activity_hrv(row)
-            return "low_quality"
-
-        # 5. DFA timeseries
-        timeseries = calculate_dfa_timeseries(
-            corrected["rr_corrected"],
-            records=records,
-        )
-
-        if not timeseries:
-            row = ActivityHrvRow(
-                activity_id=activity_id,
-                date=activity_date,
-                activity_type=activity_type,
-                hrv_quality=corrected["quality"],
-                artifact_pct=corrected["artifact_pct"],
-                rr_count=len(rr_ms),
-                processing_status="too_short",
-            )
-            await save_activity_hrv(row)
-            return "too_short"
-
-        # DFA a1 summary
-        a1_values = [p["dfa_a1"] for p in timeseries]
-        dfa_a1_mean = float(np.mean(a1_values))
-
-        # Warmup a1 (first 15 min)
-        warmup_points = [p for p in timeseries if p["time_sec"] <= 900]
-        dfa_a1_warmup = float(np.mean([p["dfa_a1"] for p in warmup_points])) if warmup_points else None
-
-        # 6. Threshold detection
-        thresholds = detect_hrv_thresholds(timeseries, activity_type=activity_type)
-
-        # 7. Readiness (Ra)
-        ra_result = None
-        pa_today = None
-        from datetime import date as date_cls
-
-        baseline_pa = await get_pa_baseline(activity_type, as_of=date_cls.fromisoformat(activity_date))
-        if baseline_pa is not None:
-            ra_result = calculate_readiness_ra(timeseries, baseline_pa, activity_type=activity_type)
-            if ra_result:
-                pa_today = ra_result["pa_today"]
-
         # Save Pa baseline for future Ra calculations
-        if warmup_points:
-            # Get warmup performance metric
-            if activity_type in ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"):
-                warmup_perf = [
-                    p["power"]
-                    for p in warmup_points
-                    if p.get("power") is not None and p["power"] > 0 and 0.6 <= p.get("dfa_a1", 0) <= 1.1
-                ]
-            else:
-                warmup_perf = [
-                    p["speed"]
-                    for p in warmup_points
-                    if p.get("speed") is not None and p["speed"] > 0 and 0.6 <= p.get("dfa_a1", 0) <= 1.1
-                ]
-            if len(warmup_perf) >= 3:
-                await save_pa_baseline(
-                    activity_type=activity_type,
-                    dt=activity_date,
-                    pa_value=float(np.mean(warmup_perf)),
-                    dfa_a1_ref=dfa_a1_warmup,
-                    quality=corrected["quality"],
-                )
-
-        # 8. Durability (Da)
-        da_result = calculate_durability_da(timeseries, activity_type=activity_type)
+        if result["pa_baseline_data"]:
+            pb = result["pa_baseline_data"]
+            await save_pa_baseline(
+                activity_type=activity_type,
+                dt=activity_date,
+                pa_value=pb["pa_value"],
+                dfa_a1_ref=pb["dfa_a1_ref"],
+                quality=pb["quality"],
+            )
 
         # 9. Build and save result row
-        # Trim timeseries for storage (keep every 30s instead of 5s)
-        stored_timeseries = [p for p in timeseries if p["time_sec"] % 30 == 0]
-
         row = ActivityHrvRow(
             activity_id=activity_id,
             date=activity_date,
             activity_type=activity_type,
-            hrv_quality=corrected["quality"],
-            artifact_pct=corrected["artifact_pct"],
-            rr_count=len(rr_ms),
-            dfa_a1_mean=round(dfa_a1_mean, 3),
-            dfa_a1_warmup=round(dfa_a1_warmup, 3) if dfa_a1_warmup is not None else None,
+            hrv_quality=result["hrv_quality"],
+            artifact_pct=result["artifact_pct"],
+            rr_count=result["rr_count"],
+            dfa_a1_mean=result["dfa_a1_mean"],
+            dfa_a1_warmup=result["dfa_a1_warmup"],
             processing_status="processed",
-            dfa_timeseries=stored_timeseries,
+            dfa_timeseries=result["dfa_timeseries"],
         )
 
         # Thresholds
-        if thresholds:
+        if result["thresholds"]:
+            thresholds = result["thresholds"]
             row.hrvt1_hr = thresholds.get("hrvt1_hr")
             row.hrvt1_power = thresholds.get("hrvt1_power")
             row.hrvt1_pace = thresholds.get("hrvt1_pace")
@@ -734,21 +771,21 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
             row.threshold_confidence = thresholds.get("confidence")
 
         # Readiness
-        if ra_result:
-            row.ra_pct = ra_result["ra_pct"]
-            row.pa_today = pa_today
+        if result["ra_result"]:
+            row.ra_pct = result["ra_result"]["ra_pct"]
+            row.pa_today = result["pa_today"]
 
         # Durability
-        if da_result:
-            row.da_pct = da_result["da_pct"]
+        if result["da_result"]:
+            row.da_pct = result["da_result"]["da_pct"]
 
         await save_activity_hrv(row)
         logger.info(
             "Processed HRV for %s: a1=%.3f, quality=%s, thresholds=%s",
             activity_id,
-            dfa_a1_mean,
-            corrected["quality"],
-            "yes" if thresholds else "no",
+            result["dfa_a1_mean"],
+            result["hrv_quality"],
+            "yes" if result["thresholds"] else "no",
         )
         return "processed"
 
@@ -789,8 +826,6 @@ async def process_fit_job(batch_size: int = 2) -> list[tuple[str, str]]:
 
     logger.info("Processing %d activities for DFA analysis", len(activities))
     results: list[tuple[str, str]] = []
-
-    import asyncio
 
     for i, activity in enumerate(activities):
         if i > 0:

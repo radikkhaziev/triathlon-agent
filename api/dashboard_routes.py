@@ -11,9 +11,6 @@ from fastapi import APIRouter, Query
 
 router = APIRouter()
 
-# --- Seed for reproducible mock data ---
-_rng = random.Random(42)
-
 # --- Helpers ---
 
 
