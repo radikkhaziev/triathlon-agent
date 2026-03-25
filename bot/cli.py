@@ -1,10 +1,20 @@
 import argparse
 import asyncio
+import code
 import logging
 import re
 from datetime import date, timedelta
 
+from bot.scheduler import daily_metrics_job, sync_activities_job
 from config import settings
+from data.database import (
+    get_activities_without_details,
+    get_session,
+    get_wellness,
+    save_activity_details,
+    save_scheduled_workouts,
+)
+from data.intervals_client import IntervalsClient
 
 
 def main() -> None:
@@ -132,8 +142,6 @@ def _parse_period(period: str | None) -> tuple[date, date]:
 
 
 async def _backfill(period: str | None = None) -> None:
-    from bot.scheduler import daily_metrics_job
-
     start, end = _parse_period(period)
     total_days = (end - start).days + 1
     print(f"Backfill: {start} -> {end} ({total_days} days)")
@@ -157,17 +165,12 @@ async def _backfill(period: str | None = None) -> None:
 
 
 async def _sync_activities(days: int = 90) -> None:
-    from bot.scheduler import sync_activities_job
-
     print(f"Syncing activities: last {days} days")
     count = await sync_activities_job(days=days)
     print(f"Synced {count} activities.")
 
 
 async def _sync_workouts(days: int = 14) -> None:
-    from data.database import save_scheduled_workouts
-    from data.intervals_client import IntervalsClient
-
     today = date.today()
     newest = today + timedelta(days=days)
     print(f"Syncing workouts: {today} → {newest} ({days} days)")
@@ -179,9 +182,6 @@ async def _sync_workouts(days: int = 14) -> None:
 
 
 async def _backfill_details(days: int = 0) -> None:
-    from data.database import get_activities_without_details, save_activity_details
-    from data.intervals_client import IntervalsClient
-
     client = IntervalsClient()
     cutoff = str(date.today() - timedelta(days=days)) if days > 0 else None
     activities = await get_activities_without_details(since_date=cutoff)
@@ -214,10 +214,6 @@ async def _backfill_details(days: int = 0) -> None:
 
 
 def _shell() -> None:
-    import code
-
-    from data.database import get_session, get_wellness
-
     banner = (
         "Triathlon Agent Shell\n"
         "Available variables:\n"

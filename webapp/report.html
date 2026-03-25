@@ -199,6 +199,28 @@
             font-size: 12px;
         }
 
+        /* AI tabs */
+        .ai-tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 12px;
+        }
+        .ai-tab {
+            padding: 6px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--tg-theme-hint-color, #666);
+            background: transparent;
+            color: var(--tg-theme-text-color, #fff);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .ai-tab.active {
+            background: var(--tg-theme-button-color, #3390ec);
+            color: var(--tg-theme-button-text-color, #fff);
+            border-color: var(--tg-theme-button-color, #3390ec);
+        }
+
         /* AI card */
         .ai-text {
             font-size: 13px;
@@ -445,11 +467,25 @@
             <span class="section-icon">🤖</span>
             <span class="section-title">Рекомендация AI</span>
         </div>
-        <div class="ai-text" id="ai-text"></div>
+        <!-- Tabs: shown only when Gemini recommendation is available -->
+        <div class="ai-tabs" id="ai-tabs" style="display:none">
+            <button class="ai-tab active" data-target="ai-claude" onclick="switchAiTab(this)">Claude</button>
+            <button class="ai-tab" data-target="ai-gemini" onclick="switchAiTab(this)">Gemini</button>
+        </div>
+        <div class="ai-text" id="ai-claude"></div>
+        <div class="ai-text" id="ai-gemini" style="display:none"></div>
     </div>
 </div>
 
 <script>
+function switchAiTab(btn) {
+    const target = btn.dataset.target;
+    document.querySelectorAll('.ai-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('ai-claude').style.display = target === 'ai-claude' ? '' : 'none';
+    document.getElementById('ai-gemini').style.display = target === 'ai-gemini' ? '' : 'none';
+}
+
 const API_BASE = window.API_BASE_URL || '';
 const tg = window.Telegram?.WebApp;
 
@@ -705,7 +741,13 @@ async function loadReport() {
         // AI recommendation
         if (d.ai_recommendation) {
             document.getElementById('ai-section').style.display = 'block';
-            document.getElementById('ai-text').innerHTML = renderMarkdown(d.ai_recommendation);
+            document.getElementById('ai-claude').innerHTML = renderMarkdown(d.ai_recommendation);
+
+            // Show Gemini tab if available
+            if (d.ai_recommendation_gemini) {
+                document.getElementById('ai-tabs').style.display = 'flex';
+                document.getElementById('ai-gemini').innerHTML = renderMarkdown(d.ai_recommendation_gemini);
+            }
         }
 
     } catch (err) {

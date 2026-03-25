@@ -233,7 +233,7 @@ Ra baseline = average Pa over last 14 days (≥3 data points required).
 | `data/utils.py`           | Done        | `SPORT_MAP`, `extract_sport_ctl`, `extract_sport_ctl_tuple`               |
 | `ai/prompts.py`           | Done        | System + morning report prompts; includes planned workouts + yesterday DFA |
 | `ai/claude_agent.py`      | Done        | Morning AI recommendation (sonnet-4-6); evaluates planned workouts + DFA context |
-| `ai/gemini_agent.py`      | Not started | Optional Gemini second opinion; same prompts, `google-genai` SDK; gated by `GOOGLE_AI_API_KEY` |
+| `ai/gemini_agent.py`      | Done        | Optional Gemini second opinion; same prompts, `google-genai` SDK; gated by `GOOGLE_AI_API_KEY` |
 | `bot/main.py`             | Done        | `/morning`, `whoami` handlers; `build_application()` shared by polling + webhook; no /start /status /week /goal /zones |
 | `bot/scheduler.py`        | Done        | Wellness every 10 min; workouts every 1 hr; activities at :30; DFA every 5 min + post-activity TG notification; evening report at 21:00; 5 cron jobs total |
 | `bot/cli.py`              | Done        | shell, backfill, sync-workouts, sync-activities, process-fit              |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import AsyncGenerator
@@ -13,6 +14,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from ai.gemini_agent import GeminiAgent, is_gemini_enabled
+from ai.prompts import MORNING_REPORT_PROMPT_GEMINI
 from config import settings
 from data.models import Activity, RecoveryScore, RhrStatus, RmssdStatus, ScheduledWorkout, Wellness
 
@@ -107,6 +110,7 @@ class WellnessRow(Base):
 
     # --- AI output ---
     ai_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_recommendation_gemini: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class HrvAnalysisRow(Base):
@@ -359,7 +363,16 @@ async def save_wellness(
 
         # --- Skip if data hasn't changed AND all computed fields are populated ---
         pipeline_complete = row.recovery_score is not None and row.ess_today is not None
-        if row.updated and wellness.updated and row.updated == wellness.updated and pipeline_complete:
+        ai_pending = run_ai and (
+            row.ai_recommendation is None or (row.ai_recommendation_gemini is None and is_gemini_enabled())
+        )
+        if (
+            row.updated
+            and wellness.updated
+            and row.updated == wellness.updated
+            and pipeline_complete
+            and not ai_pending
+        ):
             logger.debug("Wellness %s unchanged (updated=%s), skipping pipeline", row.id, row.updated)
             return row, False
 
@@ -491,12 +504,15 @@ async def save_wellness(
         row.readiness_level = _CATEGORY_TO_READINESS.get(recovery.category, "yellow")
 
         # 6. AI recommendation (only for today, not backfill)
+        # Runs Claude always + Gemini in parallel if configured.
         ai_is_new = False
-        if run_ai and row.ai_recommendation is None:
+        need_claude = run_ai and row.ai_recommendation is None
+        need_gemini = run_ai and row.ai_recommendation_gemini is None
+        if need_claude or need_gemini:
             try:
-                from ai.claude_agent import ClaudeAgent
+                # Inline import: claude_agent imports from data.database (circular)
+                from ai.claude_agent import ClaudeAgent, build_morning_prompt
 
-                agent = ClaudeAgent()
                 hrv_flatt = await session.get(HrvAnalysisRow, (row.id, "flatt_esco"))
                 hrv_aie = await session.get(HrvAnalysisRow, (row.id, "ai_endurance"))
                 rhr_row = await session.get(RhrAnalysisRow, row.id)
@@ -512,14 +528,55 @@ async def save_wellness(
                     .all()
                 )
 
-                row.ai_recommendation = await agent.get_morning_recommendation(
+                # Build prompts — separate templates for Claude and Gemini
+                prompt_kwargs = dict(
                     wellness_row=row,
                     hrv_flatt=hrv_flatt,
                     hrv_aie=hrv_aie,
                     rhr_row=rhr_row,
                     scheduled_workouts=today_workouts,
                 )
-                ai_is_new = row.ai_recommendation is not None
+
+                # Prepare tasks for parallel execution
+                tasks: dict[str, asyncio.Task] = {}
+                if need_claude:
+                    prompt_claude = await build_morning_prompt(**prompt_kwargs)
+                    agent = ClaudeAgent()
+
+                    async def _claude():
+                        return await agent.get_morning_recommendation(
+                            wellness_row=row,
+                            hrv_flatt=hrv_flatt,
+                            hrv_aie=hrv_aie,
+                            rhr_row=rhr_row,
+                            prompt=prompt_claude,
+                        )
+
+                    tasks["claude"] = asyncio.ensure_future(_claude())
+
+                # Gemini — only if GOOGLE_AI_API_KEY is configured
+                if need_gemini and is_gemini_enabled():
+                    prompt_gemini = await build_morning_prompt(**prompt_kwargs, template=MORNING_REPORT_PROMPT_GEMINI)
+                    gemini = GeminiAgent()
+
+                    async def _gemini():
+                        return await gemini.get_morning_recommendation(prompt_gemini)
+
+                    tasks["gemini"] = asyncio.ensure_future(_gemini())
+
+                # Run in parallel
+                if tasks:
+                    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+                    task_names = list(tasks.keys())
+                    for name, result in zip(task_names, results):
+                        if isinstance(result, Exception):
+                            logger.error("AI recommendation (%s) failed: %s", name, result, exc_info=result)
+                            continue
+                        if name == "claude":
+                            row.ai_recommendation = result
+                            ai_is_new = True
+                        elif name == "gemini":
+                            row.ai_recommendation_gemini = result
             except Exception:
                 logger.exception("AI recommendation failed")
 

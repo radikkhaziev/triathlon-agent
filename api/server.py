@@ -4,9 +4,11 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from telegram import Update
 
 from api.dashboard_routes import router as dashboard_router
 from api.routes import router
@@ -126,8 +128,6 @@ async def telegram_webhook(request: Request) -> Response:
     if not hmac.compare_digest(secret, expected):
         return Response(status_code=403, content="Forbidden")
 
-    from telegram import Update
-
     data = await request.json()
     update = Update.de_json(data, tg_app.bot)
     try:
@@ -146,6 +146,4 @@ if os.path.isdir(webapp_path):
 
 
 if __name__ == "__main__":
-    import uvicorn
-
     uvicorn.run("api.server:app", host="0.0.0.0", port=8000, reload=True)

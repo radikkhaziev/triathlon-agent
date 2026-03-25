@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING
 
 from data.models import RecoveryScore, Wellness
@@ -162,8 +163,6 @@ def build_evening_message(
     tomorrow_workouts: list | None = None,
 ) -> str:
     """Build evening report message."""
-    from datetime import date
-
     today = date.today()
     date_str = f"{today.day} {_MONTHS_RU.get(today.month, '')}"
 

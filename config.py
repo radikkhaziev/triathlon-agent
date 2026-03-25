@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Anthropic
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
 
+    # Google AI (optional — enables Gemini second opinion in dashboard)
+    GOOGLE_AI_API_KEY: SecretStr = SecretStr("")  # empty = Gemini disabled
+
     # App
     API_BASE_URL: str = "https://your-api.railway.app"
     WEBAPP_URL: str = "https://your-app.vercel.app"

@@ -432,34 +432,39 @@ function renderPage(data) {
         html += `<div class="section-title">DFA Alpha 1</div>`;
         html += `<div class="dfa-grid">`;
 
-        if (hrv.ra_pct != null) {
-            const cls = hrv.ra_pct > 5 ? 'positive' : hrv.ra_pct < -5 ? 'negative' : 'neutral';
+        {
+            const ra = hrv.ra_pct;
+            const cls = ra != null ? (ra > 5 ? 'positive' : ra < -5 ? 'negative' : 'neutral') : '';
             html += `<div class="dfa-item"><div class="dfa-label">Readiness (Ra)</div>`;
-            html += `<div class="dfa-value ${cls}">${hrv.ra_pct > 0 ? '+' : ''}${hrv.ra_pct.toFixed(1)}%</div></div>`;
+            html += `<div class="dfa-value ${cls}">${ra != null ? (ra > 0 ? '+' : '') + ra.toFixed(1) + '%' : '—'}</div></div>`;
         }
-        if (hrv.da_pct != null) {
-            const cls = hrv.da_pct > 0 ? 'positive' : hrv.da_pct < -5 ? 'negative' : 'neutral';
+        {
+            const da = hrv.da_pct;
+            const cls = da != null ? (da > 0 ? 'positive' : da < -5 ? 'negative' : 'neutral') : '';
             html += `<div class="dfa-item"><div class="dfa-label">Durability (Da)</div>`;
-            html += `<div class="dfa-value ${cls}">${hrv.da_pct > 0 ? '+' : ''}${hrv.da_pct.toFixed(1)}%</div></div>`;
+            html += `<div class="dfa-value ${cls}">${da != null ? (da > 0 ? '+' : '') + da.toFixed(1) + '%' : '—'}</div></div>`;
         }
-        if (hrv.hrvt1_hr) {
+        {
+            let v = '—';
+            if (hrv.hrvt1_hr) {
+                v = `${Math.round(hrv.hrvt1_hr)} bpm`;
+                if (hrv.hrvt1_power) v += ` / ${Math.round(hrv.hrvt1_power)}W`;
+                if (hrv.hrvt1_pace) v += ` / ${esc(hrv.hrvt1_pace)}`;
+            }
             html += `<div class="dfa-item"><div class="dfa-label">HRVT1</div>`;
-            let v = `${Math.round(hrv.hrvt1_hr)} bpm`;
-            if (hrv.hrvt1_power) v += ` / ${Math.round(hrv.hrvt1_power)}W`;
-            if (hrv.hrvt1_pace) v += ` / ${esc(hrv.hrvt1_pace)}`;
             html += `<div class="dfa-value">${v}</div></div>`;
         }
-        if (hrv.hrvt2_hr) {
+        {
             html += `<div class="dfa-item"><div class="dfa-label">HRVT2</div>`;
-            html += `<div class="dfa-value">${Math.round(hrv.hrvt2_hr)} bpm</div></div>`;
+            html += `<div class="dfa-value">${hrv.hrvt2_hr ? Math.round(hrv.hrvt2_hr) + ' bpm' : '—'}</div></div>`;
         }
-        if (hrv.dfa_a1_mean != null) {
+        {
             html += `<div class="dfa-item"><div class="dfa-label">DFA a1 Mean</div>`;
-            html += `<div class="dfa-value">${hrv.dfa_a1_mean.toFixed(2)}</div></div>`;
+            html += `<div class="dfa-value">${hrv.dfa_a1_mean != null ? hrv.dfa_a1_mean.toFixed(2) : '—'}</div></div>`;
         }
-        if (hrv.hrv_quality) {
+        {
             html += `<div class="dfa-item"><div class="dfa-label">Quality</div>`;
-            html += `<div class="dfa-value">${esc(hrv.hrv_quality)}</div></div>`;
+            html += `<div class="dfa-value">${hrv.hrv_quality ? esc(hrv.hrv_quality) : '—'}</div></div>`;
         }
 
         html += `</div></div>`;

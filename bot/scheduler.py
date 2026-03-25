@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
+from bot.formatter import build_evening_message, build_morning_message, build_post_activity_message
 from config import settings
 from data.database import (
     ActivityHrvRow,
@@ -22,6 +23,7 @@ from data.database import (
     save_scheduled_workouts,
     save_wellness,
 )
+from data.hrv_activity import process_fit_job as _process_fit_job
 from data.intervals_client import IntervalsClient
 from data.metrics import calculate_sport_ctl
 from data.models import Activity
@@ -35,8 +37,6 @@ async def process_fit_job(batch_size: int = 5, bot: Bot | None = None) -> int:
     Runs every 5 min. Wrapper around data.hrv_activity.process_fit_job.
     Sends Telegram notification for each successfully processed activity.
     """
-    from data.hrv_activity import process_fit_job as _process_fit_job
-
     try:
         results = await _process_fit_job(batch_size=batch_size)
         if results:
@@ -59,8 +59,6 @@ async def process_fit_job(batch_size: int = 5, bot: Bot | None = None) -> int:
 
 async def _send_post_activity_notification(activity_id: str, bot: Bot) -> None:
     """Send post-activity DFA notification to Telegram."""
-    from bot.formatter import build_post_activity_message
-
     async with get_session() as session:
         activity = await session.get(ActivityRow, activity_id)
         hrv = await session.get(ActivityHrvRow, activity_id)
@@ -79,8 +77,6 @@ _CANONICAL_TO_TYPE = {"swim": "Swim", "bike": "Ride", "run": "Run"}
 
 async def evening_report_job(bot: Bot | None = None) -> None:
     """Send evening summary report to Telegram at 21:00."""
-    from bot.formatter import build_evening_message
-
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
 
@@ -179,8 +175,6 @@ def _enrich_sport_info(wellness, sport_ctl: dict[str, float]) -> None:
 
 async def _send_morning_report(row, bot: Bot) -> None:
     """Send morning briefing to Telegram when AI recommendation is ready."""
-    from bot.formatter import build_morning_message
-
     summary = build_morning_message(row)
     webapp_url = f"{settings.API_BASE_URL}/report.html"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])

@@ -9,6 +9,7 @@ from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
 from data.database import get_wellness
+from data.intervals_client import IntervalsClient
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,6 @@ async def _post_shutdown(application: Application) -> None:
     if scheduler and scheduler.running:
         scheduler.shutdown()
         logger.info("Scheduler stopped")
-
-    from data.intervals_client import IntervalsClient
 
     if IntervalsClient._instance is not None and IntervalsClient._instance.is_active:
         await IntervalsClient._instance.close()

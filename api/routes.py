@@ -279,6 +279,7 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
         },
         # --- AI ---
         "ai_recommendation": row.ai_recommendation,
+        "ai_recommendation_gemini": row.ai_recommendation_gemini,
     }
 
 
