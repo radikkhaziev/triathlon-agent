@@ -1,14 +1,27 @@
 import hashlib
 import hmac
-from datetime import date
+import logging
+import zoneinfo
+from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
+from sqlalchemy import func, select
 
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
+from bot.scheduler import scheduled_workouts_job
 from config import settings
-from data.database import get_hrv_analysis, get_rhr_analysis, get_wellness
+from data.database import (
+    ScheduledWorkoutRow,
+    get_hrv_analysis,
+    get_rhr_analysis,
+    get_scheduled_workouts_range,
+    get_session,
+    get_wellness,
+)
 from data.utils import extract_sport_ctl
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -220,4 +233,104 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
         },
         # --- AI ---
         "ai_recommendation": row.ai_recommendation,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scheduled Workouts
+# ---------------------------------------------------------------------------
+
+_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _format_duration(secs: int | None) -> str | None:
+    if secs is None:
+        return None
+    if secs <= 0:
+        return "0m"
+    h, remainder = divmod(secs, 3600)
+    m = remainder // 60
+    if h:
+        return f"{h}h {m:02d}m" if m else f"{h}h"
+    return f"{m}m"
+
+
+@router.get("/api/scheduled-workouts")
+async def scheduled_workouts(week_offset: int = Query(default=0)) -> dict:
+    """Weekly training plan (Mon-Sun) with navigation."""
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+
+    # Monday of current week + offset
+    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
+    sunday = monday + timedelta(days=6)
+
+    workouts, last_synced_at = await get_scheduled_workouts_range(monday, sunday)
+
+    # Group by date
+    by_date: dict[str, list] = {}
+    for w in workouts:
+        by_date.setdefault(w.start_date_local, []).append(w)
+
+    days = []
+    for i in range(7):
+        d = monday + timedelta(days=i)
+        d_str = str(d)
+        day_workouts = []
+        for w in by_date.get(d_str, []):
+            day_workouts.append(
+                {
+                    "id": w.id,
+                    "type": w.type,
+                    "name": w.name,
+                    "category": w.category,
+                    "duration": _format_duration(w.moving_time),
+                    "duration_secs": w.moving_time,
+                    "distance_km": w.distance,
+                    "description": w.description,
+                }
+            )
+        days.append(
+            {
+                "date": d_str,
+                "weekday": _WEEKDAYS[i],
+                "workouts": day_workouts,
+            }
+        )
+
+    return {
+        "week_start": str(monday),
+        "week_end": str(sunday),
+        "week_offset": week_offset,
+        "today": str(today),
+        "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+        "days": days,
+    }
+
+
+@router.post("/api/jobs/sync-workouts")
+async def job_sync_workouts(authorization: str | None = Header(default=None)) -> dict:
+    """Trigger scheduled workouts sync (with Telegram initData auth)."""
+    _verify_request(authorization)
+
+    try:
+        await scheduled_workouts_job()
+    except Exception:
+        logger.exception("sync-workouts job failed")
+        raise HTTPException(status_code=502, detail="Sync failed — Intervals.icu may be unavailable")
+
+    async with get_session() as session:
+        result = await session.execute(select(func.max(ScheduledWorkoutRow.last_synced_at)))
+        last_synced_at = result.scalar_one_or_none()
+        count_result = await session.execute(
+            select(func.count())
+            .select_from(ScheduledWorkoutRow)
+            .where(ScheduledWorkoutRow.last_synced_at == last_synced_at)
+        )
+        synced_count = count_result.scalar_one() if last_synced_at else 0
+
+    return {
+        "status": "ok",
+        "synced_count": synced_count,
+        "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
     }

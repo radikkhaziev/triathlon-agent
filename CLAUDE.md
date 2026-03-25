@@ -168,8 +168,9 @@ Both algorithms are **always computed** on every save. `settings.HRV_ALGORITHM` 
 | `distance` | Float, nullable | planned distance in km |
 | `workout_doc` | JSON, nullable | native Intervals.icu workout format |
 | `updated` | DateTime(tz), nullable | last update timestamp |
+| `last_synced_at` | DateTime(tz), nullable | set to `now(UTC)` on every upsert in `save_scheduled_workouts()` |
 
-Synced every hour via scheduler. Upserted by Intervals.icu event ID.
+Synced every 30 min via scheduler. Upserted by Intervals.icu event ID.
 
 ### `activities` — completed activities from Intervals.icu
 | Column | Type | Notes |
@@ -236,9 +237,12 @@ Ra baseline = average Pa over last 14 days (≥3 data points required).
 | `bot/scheduler.py`        | Done        | Wellness every 10 min; workouts every 1 hr; activities at :30; DFA every 5 min + post-activity TG notification; evening report at 21:00; 5 cron jobs total |
 | `bot/cli.py`              | Done        | shell, backfill, sync-workouts, sync-activities, process-fit              |
 | `bot/formatter.py`        | Done        | Report summary, post-activity DFA notification, evening report + tomorrow's plan |
-| `api/routes.py`           | Done        | `/api/report` with grouped JSON (recovery, hrv, rhr, sleep, training_load, body, stress) |
+| `api/routes.py`           | Done        | `/api/report`, `/api/scheduled-workouts`, `/api/jobs/sync-workouts`       |
 | `mcp_server/`             | Done        | 12 tools + 3 resources; includes get_activities + Level 2 DFA tools (activity_hrv, thresholds_history, readiness_history) |
-| `webapp/`                 | Scaffold    | HTML/CSS/JS files exist, needs update for new API structure                |
+| `webapp/index.html`       | Done        | Public landing page                                                        |
+| `webapp/report.html`      | Done        | Morning report (single-page, calls `/api/report`)                          |
+| `webapp/plan.html`        | Done        | Scheduled workouts by week, sync button, collapsible HumanGo descriptions  |
+| `webapp/dashboard.html`   | Scaffold    | Multi-tab dashboard, needs API endpoints                                   |
 
 ---
 
@@ -514,10 +518,12 @@ Enabled when `GOOGLE_AI_API_KEY` is set in `.env`. Disabled otherwise — no Gem
 ## API Endpoints (api/server.py + api/routes.py)
 
 ```
-GET  /api/report         — full morning report (grouped JSON)
-GET  /health             — healthcheck
-POST /telegram/webhook   — Telegram update receiver (webhook mode only)
-POST /mcp                — MCP server (Streamable HTTP transport, Bearer auth)
+GET  /api/report                        — full morning report (grouped JSON)
+GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun), 7 days with workouts
+POST /api/jobs/sync-workouts            — trigger scheduled workouts sync (initData auth)
+GET  /health                            — healthcheck
+POST /telegram/webhook                  — Telegram update receiver (webhook mode only)
+POST /mcp                               — MCP server (Streamable HTTP transport, Bearer auth)
 ```
 
 **`/api/report` response structure:**
@@ -545,10 +551,18 @@ Security: Telegram `initData` HMAC via `Authorization` header.
 
 ---
 
-## Webapp Dashboard (webapp/)
+## Webapp (webapp/)
 
-Tabs: Today (readiness gauge + metrics + workout + AI), Load (CTL/ATL/TSB + TSS charts), Goal (CTL progress bars + countdown), Week (planned vs actual table).
-Telegram theme via `--tg-theme-*` CSS variables.
+Multiple standalone pages (dark theme, Inter font, mobile-first):
+
+| Page | Status | Description |
+|---|---|---|
+| `index.html` | Done | Public landing page — features, how it works, links to dashboard/plan/Telegram |
+| `report.html` | Done | Morning report — recovery gauge, HRV/RHR/sleep metrics, AI recommendation. Source: `/api/report` |
+| `plan.html` | Done | Scheduled workouts by week (Mon-Sun), prev/next navigation, sync button with `last_synced_at`, collapsible HumanGo descriptions. Source: `/api/scheduled-workouts` |
+| `dashboard.html` | Scaffold | Multi-tab dashboard (Today, Calendar, Load, Goal). Needs API endpoints |
+
+Telegram Mini App support via `--tg-theme-*` CSS variables (report.html, plan.html). Landing page is standalone (no Telegram SDK).
 
 ---
 
@@ -631,6 +645,7 @@ Detailed design documents and implementation plans:
 | `docs/PROCESS_FIT_JOB.md` | process_fit_job pipeline docs — steps, quality testing (ANT+ vs BLE), hardware config |
 | `docs/MCP_INTEGRATION_PLAN.md` | MCP roadmap — Phase 1 (done), Phase 2-3 (future) |
 | `docs/PROGRESS_TRACKING_PLAN.md` | Progress tracking — Efficiency Factor (bike/run) + swim pace/SWOLF trends |
+| `docs/SCHEDULED_WORKOUTS_PAGE.md` | Scheduled workouts dashboard page — architecture doc (implemented) |
 
 ---
 
@@ -642,10 +657,11 @@ Detailed design documents and implementation plans:
 4. ~~**Evening report**~~ — Done. Daily summary at 21:00 via Telegram (activities, recovery, DFA).
 5. ~~**Morning prompt + DFA context**~~ — Done. Yesterday's DFA data added to MORNING_REPORT_PROMPT.
 6. **Activity Details** — расширенная статистика per activity (HR, power, pace, splits). Новая таблица `activity_details`, MCP tool, Intervals.icu API + FIT parsing.
-7. **Web Dashboard** — full dashboard с вкладками: Today, Calendar (activities + plan), Stats. Manual job triggers (sync plan, sync activities, morning report). Вертикальные срезы: API + frontend за один раз.
-8. **Implement bot commands** — /start /status /week /goal /zones /iqos
-9. **MCP Phase 2** — replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
-10. **MCP Phase 3** — free-form Telegram chat — user asks any question, Claude queries tools as needed
+7. ~~**Scheduled Workouts page**~~ — Done. `plan.html` with weekly view, sync button, collapsible HumanGo descriptions. API: `/api/scheduled-workouts`, `/api/jobs/sync-workouts`.
+8. **Web Dashboard** — full dashboard с вкладками: Today, Calendar (activities + plan), Load, Goal. Manual job triggers. Вертикальные срезы: API + frontend за один раз.
+9. **Implement bot commands** — /start /status /week /goal /zones /iqos
+10. **MCP Phase 2** — replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
+11. **MCP Phase 3** — free-form Telegram chat — user asks any question, Claude queries tools as needed
 
 ---
 

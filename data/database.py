@@ -6,9 +6,9 @@ import logging
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, delete, select
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -234,6 +234,7 @@ class ScheduledWorkoutRow(Base):
     distance: Mapped[float | None] = mapped_column(Float, nullable=True)  # km
     workout_doc: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +632,7 @@ async def save_scheduled_workouts(
             row.moving_time = w.moving_time
             row.distance = w.distance
             row.workout_doc = w.workout_doc
+            row.last_synced_at = datetime.now(timezone.utc)
             if w.end_date_local:
                 row.end_date_local = str(w.end_date_local)
             if w.updated:
@@ -664,6 +666,24 @@ async def get_scheduled_workouts_for_date(dt: date) -> list[ScheduledWorkoutRow]
             select(ScheduledWorkoutRow).where(ScheduledWorkoutRow.start_date_local == dt_str)
         )
         return list(result.scalars().all())
+
+
+async def get_scheduled_workouts_range(start: date, end: date) -> tuple[list[ScheduledWorkoutRow], datetime | None]:
+    """Return scheduled workouts in date range and MAX(last_synced_at)."""
+    start_str, end_str = str(start), str(end)
+    async with get_session() as session:
+        result = await session.execute(
+            select(ScheduledWorkoutRow)
+            .where(ScheduledWorkoutRow.start_date_local >= start_str)
+            .where(ScheduledWorkoutRow.start_date_local <= end_str)
+            .order_by(ScheduledWorkoutRow.start_date_local)
+        )
+        workouts = list(result.scalars().all())
+
+        sync_result = await session.execute(select(func.max(ScheduledWorkoutRow.last_synced_at)))
+        last_synced_at = sync_result.scalar_one_or_none()
+
+    return workouts, last_synced_at
 
 
 # ---------------------------------------------------------------------------
