@@ -575,6 +575,7 @@ Multiple standalone pages (dark theme, Inter font, mobile-first):
 | `index.html` | Done | Public landing page — features, how it works, links to dashboard/plan/Telegram |
 | `report.html` | Done | Morning report — recovery gauge, HRV/RHR/sleep metrics, AI recommendation. Source: `/api/report` |
 | `plan.html` | Done | Scheduled workouts by week (Mon-Sun), prev/next navigation, sync button with `last_synced_at`, collapsible HumanGo descriptions. Source: `/api/scheduled-workouts` |
+| `activities.html` | Planned | Completed activities by week, sync button. Source: `/api/activities-week` |
 | `dashboard.html` | Scaffold | Multi-tab dashboard (Today, Calendar, Load, Goal). Needs API endpoints |
 
 Telegram Mini App support via `--tg-theme-*` CSS variables (report.html, plan.html). Landing page is standalone (no Telegram SDK).
@@ -614,8 +615,23 @@ poetry run alembic downgrade -1                      # rollback last migration
 
 ```bash
 docker compose up -d db          # PostgreSQL only
-docker compose up -d             # all (db + migrate + bot)
+docker compose up -d             # all (db + migrate + api)
+docker compose --profile polling up -d  # all + bot in polling mode (local dev)
 ```
+
+### Running CLI commands in Docker
+
+In production (webhook mode) there is no standalone `bot` container — the bot runs inside `api`. Use `docker compose run` to execute CLI commands:
+
+```bash
+docker compose run --rm api python -m bot.cli backfill
+docker compose run --rm api python -m bot.cli backfill-details
+docker compose run --rm api python -m bot.cli sync-workouts
+docker compose run --rm api python -m bot.cli sync-activities
+docker compose run --rm api alembic upgrade head
+```
+
+`--rm` removes the container after execution. Uses the same image and `.env` as the `api` service.
 
 ---
 
@@ -662,6 +678,7 @@ Detailed design documents and implementation plans:
 | `docs/PROGRESS_TRACKING_PLAN.md` | Progress tracking — Efficiency Factor (bike/run) + swim pace/SWOLF trends |
 | `docs/SCHEDULED_WORKOUTS_PAGE.md` | Scheduled workouts dashboard page — architecture doc (implemented) |
 | `docs/ACTIVITIES_PAGE.md` | Activities dashboard page — architecture doc |
+| `docs/ACTIVITY_DETAILS_PHASE1.md` | Activity Details Phase 1 — fetch from Intervals.icu API & store in DB |
 
 ---
 
@@ -731,45 +748,55 @@ All tools must document in docstrings that CTL/ATL/TSB come from Intervals.icu a
 
 ## Activity Details (#6)
 
-Расширенная статистика per activity — HR, power, pace, laps/intervals, cadence.
+Расширенная статистика per activity — HR, power, pace, zones, intervals, efficiency metrics.
+Двухфазная реализация: Phase 1 — fetch & store, Phase 2 — web + MCP display.
 
 ### Источники данных
 
-1. **Intervals.icu API** (`GET /api/v1/activity/{id}`) — summary: avg/max HR, avg/max power, NP, distance, speed, cadence, elevation, calories, laps
-2. **FIT file** (уже скачиваем для DFA) — raw секундные записи, lap markers. Используем только для данных, которых нет в API
+1. **Intervals.icu API** (`GET /api/v1/activity/{id}`) — основной источник. Все метрики уже посчитаны: NP, IF, VI, EF, decoupling, зоны HR/power/pace, trimp
+2. **Intervals.icu API** (`GET /api/v1/activity/{id}/intervals`) — per-interval breakdown: watts, HR, speed, cadence, decoupling per interval
+3. **FIT file** — уже парсим для DFA. Дополнительно на этом этапе НЕ используем. Может понадобиться позже для SWOLF (плавание), per-second streams
+
+> Полная спека Phase 1: `docs/ACTIVITY_DETAILS_PHASE1.md`
 
 ### Новая таблица `activity_details`
 
 | Column | Type | Notes |
 |---|---|---|
 | `activity_id` | String PK, FK → activities | |
-| `max_hr` | Float, nullable | max heart rate |
-| `avg_power` | Float, nullable | average power (bike) |
-| `max_power` | Float, nullable | max power |
-| `normalized_power` | Float, nullable | NP (bike) |
+| `max_hr` | Integer, nullable | max heart rate |
+| `avg_power` | Integer, nullable | average power watts (bike) |
+| `normalized_power` | Integer, nullable | NP watts (bike) |
 | `avg_speed` | Float, nullable | m/s |
 | `max_speed` | Float, nullable | m/s |
+| `pace` | Float, nullable | sec/km (run) |
+| `gap` | Float, nullable | grade adjusted pace sec/km (run) |
 | `distance` | Float, nullable | meters |
 | `elevation_gain` | Float, nullable | meters |
 | `avg_cadence` | Float, nullable | rpm (bike) or spm (run) |
+| `avg_stride` | Float, nullable | meters (run) |
 | `calories` | Integer, nullable | kcal |
-| `efficiency_factor` | Float, nullable | NP/avgHR (bike) or speed/avgHR (run) |
-| `laps` | JSON, nullable | per-lap breakdown: [{lap, duration, distance, avg_hr, avg_power, avg_pace}] |
-| `intervals` | JSON, nullable | structured intervals from Intervals.icu workout_doc matching |
+| `intensity_factor` | Float, nullable | IF = NP/FTP (from Intervals.icu) |
+| `variability_index` | Float, nullable | VI = NP/avg power |
+| `efficiency_factor` | Float, nullable | EF from Intervals.icu |
+| `power_hr` | Float, nullable | power:HR ratio |
+| `decoupling` | Float, nullable | aerobic decoupling % (<5% = good aerobic base) |
+| `trimp` | Float, nullable | training impulse |
+| `hr_zones` | JSON, nullable | array of seconds per HR zone |
+| `power_zones` | JSON, nullable | array of seconds per power zone (bike) |
+| `pace_zones` | JSON, nullable | array of seconds per pace zone (run/swim) |
+| `intervals` | JSON, nullable | per-interval breakdown from Intervals.icu |
 
-### MCP Tool
+### Заполнение (Phase 1)
 
-```
-get_activity_details(activity_id) → full activity stats + laps + DFA (if available)
-```
+- При `sync_activities_job` — запрашивать detail для **новых** активностей (без записи в `activity_details`). Пауза 1 сек между запросами
+- Backfill CLI: `python -m bot.cli backfill-details [days]`
+- НЕ запрашивать для всех при каждом sync — только для новых
 
-Combines `activity_details` + `activity_hrv` в один ответ. Если `activity_details` не заполнен — запрашивает Intervals.icu API на лету и кеширует.
+### MCP Tool + Web (Phase 2)
 
-### Заполнение
-
-- При `sync_activities_job` — запрашивать detail endpoint для новых активностей
-- Backfill CLI command: `python -m bot.cli backfill-details`
-- Lazy load через MCP tool: если нет в БД — запросить и сохранить
+- MCP: `get_activity_details(activity_id)` — объединяет `activity_details` + `activity_hrv` в один ответ
+- Web: клик по активности на `activities.html` раскрывает детальную статистику, зоны, интервалы
 
 ---
 

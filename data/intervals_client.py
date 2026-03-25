@@ -179,6 +179,36 @@ class IntervalsClient:
                 return None
             raise
 
+    async def get_activity_detail(self, activity_id: str) -> dict | None:
+        """Fetch full activity detail from Intervals.icu.
+
+        GET /api/v1/activity/{activity_id}
+        Returns raw JSON dict with all computed metrics (NP, IF, EF, zones, etc.),
+        or None if the activity is not found (404).
+        """
+        try:
+            resp = await self._request("GET", f"/activity/{activity_id}")
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+
+    async def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
+        """Fetch per-interval breakdown for an activity.
+
+        GET /api/v1/activity/{activity_id}/intervals
+        Returns list of interval dicts with power, HR, speed, cadence, etc.,
+        or None if the activity is not found (404).
+        """
+        try:
+            resp = await self._request("GET", f"/activity/{activity_id}/intervals")
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+
     async def get_events(
         self,
         oldest: date | None = None,

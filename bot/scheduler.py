@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
@@ -12,10 +13,12 @@ from data.database import (
     get_activities_for_ctl,
     get_activities_for_date,
     get_activity_hrv_for_date,
+    get_existing_detail_ids,
     get_scheduled_workouts_for_date,
     get_session,
     get_wellness,
     save_activities,
+    save_activity_details,
     save_scheduled_workouts,
     save_wellness,
 )
@@ -194,6 +197,9 @@ async def sync_activities_job(days: int = 90) -> int:
     """Sync completed activities from Intervals.icu into the activities table.
 
     Runs as a separate cron job (every hour at :30).
+    After upsert, fetches extended details for new activities that don't have
+    an activity_details row yet. Pauses 1 sec between detail API calls.
+
     Returns count of upserted activities.
     """
     intervals = IntervalsClient()
@@ -205,7 +211,51 @@ async def sync_activities_job(days: int = 90) -> int:
     activities = await intervals.get_activities(oldest=oldest, newest=newest)
     count = await save_activities(activities)
     logger.info("Synced %d activities (%s → %s)", count, oldest, newest)
+
+    # Fetch details for activities that don't have them yet
+    synced_ids = [a.id for a in activities]
+    if synced_ids:
+        await _fetch_missing_details(intervals, synced_ids)
+
     return count
+
+
+async def _fetch_missing_details(intervals: IntervalsClient, activity_ids: list[str]) -> int:
+    """Fetch and save activity details for IDs that lack an activity_details row.
+
+    Returns count of details fetched.
+    """
+    existing_ids = await get_existing_detail_ids(activity_ids)
+    missing_ids = [aid for aid in activity_ids if aid not in existing_ids]
+    if not missing_ids:
+        return 0
+
+    fetched = 0
+    for i, aid in enumerate(missing_ids):
+        try:
+            detail = await intervals.get_activity_detail(aid)
+            if detail is None:
+                logger.debug("Activity %s not found (404), skipping", aid)
+                continue
+
+            try:
+                intervals_data = await intervals.get_activity_intervals(aid)
+            except Exception:
+                logger.warning("Failed to fetch intervals for %s, saving detail only", aid)
+                intervals_data = None
+
+            await save_activity_details(aid, detail, intervals_data)
+            fetched += 1
+            logger.debug("Fetched details for activity %s", aid)
+        except Exception:
+            logger.warning("Failed to fetch details for activity %s", aid, exc_info=True)
+
+        if i < len(missing_ids) - 1:
+            await asyncio.sleep(1)
+
+    if fetched:
+        logger.info("Fetched details for %d new activities", fetched)
+    return fetched
 
 
 async def daily_metrics_job(

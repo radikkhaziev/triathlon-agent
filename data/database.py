@@ -221,6 +221,36 @@ class PaBaselineRow(Base):
     quality: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class ActivityDetailRow(Base):
+    """Extended activity statistics from Intervals.icu API."""
+
+    __tablename__ = "activity_details"
+
+    activity_id: Mapped[str] = mapped_column(String, ForeignKey("activities.id"), primary_key=True)
+    max_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_power: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    normalized_power: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pace: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gap: Mapped[float | None] = mapped_column(Float, nullable=True)
+    distance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    elevation_gain: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_cadence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_stride: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calories: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    intensity_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    variability_index: Mapped[float | None] = mapped_column(Float, nullable=True)
+    efficiency_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    power_hr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decoupling: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trimp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hr_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    power_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    pace_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    intervals: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
 class ScheduledWorkoutRow(Base):
     __tablename__ = "scheduled_workouts"
 
@@ -816,3 +846,93 @@ async def get_pa_baseline(activity_type: str, days: int = 14, as_of: date | None
     if len(values) < 3:
         return None
     return sum(values) / len(values)
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Activity Details
+# ---------------------------------------------------------------------------
+
+# Mapping: Intervals.icu JSON key → ActivityDetailRow column
+_DETAIL_FIELD_MAP = {
+    "max_heartrate": "max_hr",
+    "icu_average_watts": "avg_power",
+    "icu_weighted_avg_watts": "normalized_power",
+    "max_speed": "max_speed",
+    "average_speed": "avg_speed",
+    "pace": "pace",
+    "gap": "gap",
+    "distance": "distance",
+    "total_elevation_gain": "elevation_gain",
+    "average_cadence": "avg_cadence",
+    "average_stride": "avg_stride",
+    "calories": "calories",
+    "icu_intensity": "intensity_factor",
+    "icu_variability_index": "variability_index",
+    "icu_efficiency_factor": "efficiency_factor",
+    "icu_power_hr": "power_hr",
+    "decoupling": "decoupling",
+    "trimp": "trimp",
+    "icu_hr_zones": "hr_zones",
+    "icu_power_zones": "power_zones",
+    "pace_zones": "pace_zones",
+}
+
+
+async def save_activity_details(
+    activity_id: str,
+    detail_json: dict,
+    intervals_json: list[dict] | None = None,
+) -> None:
+    """Upsert activity details from Intervals.icu API response."""
+    async with get_session() as session:
+        row = await session.get(ActivityDetailRow, activity_id)
+        if row is None:
+            row = ActivityDetailRow(activity_id=activity_id)
+            session.add(row)
+
+        for api_key, col_name in _DETAIL_FIELD_MAP.items():
+            if api_key in detail_json:
+                setattr(row, col_name, detail_json[api_key])
+
+        if intervals_json is not None:
+            row.intervals = intervals_json
+
+        await session.commit()
+
+
+async def get_activity_details(activity_id: str) -> ActivityDetailRow | None:
+    """Fetch activity details by activity ID."""
+    async with get_session() as session:
+        return await session.get(ActivityDetailRow, activity_id)
+
+
+async def get_existing_detail_ids(activity_ids: list[str]) -> set[str]:
+    """Return the subset of activity_ids that already have an activity_details row."""
+    if not activity_ids:
+        return set()
+    async with get_session() as session:
+        result = await session.execute(
+            select(ActivityDetailRow.activity_id).where(ActivityDetailRow.activity_id.in_(activity_ids))
+        )
+        return {r[0] for r in result}
+
+
+async def get_activities_without_details(
+    limit: int = 0,
+    since_date: str | None = None,
+) -> list[ActivityRow]:
+    """Return activities that don't have a corresponding activity_details row.
+
+    Args:
+        limit: Max number of rows to return. 0 = no limit.
+        since_date: Only include activities on or after this date ("YYYY-MM-DD").
+    """
+    async with get_session() as session:
+        subq = select(ActivityDetailRow.activity_id)
+        stmt = select(ActivityRow).where(ActivityRow.id.notin_(subq)).order_by(ActivityRow.start_date_local.desc())
+        if since_date:
+            stmt = stmt.where(ActivityRow.start_date_local >= since_date)
+        if limit > 0:
+            stmt = stmt.limit(limit)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())

@@ -56,6 +56,18 @@ def main() -> None:
         help="Number of days back to sync (default: 90)",
     )
 
+    details_parser = sub.add_parser(
+        "backfill-details",
+        help="Backfill activity details for activities without them. Default: all.",
+    )
+    details_parser.add_argument(
+        "days",
+        nargs="?",
+        type=int,
+        default=0,
+        help="Limit to last N days (default: 0 = all)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -66,6 +78,8 @@ def main() -> None:
         asyncio.run(_sync_workouts(args.days))
     elif args.command == "sync-activities":
         asyncio.run(_sync_activities(args.days))
+    elif args.command == "backfill-details":
+        asyncio.run(_backfill_details(args.days))
 
 
 def _parse_period(period: str | None) -> tuple[date, date]:
@@ -162,6 +176,41 @@ async def _sync_workouts(days: int = 14) -> None:
     workouts = await client.get_events(oldest=today, newest=newest)
     count = await save_scheduled_workouts(workouts, oldest=today, newest=newest)
     print(f"Synced {count} workouts.")
+
+
+async def _backfill_details(days: int = 0) -> None:
+    from data.database import get_activities_without_details, save_activity_details
+    from data.intervals_client import IntervalsClient
+
+    client = IntervalsClient()
+    cutoff = str(date.today() - timedelta(days=days)) if days > 0 else None
+    activities = await get_activities_without_details(since_date=cutoff)
+
+    total = len(activities)
+    print(f"Backfill details: {total} activities without details")
+
+    for i, act in enumerate(activities, 1):
+        print(f"[{i}/{total}] {act.id} ({act.start_date_local}, {act.type}) ...")
+        try:
+            detail = await client.get_activity_detail(act.id)
+            if detail is None:
+                print("  Not found (404), skipping")
+                continue
+
+            try:
+                intervals_data = await client.get_activity_intervals(act.id)
+            except Exception:
+                print("  Warning: intervals fetch failed, saving detail only")
+                intervals_data = None
+
+            await save_activity_details(act.id, detail, intervals_data)
+        except Exception as exc:
+            print(f"  Error: {exc}")
+
+        if i < total:
+            await asyncio.sleep(2)
+
+    print("Backfill details completed.")
 
 
 def _shell() -> None:
