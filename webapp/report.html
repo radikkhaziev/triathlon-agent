@@ -300,7 +300,7 @@
 <body>
 
 <div style="display:flex;justify-content:flex-end;padding:12px 0 0">
-    <a href="/plan.html" style="font-size:13px;color:var(--button);text-decoration:none">План тренировок &rarr;</a>
+    <a href="/plan.html" onclick="this.href='/plan.html'+location.hash" style="font-size:13px;color:var(--button);text-decoration:none">План тренировок &rarr;</a>
 </div>
 
 <div id="loading" class="loading-state">
@@ -458,8 +458,20 @@ if (tg) {
     tg.ready();
 }
 
+// Persist initData across page navigations within the Mini App
+if (tg?.initData) {
+    sessionStorage.setItem('tg_init_data', tg.initData);
+}
+
 function getInitData() {
-    return tg?.initData || '';
+    return tg?.initData || sessionStorage.getItem('tg_init_data') || '';
+}
+
+// Block direct access (no Telegram Mini App context)
+if (!getInitData()) {
+    document.getElementById('loading').innerHTML =
+        '<div class="no-data-state">Доступ только через Telegram Mini App.</div>';
+    throw new Error('No Telegram initData');
 }
 
 async function apiFetch(endpoint) {

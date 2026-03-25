@@ -308,14 +308,8 @@
     <div class="sports-icon">🏊‍♂️ 🚴‍♂️ 🏃‍♂️</div>
     <h1>Tri<span>Coach</span> AI</h1>
     <p class="subtitle">Personal AI coach for triathletes. Analyzes HRV, training load and recovery — delivers actionable recommendations every morning.</p>
-    <div class="cta-group">
-        <a href="/dashboard.html" class="btn btn-primary">
-            📊 Dashboard
-        </a>
-        <a href="/plan.html" class="btn btn-secondary">
-            📋 Training Plan
-        </a>
-        <a href="https://t.me/radikrunbot" class="btn btn-secondary">
+    <div class="cta-group" id="cta-group">
+        <a href="https://t.me/radikrunbot" class="btn btn-primary" id="btn-telegram">
             💬 Open in Telegram
         </a>
     </div>
@@ -404,5 +398,30 @@
     TriCoach AI &copy; 2026 &middot; <a href="https://t.me/radikrunbot">@radikrunbot</a>
 </footer>
 
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg?.initData) {
+    sessionStorage.setItem('tg_init_data', tg.initData);
+}
+const hasAuth = !!(tg?.initData || sessionStorage.getItem('tg_init_data'));
+if (hasAuth) {
+    const group = document.getElementById('cta-group');
+    const tgBtn = document.getElementById('btn-telegram');
+    // Add app buttons before Telegram button
+    const dashBtn = document.createElement('a');
+    dashBtn.href = '/report.html' + location.hash;
+    dashBtn.className = 'btn btn-primary';
+    dashBtn.textContent = '\uD83D\uDCCA Dashboard';
+    const planBtn = document.createElement('a');
+    planBtn.href = '/plan.html' + location.hash;
+    planBtn.className = 'btn btn-secondary';
+    planBtn.textContent = '\uD83D\uDCCB Training Plan';
+    group.insertBefore(dashBtn, tgBtn);
+    group.insertBefore(planBtn, tgBtn);
+    // Demote Telegram button to secondary
+    tgBtn.className = 'btn btn-secondary';
+}
+</script>
 </body>
 </html>
