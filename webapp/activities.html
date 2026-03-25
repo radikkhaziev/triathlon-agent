@@ -177,7 +177,7 @@
     <button id="next-week">След &rarr;</button>
 </div>
 
-<div class="sync-bar">
+<div class="sync-bar" style="display:none">
     <button class="sync-btn" id="sync-btn">
         <span id="sync-icon">&#x1f504;</span> Синхронизировать
     </button>
@@ -451,6 +451,9 @@ async function loadWeek(offset) {
 
         document.getElementById('week-label').textContent = formatWeekLabel(data.week_start, data.week_end);
         updateSyncTime(data.last_synced_at);
+
+        // Show sync button only for owner
+        document.querySelector('.sync-bar').style.display = data.role === 'owner' ? 'flex' : 'none';
 
         const todayStr = data.today;
         let html = '';

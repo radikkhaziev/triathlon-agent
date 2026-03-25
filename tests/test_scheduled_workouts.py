@@ -266,7 +266,7 @@ class TestSyncWorkoutsEndpoint:
         """POST with valid auth should run the job and return result."""
         with (
             patch("api.routes.settings") as mock_settings,
-            patch("api.routes._verify_request"),
+            patch("api.routes._require_owner"),
             patch("api.routes.scheduled_workouts_job", new_callable=AsyncMock) as mock_job,
         ):
             mock_settings.TIMEZONE = "Europe/Belgrade"

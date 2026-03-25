@@ -227,7 +227,7 @@ class TestSyncActivitiesEndpoint:
     async def test_runs_sync_job(self, client):
         with (
             patch("api.routes.settings") as mock_settings,
-            patch("api.routes._verify_request"),
+            patch("api.routes._require_owner"),
             patch("api.routes.sync_activities_job", new_callable=AsyncMock) as mock_job,
         ):
             mock_settings.TIMEZONE = "Europe/Belgrade"
@@ -245,7 +245,7 @@ class TestSyncActivitiesEndpoint:
 
     async def test_returns_502_on_failure(self, client):
         with (
-            patch("api.routes._verify_request"),
+            patch("api.routes._require_owner"),
             patch("api.routes.sync_activities_job", new_callable=AsyncMock, side_effect=Exception("API down")),
         ):
             async with client as c:

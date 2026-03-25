@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
@@ -30,24 +31,64 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def verify_telegram_init_data(init_data: str, bot_token: str) -> bool:
+def _verify_and_parse_init_data(init_data: str, bot_token: str) -> dict | None:
+    """Verify Telegram initData HMAC and return parsed fields, or None if invalid."""
     parsed = parse_qs(init_data)
     received_hash = parsed.pop("hash", [None])[0]
     if not received_hash:
-        return False
+        return None
 
     data_check_string = "\n".join(f"{k}={v[0]}" for k, v in sorted(parsed.items()))
     secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(computed_hash, received_hash)
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return None
+    return parsed
 
 
-def _verify_request(authorization: str | None) -> None:
+def _get_user_role(authorization: str | None) -> str:
+    """Determine user role from Telegram initData.
+
+    Returns: "owner", "viewer", or "anonymous".
+    """
     bot_token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
-    if not bot_token:
-        return
-    if not authorization or not verify_telegram_init_data(authorization, bot_token):
-        raise HTTPException(status_code=401, detail="Invalid Telegram init data")
+    if not bot_token or not authorization:
+        return "anonymous"
+
+    parsed = _verify_and_parse_init_data(authorization, bot_token)
+    if parsed is None:
+        return "anonymous"
+
+    user_json = parsed.get("user", [None])[0]
+    if not user_json:
+        return "anonymous"
+
+    try:
+        user = json.loads(user_json)
+    except (json.JSONDecodeError, TypeError):
+        return "anonymous"
+
+    user_id = str(user.get("id", ""))
+    if user_id == str(settings.TELEGRAM_CHAT_ID):
+        return "owner"
+    return "viewer"
+
+
+def _require_viewer(authorization: str | None) -> str:
+    """Require at least viewer role. Returns role string."""
+    role = _get_user_role(authorization)
+    if role == "anonymous":
+        raise HTTPException(status_code=401, detail="Telegram authorization required")
+    return role
+
+
+def _require_owner(authorization: str | None) -> None:
+    """Require owner role."""
+    role = _get_user_role(authorization)
+    if role == "anonymous":
+        raise HTTPException(status_code=401, detail="Telegram authorization required")
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
 
 
 def _cv_verdict(cv: float | None) -> str | None:
@@ -160,13 +201,13 @@ def health() -> dict:
 @router.get("/api/report")
 async def morning_report(authorization: str | None = Header(default=None)) -> dict:
     """Full morning report data for the Mini App report page."""
-    _verify_request(authorization)
+    role = _require_viewer(authorization)
     today = date.today()
     today_str = str(today)
     row = await get_wellness(today)
 
     if row is None:
-        return {"date": today_str, "has_data": False}
+        return {"date": today_str, "has_data": False, "role": role}
 
     # Recovery
     category = row.recovery_category or "moderate"
@@ -190,6 +231,7 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
     return {
         "date": today_str,
         "has_data": True,
+        "role": role,
         # --- Recovery ---
         "recovery": {
             "score": row.recovery_score,
@@ -248,8 +290,12 @@ _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 @router.get("/api/scheduled-workouts")
-async def scheduled_workouts(week_offset: int = Query(default=0, ge=-52, le=52)) -> dict:
+async def scheduled_workouts(
+    week_offset: int = Query(default=0, ge=-52, le=52),
+    authorization: str | None = Header(default=None),
+) -> dict:
     """Weekly training plan (Mon-Sun) with navigation."""
+    role = _require_viewer(authorization)
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
 
@@ -296,14 +342,15 @@ async def scheduled_workouts(week_offset: int = Query(default=0, ge=-52, le=52))
         "week_offset": week_offset,
         "today": str(today),
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+        "role": role,
         "days": days,
     }
 
 
 @router.post("/api/jobs/sync-workouts")
 async def job_sync_workouts(authorization: str | None = Header(default=None)) -> dict:
-    """Trigger scheduled workouts sync (with Telegram initData auth)."""
-    _verify_request(authorization)
+    """Trigger scheduled workouts sync (owner only)."""
+    _require_owner(authorization)
 
     try:
         await scheduled_workouts_job()
@@ -334,8 +381,12 @@ async def job_sync_workouts(authorization: str | None = Header(default=None)) ->
 
 
 @router.get("/api/activities-week")
-async def activities_week(week_offset: int = Query(default=0, ge=-52, le=52)) -> dict:
+async def activities_week(
+    week_offset: int = Query(default=0, ge=-52, le=52),
+    authorization: str | None = Header(default=None),
+) -> dict:
     """Weekly completed activities (Mon-Sun) with navigation."""
+    role = _require_viewer(authorization)
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
 
@@ -378,14 +429,15 @@ async def activities_week(week_offset: int = Query(default=0, ge=-52, le=52)) ->
         "week_offset": week_offset,
         "today": str(today),
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+        "role": role,
         "days": days,
     }
 
 
 @router.post("/api/jobs/sync-activities")
 async def job_sync_activities(authorization: str | None = Header(default=None)) -> dict:
-    """Trigger activity sync (with Telegram initData auth)."""
-    _verify_request(authorization)
+    """Trigger activity sync (owner only)."""
+    _require_owner(authorization)
 
     try:
         await sync_activities_job()
@@ -419,7 +471,7 @@ async def activity_details(
     authorization: str | None = Header(default=None),
 ) -> dict:
     """Full activity details: summary + extended stats + DFA HRV analysis."""
-    _verify_request(authorization)
+    _require_viewer(authorization)
 
     if not activity_id or not activity_id.startswith("i") or not activity_id[1:].isdigit():
         raise HTTPException(status_code=400, detail="Invalid activity ID format")
