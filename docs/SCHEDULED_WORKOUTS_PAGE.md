@@ -151,9 +151,18 @@ last_synced_at: DateTime(timezone=True), nullable=True
 
 ## Порядок реализации
 
-1. Alembic миграция — `last_synced_at` колонка
-2. Обновить `save_scheduled_workouts()` — ставить `last_synced_at`
-3. `GET /api/scheduled-workouts` endpoint
-4. `POST /api/jobs/sync-workouts` endpoint
-5. `webapp/plan.html` — фронтенд
-6. Навигация — ссылки с лендинга и report
+> **Status: DONE** (implemented 2026-03-25)
+
+1. ~~Alembic миграция — `last_synced_at` колонка~~ (`8996b20a4adf`)
+2. ~~Обновить `save_scheduled_workouts()` — ставить `last_synced_at`~~
+3. ~~`GET /api/scheduled-workouts` endpoint~~ (includes `today` field for server-side TZ)
+4. ~~`POST /api/jobs/sync-workouts` endpoint~~ (returns `synced_count`, 502 on failure)
+5. ~~`webapp/plan.html` — фронтенд~~ (Russian UI, Telegram initData auth gate)
+6. ~~Навигация — ссылки с лендинга и report~~ (index.html shows buttons only with initData)
+
+### Дополнения к спеке при реализации
+- `GET` response includes `today` field (server timezone) for correct "today" highlighting
+- `POST` returns `synced_count` and wraps job in try/except → `HTTPException(502)`
+- `plan.html` / `report.html` block direct access without Telegram initData
+- `index.html` shows Dashboard/Plan buttons only when opened as Mini App
+- `sessionStorage` used to persist initData across page navigations

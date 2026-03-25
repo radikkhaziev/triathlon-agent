@@ -9,10 +9,12 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import func, select
 
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
-from bot.scheduler import scheduled_workouts_job
+from bot.scheduler import scheduled_workouts_job, sync_activities_job
 from config import settings
 from data.database import (
+    ActivityRow,
     ScheduledWorkoutRow,
+    get_activities_range,
     get_hrv_analysis,
     get_rhr_analysis,
     get_scheduled_workouts_range,
@@ -256,7 +258,7 @@ def _format_duration(secs: int | None) -> str | None:
 
 
 @router.get("/api/scheduled-workouts")
-async def scheduled_workouts(week_offset: int = Query(default=0)) -> dict:
+async def scheduled_workouts(week_offset: int = Query(default=0, ge=-52, le=52)) -> dict:
     """Weekly training plan (Mon-Sun) with navigation."""
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
@@ -326,6 +328,86 @@ async def job_sync_workouts(authorization: str | None = Header(default=None)) ->
             select(func.count())
             .select_from(ScheduledWorkoutRow)
             .where(ScheduledWorkoutRow.last_synced_at == last_synced_at)
+        )
+        synced_count = count_result.scalar_one() if last_synced_at else 0
+
+    return {
+        "status": "ok",
+        "synced_count": synced_count,
+        "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Activities
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/activities-week")
+async def activities_week(week_offset: int = Query(default=0, ge=-52, le=52)) -> dict:
+    """Weekly completed activities (Mon-Sun) with navigation."""
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+
+    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
+    sunday = monday + timedelta(days=6)
+
+    activities, last_synced_at = await get_activities_range(monday, sunday)
+
+    by_date: dict[str, list] = {}
+    for a in activities:
+        by_date.setdefault(a.start_date_local, []).append(a)
+
+    days = []
+    for i in range(7):
+        d = monday + timedelta(days=i)
+        d_str = str(d)
+        day_activities = []
+        for a in by_date.get(d_str, []):
+            day_activities.append(
+                {
+                    "id": a.id,
+                    "type": a.type,
+                    "moving_time": a.moving_time,
+                    "duration": _format_duration(a.moving_time),
+                    "icu_training_load": round(a.icu_training_load, 1) if a.icu_training_load is not None else None,
+                    "average_hr": round(a.average_hr) if a.average_hr is not None else None,
+                }
+            )
+        days.append(
+            {
+                "date": d_str,
+                "weekday": _WEEKDAYS[i],
+                "activities": day_activities,
+            }
+        )
+
+    return {
+        "week_start": str(monday),
+        "week_end": str(sunday),
+        "week_offset": week_offset,
+        "today": str(today),
+        "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+        "days": days,
+    }
+
+
+@router.post("/api/jobs/sync-activities")
+async def job_sync_activities(authorization: str | None = Header(default=None)) -> dict:
+    """Trigger activity sync (with Telegram initData auth)."""
+    _verify_request(authorization)
+
+    try:
+        await sync_activities_job()
+    except Exception:
+        logger.exception("sync-activities job failed")
+        raise HTTPException(status_code=502, detail="Sync failed — Intervals.icu may be unavailable")
+
+    async with get_session() as session:
+        result = await session.execute(select(func.max(ActivityRow.last_synced_at)))
+        last_synced_at = result.scalar_one_or_none()
+        count_result = await session.execute(
+            select(func.count()).select_from(ActivityRow).where(ActivityRow.last_synced_at == last_synced_at)
         )
         synced_count = count_result.scalar_one() if last_synced_at else 0
 

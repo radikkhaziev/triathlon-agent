@@ -165,6 +165,7 @@ class ActivityRow(Base):
     icu_training_load: Mapped[float | None] = mapped_column(Float, nullable=True)
     moving_time: Mapped[int | None] = mapped_column(Integer, nullable=True)  # seconds
     average_hr: Mapped[float | None] = mapped_column(Float, nullable=True)  # avg heart rate
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ActivityHrvRow(Base):
@@ -507,6 +508,7 @@ async def save_activities(activities: list[Activity]) -> int:
     if not activities:
         return 0
 
+    now = datetime.now(timezone.utc)
     async with get_session() as session:
         values = [
             {
@@ -516,6 +518,7 @@ async def save_activities(activities: list[Activity]) -> int:
                 "icu_training_load": a.icu_training_load,
                 "moving_time": a.moving_time,
                 "average_hr": a.average_hr,
+                "last_synced_at": now,
             }
             for a in activities
         ]
@@ -528,6 +531,7 @@ async def save_activities(activities: list[Activity]) -> int:
                 "icu_training_load": stmt.excluded.icu_training_load,
                 "moving_time": stmt.excluded.moving_time,
                 "average_hr": stmt.excluded.average_hr,
+                "last_synced_at": stmt.excluded.last_synced_at,
             },
         )
         await session.execute(stmt)
@@ -766,6 +770,24 @@ async def get_activities_for_date(dt: date) -> list[ActivityRow]:
             select(ActivityRow).where(ActivityRow.start_date_local == dt_str).order_by(ActivityRow.id)
         )
         return list(result.scalars().all())
+
+
+async def get_activities_range(start: date, end: date) -> tuple[list[ActivityRow], datetime | None]:
+    """Return activities in date range and MAX(last_synced_at)."""
+    start_str, end_str = str(start), str(end)
+    async with get_session() as session:
+        result = await session.execute(
+            select(ActivityRow)
+            .where(ActivityRow.start_date_local >= start_str)
+            .where(ActivityRow.start_date_local <= end_str)
+            .order_by(ActivityRow.start_date_local, ActivityRow.id)
+        )
+        activities = list(result.scalars().all())
+
+        sync_result = await session.execute(select(func.max(ActivityRow.last_synced_at)))
+        last_synced_at = sync_result.scalar_one_or_none()
+
+    return activities, last_synced_at
 
 
 async def get_activity_hrv_for_date(dt: date) -> list[ActivityHrvRow]:

@@ -253,16 +253,6 @@ async def scheduled_workouts(days: int = Query(default=7, le=30)) -> dict:
 # --- Job trigger stubs ---
 
 
-@router.post("/api/jobs/sync-activities", status_code=202)
-async def job_sync_activities() -> dict:
-    """Trigger activity sync + DFA processing (stub)."""
-    return {
-        "status": "accepted",
-        "job": "sync-activities",
-        "message": "Mock: would run sync_activities_job() + process_fit_job()",
-    }
-
-
 @router.post("/api/jobs/morning-report", status_code=202)
 async def job_morning_report() -> dict:
     """Trigger morning report generation (stub)."""

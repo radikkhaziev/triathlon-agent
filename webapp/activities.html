@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Активности</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #13131a;
+            --surface-2: #1c1c27;
+            --border: #2a2a3a;
+            --text: #e8e8ed;
+            --text-dim: #8888a0;
+            --accent: #3b82f6;
+            --accent-glow: #3b82f620;
+            --green: #22c55e;
+            --yellow: #f59e0b;
+            --red: #ef4444;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            padding: 0 16px 32px;
+            max-width: 540px;
+            margin: 0 auto;
+        }
+
+        .page-header { text-align: center; padding: 20px 0 16px; }
+        .page-header h1 { font-size: 20px; font-weight: 700; }
+
+        .week-nav {
+            display: flex; align-items: center; justify-content: center;
+            gap: 12px; padding: 8px 0 12px;
+        }
+        .week-nav button {
+            background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+            border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
+            cursor: pointer; transition: all 0.15s; font-family: inherit;
+        }
+        .week-nav button:hover { background: var(--border); }
+        .week-nav button:active { transform: scale(0.97); }
+        .week-label { font-size: 14px; font-weight: 600; min-width: 180px; text-align: center; }
+
+        .sync-bar {
+            display: flex; align-items: center; justify-content: center;
+            gap: 10px; padding: 10px 0 16px;
+        }
+        .sync-btn {
+            background: var(--accent); color: #fff; border: none; border-radius: 8px;
+            padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+            transition: all 0.15s; font-family: inherit; display: flex; align-items: center; gap: 6px;
+        }
+        .sync-btn:hover { background: #2563eb; }
+        .sync-btn:active { transform: scale(0.97); }
+        .sync-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .sync-btn .spin { display: inline-block; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .sync-time { font-size: 12px; color: var(--text-dim); }
+
+        .day-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 14px; margin-bottom: 10px; overflow: hidden;
+        }
+        .day-card.today { border-color: var(--accent); }
+        .day-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 16px;
+        }
+        .day-date { font-size: 14px; font-weight: 600; }
+        .today-badge {
+            font-size: 10px; font-weight: 700; background: var(--accent); color: #fff;
+            padding: 2px 8px; border-radius: 8px; letter-spacing: 0.5px;
+        }
+        .rest-day {
+            padding: 0 16px 14px; font-size: 13px; color: var(--text-dim); font-style: italic;
+        }
+
+        .activity-item { border-top: 1px solid var(--border); }
+        .activity-row {
+            display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+        }
+        .sport-icon { font-size: 18px; flex-shrink: 0; width: 24px; text-align: center; }
+        .activity-info { flex: 1; min-width: 0; }
+        .activity-name {
+            font-size: 13px; font-weight: 600;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .activity-meta { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+
+        .loading-state {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 50vh; color: var(--text-dim); gap: 12px;
+        }
+        .spinner {
+            width: 28px; height: 28px; border: 3px solid var(--surface-2);
+            border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+
+        .back-link {
+            display: inline-flex; align-items: center; gap: 4px;
+            font-size: 13px; color: var(--accent); text-decoration: none; padding: 12px 0 0;
+        }
+        .back-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<a href="/report.html" onclick="this.href='/report.html'+location.hash" class="back-link">&larr; Утренний отчёт</a>
+
+<div class="page-header">
+    <h1>Активности</h1>
+</div>
+
+<div class="week-nav">
+    <button id="prev-week">&larr; Пред</button>
+    <span class="week-label" id="week-label">...</span>
+    <button id="next-week">След &rarr;</button>
+</div>
+
+<div class="sync-bar">
+    <button class="sync-btn" id="sync-btn">
+        <span id="sync-icon">&#x1f504;</span> Синхронизировать
+    </button>
+    <span class="sync-time" id="sync-time"></span>
+</div>
+
+<div id="loading" class="loading-state">
+    <div class="spinner"></div>
+    <span>Загрузка...</span>
+</div>
+
+<div id="days-container" style="display:none"></div>
+
+<script>
+const API_BASE = window.API_BASE_URL || '';
+const tg = window.Telegram?.WebApp;
+
+if (tg) { tg.expand(); tg.ready(); }
+
+if (tg?.initData) {
+    sessionStorage.setItem('tg_init_data', tg.initData);
+}
+
+function getInitData() {
+    return tg?.initData || sessionStorage.getItem('tg_init_data') || '';
+}
+
+const hasAuth = !!getInitData();
+
+if (!hasAuth) {
+    document.getElementById('loading').innerHTML =
+        '<div style="text-align:center;color:var(--text-dim);padding:40px 20px;">' +
+        'Доступ только через Telegram Mini App.</div>';
+    throw new Error('No Telegram initData');
+}
+
+async function apiFetch(endpoint, opts = {}) {
+    const headers = opts.headers || {};
+    const initData = getInitData();
+    if (initData) headers['Authorization'] = initData;
+    const res = await fetch(`${API_BASE}${endpoint}`, { ...opts, headers });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+}
+
+const SPORT_ICONS = {
+    Swim: '\u{1F3CA}', Ride: '\u{1F6B4}', VirtualRide: '\u{1F6B4}',
+    GravelRide: '\u{1F6B4}', MountainBikeRide: '\u{26F0}\uFE0F',
+    Run: '\u{1F3C3}', VirtualRun: '\u{1F3C3}', TrailRun: '\u{26F0}\uFE0F',
+    WeightTraining: '\u{1F3CB}\uFE0F',
+};
+
+const WEEKDAY_RU = {
+    Mon: 'Пн', Tue: 'Вт', Wed: 'Ср', Thu: 'Чт', Fri: 'Пт', Sat: 'Сб', Sun: 'Вс',
+};
+
+const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+function formatWeekLabel(start, end) {
+    const s = new Date(start + 'T00:00:00');
+    const e = new Date(end + 'T00:00:00');
+    const sm = MONTHS[s.getMonth()];
+    const em = MONTHS[e.getMonth()];
+    if (sm === em) return `${sm} ${s.getDate()} \u2013 ${e.getDate()}, ${s.getFullYear()}`;
+    return `${sm} ${s.getDate()} \u2013 ${em} ${e.getDate()}, ${e.getFullYear()}`;
+}
+
+function formatDayDate(dateStr, weekday) {
+    const d = new Date(dateStr + 'T00:00:00');
+    return `${WEEKDAY_RU[weekday] || weekday} ${d.getDate()}`;
+}
+
+function relativeTime(isoStr) {
+    if (!isoStr) return '';
+    const diffMin = Math.floor((new Date() - new Date(isoStr)) / 60000);
+    if (diffMin < 1) return 'только что';
+    if (diffMin < 60) return `${diffMin} мин назад`;
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return `${diffH} ч назад`;
+    return `${Math.floor(diffH / 24)} дн назад`;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function sportLabel(type) {
+    if (!type) return 'Activity';
+    return type.replace(/([A-Z])/g, ' $1').trim();
+}
+
+let currentOffset = 0;
+
+async function loadWeek(offset) {
+    currentOffset = offset;
+    const container = document.getElementById('days-container');
+    const loading = document.getElementById('loading');
+
+    loading.style.display = 'flex';
+    container.style.display = 'none';
+
+    try {
+        const data = await apiFetch(`/api/activities-week?week_offset=${offset}`);
+
+        document.getElementById('week-label').textContent = formatWeekLabel(data.week_start, data.week_end);
+        updateSyncTime(data.last_synced_at);
+
+        const todayStr = data.today;
+        let html = '';
+
+        for (const day of data.days) {
+            const isToday = day.date === todayStr;
+            html += `<div class="day-card${isToday ? ' today' : ''}">`;
+            html += `<div class="day-header">`;
+            html += `<div><span class="day-date">${formatDayDate(day.date, day.weekday)}</span></div>`;
+            if (isToday) html += `<span class="today-badge">СЕГОДНЯ</span>`;
+            html += `</div>`;
+
+            if (day.activities.length === 0) {
+                html += `<div class="rest-day">День отдыха</div>`;
+            } else {
+                for (const a of day.activities) {
+                    const icon = SPORT_ICONS[a.type] || '\u{1F3C6}';
+                    const label = sportLabel(a.type);
+                    const metaParts = [];
+                    if (a.duration) metaParts.push(a.duration);
+                    if (a.icu_training_load != null) metaParts.push(`TSS ${a.icu_training_load}`);
+                    if (a.average_hr != null) metaParts.push(`\u2764\uFE0F ${a.average_hr}`);
+                    const meta = metaParts.join(' \u00B7 ');
+
+                    html += `<div class="activity-item">`;
+                    html += `<div class="activity-row">`;
+                    html += `<span class="sport-icon">${icon}</span>`;
+                    html += `<div class="activity-info">`;
+                    html += `<div class="activity-name">${escapeHtml(label)}</div>`;
+                    if (meta) html += `<div class="activity-meta">${escapeHtml(meta)}</div>`;
+                    html += `</div></div></div>`;
+                }
+            }
+            html += `</div>`;
+        }
+
+        container.innerHTML = html;
+        loading.style.display = 'none';
+        container.style.display = 'block';
+    } catch (err) {
+        console.error('Failed to load activities:', err);
+        loading.innerHTML = '<div style="text-align:center;color:var(--text-dim);padding:40px 20px;">Не удалось загрузить активности.<br>Попробуйте позже.</div>';
+    }
+}
+
+function updateSyncTime(isoStr) {
+    const el = document.getElementById('sync-time');
+    el.textContent = isoStr ? `Обновлено: ${relativeTime(isoStr)}` : 'Не синхронизировано';
+}
+
+async function syncActivities() {
+    const btn = document.getElementById('sync-btn');
+    const iconEl = document.getElementById('sync-icon');
+    btn.disabled = true;
+    iconEl.classList.add('spin');
+
+    try {
+        const result = await apiFetch('/api/jobs/sync-activities', { method: 'POST' });
+        updateSyncTime(result.last_synced_at);
+        await loadWeek(currentOffset);
+    } catch (err) {
+        console.error('Sync failed:', err);
+        const msg = 'Ошибка синхронизации. Проверьте соединение.';
+        if (tg?.showAlert) { tg.showAlert(msg); } else { alert(msg); }
+    } finally {
+        btn.disabled = false;
+        iconEl.classList.remove('spin');
+    }
+}
+
+document.getElementById('prev-week').addEventListener('click', () => loadWeek(currentOffset - 1));
+document.getElementById('next-week').addEventListener('click', () => loadWeek(currentOffset + 1));
+document.getElementById('sync-btn').addEventListener('click', syncActivities);
+
+loadWeek(0);
+</script>
+</body>
+</html>
