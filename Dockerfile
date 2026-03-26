@@ -12,10 +12,10 @@ ENV PATH="/root/.local/bin:$PATH"
 COPY pyproject.toml poetry.lock ./
 
 RUN poetry config virtualenvs.create false && \
-    poetry install --only main --no-root --no-interaction --no-ansi
+    poetry install --only main -E gemini --no-root --no-interaction --no-ansi
 
 COPY . .
 
-RUN poetry install --only main --no-interaction --no-ansi
+RUN poetry install --only main -E gemini --no-interaction --no-ansi
 
 EXPOSE 8000

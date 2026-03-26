@@ -5,6 +5,7 @@ from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
+from api.auth import generate_code
 from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
@@ -36,6 +37,20 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     webapp_url = f"{settings.API_BASE_URL}/report.html"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await update.message.reply_text(summary, reply_markup=keyboard)
+
+
+async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /web command — generate one-time login code for desktop browser."""
+    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        await update.message.reply_text("У вас нет доступа к этому боту.")
+        return
+
+    code = generate_code(str(update.effective_user.id))
+    login_url = f"{settings.API_BASE_URL}/login.html"
+    await update.message.reply_text(
+        f"🔑 Код: `{code}`\n\nДействует 5 минут. Введите на странице:\n{login_url}",
+        parse_mode="Markdown",
+    )
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -90,6 +105,7 @@ def build_application() -> Application:
         builder = builder.updater(None)
     app = builder.build()
     app.add_handler(CommandHandler("morning", morning))
+    app.add_handler(CommandHandler("web", web_login))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     return app
 

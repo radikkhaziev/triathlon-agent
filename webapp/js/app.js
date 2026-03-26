@@ -9,16 +9,21 @@ if (tg) {
     tg.ready();
 }
 
-function getInitData() {
-    return tg?.initData || '';
+function getAuthHeader() {
+    const initData = tg?.initData || sessionStorage.getItem('tg_init_data') || '';
+    if (initData) return initData;
+    const jwt = localStorage.getItem('auth_token');
+    if (jwt) return 'Bearer ' + jwt;
+    return '';
 }
 
 async function apiFetch(endpoint) {
     const headers = {};
-    const initData = getInitData();
-    if (initData) headers['Authorization'] = initData;
+    const auth = getAuthHeader();
+    if (auth) headers['Authorization'] = auth;
 
     const res = await fetch(`${API_BASE}${endpoint}`, { headers });
+    if (res.status === 401) { localStorage.removeItem('auth_token'); window.location.href = '/login.html'; }
     if (!res.ok) throw new Error(`API error: ${res.status}`);
     return res.json();
 }

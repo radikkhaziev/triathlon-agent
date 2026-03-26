@@ -533,19 +533,25 @@ if (tg?.initData) sessionStorage.setItem('tg_init_data', tg.initData);
 
 const API_BASE = window.API_BASE_URL || '';
 
-function getInitData() { return tg?.initData || sessionStorage.getItem('tg_init_data') || ''; }
+function getAuthHeader() {
+    const initData = tg?.initData || sessionStorage.getItem('tg_init_data') || '';
+    if (initData) return initData;
+    const jwt = localStorage.getItem('auth_token');
+    if (jwt) return 'Bearer ' + jwt;
+    return '';
+}
 
-const hasAuth = !!getInitData();
-if (!hasAuth) {
-    document.getElementById('loading').innerHTML = '<div class="no-data-state">Доступ только через Telegram Mini App.</div>';
-    throw new Error('No Telegram initData');
+if (!getAuthHeader()) {
+    window.location.href = '/login.html';
+    throw new Error('Not authenticated');
 }
 
 async function apiFetch(endpoint) {
     const headers = {};
-    const d = getInitData();
-    if (d) headers['Authorization'] = d;
+    const auth = getAuthHeader();
+    if (auth) headers['Authorization'] = auth;
     const res = await fetch(`${API_BASE}${endpoint}`, { headers });
+    if (res.status === 401) { localStorage.removeItem('auth_token'); window.location.href = '/login.html'; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
 }

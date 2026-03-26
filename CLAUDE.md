@@ -70,7 +70,8 @@ triathlon-agent/
 │
 ├── api/
 │   ├── server.py                # FastAPI application + static mount + Telegram webhook
-│   └── routes.py                # REST endpoints + Telegram initData auth
+│   ├── routes.py                # REST endpoints + Telegram initData auth
+│   └── auth.py                  # Desktop auth: one-time codes + JWT create/verify
 │
 ├── mcp_server/
 │   ├── __init__.py
@@ -296,6 +297,10 @@ TIMEZONE=Europe/Belgrade
 # Note: both algorithms are always computed and stored in hrv_analysis
 HRV_ALGORITHM=flatt_esco
 
+# Web Auth (desktop login via /web bot command)
+JWT_SECRET=                           # if empty, uses TELEGRAM_BOT_TOKEN
+JWT_EXPIRY_DAYS=7                     # JWT token lifetime in days
+
 # MCP
 MCP_AUTH_TOKEN=your-secret-token    # Bearer token for remote MCP access via /mcp endpoint
 ```
@@ -500,6 +505,7 @@ Enabled when `GOOGLE_AI_API_KEY` is set in `.env`. Disabled otherwise — no Gem
 
 ```
 /morning  — morning report from DB data + Mini App button
+/web      — generate one-time code for desktop browser login (5 min TTL)
 /start    — welcome + quick guide (not yet implemented)
 /status   — quick numbers, no AI (not yet implemented)
 /week     — weekly training summary (not yet implemented)
@@ -534,8 +540,10 @@ GET  /api/wellness-day?date=YYYY-MM-DD  — full wellness data for any date (nav
 GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun), has_prev/has_next for nav limits
 GET  /api/activities-week?week_offset=0 — weekly activities (Mon-Sun), 7 days with completed activities
 GET  /api/activity/{id}/details         — full activity stats: zones, intervals, DFA alpha 1
-POST /api/jobs/sync-workouts            — trigger scheduled workouts sync (initData auth)
-POST /api/jobs/sync-activities          — trigger activities sync (initData auth)
+POST /api/auth/verify-code              — verify one-time code from /web bot command, return JWT
+GET  /api/auth/me                       — check current auth status (role, authenticated)
+POST /api/jobs/sync-workouts            — trigger scheduled workouts sync (owner auth)
+POST /api/jobs/sync-activities          — trigger activities sync (owner auth)
 GET  /health                            — healthcheck
 POST /telegram/webhook                  — Telegram update receiver (webhook mode only)
 POST /mcp                               — MCP server (Streamable HTTP transport, Bearer auth)
@@ -573,7 +581,11 @@ POST /api/jobs/sync-wellness            — trigger wellness sync (stub)
 }
 ```
 
-Security: Telegram `initData` HMAC via `Authorization` header.
+Security: Two auth methods supported in `Authorization` header:
+- **Telegram Mini App**: raw `initData` string (HMAC-SHA256 verified)
+- **Desktop JWT**: `Bearer <jwt>` from `/web` bot command one-time code flow
+
+Both resolve to a role: `owner`, `viewer`, or `anonymous`.
 
 ---
 
@@ -589,9 +601,29 @@ Multiple standalone pages (dark theme, Inter font, mobile-first):
 | `activities.html` | Done | Completed activities by week (Mon-Sun), inline detail expansion, sync button, no future week nav, future days empty, ← Главная. Source: `/api/activities-week` |
 | `activity.html` | Done | Full activity detail page — zones, intervals, DFA Alpha 1, ← back to activities. Source: `/api/activity/{id}/details` |
 | `wellness.html` | Done | Daily wellness with day nav (no future), recovery, sleep, HRV (dual algo tabs), RHR, load, per-sport CTL, body, AI (Claude/Gemini tabs), ← Главная. Source: `/api/wellness-day` |
+| `login.html` | Done | Desktop login page — enter 6-digit code from `/web` bot command → JWT stored in localStorage |
 | `dashboard.html` | Scaffold | Multi-tab dashboard (Today, Calendar, Load, Goal). Needs API endpoints |
 
 Telegram Mini App support via `--tg-theme-*` CSS variables. Landing page is standalone (no Telegram SDK).
+
+### Desktop Auth (One-Time Code)
+
+For accessing webapp from a desktop browser without Telegram Mini App:
+
+1. User sends `/web` to bot → gets 6-digit code (5 min TTL, one-time use)
+2. Opens `/login.html` → enters code → `POST /api/auth/verify-code`
+3. Server verifies code → returns JWT (signed HMAC-SHA256, `JWT_EXPIRY_DAYS` expiry)
+4. Frontend stores JWT in `localStorage` → sends as `Authorization: Bearer <jwt>`
+5. On 401 response → clears JWT → redirects to `/login.html`
+
+**Implementation:**
+- `api/auth.py` — code generation (in-memory dict), JWT create/verify (HMAC-SHA256, no PyJWT dependency)
+- `bot/main.py` — `/web` command handler (owner-only)
+- `api/routes.py` — `_get_user_role()` accepts both `Bearer <jwt>` and raw Telegram initData
+- All webapp pages — `getAuthHeader()` checks initData first, then `localStorage.auth_token`
+- `index.html` — shows "Войти" button for unauthenticated desktop users, "Выйти" for JWT-authenticated
+
+**JWT signing secret:** `JWT_SECRET` env var. If empty, falls back to `TELEGRAM_BOT_TOKEN`.
 
 ---
 
@@ -708,7 +740,7 @@ Detailed design documents and implementation plans:
 7. ~~**Scheduled Workouts page**~~ — Done. `plan.html` with weekly view, sync button, collapsible HumanGo descriptions. API: `/api/scheduled-workouts`, `/api/jobs/sync-workouts`.
 8. **Web Dashboard** — full dashboard с вкладками: Today, Calendar (activities + plan), Load, Goal. Manual job triggers. Вертикальные срезы: API + frontend за один раз.
 9. **Implement bot commands** — /start /status /week /goal /zones /iqos
-10. **Web App auth model** — определить что видит: анонимный пользователь (прямой URL), неизвестный пользователь Telegram, авторизованный владелец. Авторизация с десктоп-браузера без Telegram (например, token-based login).
+10. ~~**Web App auth model**~~ — Done. Three roles (anonymous/viewer/owner). Desktop auth via `/web` bot command → one-time code → JWT (7-day expiry). All pages support both Telegram initData and JWT Bearer auth.
 11. **MCP Phase 2** — replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
 12. **MCP Phase 3** — free-form Telegram chat — user asks any question, Claude queries tools as needed
 

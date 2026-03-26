@@ -404,7 +404,7 @@ const tg = window.Telegram?.WebApp;
 if (tg?.initData) {
     sessionStorage.setItem('tg_init_data', tg.initData);
 }
-const hasAuth = !!(tg?.initData || sessionStorage.getItem('tg_init_data'));
+const hasAuth = !!(tg?.initData || sessionStorage.getItem('tg_init_data') || localStorage.getItem('auth_token'));
 if (hasAuth) {
     const group = document.getElementById('cta-group');
     const tgBtn = document.getElementById('btn-telegram');
@@ -431,6 +431,29 @@ if (hasAuth) {
     group.insertBefore(wellBtn, tgBtn);
     // Demote Telegram button to secondary
     tgBtn.className = 'btn btn-secondary';
+
+    // Add logout button if logged in via JWT (not Telegram)
+    if (localStorage.getItem('auth_token') && !tg?.initData) {
+        const logoutBtn = document.createElement('a');
+        logoutBtn.href = '#';
+        logoutBtn.className = 'btn btn-secondary';
+        logoutBtn.textContent = 'Выйти';
+        logoutBtn.style.opacity = '0.6';
+        logoutBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            localStorage.removeItem('auth_token');
+            location.reload();
+        });
+        group.appendChild(logoutBtn);
+    }
+} else if (!tg) {
+    // Desktop without auth — show login button
+    const group = document.getElementById('cta-group');
+    const loginBtn = document.createElement('a');
+    loginBtn.href = '/login.html';
+    loginBtn.className = 'btn btn-primary';
+    loginBtn.textContent = 'Войти';
+    group.prepend(loginBtn);
 }
 </script>
 </body>

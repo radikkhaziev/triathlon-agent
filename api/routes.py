@@ -9,6 +9,7 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import exists, func, select
 
+from api.auth import create_jwt, verify_code, verify_jwt
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from bot.scheduler import scheduled_workouts_job, sync_activities_job
 from config import settings
@@ -48,12 +49,30 @@ def _verify_and_parse_init_data(init_data: str, bot_token: str) -> dict | None:
 
 
 def _get_user_role(authorization: str | None) -> str:
-    """Determine user role from Telegram initData.
+    """Determine user role from Telegram initData or JWT Bearer token.
+
+    Supports two auth methods:
+    - Telegram Mini App: Authorization header contains raw initData
+    - Desktop JWT: Authorization header contains "Bearer <jwt>"
 
     Returns: "owner", "viewer", or "anonymous".
     """
+    if not authorization:
+        return "anonymous"
+
+    # Method 1: JWT Bearer token (desktop login)
+    if authorization.startswith("Bearer "):
+        jwt_token = authorization[7:]
+        chat_id = verify_jwt(jwt_token)
+        if chat_id and chat_id == str(settings.TELEGRAM_CHAT_ID):
+            return "owner"
+        if chat_id:
+            return "viewer"
+        return "anonymous"
+
+    # Method 2: Telegram initData (Mini App)
     bot_token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
-    if not bot_token or not authorization:
+    if not bot_token:
         return "anonymous"
 
     parsed = _verify_and_parse_init_data(authorization, bot_token)
@@ -197,6 +216,34 @@ def _rhr_block(rhr_row) -> dict:
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints (desktop login via one-time code)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/auth/verify-code")
+async def auth_verify_code(body: dict) -> dict:
+    """Verify a one-time code from /web bot command and return JWT."""
+    code = str(body.get("code", "")).strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Code is required")
+
+    chat_id = verify_code(code)
+    if not chat_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+
+    token = create_jwt(chat_id)
+    role = "owner" if chat_id == str(settings.TELEGRAM_CHAT_ID) else "viewer"
+    return {"token": token, "role": role, "expires_in_days": settings.JWT_EXPIRY_DAYS}
+
+
+@router.get("/api/auth/me")
+async def auth_me(authorization: str | None = Header(default=None)) -> dict:
+    """Check current auth status."""
+    role = _get_user_role(authorization)
+    return {"role": role, "authenticated": role != "anonymous"}
 
 
 async def _build_wellness_response(row, target_date: date) -> dict:

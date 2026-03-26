@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # HRV Algorithm
     HRV_ALGORITHM: str = "flatt_esco"  # "flatt_esco" | "ai_endurance"
 
+    # Web Auth (desktop login via one-time code)
+    JWT_SECRET: SecretStr = SecretStr("")  # If empty, falls back to TELEGRAM_BOT_TOKEN
+    JWT_EXPIRY_DAYS: int = 7  # JWT token lifetime
+
     # MCP
     MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access
 
