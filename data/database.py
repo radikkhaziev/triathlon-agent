@@ -270,6 +270,20 @@ class ScheduledWorkoutRow(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class MoodCheckinRow(Base):
+    """Daily mood and emotional state check-ins."""
+
+    __tablename__ = "mood_checkins"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    energy: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5
+    mood: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5
+    anxiety: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5
+    social: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # CRUD — Wellness
 # ---------------------------------------------------------------------------
@@ -996,4 +1010,83 @@ async def get_activities_without_details(
         if limit > 0:
             stmt = stmt.limit(limit)
         result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Mood Check-ins
+# ---------------------------------------------------------------------------
+
+
+async def save_mood_checkin(
+    energy: int | None = None,
+    mood: int | None = None,
+    anxiety: int | None = None,
+    social: int | None = None,
+    note: str | None = None,
+) -> MoodCheckinRow:
+    """Create a mood check-in with optional fields.
+
+    At least one field must be provided. All numeric fields (1-5) are optional.
+    Returns the newly created and persisted MoodCheckinRow.
+
+    Args:
+        energy: Energy level (1=low, 5=high)
+        mood: Overall mood (1=poor, 5=excellent)
+        anxiety: Anxiety level (1=calm, 5=high anxiety)
+        social: Social desire (1=withdrawn, 5=very social)
+        note: Optional text note
+    """
+    if all(x is None for x in [energy, mood, anxiety, social, note]):
+        raise ValueError("At least one field must be provided")
+
+    # Validate ranges
+    for field, value in [("energy", energy), ("mood", mood), ("anxiety", anxiety), ("social", social)]:
+        if value is not None and not (1 <= value <= 5):
+            raise ValueError(f"{field} must be between 1 and 5")
+
+    async with get_session() as session:
+        row = MoodCheckinRow(
+            timestamp=datetime.now(timezone.utc),
+            energy=energy,
+            mood=mood,
+            anxiety=anxiety,
+            social=social,
+            note=note,
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row
+
+
+async def get_mood_checkins(
+    target_date: str | None = None,
+    days_back: int = 7,
+) -> list[MoodCheckinRow]:
+    """Get mood check-ins for a date range.
+
+    Args:
+        target_date: Reference date in YYYY-MM-DD format. Defaults to today.
+        days_back: Number of days to look back (inclusive). Default is 7.
+
+    Returns:
+        List of MoodCheckinRow objects, ordered by timestamp (oldest first).
+    """
+    if target_date:
+        ref_date = date.fromisoformat(target_date)
+    else:
+        ref_date = date.today()
+
+    cutoff_date = ref_date - timedelta(days=days_back - 1)
+    cutoff_dt = datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
+    end_dt = datetime.combine(ref_date, datetime.max.time(), tzinfo=timezone.utc)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(MoodCheckinRow)
+            .where(MoodCheckinRow.timestamp >= cutoff_dt)
+            .where(MoodCheckinRow.timestamp <= end_dt)
+            .order_by(MoodCheckinRow.timestamp.asc())
+        )
         return list(result.scalars().all())

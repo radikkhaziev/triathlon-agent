@@ -102,7 +102,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Seven tables:
+Eight tables:
 
 ### `wellness` — daily data from Intervals.icu
 | Column | Type | Notes |
@@ -219,6 +219,19 @@ Processed every 5 min via scheduler. Only bike/run activities ≥15 min with che
 | `quality` | String, nullable | good/moderate/poor |
 
 Ra baseline = average Pa over last 14 days (≥3 data points required).
+
+### `mood_checkins` — emotional state tracking
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK | autoincrement |
+| `timestamp` | DateTime(tz) | момент записи (UTC) |
+| `energy` | Integer, nullable | 1-5 (1 = нет сил, 5 = полон энергии) |
+| `mood` | Integer, nullable | 1-5 (1 = плохое, 5 = отличное) |
+| `anxiety` | Integer, nullable | 1-5 (1 = спокоен, 5 = сильная тревога) |
+| `social` | Integer, nullable | 1-5 (1 = изоляция, 5 = много общения) |
+| `note` | Text, nullable | свободный текст |
+
+Записи создаются через MCP tool `save_mood_checkin`. Claude предлагает записать, пользователь подтверждает.
 
 ---
 
@@ -708,6 +721,50 @@ Webhook lifecycle in `api/server.py` lifespan:
 
 ---
 
+## Mood Tracking (Emotional State)
+
+Трекинг эмоционального состояния через MCP. Claude в процессе разговора замечает эмоциональный контекст, предлагает сделать запись, и сохраняет по подтверждению пользователя.
+
+### Принцип работы
+
+1. Claude в диалоге замечает что стоит записать эмоциональное состояние
+2. Спрашивает: "Хочешь записать: энергия 3, настроение 2, тревожность 4, заметка: плохо спал?"
+3. Пользователь подтверждает "да" → Claude вызывает `save_mood_checkin` через MCP
+4. Если MCP недоступен (мобильное приложение) — Claude сообщает что хотел записать, пользователь сохраняет позже с десктопа в том же или новом диалоге
+
+### Таблица `mood_checkins`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK | autoincrement |
+| `timestamp` | DateTime(tz) | момент записи (UTC) |
+| `energy` | Integer, nullable | 1-5 (1 = нет сил, 5 = полон энергии) |
+| `mood` | Integer, nullable | 1-5 (1 = плохое, 5 = отличное) |
+| `anxiety` | Integer, nullable | 1-5 (1 = спокоен, 5 = сильная тревога) |
+| `social` | Integer, nullable | 1-5 (1 = полная изоляция, 5 = много общения) |
+| `note` | Text, nullable | свободный текст, 1-3 предложения |
+
+Все шкалы nullable — не обязательно заполнять все. Может быть checkin только с заметкой или только energy + mood.
+
+### MCP Tools
+
+| Tool | Description |
+|---|---|
+| `save_mood_checkin(energy?, mood?, anxiety?, social?, note?)` | Сохранить запись. Хотя бы одно поле обязательно. timestamp = now() |
+| `get_mood_checkins(date?, days_back=7)` | Получить записи за период. По умолчанию последние 7 дней |
+
+Daily summary не хранится — Claude генерирует на лету из checkins по запросу пользователя.
+
+### Ключевые решения
+
+- **Нет автоматического вечернего блока** — пользователь сам спрашивает Claude "как у меня было с настроением?"
+- **Нет Telegram-команды /mood** — ввод только через Claude (MCP)
+- **Нет таблицы summary** — summary генерируется Claude из checkins по запросу
+- **Тип чекина не хранится** — определяется по timestamp (утро/день/вечер)
+- **Несколько записей в день** — нормально, каждый checkin независим
+
+---
+
 ## Documentation (docs/)
 
 Detailed design documents and implementation plans:
@@ -741,8 +798,9 @@ Detailed design documents and implementation plans:
 8. **Web Dashboard** — full dashboard с вкладками: Today, Calendar (activities + plan), Load, Goal. Manual job triggers. Вертикальные срезы: API + frontend за один раз.
 9. **Implement bot commands** — /start /status /week /goal /zones /iqos
 10. ~~**Web App auth model**~~ — Done. Three roles (anonymous/viewer/owner). Desktop auth via `/web` bot command → one-time code → JWT (7-day expiry). All pages support both Telegram initData and JWT Bearer auth.
-11. **MCP Phase 2** — replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
-12. **MCP Phase 3** — free-form Telegram chat — user asks any question, Claude queries tools as needed
+11. ~~**Mood Tracking**~~ — Done. Table `mood_checkins`, Alembic migration, 2 MCP tools (`save_mood_checkin_tool`, `get_mood_checkins_tool`).
+12. **MCP Phase 2** — replace `claude_agent.py` fixed prompt with MCP tool-use (Claude picks which data to query)
+13. **MCP Phase 3** — free-form Telegram chat — user asks any question, Claude queries tools as needed
 
 ---
 
@@ -757,7 +815,7 @@ MCP server exposes athlete data as read-only tools. Parallel access channel for 
 Run standalone: `python -m mcp_server`
 Production: mounted at `/mcp` in FastAPI (Streamable HTTP transport), protected by Bearer token (`MCP_AUTH_TOKEN`). Auth middleware (`MCPAuthMiddleware`) validates tokens on all `/mcp*` paths.
 
-### Tools (12)
+### Tools (14)
 
 | Tool | Description |
 |---|---|
@@ -773,6 +831,8 @@ Production: mounted at `/mcp` in FastAPI (Streamable HTTP transport), protected 
 | `get_activity_hrv(activity_id)` | DFA a1 analysis: quality, thresholds (HRVT1/HRVT2), Ra, Da |
 | `get_thresholds_history(sport?, days_back?)` | HRVT1/HRVT2 trend over time (fitness progression) |
 | `get_readiness_history(sport?, days_back?)` | Readiness (Ra) trend — warmup power/pace vs baseline |
+| `save_mood_checkin_tool(energy?, mood?, anxiety?, social?, note?)` | Record emotion ratings (1-5) and optional note |
+| `get_mood_checkins_tool(date?, days_back=7)` | Get mood check-ins for date range |
 
 ### Resources (3)
 
