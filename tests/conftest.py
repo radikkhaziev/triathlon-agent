@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import data.database as db_module
+from config import settings
 
 
 def _make_test_db_url(original_url: str) -> tuple[str, str]:
@@ -44,8 +45,6 @@ def event_loop():
 @pytest.fixture(scope="session")
 async def _test_db():
     """Create the test database if it doesn't exist, run migrations."""
-    from config import settings
-
     test_url, test_name = _make_test_db_url(settings.DATABASE_URL)
     server_url = _server_url(settings.DATABASE_URL)
 
@@ -82,11 +81,7 @@ async def test_session(_test_db, monkeypatch):
 
     # Clean up data between tests (only tables that exist in the DB)
     async with engine.begin() as conn:
-        result = await conn.execute(
-            text(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-            )
-        )
+        result = await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
         existing = {row[0] for row in result}
         for table in reversed(db_module.Base.metadata.sorted_tables):
             if table.name in existing:

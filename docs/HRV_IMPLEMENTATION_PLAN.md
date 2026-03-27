@@ -1,106 +1,84 @@
-# План внедрения HRV RMSSD анализа (Phase 1)
+# План внедрения HRV RMSSD анализа (Level 1)
 
 > На основе [HRV_MODULE_SPEC.md](HRV_MODULE_SPEC.md), секции 1.3–1.7
 
 ---
 
-## Текущее состояние
+## Статус: ✅ ЗАВЕРШЕНО
 
-- Garmin API возвращает `hrv_last_night` и `hrv_weekly_avg` (7-дневное среднее от Garmin)
-- `calculate_readiness()` использует только одноразовый дельта-процент HRV — нет анализа трендов
-- В БД таблица `daily_metrics` хранит только `sleep_hrv_avg`, колонки для HRV закомментированы
-- Нет хранения RMSSD истории для 60-дневного baseline
+Все 8 шагов реализованы. Данные поступают из Intervals.icu API (не Garmin напрямую). БД — PostgreSQL + SQLAlchemy async. Dual HRV алгоритм работает.
 
 ---
 
-## Шаги реализации
+## Реализованные шаги
 
-### Шаг 1. Расширить схему БД — таблица `daily_hrv`
+### Шаг 1. Схема БД ✅
 
-Добавить новую таблицу (из спеки) для хранения ежедневных RMSSD значений.
-Без неё невозможно считать 60-дневный baseline — Garmin API даёт только 7-дневное среднее.
+Три таблицы в PostgreSQL (Alembic migrations):
+- `wellness` — ежедневные метрики (RMSSD, RHR, sleep, CTL/ATL, recovery score, AI recommendation)
+- `hrv_analysis` — dual-algorithm HRV baseline (composite PK: date + algorithm)
+- `rhr_analysis` — RHR baseline (7d/30d/60d)
+- `activities` — завершённые активности для per-sport CTL (id: String, e.g. "i12345")
+- `scheduled_workouts` — запланированные тренировки из Intervals.icu календаря
 
-Колонки: `date`, `rmssd_night`, `rmssd_morning`, `resting_hr`, `min_hr`,
-`sleep_score`, `sleep_start`, `body_battery_am`, `stress_avg`, `garmin_readiness`.
+Файл: `data/database.py` (WellnessRow, HrvAnalysisRow, RhrAnalysisRow, ActivityRow, ScheduledWorkoutRow)
 
-### Шаг 2. Расширить Garmin sync — сохранять RMSSD в `daily_hrv`
+### Шаг 2. Data sync ✅
 
-В текущем sync pipeline добавить запись `hrv_last_night` в новую таблицу при каждом sync.
-Это позволит накопить историю для baseline.
+`data/intervals_client.py` — IntervalsClient:
+- `get_wellness(date)` → Wellness model
+- `get_activities(oldest, newest)` → list[Activity]
+- `get_events(oldest, newest)` → list[ScheduledWorkout]
 
-### Шаг 3. Реализовать `calculate_rmssd_status()` в `data/metrics.py`
+`bot/scheduler.py` — три cron задачи:
+- `daily_metrics_job` — каждые 15 мин (5-23ч): wellness + HRV/RHR + recovery score + AI
+- `sync_activities_job` — каждый час :30 (4-23ч): activities из API → БД
+- `scheduled_workouts_job` — каждый час :00 (4-23ч): planned workouts → БД
 
-Функция из спеки — 7d vs 60d baseline, CV, SWC, тренд. Нужны вспомогательные:
+### Шаг 3. RMSSD status ✅
 
-- `_classify_recovery(mean_7d, lower, upper)` → `'low'` / `'normal'` / `'elevated'`
-- `_calculate_trend(values_14d)` → `'rising'` / `'stable'` / `'declining'` (линейная регрессия наклона)
+`data/metrics.py`: `calculate_rmssd_status()` — dual algorithm (Flatt & Esco + AIEndurance).
+Оба алгоритма всегда рассчитываются и сохраняются. `HRV_ALGORITHM` выбирает основной для recovery.
 
-Зависимость: `numpy` — добавить в requirements.
+Вспомогательные: trend analysis (линейная регрессия), CV, SWC.
 
-### Шаг 4. Реализовать `calculate_rhr_status()` в `data/metrics.py`
+### Шаг 4. RHR status ✅
 
-30-дневный baseline RHR с инвертированной интерпретацией
-(повышенный RHR = плохое восстановление).
+`data/metrics.py`: `calculate_rhr_status()` — 7d/30d/60d baselines, инвертированная интерпретация.
 
-### Шаг 5. Обновить `calculate_readiness()`
+### Шаг 5. Recovery Score ✅
 
-Заменить текущую упрощённую логику HRV-дельты на вызов `calculate_rmssd_status()`. Добавить:
+`data/metrics.py`: `combined_recovery_score()` — composite 0-100.
+Weights: RMSSD 35%, Banister 25%, RHR 20%, Sleep 20% (перенормировка при None).
 
-- Penalty за нестабильный CV (>15%) → -5
-- Penalty за declining trend >3 дня → warning flag
-- Вернуть расширенный результат с компонентами (`components` dict)
+### Шаг 6. Pydantic модели ✅
 
-### Шаг 6. Новая Pydantic модель `RMSSDStatus` в `data/models.py`
+`data/models.py`: `RmssdStatus`, `RhrStatus`, `TrendResult`, `RecoveryScore`, `Wellness`, `Activity`, `ScheduledWorkout`, `GoalProgress`.
 
-```python
-class RMSSDStatus(BaseModel):
-    status: str          # 'low' | 'normal' | 'elevated' | 'insufficient_data'
-    rmssd_7d: float
-    rmssd_60d: float
-    lower_bound: float
-    upper_bound: float
-    cv_7d: float
-    swc: float
-    trend: str           # 'rising' | 'stable' | 'declining'
-```
+### Шаг 7. Тесты ⚠️
 
-### Шаг 7. Тесты в `tests/test_metrics.py`
+Базовые тесты для metrics существуют, но покрытие неполное. Нужно расширить.
 
-- `test_rmssd_status_normal` — 7d среднее внутри нормы
-- `test_rmssd_status_low` — 7d ниже lower_bound
-- `test_rmssd_status_elevated` — 7d выше upper_bound
-- `test_rmssd_insufficient_data` — менее 14 дней данных
-- `test_rmssd_trend_declining` / `rising`
-- `test_rhr_status_*` — аналогичные кейсы
+### Шаг 8. Интеграция в отчёт ✅
 
-### Шаг 8. Интеграция в утренний отчёт
-
-Добавить RMSSD status в prompt (`ai/prompts.py`):
-
-```
-RMSSD Status: {status} (7d: {rmssd_7d}, norm: {lower}–{upper}, CV: {cv}%)
-```
-
-Обновить `bot/formatter.py` — отображать тренд стрелкой.
-
----
-
-## Порядок и зависимости
-
-```
-Шаг 1 (БД) ──→ Шаг 2 (sync) ──→ Шаг 3-4 (расчёты) ──→ Шаг 5 (readiness)
-                                        ↑                       ↓
-                                   Шаг 6 (модели)          Шаг 8 (отчёт)
-                                        ↓
-                                   Шаг 7 (тесты)
-```
+- `ai/prompts.py` — SYSTEM_PROMPT + MORNING_REPORT_PROMPT с HRV, RHR, recovery, per-sport CTL, planned workouts
+- `ai/claude_agent.py` — Claude API call (sonnet-4-6), один раз в день
+- `bot/formatter.py` — Telegram summary с recovery score
+- `mcp_server/` — 12 tools + 3 resources для Claude Desktop
 
 ---
 
 ## Холодный старт
 
-Для полноценного 60-дневного baseline нужно ~2 месяца данных. На старте:
+Для 60-дневного baseline нужно ~2 месяца данных:
+- **< 14 дней** → `insufficient_data` (fallback на readiness)
+- **14–60 дней** → используем сколько есть
+- **Backfill** — `python -m bot.cli backfill` загружает историю из Intervals.icu (до 180 дней)
 
-- **Минимум 14 дней** — иначе возвращаем `insufficient_data`
-- **14–60 дней** — используем сколько есть (спека допускает: `recent_60 = rmssd_values[-60:]`)
-- **Backfill** — можно загрузить историю через `garmin_client` за прошлые даты при первом запуске
+---
+
+## Что ещё не реализовано (из Level 1)
+
+1. **Тесты** — расширить покрытие `tests/test_metrics.py`
+2. **Bot commands** — /start, /status, /week, /goal, /zones
+3. **Webapp** — обновить под новую API структуру (/api/report grouped JSON)

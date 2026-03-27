@@ -32,6 +32,8 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    profiles:
+      - polling
 
   api:
     build: .

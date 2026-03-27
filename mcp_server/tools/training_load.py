@@ -1,27 +1,8 @@
 """MCP tools for training load data (CTL/ATL/TSB)."""
 
 from data.database import WellnessRow, get_session
+from data.utils import extract_sport_ctl
 from mcp_server.app import mcp
-
-
-def _extract_sport_ctl(sport_info) -> dict:
-    """Extract per-sport CTL from Intervals.icu sport_info JSON."""
-    result = {"swim": None, "bike": None, "run": None}
-    if not sport_info:
-        return result
-    info = sport_info if isinstance(sport_info, list) else []
-    for entry in info:
-        sport = (entry.get("type") or entry.get("sport") or "").lower()
-        ctl_val = entry.get("ctl") or entry.get("ctlLoad")
-        if ctl_val is None:
-            continue
-        if sport in ("swim", "swimming"):
-            result["swim"] = round(float(ctl_val), 1)
-        elif sport in ("ride", "bike", "cycling"):
-            result["bike"] = round(float(ctl_val), 1)
-        elif sport in ("run", "running"):
-            result["run"] = round(float(ctl_val), 1)
-    return result
 
 
 def _tsb_zone(tsb: float | None) -> str | None:
@@ -54,7 +35,7 @@ async def get_training_load(date: str) -> dict:
         return {"error": f"No data for {date}"}
 
     tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
-    sport_ctl = _extract_sport_ctl(row.sport_info)
+    sport_ctl = extract_sport_ctl(row.sport_info)
 
     return {
         "date": date,

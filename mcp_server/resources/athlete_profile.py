@@ -16,7 +16,7 @@ def register_resources(mcp):
             f"LTHR Run: {lthr_run} bpm\n"
             f"LTHR Bike: {lthr_bike} bpm\n"
             f"Max HR: {settings.ATHLETE_MAX_HR} bpm\n"
-            f"Resting HR: {settings.ATHLETE_RESTING_HR} bpm\n"
+            f"Resting HR: dynamic (from daily wellness sync)\n"
             f"FTP: {settings.ATHLETE_FTP} W\n"
             f"CSS: {settings.ATHLETE_CSS} s/100m\n"
             f"\n"

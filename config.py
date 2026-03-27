@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
     TELEGRAM_CHAT_ID: str = ""
+    TELEGRAM_WEBHOOK_URL: str = ""  # base URL, e.g. "https://your-api.example.com"; empty = polling mode
 
     # Intervals.icu
     INTERVALS_API_KEY: SecretStr = SecretStr("")
@@ -22,18 +23,20 @@ class Settings(BaseSettings):
     # Anthropic
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
 
+    # Google AI (optional — enables Gemini second opinion in dashboard)
+    GOOGLE_AI_API_KEY: SecretStr = SecretStr("")  # empty = Gemini disabled
+
     # App
     API_BASE_URL: str = "https://your-api.railway.app"
     WEBAPP_URL: str = "https://your-app.vercel.app"
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
 
-    # Athlete thresholds
-    ATHLETE_LTHR_RUN: int = 158
-    ATHLETE_LTHR_BIKE: int = 152
-    ATHLETE_MAX_HR: int = 182
-    ATHLETE_RESTING_HR: float = 42
-    ATHLETE_FTP: float = 245
-    ATHLETE_CSS: float = 98
+    # Athlete thresholds (from HumanGo tests, Nov-Dec 2025 + Mar 2026)
+    ATHLETE_LTHR_RUN: int = 153
+    ATHLETE_LTHR_BIKE: int = 153
+    ATHLETE_MAX_HR: int = 179
+    ATHLETE_FTP: float = 233
+    ATHLETE_CSS: float = 141  # 2:21/100m from HumanGo, Mar 2026
     ATHLETE_AGE: int = 43
 
     # Race goal
@@ -44,13 +47,14 @@ class Settings(BaseSettings):
     GOAL_BIKE_CTL_TARGET: float = 35
     GOAL_RUN_CTL_TARGET: float = 25
 
-    # Scheduler
-    MORNING_REPORT_HOUR: int = 7
-    MORNING_REPORT_MINUTE: int = 0
     TIMEZONE: str = "Europe/Belgrade"
 
     # HRV Algorithm
     HRV_ALGORITHM: str = "flatt_esco"  # "flatt_esco" | "ai_endurance"
+
+    # Web Auth (desktop login via one-time code)
+    JWT_SECRET: SecretStr = SecretStr("")  # If empty, falls back to TELEGRAM_BOT_TOKEN
+    JWT_EXPIRY_DAYS: int = 7  # JWT token lifetime
 
     # MCP
     MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access

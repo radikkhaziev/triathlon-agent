@@ -3,13 +3,21 @@ import zoneinfo
 from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
-from bot.formatter import build_report_summary
+from api.auth import generate_code
+from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
 from data.database import get_wellness
-from data.models import RecoveryScore, Wellness
+from data.intervals_client import IntervalsClient
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------------------------
 
 
 async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -22,23 +30,27 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     row = await get_wellness(dt)
 
     if not row:
-        await update.message.reply_text("Нет данных за сегодня. Данные обновляются автоматически каждые 15 минут.")
+        await update.message.reply_text("Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут.")
         return
 
-    recovery = None
-    if row.recovery_score is not None:
-        recovery = RecoveryScore(
-            score=row.recovery_score,
-            category=row.recovery_category or "moderate",
-            recommendation=row.recovery_recommendation or "zone1_long",
-        )
-
-    wellness = Wellness(sleep_score=row.sleep_score, sleep_secs=row.sleep_secs)
-
-    summary = build_report_summary(recovery=recovery, sleep_data=wellness)
+    summary = build_morning_message(row)
     webapp_url = f"{settings.API_BASE_URL}/report.html"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await update.message.reply_text(summary, reply_markup=keyboard)
+
+
+async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /web command — generate one-time login code for desktop browser."""
+    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        await update.message.reply_text("У вас нет доступа к этому боту.")
+        return
+
+    code = generate_code(str(update.effective_user.id))
+    login_url = f"{settings.API_BASE_URL}/login.html"
+    await update.message.reply_text(
+        f"🔑 Код: `{code}`\n\nДействует 5 минут. Введите на странице:\n{login_url}",
+        parse_mode="Markdown",
+    )
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -55,22 +67,58 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-def start_bot() -> None:
-    """Start the Telegram bot with polling."""
+# ---------------------------------------------------------------------------
+# App builder (shared between polling and webhook modes)
+# ---------------------------------------------------------------------------
+
+
+async def _post_init(application: Application) -> None:
+    scheduler = await create_scheduler(bot=application.bot)
+    scheduler.start()
+    application.bot_data["scheduler"] = scheduler
+    logger.info("Scheduler started")
+
+
+async def _post_shutdown(application: Application) -> None:
+    scheduler = application.bot_data.get("scheduler")
+    if scheduler and scheduler.running:
+        scheduler.shutdown()
+        logger.info("Scheduler stopped")
+
+    if IntervalsClient._instance is not None and IntervalsClient._instance.is_active:
+        await IntervalsClient._instance.close()
+        logger.info("IntervalsClient closed")
+
+
+def build_application() -> Application:
+    """Build the Telegram Application with all handlers.
+
+    Used by both polling mode (start_bot) and webhook mode (api/server.py).
+    """
     token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
-    async def post_init(application):
-        scheduler = await create_scheduler()
-        scheduler.start()
-        logging.info("Scheduler started")
-
-    app = ApplicationBuilder().token(token).post_init(post_init).build()
+    builder = ApplicationBuilder().token(token).post_init(_post_init).post_shutdown(_post_shutdown)
+    # In webhook mode, we handle updates manually — no need for built-in Updater
+    if settings.TELEGRAM_WEBHOOK_URL:
+        builder = builder.updater(None)
+    app = builder.build()
     app.add_handler(CommandHandler("morning", morning))
+    app.add_handler(CommandHandler("web", web_login))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
+    return app
 
-    logging.info("Bot started")
+
+# ---------------------------------------------------------------------------
+# Polling mode (local development)
+# ---------------------------------------------------------------------------
+
+
+def start_bot() -> None:
+    """Start the Telegram bot with polling (for local development)."""
+    app = build_application()
+    logger.info("Bot started (polling mode)")
     app.run_polling()
 
 

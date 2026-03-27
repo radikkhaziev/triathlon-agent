@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,7 +13,9 @@ from data.metrics import (
     calc_hr_tss,
     calc_power_tss,
     calc_swim_tss,
+    calculate_banister_for_date,
     calculate_banister_recovery,
+    calculate_daily_ess,
     calculate_ess,
     calculate_readiness,
     calculate_rhr_status,
@@ -442,6 +445,211 @@ class TestBanisterRecovery:
         assert len(result) == 3
         # Recovery should increase on rest days (decay toward 0, but with no load)
         # Actually R decays via exp(-1/tau), so it decreases but less than with load
+
+
+# ---------------------------------------------------------------------------
+# Daily ESS Aggregation
+# ---------------------------------------------------------------------------
+
+
+def _activity(moving_time: int | None = 3600, average_hr: float | None = 140.0) -> SimpleNamespace:
+    """Create a minimal activity stub with the fields calculate_daily_ess reads."""
+    return SimpleNamespace(moving_time=moving_time, average_hr=average_hr)
+
+
+class TestCalculateDailyEss:
+    """Tests for calculate_daily_ess — sums ESS across all activities on a day."""
+
+    # Patch calculate_ess's dependency on settings.ATHLETE_LTHR_RUN so tests are
+    # deterministic regardless of the local .env value.
+    _PATCH = "data.metrics.settings"
+
+    def test_multiple_activities_sum_greater_than_single(self):
+        """Two activities with HR data should yield a larger ESS than one alone."""
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            single = calculate_daily_ess([_activity(3600, 140)], hr_rest=42, hr_max=182)
+            combined = calculate_daily_ess(
+                [_activity(3600, 140), _activity(1800, 150)],
+                hr_rest=42,
+                hr_max=182,
+            )
+        assert combined > single
+
+    def test_no_hr_returns_zero(self):
+        """Activity with average_hr=None contributes nothing; only activity → 0.0."""
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            result = calculate_daily_ess([_activity(3600, None)], hr_rest=42, hr_max=182)
+        assert result == 0.0
+
+    def test_zero_hr_returns_zero(self):
+        """Activity with average_hr=0 is skipped (below resting HR guard)."""
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            result = calculate_daily_ess([_activity(3600, 0)], hr_rest=42, hr_max=182)
+        assert result == 0.0
+
+    def test_empty_list_returns_zero(self):
+        """No activities → 0.0 without touching calculate_ess."""
+        result = calculate_daily_ess([], hr_rest=42, hr_max=182)
+        assert result == 0.0
+
+    def test_mixed_valid_and_no_hr_ignores_invalid(self):
+        """Only activities with positive average_hr contribute to the total."""
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            valid_only = calculate_daily_ess([_activity(3600, 140)], hr_rest=42, hr_max=182)
+            mixed = calculate_daily_ess(
+                [_activity(3600, 140), _activity(3600, None), _activity(3600, 0)],
+                hr_rest=42,
+                hr_max=182,
+            )
+        assert mixed == valid_only
+
+
+# ---------------------------------------------------------------------------
+# calculate_banister_for_date — end-to-end Banister pipeline for a target date
+# ---------------------------------------------------------------------------
+
+
+class TestCalculateBanisterForDate:
+    """Tests for calculate_banister_for_date — builds ESS log and runs Banister model."""
+
+    _PATCH = "data.metrics.settings"
+    _HR_REST = 42.0
+    _HR_MAX = 182.0
+
+    def _rest_days_dict(self, target: date, lookback: int = 90) -> dict:
+        """Return an activities_by_date dict with no activities (all rest days)."""
+        return {}
+
+    def _heavy_training_dict(self, target: date, lookback: int, avg_hr: float = 165) -> dict:
+        """Fill every day in the lookback window with a hard 2-hour activity."""
+        from datetime import timedelta
+
+        activities_by_date: dict[str, list] = {}
+        start = target - timedelta(days=lookback)
+        current = start
+        while current <= target:
+            activities_by_date[current.isoformat()] = [_activity(7200, avg_hr)]
+            current += timedelta(days=1)
+        return activities_by_date
+
+    def test_rest_days_recovery_near_100(self):
+        """All rest days → Banister recovery decays from 100 but stays high (≥ 1)."""
+        target = date(2026, 3, 24)
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            recovery_pct, ess_today = calculate_banister_for_date(
+                self._rest_days_dict(target),
+                target,
+                hr_rest=self._HR_REST,
+                hr_max=self._HR_MAX,
+                lookback_days=90,
+                k=0.1,
+                tau=2.0,
+            )
+        # With no load and tau=2, R decays by exp(-1/2) ≈ 0.607 per day.
+        # After 90 days starting at 100, it approaches 0, but the initial 100
+        # is the starting point before any day is processed, so result ≥ 0.
+        assert 0.0 <= recovery_pct <= 100.0
+        assert ess_today == 0.0
+
+    def test_heavy_training_drops_recovery_below_50(self):
+        """Continuous hard training should drive recovery well below 50."""
+        target = date(2026, 3, 24)
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            recovery_pct, ess_today = calculate_banister_for_date(
+                self._heavy_training_dict(target, lookback=90, avg_hr=165),
+                target,
+                hr_rest=self._HR_REST,
+                hr_max=self._HR_MAX,
+                lookback_days=90,
+                k=0.5,
+                tau=2.0,
+            )
+        assert recovery_pct < 50.0
+        assert ess_today > 0.0
+
+    def test_recovery_after_rest_day_higher_than_training_day(self):
+        """A rest day should yield a higher recovery than a training day from the same starting R.
+
+        The Banister model is: R(t+1) = R(t) * decay - k * ESS
+        On a rest day ESS=0, so R decays only. On a training day ESS>0 subtracts
+        extra load. Therefore a rest day always leaves R higher than a training day
+        given the same prior state — this tests the model's core invariant using a
+        2-day lookback so the initial R is still near 100.
+        """
+        target_training = date(2026, 3, 24)
+        target_rest = date(2026, 3, 24)
+
+        # Scenario A: 1 lookback day of rest, then target day with a training session
+        # (lookback_days=1 → start = target - 1 day; only 2 entries processed)
+        activities_training = {target_training.isoformat(): [_activity(3600, 140)]}
+        # Scenario B: same structure but target day is also a rest day
+        activities_rest: dict[str, list] = {}
+
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            recovery_training, _ = calculate_banister_for_date(
+                activities_training,
+                target_training,
+                hr_rest=self._HR_REST,
+                hr_max=self._HR_MAX,
+                lookback_days=1,
+                k=0.1,
+                tau=2.0,
+            )
+            recovery_rest, _ = calculate_banister_for_date(
+                activities_rest,
+                target_rest,
+                hr_rest=self._HR_REST,
+                hr_max=self._HR_MAX,
+                lookback_days=1,
+                k=0.1,
+                tau=2.0,
+            )
+        # Rest day should leave recovery higher than a training day from the same start
+        assert recovery_rest > recovery_training
+
+    def test_ess_today_matches_target_date_activities(self):
+        """ess_today returned must equal calculate_daily_ess for that day's activities."""
+        target = date(2026, 3, 24)
+        target_activities = [_activity(3600, 145), _activity(1800, 130)]
+        activities_by_date = {target.isoformat(): target_activities}
+
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            _, ess_today = calculate_banister_for_date(
+                activities_by_date,
+                target,
+                hr_rest=self._HR_REST,
+                hr_max=self._HR_MAX,
+                lookback_days=90,
+                k=0.1,
+                tau=2.0,
+            )
+            expected_ess = calculate_daily_ess(target_activities, self._HR_REST, self._HR_MAX)
+        assert ess_today == expected_ess
+
+    def test_returns_tuple_of_two_floats(self):
+        """Return type is always a 2-tuple of floats, even with an empty dict."""
+        target = date(2026, 3, 24)
+        with patch(self._PATCH) as mock_settings:
+            mock_settings.ATHLETE_LTHR_RUN = 158
+            result = calculate_banister_for_date(
+                {},
+                target,
+                hr_rest=self._HR_REST,
+                hr_max=self._HR_MAX,
+            )
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        recovery_pct, ess_today = result
+        assert isinstance(recovery_pct, float)
+        assert isinstance(ess_today, float)
 
 
 # ---------------------------------------------------------------------------

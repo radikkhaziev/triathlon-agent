@@ -2,12 +2,12 @@
 
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import httpx
 
 from config import settings
-from data.models import ScheduledWorkout, Wellness
+from data.models import Activity, ScheduledWorkout, Wellness
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,11 @@ class IntervalsClient:
         cls._instance = inst
         return inst
 
+    @property
+    def is_active(self) -> bool:
+        """Whether this client has been initialized and not yet closed."""
+        return self._initialized
+
     def __init__(self) -> None:
         if self._initialized:
             return
@@ -58,6 +63,12 @@ class IntervalsClient:
             timeout=30.0,
         )
         self._athlete_id = settings.INTERVALS_ATHLETE_ID
+
+    async def close(self) -> None:
+        """Close the underlying httpx session."""
+        await self._client.aclose()
+        IntervalsClient._instance = None
+        self._initialized = False
 
     # ------------------------------------------------------------------
     # Retry
@@ -101,6 +112,102 @@ class IntervalsClient:
     # ------------------------------------------------------------------
     # Scheduled Workouts (Events)
     # ------------------------------------------------------------------
+
+    async def get_activities(
+        self,
+        oldest: date | None = None,
+        newest: date | None = None,
+    ) -> list[Activity]:
+        """Fetch completed activities with training load and sport type.
+
+        Args:
+            oldest: Start date (default: 90 days ago).
+            newest: End date (default: today).
+        """
+        if oldest is None:
+            oldest = date.today() - timedelta(days=90)
+        if newest is None:
+            newest = date.today()
+
+        params: dict[str, str] = {
+            "oldest": oldest.strftime("%Y-%m-%d"),
+            "newest": newest.strftime("%Y-%m-%d"),
+            "fields": "id,start_date_local,type,icu_training_load,moving_time,average_heartrate",
+        }
+        resp = await self._request(
+            "GET",
+            f"/athlete/{self._athlete_id}/activities",
+            params=params,
+        )
+        activities = []
+        for raw in resp.json():
+            data = {_to_snake(k): v for k, v in raw.items()}
+            # Intervals.icu returns averageHeartrate → average_heartrate, model uses average_hr
+            if "average_heartrate" in data:
+                data["average_hr"] = data.pop("average_heartrate")
+            activities.append(Activity.model_validate(data))
+        return activities
+
+    # ------------------------------------------------------------------
+    # FIT file download (Level 2: DFA alpha 1)
+    # ------------------------------------------------------------------
+
+    async def download_fit(self, activity_id: str) -> bytes | None:
+        """Download original FIT file for an activity.
+
+        Returns raw bytes or None if not available (404).
+        Uses _request() for retry on 429/5xx.
+        """
+        max_size = 50 * 1024 * 1024  # 50 MB
+        try:
+            resp = await self._request(
+                "GET",
+                f"/activity/{activity_id}/file",
+                headers={"Accept": "application/octet-stream"},
+                timeout=60.0,
+            )
+            content_length = resp.headers.get("content-length")
+            if content_length and int(content_length) > max_size:
+                logger.warning("FIT file too large (%s bytes), skipping %s", content_length, activity_id)
+                return None
+            if len(resp.content) > max_size:
+                logger.warning("FIT file too large (%d bytes), skipping %s", len(resp.content), activity_id)
+                return None
+            return resp.content
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+
+    async def get_activity_detail(self, activity_id: str) -> dict | None:
+        """Fetch full activity detail from Intervals.icu.
+
+        GET /api/v1/activity/{activity_id}
+        Returns raw JSON dict with all computed metrics (NP, IF, EF, zones, etc.),
+        or None if the activity is not found (404).
+        """
+        try:
+            resp = await self._request("GET", f"/activity/{activity_id}")
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+
+    async def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
+        """Fetch per-interval breakdown for an activity.
+
+        GET /api/v1/activity/{activity_id}/intervals
+        Returns list of interval dicts with power, HR, speed, cadence, etc.,
+        or None if the activity is not found (404).
+        """
+        try:
+            resp = await self._request("GET", f"/activity/{activity_id}/intervals")
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
 
     async def get_events(
         self,

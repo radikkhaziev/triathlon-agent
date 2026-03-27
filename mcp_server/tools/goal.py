@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from config import settings
 from data.database import WellnessRow, get_session
+from data.utils import extract_sport_ctl
 from mcp_server.app import mcp
 
 
@@ -13,26 +14,6 @@ def _pct(current: float | None, target: float) -> float | None:
     if current is None or target <= 0:
         return None
     return round(current / target * 100, 1)
-
-
-def _extract_sport_ctl(sport_info) -> dict:
-    """Extract per-sport CTL from Intervals.icu sport_info JSON."""
-    result = {"swim": None, "bike": None, "run": None}
-    if not sport_info:
-        return result
-    info = sport_info if isinstance(sport_info, list) else []
-    for entry in info:
-        sport = (entry.get("type") or entry.get("sport") or "").lower()
-        ctl_val = entry.get("ctl") or entry.get("ctlLoad")
-        if ctl_val is None:
-            continue
-        if sport in ("swim", "swimming"):
-            result["swim"] = round(float(ctl_val), 1)
-        elif sport in ("ride", "bike", "cycling"):
-            result["bike"] = round(float(ctl_val), 1)
-        elif sport in ("run", "running"):
-            result["run"] = round(float(ctl_val), 1)
-    return result
 
 
 @mcp.tool()
@@ -54,7 +35,7 @@ async def get_goal_progress() -> dict:
         row = result.scalar_one_or_none()
 
     current_ctl = row.ctl if row else None
-    sport_ctl = _extract_sport_ctl(row.sport_info) if row else {"swim": None, "bike": None, "run": None}
+    sport_ctl = extract_sport_ctl(row.sport_info) if row else {"swim": None, "bike": None, "run": None}
 
     return {
         "event": settings.GOAL_EVENT_NAME,

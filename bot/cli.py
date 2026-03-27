@@ -1,10 +1,20 @@
 import argparse
 import asyncio
+import code
 import logging
 import re
 from datetime import date, timedelta
 
+from bot.scheduler import daily_metrics_job, sync_activities_job
 from config import settings
+from data.database import (
+    get_activities_without_details,
+    get_session,
+    get_wellness,
+    save_activity_details,
+    save_scheduled_workouts,
+)
+from data.intervals_client import IntervalsClient
 
 
 def main() -> None:
@@ -44,6 +54,30 @@ def main() -> None:
         help="Number of days ahead to sync (default: 14)",
     )
 
+    activities_parser = sub.add_parser(
+        "sync-activities",
+        help="Sync completed activities from Intervals.icu. Default: 90 days back.",
+    )
+    activities_parser.add_argument(
+        "days",
+        nargs="?",
+        type=int,
+        default=90,
+        help="Number of days back to sync (default: 90)",
+    )
+
+    details_parser = sub.add_parser(
+        "backfill-details",
+        help="Backfill activity details for activities without them. Default: all.",
+    )
+    details_parser.add_argument(
+        "days",
+        nargs="?",
+        type=int,
+        default=0,
+        help="Limit to last N days (default: 0 = all)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -52,6 +86,10 @@ def main() -> None:
         asyncio.run(_backfill(args.period))
     elif args.command == "sync-workouts":
         asyncio.run(_sync_workouts(args.days))
+    elif args.command == "sync-activities":
+        asyncio.run(_sync_activities(args.days))
+    elif args.command == "backfill-details":
+        asyncio.run(_backfill_details(args.days))
 
 
 def _parse_period(period: str | None) -> tuple[date, date]:
@@ -104,8 +142,6 @@ def _parse_period(period: str | None) -> tuple[date, date]:
 
 
 async def _backfill(period: str | None = None) -> None:
-    from bot.scheduler import daily_metrics_job
-
     start, end = _parse_period(period)
     total_days = (end - start).days + 1
     print(f"Backfill: {start} -> {end} ({total_days} days)")
@@ -128,25 +164,56 @@ async def _backfill(period: str | None = None) -> None:
     print("Backfill completed.")
 
 
-async def _sync_workouts(days: int = 14) -> None:
-    from data.database import save_scheduled_workouts
-    from data.intervals_client import IntervalsClient
+async def _sync_activities(days: int = 90) -> None:
+    print(f"Syncing activities: last {days} days")
+    count = await sync_activities_job(days=days)
+    print(f"Synced {count} activities.")
 
+
+async def _sync_workouts(days: int = 14) -> None:
     today = date.today()
     newest = today + timedelta(days=days)
     print(f"Syncing workouts: {today} → {newest} ({days} days)")
 
     client = IntervalsClient()
     workouts = await client.get_events(oldest=today, newest=newest)
-    count = await save_scheduled_workouts(workouts)
+    count = await save_scheduled_workouts(workouts, oldest=today, newest=newest)
     print(f"Synced {count} workouts.")
 
 
+async def _backfill_details(days: int = 0) -> None:
+    client = IntervalsClient()
+    cutoff = str(date.today() - timedelta(days=days)) if days > 0 else None
+    activities = await get_activities_without_details(since_date=cutoff)
+
+    total = len(activities)
+    print(f"Backfill details: {total} activities without details")
+
+    for i, act in enumerate(activities, 1):
+        print(f"[{i}/{total}] {act.id} ({act.start_date_local}, {act.type}) ...")
+        try:
+            detail = await client.get_activity_detail(act.id)
+            if detail is None:
+                print("  Not found (404), skipping")
+                continue
+
+            try:
+                intervals_data = await client.get_activity_intervals(act.id)
+            except Exception:
+                print("  Warning: intervals fetch failed, saving detail only")
+                intervals_data = None
+
+            await save_activity_details(act.id, detail, intervals_data)
+        except Exception as exc:
+            print(f"  Error: {exc}")
+
+        if i < total:
+            await asyncio.sleep(2)
+
+    print("Backfill details completed.")
+
+
 def _shell() -> None:
-    import code
-
-    from data.database import get_session, get_wellness
-
     banner = (
         "Triathlon Agent Shell\n"
         "Available variables:\n"

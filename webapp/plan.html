@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>План тренировок</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #13131a;
+            --surface-2: #1c1c27;
+            --border: #2a2a3a;
+            --text: #e8e8ed;
+            --text-dim: #8888a0;
+            --accent: #3b82f6;
+            --accent-glow: #3b82f620;
+            --green: #22c55e;
+            --yellow: #f59e0b;
+            --red: #ef4444;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            padding: 0 16px 32px;
+            max-width: 540px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .page-header {
+            text-align: center;
+            padding: 20px 0 16px;
+        }
+
+        .page-header h1 {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        /* Week nav */
+        .week-nav {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 8px 0 12px;
+        }
+
+        .week-nav button {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: inherit;
+        }
+
+        .week-nav button:hover {
+            background: var(--border);
+        }
+
+        .week-nav button:active {
+            transform: scale(0.97);
+        }
+
+        .week-label {
+            font-size: 14px;
+            font-weight: 600;
+            min-width: 180px;
+            text-align: center;
+        }
+
+        /* Sync bar */
+        .sync-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 10px 0 16px;
+        }
+
+        .sync-btn {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: inherit;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .sync-btn:hover { background: #2563eb; }
+        .sync-btn:active { transform: scale(0.97); }
+        .sync-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .sync-btn .spin {
+            display: inline-block;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .sync-time {
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+
+        /* Day card */
+        .day-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+
+        .day-card.today {
+            border-color: var(--accent);
+        }
+
+        .day-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+        }
+
+        .day-date {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .day-weekday {
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+
+        .today-badge {
+            font-size: 10px;
+            font-weight: 700;
+            background: var(--accent);
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 8px;
+            letter-spacing: 0.5px;
+        }
+
+        .rest-day {
+            padding: 0 16px 14px;
+            font-size: 13px;
+            color: var(--text-dim);
+            font-style: italic;
+        }
+
+        /* Workout item */
+        .workout-item {
+            border-top: 1px solid var(--border);
+        }
+
+        .workout-summary {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+
+        .workout-summary:hover {
+            background: var(--surface-2);
+        }
+
+        .sport-icon {
+            font-size: 18px;
+            flex-shrink: 0;
+            width: 24px;
+            text-align: center;
+        }
+
+        .workout-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .workout-name {
+            font-size: 13px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .workout-meta {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin-top: 1px;
+        }
+
+        .expand-icon {
+            font-size: 12px;
+            color: var(--text-dim);
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+
+        .workout-item.expanded .expand-icon {
+            transform: rotate(90deg);
+        }
+
+        .workout-description {
+            display: none;
+            padding: 0 16px 14px;
+            border-top: 1px solid var(--border);
+        }
+
+        .workout-item.expanded .workout-description {
+            display: block;
+        }
+
+        .workout-description pre {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text-dim);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin: 0;
+            padding: 12px;
+            background: var(--bg);
+            border-radius: 8px;
+        }
+
+        /* Loading */
+        .loading-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 50vh;
+            color: var(--text-dim);
+            gap: 12px;
+        }
+
+        .spinner {
+            width: 28px;
+            height: 28px;
+            border: 3px solid var(--surface-2);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        /* Nav link */
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: var(--accent);
+            text-decoration: none;
+            padding: 12px 0 0;
+        }
+
+        .back-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+<a href="/" onclick="this.href='/'+location.hash" class="back-link">&larr; Главная</a>
+
+<div class="page-header">
+    <h1>План тренировок</h1>
+</div>
+
+<div class="week-nav">
+    <button id="prev-week">&larr; Пред</button>
+    <span class="week-label" id="week-label">...</span>
+    <button id="next-week">След &rarr;</button>
+</div>
+
+<div class="sync-bar" style="display:none">
+    <button class="sync-btn" id="sync-btn">
+        <span id="sync-icon">&#x1f504;</span> Синхронизировать
+    </button>
+    <span class="sync-time" id="sync-time"></span>
+</div>
+
+<div id="loading" class="loading-state">
+    <div class="spinner"></div>
+    <span>Загрузка...</span>
+</div>
+
+<div id="days-container" style="display:none"></div>
+
+<script>
+const API_BASE = window.API_BASE_URL || '';
+const tg = window.Telegram?.WebApp;
+
+if (tg) {
+    tg.expand();
+    tg.ready();
+}
+
+// Persist initData across page navigations within the Mini App
+if (tg?.initData) {
+    sessionStorage.setItem('tg_init_data', tg.initData);
+}
+
+function getAuthHeader() {
+    const initData = tg?.initData || sessionStorage.getItem('tg_init_data') || '';
+    if (initData) return initData;
+    const jwt = localStorage.getItem('auth_token');
+    if (jwt) return 'Bearer ' + jwt;
+    return '';
+}
+
+if (!getAuthHeader()) {
+    window.location.href = '/login.html';
+    throw new Error('Not authenticated');
+}
+
+async function apiFetch(endpoint, opts = {}) {
+    const headers = opts.headers || {};
+    const auth = getAuthHeader();
+    if (auth) headers['Authorization'] = auth;
+    const res = await fetch(`${API_BASE}${endpoint}`, { ...opts, headers });
+    if (res.status === 401) { localStorage.removeItem('auth_token'); window.location.href = '/login.html'; }
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+}
+
+const SPORT_ICONS = {
+    Swim: '\u{1F3CA}',
+    Ride: '\u{1F6B4}',
+    VirtualRide: '\u{1F6B4}',
+    GravelRide: '\u{1F6B4}',
+    MountainBikeRide: '\u{26F0}\uFE0F',
+    Run: '\u{1F3C3}',
+    VirtualRun: '\u{1F3C3}',
+    TrailRun: '\u{26F0}\uFE0F',
+    WeightTraining: '\u{1F3CB}\uFE0F',
+};
+
+const WEEKDAY_RU = {
+    Mon: 'Пн', Tue: 'Вт', Wed: 'Ср', Thu: 'Чт', Fri: 'Пт', Sat: 'Сб', Sun: 'Вс',
+};
+
+const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+function formatWeekLabel(start, end) {
+    const s = new Date(start + 'T00:00:00');
+    const e = new Date(end + 'T00:00:00');
+    const sm = MONTHS[s.getMonth()];
+    const em = MONTHS[e.getMonth()];
+    if (sm === em) {
+        return `${sm} ${s.getDate()} \u2013 ${e.getDate()}, ${s.getFullYear()}`;
+    }
+    return `${sm} ${s.getDate()} \u2013 ${em} ${e.getDate()}, ${e.getFullYear()}`;
+}
+
+function formatDayDate(dateStr, weekday) {
+    const d = new Date(dateStr + 'T00:00:00');
+    return `${WEEKDAY_RU[weekday] || weekday} ${d.getDate()}`;
+}
+
+function relativeTime(isoStr) {
+    if (!isoStr) return '';
+    const then = new Date(isoStr);
+    const now = new Date();
+    const diffMs = now - then;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'только что';
+    if (diffMin < 60) return `${diffMin} мин назад`;
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return `${diffH} ч назад`;
+    const diffD = Math.floor(diffH / 24);
+    return `${diffD} дн назад`;
+}
+
+function stripWorkoutPrefix(name) {
+    if (!name) return 'Тренировка';
+    // Strip "CYCLING:", "RUNNING:", etc. prefix from HumanGo names
+    return name.replace(/^[A-Z]+:/, '').trim() || name;
+}
+
+let currentOffset = 0;
+
+async function loadWeek(offset) {
+    currentOffset = offset;
+    const container = document.getElementById('days-container');
+    const loading = document.getElementById('loading');
+
+    loading.style.display = 'flex';
+    container.style.display = 'none';
+
+    try {
+        const data = await apiFetch(`/api/scheduled-workouts?week_offset=${offset}`);
+
+        document.getElementById('week-label').textContent = formatWeekLabel(data.week_start, data.week_end);
+        updateSyncTime(data.last_synced_at);
+
+        // Show sync button only for owner
+        document.querySelector('.sync-bar').style.display = data.role === 'owner' ? 'flex' : 'none';
+
+        const todayStr = data.today; // server timezone (Europe/Belgrade)
+        let html = '';
+
+        for (const day of data.days) {
+            const isToday = day.date === todayStr;
+            html += `<div class="day-card${isToday ? ' today' : ''}">`;
+            html += `<div class="day-header">`;
+            html += `<div><span class="day-date">${formatDayDate(day.date, day.weekday)}</span></div>`;
+            if (isToday) html += `<span class="today-badge">СЕГОДНЯ</span>`;
+            html += `</div>`;
+
+            if (day.workouts.length === 0) {
+                html += `<div class="rest-day">День отдыха</div>`;
+            } else {
+                for (const w of day.workouts) {
+                    const icon = SPORT_ICONS[w.type] || '\u{1F3C6}';
+                    const name = stripWorkoutPrefix(w.name);
+                    const metaParts = [];
+                    if (w.duration) metaParts.push(w.duration);
+                    if (w.distance_km) metaParts.push(`${w.distance_km} km`);
+                    const meta = metaParts.join(' \u00B7 ');
+                    const hasDesc = w.description && w.description.trim().length > 0;
+
+                    html += `<div class="workout-item" ${hasDesc ? 'onclick="toggleExpand(this)"' : ''}>`;
+                    html += `<div class="workout-summary">`;
+                    html += `<span class="sport-icon">${icon}</span>`;
+                    html += `<div class="workout-info">`;
+                    html += `<div class="workout-name">${escapeHtml(name)}</div>`;
+                    if (meta) html += `<div class="workout-meta">${escapeHtml(meta)}</div>`;
+                    html += `</div>`;
+                    if (hasDesc) html += `<span class="expand-icon">\u25B6</span>`;
+                    html += `</div>`;
+                    if (hasDesc) {
+                        html += `<div class="workout-description"><pre>${escapeHtml(w.description)}</pre></div>`;
+                    }
+                    html += `</div>`;
+                }
+            }
+            html += `</div>`;
+        }
+
+        container.innerHTML = html;
+        loading.style.display = 'none';
+        container.style.display = 'block';
+
+        // Disable nav buttons when no more data in DB
+        document.getElementById('prev-week').disabled = data.has_prev === false;
+        document.getElementById('next-week').disabled = data.has_next === false;
+    } catch (err) {
+        console.error('Failed to load plan:', err);
+        loading.innerHTML = '<div style="text-align:center;color:var(--text-dim);padding:40px 20px;">Не удалось загрузить план.<br>Попробуйте позже.</div>';
+    }
+}
+
+function toggleExpand(el) {
+    el.classList.toggle('expanded');
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function updateSyncTime(isoStr) {
+    const el = document.getElementById('sync-time');
+    if (isoStr) {
+        el.textContent = `Обновлено: ${relativeTime(isoStr)}`;
+    } else {
+        el.textContent = 'Не синхронизировано';
+    }
+}
+
+async function syncWorkouts() {
+    const btn = document.getElementById('sync-btn');
+    const iconEl = document.getElementById('sync-icon');
+    btn.disabled = true;
+    iconEl.classList.add('spin');
+
+    try {
+        const result = await apiFetch('/api/jobs/sync-workouts', { method: 'POST' });
+        updateSyncTime(result.last_synced_at);
+        await loadWeek(currentOffset);
+    } catch (err) {
+        console.error('Sync failed:', err);
+        const msg = 'Ошибка синхронизации. Проверьте соединение.';
+        if (tg?.showAlert) { tg.showAlert(msg); } else { alert(msg); }
+    } finally {
+        btn.disabled = false;
+        iconEl.classList.remove('spin');
+    }
+}
+
+// Event listeners
+document.getElementById('prev-week').addEventListener('click', () => loadWeek(currentOffset - 1));
+document.getElementById('next-week').addEventListener('click', () => loadWeek(currentOffset + 1));
+document.getElementById('sync-btn').addEventListener('click', syncWorkouts);
+
+// Initial load
+loadWeek(0);
+</script>
+</body>
+</html>
