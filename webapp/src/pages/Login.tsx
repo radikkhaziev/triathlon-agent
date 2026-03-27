@@ -1,6 +1,8 @@
 import { useState, useEffect, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import { apiFetch } from '../api/client'
+import type { AuthMeResponse } from '../api/types'
 
 export default function Login() {
   const { isAuthenticated, setJwt } = useAuth()
@@ -13,10 +15,7 @@ export default function Login() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` },
-      })
-        .then(r => r.json())
+      apiFetch<AuthMeResponse>('/api/auth/me')
         .then(data => {
           if (data.authenticated) setAlreadyAuth(true)
         })

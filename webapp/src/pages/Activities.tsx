@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -7,6 +7,7 @@ import WeekNav from '../components/WeekNav'
 import SyncButton from '../components/SyncButton'
 import ZoneBar from '../components/ZoneBar'
 import { useWeekNav } from '../hooks/useWeekNav'
+import { useApi } from '../hooks/useApi'
 import { apiFetch } from '../api/client'
 import { formatDayDate, sportLabel, fmtPace } from '../lib/formatters'
 import { SPORT_ICONS, BIKE_TYPES, RUN_TYPES } from '../lib/constants'
@@ -14,28 +15,10 @@ import type { ActivitiesWeekResponse, ActivityItem, ActivityDetailsResponse, Syn
 
 export default function Activities() {
   const { offset, prev, next } = useWeekNav()
-  const [data, setData] = useState<ActivitiesWeekResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { data, loading, error, reload } = useApi<ActivitiesWeekResponse>(`/api/activities-week?week_offset=${offset}`)
 
-  const loadWeek = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await apiFetch<ActivitiesWeekResponse>(`/api/activities-week?week_offset=${offset}`)
-      setData(result)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error')
-    } finally {
-      setLoading(false)
-    }
-  }, [offset])
-
-  useEffect(() => { loadWeek() }, [loadWeek])
-
-  const handleSynced = (result: SyncResponse) => {
-    if (data) setData({ ...data, last_synced_at: result.last_synced_at })
-    loadWeek()
+  const handleSynced = (_result: SyncResponse) => {
+    reload()
   }
 
   return (

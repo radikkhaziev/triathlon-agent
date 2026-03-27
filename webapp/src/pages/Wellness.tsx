@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
@@ -9,31 +9,14 @@ import TabSwitcher from '../components/TabSwitcher'
 import AiRecommendation from '../components/AiRecommendation'
 import SportCtlBars from '../components/SportCtlBars'
 import { useDayNav } from '../hooks/useDayNav'
-import { apiFetch } from '../api/client'
+import { useApi } from '../hooks/useApi'
 import { num } from '../lib/formatters'
 import type { WellnessResponse, HRVBlock } from '../api/types'
 
 export default function Wellness() {
   const { currentDate, dateStr, isToday, prev, next } = useDayNav()
-  const [data, setData] = useState<WellnessResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { data, loading, error } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
   const [hrvTab, setHrvTab] = useState('flatt_esco')
-
-  const loadDay = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await apiFetch<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
-      setData(result)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error')
-    } finally {
-      setLoading(false)
-    }
-  }, [dateStr])
-
-  useEffect(() => { loadDay() }, [loadDay])
 
   return (
     <Layout title="Wellness" backTo="/">
@@ -78,7 +61,7 @@ export default function Wellness() {
           <Section icon="😴" title="Сон">
             <div className="grid grid-cols-2 gap-2">
               <MetricCard label="Sleep Score" value={data.sleep?.score != null ? String(data.sleep.score) : '--'} />
-              <MetricCard label="Длительность" value={data.sleep?.duration || '--'} sub={data.sleep?.quality ? `Качество: ${data.sleep.quality}` : undefined} />
+              <MetricCard label="Длительность" value={data.sleep?.duration || '--'} sub={data.sleep?.quality != null ? `Качество: ${data.sleep.quality}` : undefined} />
             </div>
           </Section>
 
@@ -105,16 +88,13 @@ export default function Wellness() {
                 sub={data.rhr?.delta_30d != null ? `\u03B4 ${data.rhr.delta_30d > 0 ? '+' : ''}${num(data.rhr.delta_30d)}` : undefined}
                 subClass={data.rhr?.delta_30d != null ? (data.rhr.delta_30d > 0 ? 'text-red' : data.rhr.delta_30d < 0 ? 'text-green' : '') : undefined}
               />
-              <MetricCard label="Статус" value="" sub={undefined} />
+              <div className="bg-[var(--bg)] border border-border rounded-[10px] px-3 py-2.5">
+                <div className="text-[11px] text-text-dim uppercase">Статус</div>
+                <div className="mt-0.5">{data.rhr ? <StatusBadge status={data.rhr.status} /> : '--'}</div>
+              </div>
             </div>
             {data.rhr && (
               <div className="[&>div:last-child]:border-b-0">
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <div className="bg-[var(--tg-theme-bg-color,var(--bg))] border border-border rounded-[10px] px-3 py-2.5">
-                    <div className="text-[11px] text-text-dim uppercase">Статус</div>
-                    <div className="mt-0.5"><StatusBadge status={data.rhr.status} /></div>
-                  </div>
-                </div>
                 <MetricRow label="Среднее 7д" value={data.rhr.mean_7d != null ? `${num(data.rhr.mean_7d, 0)} \u00B1 ${num(data.rhr.sd_7d)}` : '--'} />
                 <MetricRow label="Среднее 30д" value={data.rhr.mean_30d != null ? `${num(data.rhr.mean_30d, 0)} \u00B1 ${num(data.rhr.sd_30d)}` : '--'} />
                 <MetricRow label="Среднее 60д" value={data.rhr.mean_60d != null ? `${num(data.rhr.mean_60d, 0)} \u00B1 ${num(data.rhr.sd_60d)}` : '--'} />
@@ -160,7 +140,7 @@ export default function Wellness() {
 
 function Section({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
   return (
-    <div className="bg-[var(--tg-theme-secondary-bg-color,var(--surface))] border border-border rounded-[14px] p-4 mb-3">
+    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
       <div className="flex items-center gap-2 mb-3">
         <span className="text-lg">{icon}</span>
         <span className="text-[15px] font-bold">{title}</span>
@@ -189,7 +169,7 @@ function HRVBlockView({ block }: { block: HRVBlock }) {
           sub={block.delta_pct != null ? `${block.delta_pct > 0 ? '+' : ''}${num(block.delta_pct)}%` : undefined}
           subClass={block.delta_pct != null ? (block.delta_pct > 0 ? 'text-green' : block.delta_pct < 0 ? 'text-red' : '') : undefined}
         />
-        <div className="bg-[var(--tg-theme-bg-color,var(--bg))] border border-border rounded-[10px] px-3 py-2.5">
+        <div className="bg-[var(--bg)] border border-border rounded-[10px] px-3 py-2.5">
           <div className="text-[11px] text-text-dim uppercase">Статус</div>
           <div className="mt-0.5"><StatusBadge status={block.status} /></div>
         </div>

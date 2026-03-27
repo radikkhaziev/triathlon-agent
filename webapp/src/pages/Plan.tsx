@@ -1,40 +1,21 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import WeekNav from '../components/WeekNav'
 import SyncButton from '../components/SyncButton'
 import { useWeekNav } from '../hooks/useWeekNav'
-import { apiFetch } from '../api/client'
+import { useApi } from '../hooks/useApi'
 import { formatDayDate, stripWorkoutPrefix } from '../lib/formatters'
 import { SPORT_ICONS } from '../lib/constants'
 import type { ScheduledWorkoutsResponse, SyncResponse, ScheduledWorkout } from '../api/types'
 
 export default function Plan() {
-
   const { offset, prev, next } = useWeekNav()
-  const [data, setData] = useState<ScheduledWorkoutsResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { data, loading, error, reload } = useApi<ScheduledWorkoutsResponse>(`/api/scheduled-workouts?week_offset=${offset}`)
 
-  const loadWeek = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await apiFetch<ScheduledWorkoutsResponse>(`/api/scheduled-workouts?week_offset=${offset}`)
-      setData(result)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error')
-    } finally {
-      setLoading(false)
-    }
-  }, [offset])
-
-  useEffect(() => { loadWeek() }, [loadWeek])
-
-  const handleSynced = (result: SyncResponse) => {
-    if (data) setData({ ...data, last_synced_at: result.last_synced_at })
-    loadWeek()
+  const handleSynced = (_result: SyncResponse) => {
+    reload()
   }
 
   return (

@@ -48,7 +48,7 @@ export default function Report() {
       <div className="text-center text-[13px] text-text-dim pt-3 pb-1">{formatDate(data.date)}</div>
 
       {/* Recovery Header */}
-      <div className="text-center px-4 py-6 mx-[-16px] mb-4 border-b border-[var(--tg-theme-secondary-bg-color,#1c1c27)]">
+      <div className="text-center px-4 py-6 mx-[-16px] mb-4 border-b border-border">
         <div className="text-xs font-bold tracking-[1.5px] uppercase mb-3" style={{ color }}>{rec.title || ''}</div>
         <div className="relative w-[140px] h-[140px] mx-auto mb-3">
           <Gauge score={rec.score || 0} color={color} size={140} />
@@ -64,7 +64,7 @@ export default function Report() {
 
       {/* Quick metrics */}
       <div className="grid grid-cols-2 gap-2 mb-2.5">
-        <div className="bg-[var(--tg-theme-bg-color,var(--bg))] rounded-[10px] p-3 text-center">
+        <div className="bg-[var(--bg)] rounded-[10px] p-3 text-center">
           <div className="text-2xl font-bold">{sleep.score != null ? sleep.score : '--'}</div>
           <div className="text-[11px] text-text-dim mt-0.5">Оценка сна</div>
         </div>
@@ -117,11 +117,11 @@ export default function Report() {
       {(load.ctl != null || load.atl != null) && (
         <Section icon="📊" title="Нагрузка">
           <div className="grid grid-cols-2 gap-2 mb-0">
-            <div className="bg-[var(--tg-theme-bg-color,var(--bg))] rounded-[10px] p-3 text-center">
+            <div className="bg-[var(--bg)] rounded-[10px] p-3 text-center">
               <div className="text-2xl font-bold">{load.ctl != null ? load.ctl.toFixed(0) : '--'}</div>
               <div className="text-[11px] text-text-dim mt-0.5">CTL (Фитнес)</div>
             </div>
-            <div className="bg-[var(--tg-theme-bg-color,var(--bg))] rounded-[10px] p-3 text-center">
+            <div className="bg-[var(--bg)] rounded-[10px] p-3 text-center">
               <div className="text-2xl font-bold">{load.atl != null ? load.atl.toFixed(0) : '--'}</div>
               <div className="text-[11px] text-text-dim mt-0.5">ATL (Усталость)</div>
             </div>
@@ -141,7 +141,7 @@ export default function Report() {
             />
           )}
           {(sc.swim != null || sc.bike != null || sc.run != null) && (
-            <div className="pt-2.5 mt-2.5 border-t border-[var(--tg-theme-bg-color,var(--bg))]">
+            <div className="pt-2.5 mt-2.5 border-t border-[var(--bg)]">
               {sc.swim != null && <MetricRow label="🏊 Swim CTL" value={num(sc.swim)} />}
               {sc.bike != null && <MetricRow label="🚴 Bike CTL" value={num(sc.bike)} />}
               {sc.run != null && <MetricRow label="🏃 Run CTL" value={num(sc.run)} />}
@@ -158,7 +158,7 @@ export default function Report() {
 
 function Section({ icon, title, badge, children }: { icon: string; title: string; badge?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="bg-[var(--tg-theme-secondary-bg-color,#f0f0f0)] rounded-[14px] p-4 mb-2.5">
+    <div className="bg-[var(--surface)] rounded-[14px] p-4 mb-2.5">
       <div className="flex items-center gap-2 mb-2.5">
         <span className="text-lg leading-none">{icon}</span>
         <span className="text-sm font-bold">{title}</span>

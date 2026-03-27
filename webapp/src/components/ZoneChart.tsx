@@ -58,7 +58,7 @@ export default function ZoneChart({ zones, label }: ZoneChartProps) {
         plugins: {
           legend: {
             position: 'bottom',
-            labels: { color: '#8888a0', font: { size: 10, family: 'Inter' }, boxWidth: 10, padding: 8 },
+            labels: { color: '#6b6b80', font: { size: 10, family: 'Inter' }, boxWidth: 10, padding: 8 },
           },
           tooltip: { enabled: false },
         },

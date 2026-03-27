@@ -34,7 +34,7 @@ export default function Dashboard() {
             className={`flex-1 py-2 px-1 border-none rounded-lg text-[13px] font-semibold cursor-pointer transition-all font-sans ${
               activeTab === tab
                 ? 'bg-[var(--button)] text-[var(--button-text)]'
-                : 'bg-[var(--tg-theme-secondary-bg-color,#f0f0f0)] text-text-dim'
+                : 'bg-[var(--surface)] text-text-dim'
             }`}
           >
             {TAB_LABELS[tab]}
@@ -89,7 +89,7 @@ function TodayTab() {
         <MetricCard label="CTL" value={data.ctl?.toFixed(0) ?? '\u2014'} />
       </div>
 
-      <div className="bg-[var(--tg-theme-secondary-bg-color,#f0f0f0)] rounded-xl p-4 mb-3">
+      <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
         <div className="text-sm font-bold mb-2">AI Recommendation</div>
         <p className="text-[13px] leading-relaxed whitespace-pre-wrap">{data.ai_recommendation || 'No recommendation available.'}</p>
       </div>
@@ -99,7 +99,7 @@ function TodayTab() {
 
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-[var(--tg-theme-secondary-bg-color,#f0f0f0)] rounded-xl p-3 text-center">
+    <div className="bg-[var(--surface)] rounded-xl p-3 text-center">
       <div className="text-[22px] font-bold">{value}</div>
       <div className="text-[11px] text-text-dim mt-0.5">{label}</div>
     </div>
@@ -259,7 +259,7 @@ function WeekTab() {
   return (
     <>
       {sched?.workouts?.length ? (
-        <div className="bg-[var(--tg-theme-secondary-bg-color,#f0f0f0)] rounded-xl p-4 mb-3">
+        <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
           <div className="text-sm font-bold mb-2">Planned Workouts</div>
           <table className="w-full border-collapse text-[13px]">
             <thead>
@@ -272,9 +272,9 @@ function WeekTab() {
             <tbody>
               {sched.workouts.map((w, i) => (
                 <tr key={i}>
-                  <td className="py-2 px-1 border-b border-[var(--tg-theme-secondary-bg-color,#f0f0f0)]">{w.date}</td>
-                  <td className="py-2 px-1 border-b border-[var(--tg-theme-secondary-bg-color,#f0f0f0)]">{sportEmoji[w.sport] || '🏋'} {w.workout_name}</td>
-                  <td className="py-2 px-1 border-b border-[var(--tg-theme-secondary-bg-color,#f0f0f0)]">{w.planned_tss ? w.planned_tss.toFixed(0) : '\u2014'}</td>
+                  <td className="py-2 px-1 border-b border-[var(--surface)]">{w.date}</td>
+                  <td className="py-2 px-1 border-b border-[var(--surface)]">{sportEmoji[w.sport] || '🏋'} {w.workout_name}</td>
+                  <td className="py-2 px-1 border-b border-[var(--surface)]">{w.planned_tss ? w.planned_tss.toFixed(0) : '\u2014'}</td>
                 </tr>
               ))}
             </tbody>
@@ -285,7 +285,7 @@ function WeekTab() {
       )}
 
       {summary && (
-        <div className="bg-[var(--tg-theme-secondary-bg-color,#f0f0f0)] rounded-xl p-4 mb-3">
+        <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
           <div className="text-sm font-bold mb-2">Weekly Summary</div>
           <pre className="text-[13px] leading-relaxed whitespace-pre-wrap">
             {Object.entries(summary.by_sport || {}).map(([sport, s]) => {
@@ -301,7 +301,7 @@ function WeekTab() {
 
 function ChartContainer({ children }: { children: React.ReactNode }) {
   return (
-    <div className="bg-[var(--tg-theme-secondary-bg-color,#f0f0f0)] rounded-xl p-3 mb-3">
+    <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
       <div style={{ maxHeight: 250 }}>{children}</div>
     </div>
   )

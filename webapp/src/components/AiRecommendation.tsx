@@ -15,7 +15,7 @@ export default function AiRecommendation({ claude, gemini }: AiRecommendationPro
   const hasTabs = !!gemini
 
   return (
-    <div className="bg-[var(--tg-theme-secondary-bg-color,var(--surface))] border border-border rounded-[14px] p-4 mb-3">
+    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
       <div className="flex items-center gap-2 mb-3">
         <span className="text-lg">🤖</span>
         <span className="text-[15px] font-bold">AI Рекомендация</span>

@@ -3,29 +3,22 @@
 @tailwind utilities;
 
 :root {
-  --bg: #0a0a0f;
-  --surface: #13131a;
-  --surface-2: #1c1c27;
-  --border: #2a2a3a;
-  --text: #e8e8ed;
-  --text-dim: #8888a0;
+  --bg: #ffffff;
+  --surface: #f5f5f7;
+  --surface-2: #ebebf0;
+  --border: #d4d4dc;
+  --text: #1a1a2e;
+  --text-dim: #6b6b80;
   --accent: #3b82f6;
-  --accent-glow: #3b82f620;
-  --green: #22c55e;
-  --yellow: #f59e0b;
-  --orange: #f97316;
-  --red: #ef4444;
+  --accent-glow: #3b82f618;
+  --green: #16a34a;
+  --yellow: #d97706;
+  --orange: #ea580c;
+  --red: #dc2626;
   --button: var(--tg-theme-button-color, #3b82f6);
   --button-text: var(--tg-theme-button-text-color, #ffffff);
 }
 
-/* Telegram Mini App theme overrides */
-body.tg-webapp {
-  --bg: var(--tg-theme-bg-color, #0a0a0f);
-  --text: var(--tg-theme-text-color, #e8e8ed);
-  --text-dim: var(--tg-theme-hint-color, #8888a0);
-  --surface: var(--tg-theme-secondary-bg-color, #13131a);
-}
 
 * {
   box-sizing: border-box;

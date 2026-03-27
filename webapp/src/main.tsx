@@ -5,11 +5,6 @@ import { AuthProvider } from './auth/AuthProvider'
 import App from './App'
 import './styles/index.css'
 
-// Mark body as Telegram webapp if running inside Mini App
-if (window.Telegram?.WebApp) {
-  document.body.classList.add('tg-webapp')
-}
-
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
