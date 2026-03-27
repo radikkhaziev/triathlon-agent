@@ -15,3 +15,8 @@ dist/
 .vscode/
 
 .claude/
+
+# Webapp
+webapp/node_modules/
+webapp/dist/
+webapp_old/

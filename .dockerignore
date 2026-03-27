@@ -1,0 +1,26 @@
+.git
+.github
+.venv
+.env
+.claude
+.mypy_cache
+.ruff_cache
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+
+# Frontend build artifacts (Docker builds fresh)
+webapp/node_modules
+webapp/dist
+
+# Old webapp backup
+webapp_old
+
+# IDE
+.vscode
+.idea
+
+# Tests
+tests
+htmlcov

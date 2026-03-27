@@ -110,9 +110,13 @@ python -m bot.cli shell                              # interactive Python shell
 | Page | URL | Description |
 |---|---|---|
 | Landing | `/` | Public page — features, links to dashboard/plan/Telegram |
-| Morning Report | `/report.html` | Recovery gauge, HRV/RHR/sleep metrics, AI recommendation |
-| Training Plan | `/plan.html` | Scheduled workouts by week, sync button, HumanGo descriptions |
-| Activities | `/activities.html` | Completed activities by week, sync button |
+| Login | `/login` | Desktop auth — 6-digit code from `/web` bot command |
+| Morning Report | `/report` | Recovery gauge, HRV/RHR/sleep metrics, AI recommendation |
+| Wellness | `/wellness` | Day-by-day wellness navigation with all metrics |
+| Training Plan | `/plan` | Scheduled workouts by week, sync button, HumanGo descriptions |
+| Activities | `/activities` | Completed activities by week, inline detail expansion |
+| Activity | `/activity/:id` | Full activity details — zones, intervals, DFA alpha 1 |
+| Dashboard | `/dashboard` | Tabbed dashboard — Today/Load/Goal/Week |
 
 ## API Endpoints
 

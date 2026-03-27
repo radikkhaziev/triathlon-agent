@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0a0a0f;
+  --surface: #13131a;
+  --surface-2: #1c1c27;
+  --border: #2a2a3a;
+  --text: #e8e8ed;
+  --text-dim: #8888a0;
+  --accent: #3b82f6;
+  --accent-glow: #3b82f620;
+  --green: #22c55e;
+  --yellow: #f59e0b;
+  --orange: #f97316;
+  --red: #ef4444;
+  --button: var(--tg-theme-button-color, #3b82f6);
+  --button-text: var(--tg-theme-button-text-color, #ffffff);
+}
+
+/* Telegram Mini App theme overrides */
+body.tg-webapp {
+  --bg: var(--tg-theme-bg-color, #0a0a0f);
+  --text: var(--tg-theme-text-color, #e8e8ed);
+  --text-dim: var(--tg-theme-hint-color, #8888a0);
+  --surface: var(--tg-theme-secondary-bg-color, #13131a);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Spinner animation */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 0.8s linear infinite;
+}
+
+/* Pulse animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Fade in animation */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.15s ease-out;
+}
+
+/* AI text styling */
+.ai-text {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.ai-text p { margin: 0 0 10px; }
+.ai-text p:last-child { margin-bottom: 0; }
+.ai-text strong { font-weight: 700; }
+.ai-text em { font-style: italic; }
+.ai-text ul, .ai-text ol { margin: 4px 0 10px; padding-left: 20px; }
+.ai-text li { margin-bottom: 4px; }
+.ai-text h2, .ai-text h3, .ai-text h4 { font-size: 13px; font-weight: 700; margin: 12px 0 4px; }
+.ai-text h2:first-child, .ai-text h3:first-child, .ai-text h4:first-child { margin-top: 0; }
+.ai-text hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }

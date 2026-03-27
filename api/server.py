@@ -139,10 +139,29 @@ async def telegram_webhook(request: Request) -> Response:
 
 app.mount("/mcp", _mcp_app)
 
-# Serve webapp locally — on prod nginx handles static files
-webapp_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "webapp")
-if os.path.isdir(webapp_path):
-    app.mount("/", StaticFiles(directory=webapp_path, html=True), name="webapp")
+# Serve React SPA — check for dist/ (production build), fallback to webapp/ root
+_project_root = os.path.dirname(os.path.dirname(__file__))
+_webapp_dist = os.path.join(_project_root, "webapp", "dist")
+_webapp_root = os.path.join(_project_root, "webapp")
+_spa_dir = _webapp_dist if os.path.isdir(_webapp_dist) else _webapp_root
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serves static files with SPA fallback to index.html for client-side routing."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
+if os.path.isdir(_spa_dir):
+    app.mount("/", SPAStaticFiles(directory=_spa_dir, html=True), name="webapp")
 
 
 if __name__ == "__main__":

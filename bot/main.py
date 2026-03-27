@@ -34,7 +34,7 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     summary = build_morning_message(row)
-    webapp_url = f"{settings.API_BASE_URL}/report.html"
+    webapp_url = f"{settings.API_BASE_URL}/report"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await update.message.reply_text(summary, reply_markup=keyboard)
 
@@ -46,7 +46,7 @@ async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     code = generate_code(str(update.effective_user.id))
-    login_url = f"{settings.API_BASE_URL}/login.html"
+    login_url = f"{settings.API_BASE_URL}/login"
     await update.message.reply_text(
         f"🔑 Код: `{code}`\n\nДействует 5 минут. Введите на странице:\n{login_url}",
         parse_mode="Markdown",
