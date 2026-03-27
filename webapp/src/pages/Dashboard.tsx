@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Chart, registerables } from 'chart.js'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
+import ErrorMessage from '../components/ErrorMessage'
 import Gauge from '../components/Gauge'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
@@ -52,15 +53,17 @@ export default function Dashboard() {
 function TodayTab() {
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     apiFetch<DashboardResponse>('/api/dashboard')
       .then(setData)
-      .catch(() => {})
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setLoading(false))
   }, [])
 
   if (loading) return <LoadingSpinner />
+  if (error) return <ErrorMessage message={error} />
   if (!data?.has_data) return <div className="text-center py-6 text-text-dim text-sm">No data for today.</div>
 
   const colors: Record<string, string> = { green: '#22c55e', yellow: '#f59e0b', red: '#ef4444' }
@@ -108,6 +111,7 @@ function LoadTab() {
   const tssChartRef = useRef<HTMLCanvasElement>(null)
   const chartsRef = useRef<Chart[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -155,12 +159,13 @@ function LoadTab() {
           options: { ...chartOptions('Daily TSS by Sport'), scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, ticks: { font: { size: 10 } } } } },
         }))
       }
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch(err => setError(err instanceof Error ? err.message : 'Failed to load')).finally(() => setLoading(false))
 
     return () => { chartsRef.current.forEach(c => c.destroy()) }
   }, [])
 
   if (loading) return <LoadingSpinner />
+  if (error) return <ErrorMessage message={error} />
 
   return (
     <>
@@ -175,6 +180,7 @@ function GoalTab() {
   const chartInstRef = useRef<Chart | null>(null)
   const [goal, setGoal] = useState<GoalResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -198,12 +204,13 @@ function GoalTab() {
           options: chartOptions('CTL by Sport'),
         })
       }
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch(err => setError(err instanceof Error ? err.message : 'Failed to load')).finally(() => setLoading(false))
 
     return () => { chartInstRef.current?.destroy() }
   }, [])
 
   if (loading) return <LoadingSpinner />
+  if (error) return <ErrorMessage message={error} />
   if (!goal) return <div className="text-center py-6 text-text-dim">No goal data.</div>
 
   return (
@@ -233,17 +240,19 @@ function WeekTab() {
   const [summary, setSummary] = useState<WeeklySummary | null>(null)
   const [sched, setSched] = useState<ScheduledList | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     Promise.all([
       apiFetch<WeeklySummary>('/api/weekly-summary'),
       apiFetch<ScheduledList>('/api/scheduled?days=7'),
     ]).then(([w, s]) => { setSummary(w); setSched(s) })
-      .catch(() => {})
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setLoading(false))
   }, [])
 
   if (loading) return <LoadingSpinner />
+  if (error) return <ErrorMessage message={error} />
 
   const sportEmoji: Record<string, string> = { swimming: '🏊', cycling: '🚴', running: '🏃' }
 

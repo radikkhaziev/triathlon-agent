@@ -1,4 +1,4 @@
-import { createContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { createContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { getInitData, persistInitData } from './telegram'
 import { setAuthHeaderProvider } from '../api/client'
 
@@ -36,12 +36,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const isAuthenticated = authHeader.length > 0
 
-  // Wire up API client auth header provider once
-  const authRef = useMemo(() => ({ current: authHeader }), [authHeader])
+  // Wire up API client auth header provider
+  const authRef = useRef(authHeader)
   useEffect(() => {
     authRef.current = authHeader
     setAuthHeaderProvider(() => authRef.current)
-  }, [authHeader, authRef])
+  }, [authHeader])
 
   const logout = useCallback(() => {
     localStorage.removeItem('auth_token')

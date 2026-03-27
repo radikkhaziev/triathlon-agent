@@ -58,8 +58,8 @@ triathlon-agent/
 │   ├── server.py                # FastAPI + static + webhook
 │   ├── routes.py                # REST endpoints + auth
 │   └── auth.py                  # one-time codes + JWT
-├── mcp_server/                  # FastMCP: 14 tools + 3 resources
-│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_hrv, scheduled_workouts, mood
+├── mcp_server/                  # FastMCP: 15 tools + 3 resources
+│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_hrv, scheduled_workouts, mood, iqos
 │   └── resources/               # athlete profile, goal, thresholds
 ├── webapp/                      # React SPA (Vite + TypeScript + Tailwind)
 │   ├── index.html               # Vite entry
@@ -81,7 +81,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Eight tables. Full column specs in `data/database.py`.
+Nine tables. Full column specs in `data/database.py`.
 
 | Table | PK | Purpose |
 |---|---|---|
@@ -93,6 +93,7 @@ Eight tables. Full column specs in `data/database.py`.
 | `activity_hrv` | activity_id FK | Post-activity DFA a1: quality, thresholds (HRVT1/HRVT2), Ra, Da. Processed every 5 min |
 | `pa_baseline` | autoincrement | Pa values for Readiness (Ra) calculation. 14-day rolling baseline |
 | `mood_checkins` | autoincrement | Emotional state: energy/mood/anxiety/social (1-5) + note. Via MCP only |
+| `iqos_daily` | date string | Daily IQOS stick counter. Incremented via /stick bot command. Queried via MCP |
 
 ---
 
@@ -104,7 +105,7 @@ Eight tables. Full column specs in `data/database.py`.
 | `ai/*` | Done | Claude + Gemini (optional) morning reports, shared prompts |
 | `bot/*` | Done | /morning, /web, scheduler (5 jobs), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard_routes (scaffold), auth |
-| `mcp_server/` | Done | 14 tools + 3 resources |
+| `mcp_server/` | Done | 15 tools + 3 resources |
 | `webapp/` (React SPA) | Migration | See `docs/REACT_MIGRATION_PLAN.md` |
 
 **Webapp pages status:** All pending React migration — Landing, Login, Report, Plan, Activities, Activity, Wellness, Dashboard.
@@ -197,8 +198,8 @@ Runs once daily for current date (not backfill). Model: `claude-sonnet-4-6`, max
 ```
 /morning  — morning report + Mini App button
 /web      — one-time code for desktop login (5 min TTL)
+/stick    — increment IQOS stick counter for today, replies with current count
 /start, /status, /week, /goal, /zones — not yet implemented
-/iqos     — daily IQOS counter (not yet implemented, needs iqos_daily table)
 ```
 
 ---
@@ -312,11 +313,11 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 
 ---
 
-## MCP Server (14 tools + 3 resources)
+## MCP Server (15 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, Bearer auth via `MCP_AUTH_TOKEN`).
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, save_mood_checkin_tool, get_mood_checkins_tool.
+**Tools:** get_wellness, get_wellness_range, get_activities, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks.
 
 **Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
@@ -327,6 +328,14 @@ Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, Bea
 ## Mood Tracking
 
 Via MCP only (no Telegram command). Claude notices emotional context → proposes check-in → user confirms → `save_mood_checkin`. Scales 1-5: energy, mood, anxiety, social + free text note. Multiple check-ins per day OK. No stored summaries — Claude generates on demand.
+
+---
+
+## IQOS Stick Tracking
+
+Telegram command `/stick` increments daily counter (one row per date in `iqos_daily` table). Uses PostgreSQL `ON CONFLICT DO UPDATE` for atomic upsert. Bot replies with current count for today (e.g. "🚬 Стик #5 за 27.03").
+
+MCP tool `get_iqos_sticks(target_date, days_back)`: `days_back=0` returns single-day count, `days_back>0` returns range with totals, daily breakdown, and average per day. Useful for trend analysis and correlating with training/recovery data.
 
 ---
 

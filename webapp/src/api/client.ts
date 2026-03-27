@@ -13,7 +13,9 @@ export async function apiFetch<T>(endpoint: string, opts: RequestInit = {}): Pro
 
   if (res.status === 401) {
     localStorage.removeItem('auth_token')
-    window.location.href = '/login'
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
     throw new Error('Unauthorized')
   }
 

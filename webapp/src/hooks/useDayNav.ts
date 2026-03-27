@@ -15,9 +15,9 @@ export function useDayNav() {
 
   const prev = useCallback(() => {
     setCurrentDate(d => {
-      const next = new Date(d)
-      next.setDate(next.getDate() - 1)
-      return next
+      const newDate = new Date(d)
+      newDate.setDate(newDate.getDate() - 1)
+      return newDate
     })
   }, [])
 
@@ -25,9 +25,9 @@ export function useDayNav() {
     setCurrentDate(d => {
       const today = todayLocal()
       if (fmtDateYmd(d) < fmtDateYmd(today)) {
-        const next = new Date(d)
-        next.setDate(next.getDate() + 1)
-        return next
+        const newDate = new Date(d)
+        newDate.setDate(newDate.getDate() + 1)
+        return newDate
       }
       return d
     })
