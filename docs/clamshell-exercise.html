@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ракушка (Clamshell)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 16px;
+  }
+  .card {
+    background: #1e293b;
+    border-radius: 20px;
+    padding: 28px 24px;
+    max-width: 380px;
+    width: 100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .badge {
+    background: #7c3aed;
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge.equip {
+    background: #0891b2;
+  }
+  h1 {
+    font-size: 24px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: #f8fafc;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: #94a3b8;
+    margin-bottom: 20px;
+  }
+
+  /* Animation container */
+  .anim-container {
+    background: #0f172a;
+    border-radius: 16px;
+    height: 220px;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .floor {
+    position: absolute;
+    bottom: 40px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: #334155;
+  }
+
+  /* Stick figure lying on side */
+  .figure {
+    position: absolute;
+    bottom: 42px;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  /* Body parts */
+  .head {
+    width: 28px;
+    height: 28px;
+    border: 3px solid #60a5fa;
+    border-radius: 50%;
+    position: absolute;
+    left: -80px;
+    bottom: 42px;
+  }
+  .torso {
+    width: 70px;
+    height: 3px;
+    background: #60a5fa;
+    position: absolute;
+    left: -55px;
+    bottom: 55px;
+    transform: rotate(-5deg);
+  }
+  .arm {
+    width: 35px;
+    height: 3px;
+    background: #60a5fa;
+    position: absolute;
+    left: -30px;
+    bottom: 68px;
+    transform: rotate(-30deg);
+    transform-origin: left center;
+  }
+
+  /* Lower leg (stationary) */
+  .lower-leg-upper {
+    width: 45px;
+    height: 3px;
+    background: #60a5fa;
+    position: absolute;
+    left: 15px;
+    bottom: 45px;
+    transform: rotate(40deg);
+    transform-origin: left center;
+  }
+  .lower-leg-lower {
+    width: 40px;
+    height: 3px;
+    background: #60a5fa;
+    position: absolute;
+    left: 47px;
+    bottom: 22px;
+    transform: rotate(-20deg);
+    transform-origin: left center;
+  }
+
+  /* Upper leg (moving - the clamshell) */
+  .upper-leg-upper {
+    width: 45px;
+    height: 3px;
+    background: #34d399;
+    position: absolute;
+    left: 15px;
+    bottom: 50px;
+    transform: rotate(40deg);
+    transform-origin: left center;
+    animation: clamshell-thigh 2s ease-in-out infinite;
+  }
+  .upper-leg-lower {
+    width: 40px;
+    height: 3px;
+    background: #34d399;
+    position: absolute;
+    left: 47px;
+    bottom: 27px;
+    transform: rotate(-20deg);
+    transform-origin: left center;
+    animation: clamshell-shin 2s ease-in-out infinite;
+  }
+
+  /* Knee pivot point */
+  .knee {
+    width: 8px;
+    height: 8px;
+    background: #fbbf24;
+    border-radius: 50%;
+    position: absolute;
+    left: 46px;
+    bottom: 26px;
+    animation: clamshell-knee 2s ease-in-out infinite;
+    z-index: 2;
+  }
+
+  /* Mini band */
+  .band {
+    position: absolute;
+    left: 38px;
+    bottom: 24px;
+    width: 20px;
+    height: 12px;
+    border: 2px solid #f472b6;
+    border-radius: 4px;
+    animation: clamshell-band 2s ease-in-out infinite;
+    z-index: 1;
+  }
+
+  @keyframes clamshell-thigh {
+    0%, 100% { transform: rotate(40deg); }
+    50% { transform: rotate(-10deg); }
+  }
+  @keyframes clamshell-shin {
+    0%, 100% {
+      transform: rotate(-20deg);
+      left: 47px;
+      bottom: 27px;
+    }
+    50% {
+      transform: rotate(-20deg);
+      left: 30px;
+      bottom: 72px;
+    }
+  }
+  @keyframes clamshell-knee {
+    0%, 100% {
+      left: 46px;
+      bottom: 26px;
+    }
+    50% {
+      left: 30px;
+      bottom: 68px;
+    }
+  }
+  @keyframes clamshell-band {
+    0%, 100% {
+      height: 12px;
+      left: 38px;
+      bottom: 24px;
+    }
+    50% {
+      height: 30px;
+      left: 33px;
+      bottom: 30px;
+    }
+  }
+
+  /* Breathing indicator */
+  .breath {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #64748b;
+  }
+  .breath-dot {
+    width: 8px;
+    height: 8px;
+    background: #34d399;
+    border-radius: 50%;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+
+  /* Details */
+  .details {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .detail-box {
+    background: #0f172a;
+    border-radius: 12px;
+    padding: 12px;
+    text-align: center;
+  }
+  .detail-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: #f8fafc;
+  }
+  .detail-label {
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 2px;
+  }
+
+  /* Instructions */
+  .instructions {
+    background: #0f172a;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .instructions h3 {
+    font-size: 13px;
+    color: #94a3b8;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .step {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .step:last-child { margin-bottom: 0; }
+  .step-num {
+    color: #7c3aed;
+    font-weight: 700;
+    min-width: 18px;
+  }
+
+  .focus {
+    background: linear-gradient(135deg, #7c3aed22, #0891b222);
+    border: 1px solid #7c3aed44;
+    border-radius: 12px;
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #cbd5e1;
+  }
+  .focus strong {
+    color: #a78bfa;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <span class="badge">День Б</span>
+    <span class="badge equip">Мини-петля</span>
+  </div>
+
+  <h1>Ракушка</h1>
+  <p class="subtitle">Clamshell • Средняя ягодичная мышца</p>
+
+  <div class="anim-container">
+    <div class="breath">
+      <div class="breath-dot"></div>
+      Выдох при подъёме
+    </div>
+    <div class="figure">
+      <div class="head"></div>
+      <div class="torso"></div>
+      <div class="arm"></div>
+      <div class="lower-leg-upper"></div>
+      <div class="lower-leg-lower"></div>
+      <div class="upper-leg-upper"></div>
+      <div class="upper-leg-lower"></div>
+      <div class="knee"></div>
+      <div class="band"></div>
+    </div>
+    <div class="floor"></div>
+  </div>
+
+  <div class="details">
+    <div class="detail-box">
+      <div class="detail-value">2×15</div>
+      <div class="detail-label">на каждую сторону</div>
+    </div>
+    <div class="detail-box">
+      <div class="detail-value">~3 мин</div>
+      <div class="detail-label">общее время</div>
+    </div>
+  </div>
+
+  <div class="instructions">
+    <h3>Выполнение</h3>
+    <div class="step"><span class="step-num">1</span> Ляг на бок, колени согнуты 90°, стопы вместе</div>
+    <div class="step"><span class="step-num">2</span> Мини-петля чуть выше колен</div>
+    <div class="step"><span class="step-num">3</span> Раскрывай верхнее колено вверх, стопы не разъединяй</div>
+    <div class="step"><span class="step-num">4</span> Медленно вернись. Таз неподвижен!</div>
+  </div>
+
+  <div class="focus">
+    <strong>Зачем:</strong> Стабилизация таза при беге и на вело. Слабая средняя ягодичная = колени заваливаются внутрь, теряется мощность, растёт риск травмы.
+  </div>
+</div>
+</body>
+</html>

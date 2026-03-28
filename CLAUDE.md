@@ -223,6 +223,7 @@ GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA
 POST /api/auth/verify-code              — verify one-time code → JWT
 GET  /api/auth/me                       — auth status
+POST /api/jobs/sync-wellness            — trigger wellness sync (owner auth)
 POST /api/jobs/sync-workouts            — trigger sync (owner auth)
 POST /api/jobs/sync-activities          — trigger sync (owner auth)
 GET  /health
@@ -387,6 +388,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 | `GEMINI_ROLE_SPEC.md` | Gemini role — weekly pattern analyst (depends on ATP Phase 3) |
 | `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends |
 | `MOOD_TRACKING.md` | Mood tracking via MCP — scales, workflow |
+| `WORKOUT_CARDS.md` | Workout Cards — exercise library + workout composition from cards |
 | `intervals_icu_openapi.json` | Intervals.icu OpenAPI 3.0 spec (official, full API reference) |
 
 ---
@@ -414,7 +416,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 19. **MCP Phase 2** — replace fixed prompt with tool-use
 20. **MCP Phase 3** — free-form Telegram chat
 21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
-22. **Workout Cards** — HTML-карточки с упражнениями и анимациями для AI-тренировок (зарядка, разминка, силовая). Static files via nginx (`/static/workouts/{id}.html`). Future idea
+22. **Workout Cards** — Библиотека упражнений (HTML-карточки с CSS-анимациями) + сборка зарядок из карточек. MCP tools: `create_exercise_card`, `list_exercise_cards`, `compose_workout`. See `docs/WORKOUT_CARDS.md`
 
 ---
 

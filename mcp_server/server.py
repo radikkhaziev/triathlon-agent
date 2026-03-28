@@ -10,15 +10,16 @@ import mcp_server.tools.activities  # noqa: F401
 import mcp_server.tools.activity_details  # noqa: F401
 import mcp_server.tools.activity_hrv  # noqa: F401
 import mcp_server.tools.ai_workouts  # noqa: F401
-import mcp_server.tools.training_log  # noqa: F401
 import mcp_server.tools.goal  # noqa: F401
 import mcp_server.tools.hrv  # noqa: F401
 import mcp_server.tools.iqos  # noqa: F401
 import mcp_server.tools.mood  # noqa: F401
+import mcp_server.tools.ramp_tests  # noqa: F401
 import mcp_server.tools.recovery  # noqa: F401
 import mcp_server.tools.rhr  # noqa: F401
 import mcp_server.tools.scheduled_workouts  # noqa: F401
 import mcp_server.tools.training_load  # noqa: F401
+import mcp_server.tools.training_log  # noqa: F401
 
 # Register tools (side-effect imports)
 import mcp_server.tools.wellness  # noqa: F401

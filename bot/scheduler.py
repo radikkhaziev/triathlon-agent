@@ -12,32 +12,35 @@ from config import settings
 from data.database import (
     ActivityHrvRow,
     ActivityRow,
+    create_training_log,
     get_activities_for_ctl,
     get_activities_for_date,
     get_activity_hrv_for_date,
     get_ai_workout_by_external_id,
     get_ai_workouts_for_date,
+    get_ai_workouts_upcoming,
     get_existing_detail_ids,
-    create_training_log,
-    get_training_log_for_date,
-    get_training_log_unfilled_actual,
-    get_training_log_unfilled_post,
-    update_training_log,
     get_hrv_analysis,
     get_rhr_analysis,
     get_scheduled_workouts_for_date,
     get_session,
+    get_training_log_for_date,
+    get_training_log_unfilled_actual,
+    get_training_log_unfilled_post,
     get_wellness,
     save_activities,
     save_activity_details,
     save_ai_workout,
     save_scheduled_workouts,
     save_wellness,
+    update_training_log,
 )
 from data.hrv_activity import process_fit_job as _process_fit_job
 from data.intervals_client import IntervalsClient
 from data.metrics import calculate_sport_ctl
-from data.models import Activity, ScheduledWorkout
+from data.models import Activity, RecoveryScore, ScheduledWorkout
+from data.ramp_tests import create_ramp_test, detect_threshold_drift, get_threshold_freshness_data, should_suggest_ramp
+from data.workout_adapter import adapt_workout
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +189,14 @@ def _enrich_sport_info(wellness, sport_ctl: dict[str, float]) -> None:
 
 async def _send_morning_report(row, bot: Bot) -> None:
     """Send morning briefing to Telegram when AI recommendation is ready."""
-    summary = build_morning_message(row)
+    # Check threshold drift for alert
+    drift = None
+    try:
+        drift = await detect_threshold_drift()
+    except Exception:
+        logger.warning("Failed to check threshold drift", exc_info=True)
+
+    summary = build_morning_message(row, threshold_drift=drift)
     webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
 
@@ -204,9 +214,6 @@ async def _generate_and_push_workout(wellness_row, dt: date) -> None:
     Phase 1: if no planned workout → AI generates from scratch (suffix=generated)
     Phase 2: if planned workout exists → adapt if recovery requires it (suffix=adapted)
     """
-    from data.models import RecoveryScore
-    from data.workout_adapter import adapt_workout
-
     hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
     rhr_row = await get_rhr_analysis(str(dt))
     hrv_status = hrv_flatt.status if hrv_flatt else "insufficient_data"
@@ -308,10 +315,39 @@ async def _push_workout(workout, dt: date) -> None:
     )
 
 
+async def _maybe_suggest_ramp(wellness_row, dt: date) -> None:
+    """Suggest a ramp test if thresholds are stale and athlete is ready."""
+    tsb = (wellness_row.ctl - wellness_row.atl) if wellness_row.ctl and wellness_row.atl else 0
+    sport = await should_suggest_ramp(
+        recovery_score=wellness_row.recovery_score or 0,
+        recovery_category=wellness_row.recovery_category or "moderate",
+        tsb=tsb,
+    )
+    if not sport:
+        return
+
+    # Don't suggest if there's already a workout planned for tomorrow
+    tomorrow = dt + timedelta(days=1)
+    planned = await get_scheduled_workouts_for_date(tomorrow)
+    if planned:
+        logger.info("Skipping ramp suggestion — workout planned for %s", tomorrow)
+        return
+
+    # Check if we already pushed a ramp test recently
+    upcoming = await get_ai_workouts_upcoming(days_ahead=14)
+    if any("Ramp Test" in (w.name or "") for w in upcoming):
+        return
+
+    freshness = await get_threshold_freshness_data(sport)
+    days_since = freshness.get("days_since") or 0
+
+    workout = create_ramp_test(sport, tomorrow, days_since)
+    await _push_workout(workout, tomorrow)
+    logger.info("Ramp test suggested: %s on %s (thresholds %d days old)", sport, tomorrow, days_since)
+
+
 async def _get_latest_ra(dt: date) -> float | None:
     """Get the latest Ra (readiness) from yesterday's DFA analysis."""
-    from datetime import timedelta
-
     yesterday = dt - timedelta(days=1)
     hrv_analyses = await get_activity_hrv_for_date(yesterday)
     for h in hrv_analyses:
@@ -617,8 +653,16 @@ async def daily_metrics_job(
         except Exception:
             logger.warning("Failed to generate/push AI workout", exc_info=True)
 
+    # Suggest ramp test if thresholds are stale
+    if ai_is_new and settings.AI_WORKOUT_ENABLED:
+        try:
+            await _maybe_suggest_ramp(row, dt)
+        except Exception:
+            logger.warning("Failed to check/suggest ramp test", exc_info=True)
+
     # Training Log: record pre-context for today + fill post-outcome for yesterday
-    if ai_is_new:
+    # Independent of AI — runs on every first wellness save
+    if is_today and row:
         try:
             await _record_training_log_pre(row, dt)
         except Exception:
