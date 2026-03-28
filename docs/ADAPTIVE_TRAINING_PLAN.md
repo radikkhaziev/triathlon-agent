@@ -860,10 +860,11 @@ async def create_ramp_test(sport: str, target_date: str) -> str:
 - [ ] `compute_personal_patterns()` — еженедельный cron job (данных пока нет, запустится после накопления 30+ записей)
 - [ ] Prompt enrichment: персональные паттерны в контексте Claude (после накопления данных)
 
-### Этап 4: Фаза 4 — Ramp-тесты + threshold drift (1-2 дня)
-- [ ] Ramp протоколы (Ride + Run) в Intervals.icu workout syntax
-- [ ] Проверка свежести порогов в утреннем cron
-- [ ] MCP tools: `get_threshold_freshness`, `create_ramp_test`
-- [ ] Threshold drift detection: сравнение HRVT с config (LTHR/FTP), alert при >5% сдвиге
-- [ ] Обновлённый формат утреннего Telegram-сообщения (compact summary + threshold drift блок)
-- [ ] Убрать дублирование AI-рекомендации в Telegram (оставить только в webapp)
+### Этап 4: Фаза 4 — Ramp-тесты + threshold drift — Done
+- [x] Ramp протоколы (Ride 8 steps + Run 7 steps) в workout_doc формате (`data/ramp_tests.py`)
+- [x] Проверка свежести порогов в утреннем cron (`_maybe_suggest_ramp` в scheduler)
+- [x] MCP tools: `get_threshold_freshness`, `create_ramp_test_tool` (`mcp_server/tools/ramp_tests.py`)
+- [x] Threshold drift detection: сравнение HRVT с config (LTHR/FTP), alert при >5% сдвиге (2+ теста)
+- [x] Обновлённый формат утреннего Telegram-сообщения (compact summary + threshold drift блок)
+- [x] AI-рекомендация не дублируется в Telegram (доступна только в webapp)
+- [x] 15 unit-тестов (protocols, creation, morning message format, drift alert)

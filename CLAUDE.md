@@ -108,9 +108,9 @@ Eleven tables. Full column specs in `data/database.py`.
 | `ai/*` | Done | Claude + Gemini morning reports, workout generation (`generate_workout`), shared prompts |
 | `bot/*` | Done | /start, /morning, /web, /stick, /whoami, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
-| `mcp_server/` | Done | 23 tools + 3 resources (includes AI workouts, training log, activity details) |
+| `mcp_server/` | Done | 25 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details) |
 | `webapp/` (React SPA) | Done | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme |
-| Adaptive Training Plan | Phase 3 done | Write API, AI workout generation, HumanGo adaptation, training log + patterns. See `docs/ADAPTIVE_TRAINING_PLAN.md` |
+| Adaptive Training Plan | Phase 4 done | Write API, AI workout generation, HumanGo adaptation, training log, ramp tests + threshold drift. See `docs/ADAPTIVE_TRAINING_PLAN.md` |
 
 **Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
 
@@ -328,11 +328,11 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 
 ---
 
-## MCP Server (23 tools + 3 resources)
+## MCP Server (25 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, Bearer auth via `MCP_AUTH_TOKEN`).
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks.
+**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks.
 
 **Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
@@ -412,7 +412,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 15. ~~Webapp Restructure~~ — Done (Bottom tabs, Today hub, merge Report→Wellness, Settings stub)
 16. ~~Adaptive Training Plan Phase 2~~ — Done (HumanGo parser, adaptation rules, clamp engine, scheduler integration, 33 unit tests)
 17. ~~Adaptive Training Plan Phase 3~~ — Done (training_log table, pre/actual/post lifecycle, compliance detection, MCP tools, 10 tests)
-18. **Adaptive Training Plan Phase 4** — Ramp tests (Ride + Run protocols). See `docs/ADAPTIVE_TRAINING_PLAN.md`
+18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
 19. **MCP Phase 2** — replace fixed prompt with tool-use
 20. **MCP Phase 3** — free-form Telegram chat
 21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`

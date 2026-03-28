@@ -7,8 +7,10 @@ and threshold drift detection.
 import logging
 from datetime import date
 
+from sqlalchemy import select
+
 from config import settings
-from data.database import get_session
+from data.database import ActivityHrvRow, ActivityRow, get_session
 from data.models import PlannedWorkout, WorkoutStep
 
 logger = logging.getLogger(__name__)
@@ -85,10 +87,6 @@ async def get_threshold_freshness_data(sport: str = "") -> dict:
 
     Returns dict with days_since, last_date, hrvt1_hr, hrvt2_hr per sport.
     """
-    from sqlalchemy import select
-
-    from data.database import ActivityHrvRow, ActivityRow
-
     async with get_session() as session:
         query = (
             select(
@@ -119,7 +117,8 @@ async def get_threshold_freshness_data(sport: str = "") -> dict:
             "recent_tests": [],
         }
 
-    last_date = rows[0][1]
+    last_date_str = rows[0][1]
+    last_date = date.fromisoformat(last_date_str) if last_date_str else None
     days_since = (date.today() - last_date).days if last_date else None
 
     return {
@@ -152,10 +151,6 @@ async def detect_threshold_drift() -> dict | None:
     Returns drift info if >5% divergence found across 2+ tests,
     or None if no significant drift.
     """
-    from sqlalchemy import select
-
-    from data.database import ActivityHrvRow, ActivityRow
-
     async with get_session() as session:
         # Get last 3 valid HRVT1 values for each sport
         result_ride = await session.execute(
