@@ -29,13 +29,17 @@ export default function DayNav({ currentDate, isToday, hasPrev = true, hasNext, 
           </span>
         )}
       </span>
-      <button
-        onClick={onNext}
-        disabled={disableNext}
-        className="bg-surface-2 border border-border text-text rounded-lg px-3.5 py-2 text-[13px] font-semibold cursor-pointer transition-all hover:bg-border active:scale-[0.97] disabled:opacity-30 disabled:cursor-default font-sans"
-      >
-        След &rarr;
-      </button>
+      {!disableNext && (
+        <button
+          onClick={onNext}
+          className="bg-surface-2 border border-border text-text rounded-lg px-3.5 py-2 text-[13px] font-semibold cursor-pointer transition-all hover:bg-border active:scale-[0.97] font-sans"
+        >
+          След &rarr;
+        </button>
+      )}
+      {disableNext && (
+        <div className="px-3.5 py-2 min-w-[76px]" />
+      )}
     </div>
   )
 }

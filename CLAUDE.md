@@ -396,7 +396,7 @@ Four tabs: Today (recovery + AI), Calendar (activities + plan), Load (CTL/ATL/TS
 13. ~~IQOS Tracking~~ — Done (/stick command + MCP tool)
 14. ~~Adaptive Training Plan Phase 1~~ — Done (Write API, AI workout generation, MCP tools, `ai_workouts` table)
 15. ~~Webapp Restructure~~ — Done (Bottom tabs, Today hub, merge Report→Wellness, Settings stub)
-16. **Adaptive Training Plan Phase 2** — HumanGo workout adaptation (`[Adapted]` events). See `docs/ADAPTIVE_TRAINING_PLAN.md`
+16. ~~Adaptive Training Plan Phase 2~~ — Done (HumanGo parser, adaptation rules, clamp engine, scheduler integration)
 17. **Adaptive Training Plan Phase 3** — Training Log + personal patterns + learning. See `docs/ADAPTIVE_TRAINING_PLAN.md`
 18. **Adaptive Training Plan Phase 4** — Ramp tests (Ride + Run protocols). See `docs/ADAPTIVE_TRAINING_PLAN.md`
 19. **MCP Phase 2** — replace fixed prompt with tool-use

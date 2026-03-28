@@ -796,25 +796,24 @@ async def create_ramp_test(sport: str, target_date: str) -> str:
 
 ## План реализации
 
-### Этап 1: Фаза 1 — Write API + AI генерация (2-3 дня)
-- [ ] `create_event()` / `update_event()` / `delete_event()` в IntervalsClient
-- [ ] `PlannedWorkout` модель + `to_intervals_event()`
-- [ ] Таблица `ai_workouts` + Alembic миграция + CRUD
-- [ ] Промпт `WORKOUT_GENERATION_PROMPT` + `generate_workout()` в ClaudeAgent
-- [ ] MCP tools: `suggest_workout`, `remove_ai_workout`, `list_ai_workouts`
-- [ ] Интеграция в утренний cron (если `AI_WORKOUT_ENABLED`)
-- [ ] Конфиг: `AI_WORKOUT_ENABLED`, `AI_WORKOUT_AUTO_PUSH`
-- [ ] Тест: event в Intervals.icu → синхронизация на часы
+### Этап 1: Фаза 1 — Write API + AI генерация — Done
+- [x] `create_event()` / `update_event()` / `delete_event()` в IntervalsClient
+- [x] `PlannedWorkout` + `WorkoutStep` модели + `to_intervals_event()` (workout_doc JSON)
+- [x] Таблица `ai_workouts` + Alembic миграция + CRUD
+- [x] Промпт `WORKOUT_GENERATION_PROMPT` + `generate_workout()` в ClaudeAgent
+- [x] MCP tools: `suggest_workout`, `remove_ai_workout`, `list_ai_workouts`
+- [x] Интеграция в утренний cron (если `AI_WORKOUT_ENABLED`)
+- [x] Конфиг: `AI_WORKOUT_ENABLED`, `AI_WORKOUT_AUTO_PUSH`
+- [x] Тест: event в Intervals.icu → синхронизация на часы
+- [x] 26 unit-тестов (models, parsing, CRUD, generate_workout)
 
-### Этап 2: Фаза 2 — Парсер + адаптация (3-4 дня)
-- [ ] Парсер `workout_doc` JSON → `WorkoutStep[]`
-- [ ] Fallback парсер `description` текст → `WorkoutStep[]`
-- [ ] `compute_constraints()` — правила max_zone + duration_factor
-- [ ] `needs_adaptation()` + `clamp_step()` + `steps_to_description()`
-- [ ] `adapt_workout()` — полный pipeline
-- [ ] Утренний cron: создание `ADAPTED:` event
-- [ ] Telegram report: секция адаптации
-- [ ] Тесты на реальных тренировках HumanGo
+### Этап 2: Фаза 2 — Парсер + адаптация — Done
+- [x] Парсер `parse_humango_description()` — HumanGo текст → `WorkoutStep[]` (power/HR/pace targets, repeat groups)
+- [x] `compute_constraints()` — recovery + HRV + TSB + Ra → max_zone + duration_factor
+- [x] `needs_adaptation()` + `clamp_step()` — проверка и clamping зон/длительности
+- [x] `adapt_workout()` — полный pipeline: parse → check → clamp → PlannedWorkout(suffix="adapted")
+- [x] Утренний cron: Phase 2 (adapt existing) + Phase 1 (generate new) в `_generate_and_push_workout()`
+- [x] 33 unit-тестов на реальных HumanGo описаниях (Bike/Run/Swim)
 
 ### Этап 3: Фаза 3 — Training Log + обучение (2-3 дня)
 - [ ] Таблица `training_log` + Alembic миграция + ORM

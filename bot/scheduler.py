@@ -31,7 +31,7 @@ from data.database import (
 from data.hrv_activity import process_fit_job as _process_fit_job
 from data.intervals_client import IntervalsClient
 from data.metrics import calculate_sport_ctl
-from data.models import Activity
+from data.models import Activity, ScheduledWorkout
 
 logger = logging.getLogger(__name__)
 
@@ -193,23 +193,70 @@ async def _send_morning_report(row, bot: Bot) -> None:
 
 
 async def _generate_and_push_workout(wellness_row, dt: date) -> None:
-    """Generate an AI workout and push it to Intervals.icu (if no workout planned)."""
+    """Generate or adapt a workout and push it to Intervals.icu.
 
-    # Check if there's already a planned workout for today
+    Phase 1: if no planned workout → AI generates from scratch (suffix=generated)
+    Phase 2: if planned workout exists → adapt if recovery requires it (suffix=adapted)
+    """
+    from data.models import RecoveryScore
+    from data.workout_adapter import adapt_workout
+
+    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
+    rhr_row = await get_rhr_analysis(str(dt))
+    hrv_status = hrv_flatt.status if hrv_flatt else "insufficient_data"
+    tsb = (wellness_row.ctl - wellness_row.atl) if wellness_row.ctl and wellness_row.atl else 0
+
     existing_workouts = await get_scheduled_workouts_for_date(dt)
+
     if existing_workouts:
-        logger.info("Skipping AI workout — %d workout(s) planned for %s", len(existing_workouts), dt)
+        # Phase 2: try to adapt existing workout
+        if wellness_row.recovery_category in ("excellent", "good") and hrv_status == "green":
+            logger.info("No adaptation needed — recovery %s, HRV green", wellness_row.recovery_category)
+            return
+
+        recovery = RecoveryScore(
+            score=wellness_row.recovery_score or 50,
+            category=wellness_row.recovery_category or "moderate",
+            recommendation=wellness_row.recovery_recommendation or "",
+        )
+
+        # Get latest Ra from yesterday's DFA
+        ra = await _get_latest_ra(dt)
+
+        # Try first workout that has a description
+        for w_row in existing_workouts:
+            if not w_row.description:
+                continue
+            original = ScheduledWorkout(
+                id=w_row.id,
+                start_date_local=dt,
+                name=w_row.name,
+                type=w_row.type,
+                description=w_row.description,
+                moving_time=w_row.moving_time,
+            )
+            workout = adapt_workout(
+                original,
+                recovery,
+                hrv_status,
+                tsb,
+                ra,
+                ftp=settings.ATHLETE_FTP,
+                lthr=settings.ATHLETE_LTHR_RUN,
+            )
+            if workout:
+                await _push_workout(workout, dt)
+                return
+
+        logger.info("No adaptation needed for planned workouts on %s", dt)
         return
 
-    # Skip if recovery is low (rest day)
+    # Phase 1: no planned workout → generate from scratch
     if wellness_row.recovery_category == "low":
         logger.info("Skipping AI workout generation — recovery is low for %s", dt)
         return
 
-    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
     hrv_aie = await get_hrv_analysis(str(dt), "ai_endurance")
-    rhr_row = await get_rhr_analysis(str(dt))
-
     agent = ClaudeAgent()
     workout = await agent.generate_workout(wellness_row, hrv_flatt, hrv_aie, rhr_row)
 
@@ -217,19 +264,22 @@ async def _generate_and_push_workout(wellness_row, dt: date) -> None:
         logger.info("AI recommended rest day for %s", dt)
         return
 
-    # Check for existing AI workout (avoid duplicate push)
+    await _push_workout(workout, dt)
+
+
+async def _push_workout(workout, dt: date) -> None:
+    """Push a PlannedWorkout to Intervals.icu and save to local DB."""
+
     existing = await get_ai_workout_by_external_id(workout.external_id)
     if existing and existing.status == "active":
-        logger.info("AI workout already exists for %s: %s", dt, workout.external_id)
+        logger.info("Workout already exists: %s", workout.external_id)
         return
 
-    # Push to Intervals.icu
     intervals = IntervalsClient()
     event_data = workout.to_intervals_event()
     result = await intervals.create_event(event_data)
     intervals_id = result.get("id")
 
-    # Save to local DB
     await save_ai_workout(
         date_str=str(dt),
         sport=workout.sport,
@@ -243,12 +293,25 @@ async def _generate_and_push_workout(wellness_row, dt: date) -> None:
         rationale=workout.rationale,
     )
     logger.info(
-        "AI workout pushed to Intervals.icu: AI: %s (%s, %d min) for %s",
+        "Workout pushed: AI: %s (%s) (%s, %d min) for %s",
         workout.name,
+        workout.suffix,
         workout.sport,
         workout.duration_minutes,
         dt,
     )
+
+
+async def _get_latest_ra(dt: date) -> float | None:
+    """Get the latest Ra (readiness) from yesterday's DFA analysis."""
+    from datetime import timedelta
+
+    yesterday = dt - timedelta(days=1)
+    hrv_analyses = await get_activity_hrv_for_date(yesterday)
+    for h in hrv_analyses:
+        if h.ra_pct is not None:
+            return h.ra_pct
+    return None
 
 
 async def sync_activities_job(days: int = 90) -> int:

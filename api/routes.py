@@ -320,6 +320,8 @@ async def _build_wellness_response(row, target_date: date) -> dict:
         # --- AI ---
         "ai_recommendation": row.ai_recommendation,
         "ai_recommendation_gemini": row.ai_recommendation_gemini,
+        # --- Sync metadata ---
+        "updated_at": row.updated.isoformat() if row.updated else None,
     }
 
 
