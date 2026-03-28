@@ -372,17 +372,17 @@ async def compose_workout(
             client = IntervalsClient()
             event = {
                 "category": "WORKOUT",
-                "start_date_local": f"{date_str}T06:00:00",
+                "start_date_local": date_str,
                 "name": name,
-                "type": "Strength",
-                "moving_time": total_duration_sec,
+                "type": "Other",
                 "description": f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}",
             }
             result = await client.create_event(event)
             intervals_id = result.get("id")
         except Exception as e:
-            logger.exception("Failed to push workout to Intervals.icu")
-            return f"HTML generated: {url}\nError pushing to Intervals.icu: {e}"
+            resp_body = getattr(getattr(e, "response", None), "text", "")
+            logger.error("Failed to push workout to Intervals.icu: %s | body: %s", e, resp_body)
+            return f"HTML generated: {url}\nError pushing to Intervals.icu: {e}\nResponse: {resp_body}"
 
     # Save to DB
     await save_workout_card(
