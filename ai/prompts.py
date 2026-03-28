@@ -157,6 +157,85 @@ HRV (RMSSD):
 """
 
 
+WORKOUT_GENERATION_PROMPT = """
+Сгенерируй тренировку для атлета на сегодня.
+
+АТЛЕТ:
+- Возраст: {athlete_age}
+- LTHR Run: {lthr_run} bpm, LTHR Bike: {lthr_bike} bpm
+- FTP: {ftp}W, CSS: {css} sec/100m
+- Цель: {goal_event} ({goal_date}), осталось {weeks_remaining} недель
+
+ТЕКУЩЕЕ СОСТОЯНИЕ:
+- Recovery: {recovery_score:.0f}/100 ({recovery_category})
+- HRV delta: {hrv_delta:+.1f}%, статус: {hrv_status}
+- RHR: {rhr_today} bpm (норма {rhr_30d})
+- Sleep: {sleep_score}/100
+- CTL: {ctl:.1f}, ATL: {atl:.1f}, TSB: {tsb:+.1f}
+- Ramp Rate: {ramp_rate:.1f}
+- Swim CTL: {ctl_swim:.1f} (цель: {ctl_swim_target:.0f})
+- Bike CTL: {ctl_bike:.1f} (цель: {ctl_bike_target:.0f})
+- Run CTL: {ctl_run:.1f} (цель: {ctl_run_target:.0f})
+- Вчера: {yesterday_summary}
+
+ПРАВИЛА ВЫБОРА НАГРУЗКИ:
+- Recovery excellent + TSB > 0 → можно интенсив (Z4-Z5)
+- Recovery good → Z2-Z3, до 90 мин
+- Recovery moderate / sleep < 50 → Z1-Z2, 45-60 мин
+- Recovery low / HRV red → отдых или Z1 до 30 мин
+- TSB < -25 → максимум Z1-Z2
+- HRV delta < -15% → максимум Z1-Z2
+- Ramp rate > 7 → снизить объём
+- Приоритет спорта: тот, где CTL отстаёт от цели больше всего
+
+ФОРМАТ ОТВЕТА — строго JSON, без markdown:
+{{
+  "sport": "Ride или Run или Swim",
+  "name": "краткое название тренировки",
+  "steps": [массив шагов workout_doc],
+  "duration_minutes": число,
+  "target_tss": число или null,
+  "rationale": "1-2 предложения почему именно эта тренировка"
+}}
+
+ФОРМАТ steps (Intervals.icu workout_doc):
+Каждый шаг — объект с полями:
+- "text": название шага ("Warm-up", "Tempo", "Cool-down")
+- "duration": длительность в секундах (600 = 10 мин)
+- "hr": целевой пульс {{"units": "%lthr", "value": 75}}
+- "power": целевая мощность {{"units": "%ftp", "value": 80}}
+- "pace": целевой темп {{"units": "%pace", "value": 90}}
+- "cadence": каденс {{"units": "rpm", "value": 90}}
+
+Для интервалов с повторами:
+- "text": название ("Tempo intervals")
+- "reps": количество повторов (3, 4, 5...)
+- "steps": [шаг работы, шаг отдыха] — вложенные шаги
+
+Пример Ride Z2 + Tempo:
+[
+  {{"text": "Warm-up", "duration": 600, "power": {{"units": "%ftp", "value": 60}}, "cadence": {{"units": "rpm", "value": 90}}}},
+  {{"text": "Z2 Base", "duration": 1800, "power": {{"units": "%ftp", "value": 75}}}},
+  {{"text": "Tempo", "reps": 3, "steps": [
+    {{"duration": 300, "power": {{"units": "%ftp", "value": 88}}}},
+    {{"duration": 180, "power": {{"units": "%ftp", "value": 60}}}}
+  ]}},
+  {{"text": "Cool-down", "duration": 600, "power": {{"units": "%ftp", "value": 55}}}}
+]
+
+Пример Run:
+[
+  {{"text": "Warm-up", "duration": 600, "hr": {{"units": "%lthr", "value": 65}}}},
+  {{"text": "Main", "duration": 1500, "hr": {{"units": "%lthr", "value": 78}}}},
+  {{"text": "Cool-down", "duration": 600, "hr": {{"units": "%lthr", "value": 60}}}}
+]
+
+Для Ride используй "power" (units: %ftp). Для Run используй "hr" (units: %lthr). Для Swim используй "pace" (units: %pace).
+
+Если рекомендуешь отдых, верни: {{"sport": "Rest", "name": "Rest Day", "steps": [], "duration_minutes": 0, "target_tss": null, "rationale": "причина"}}
+"""
+
+
 def get_system_prompt() -> str:
     return SYSTEM_PROMPT.format(
         athlete_age=settings.ATHLETE_AGE,

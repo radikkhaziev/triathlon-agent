@@ -36,12 +36,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const isAuthenticated = authHeader.length > 0
 
-  // Wire up API client auth header provider
+  // Wire up API client auth header — must be synchronous (before child effects)
   const authRef = useRef(authHeader)
-  useEffect(() => {
-    authRef.current = authHeader
-    setAuthHeaderProvider(() => authRef.current)
-  }, [authHeader])
+  authRef.current = authHeader
+  setAuthHeaderProvider(() => authRef.current)
 
   const logout = useCallback(() => {
     localStorage.removeItem('auth_token')

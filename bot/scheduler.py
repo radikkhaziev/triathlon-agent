@@ -176,7 +176,7 @@ def _enrich_sport_info(wellness, sport_ctl: dict[str, float]) -> None:
 async def _send_morning_report(row, bot: Bot) -> None:
     """Send morning briefing to Telegram when AI recommendation is ready."""
     summary = build_morning_message(row)
-    webapp_url = f"{settings.API_BASE_URL}/report"
+    webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
 
     await bot.send_message(
@@ -185,6 +185,73 @@ async def _send_morning_report(row, bot: Bot) -> None:
         reply_markup=keyboard,
     )
     logger.info("Morning report sent for %s", row.id)
+
+
+async def _generate_and_push_workout(wellness_row, dt: date) -> None:
+    """Generate an AI workout and push it to Intervals.icu (if no workout planned)."""
+    from ai.claude_agent import ClaudeAgent
+    from data.database import (
+        get_ai_workout_by_external_id,
+        get_hrv_analysis,
+        get_rhr_analysis,
+        get_scheduled_workouts_for_date,
+        save_ai_workout,
+    )
+
+    # Check if there's already a planned workout for today
+    existing_workouts = await get_scheduled_workouts_for_date(dt)
+    if existing_workouts:
+        logger.info("Skipping AI workout generation — %d workout(s) already planned for %s", len(existing_workouts), dt)
+        return
+
+    # Skip if recovery is low (rest day)
+    if wellness_row.recovery_category == "low":
+        logger.info("Skipping AI workout generation — recovery is low for %s", dt)
+        return
+
+    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
+    hrv_aie = await get_hrv_analysis(str(dt), "ai_endurance")
+    rhr_row = await get_rhr_analysis(str(dt))
+
+    agent = ClaudeAgent()
+    workout = await agent.generate_workout(wellness_row, hrv_flatt, hrv_aie, rhr_row)
+
+    if workout is None:
+        logger.info("AI recommended rest day for %s", dt)
+        return
+
+    # Check for existing AI workout (avoid duplicate push)
+    existing = await get_ai_workout_by_external_id(workout.external_id)
+    if existing and existing.status == "active":
+        logger.info("AI workout already exists for %s: %s", dt, workout.external_id)
+        return
+
+    # Push to Intervals.icu
+    intervals = IntervalsClient()
+    event_data = workout.to_intervals_event()
+    result = await intervals.create_event(event_data)
+    intervals_id = result.get("id")
+
+    # Save to local DB
+    await save_ai_workout(
+        date_str=str(dt),
+        sport=workout.sport,
+        slot=workout.slot,
+        external_id=workout.external_id,
+        intervals_id=intervals_id,
+        name=workout.name,
+        description="; ".join(s.text for s in workout.steps if s.text),
+        duration_minutes=workout.duration_minutes,
+        target_tss=workout.target_tss,
+        rationale=workout.rationale,
+    )
+    logger.info(
+        "AI workout pushed to Intervals.icu: AI: %s (%s, %d min) for %s",
+        workout.name,
+        workout.sport,
+        workout.duration_minutes,
+        dt,
+    )
 
 
 async def sync_activities_job(days: int = 90) -> int:
@@ -295,6 +362,13 @@ async def daily_metrics_job(
             await _send_morning_report(row, bot)
         except Exception:
             logger.warning("Failed to send morning report", exc_info=True)
+
+    # Generate AI workout if enabled and auto-push is on
+    if ai_is_new and settings.AI_WORKOUT_ENABLED and settings.AI_WORKOUT_AUTO_PUSH:
+        try:
+            await _generate_and_push_workout(row, dt)
+        except Exception:
+            logger.warning("Failed to generate/push AI workout", exc_info=True)
 
 
 async def scheduled_workouts_job() -> None:

@@ -34,7 +34,7 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     summary = build_morning_message(row)
-    webapp_url = f"{settings.API_BASE_URL}/report"
+    webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await update.message.reply_text(summary, reply_markup=keyboard)
 

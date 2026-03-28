@@ -19,7 +19,7 @@ export default function Plan() {
   }
 
   return (
-    <Layout title="План тренировок" backTo="/">
+    <Layout title="План тренировок">
       {data && (
         <WeekNav
           weekStart={data.week_start}

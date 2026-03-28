@@ -9,6 +9,7 @@ Run: python -m mcp_server.server
 import mcp_server.tools.activities  # noqa: F401
 import mcp_server.tools.activity_details  # noqa: F401
 import mcp_server.tools.activity_hrv  # noqa: F401
+import mcp_server.tools.ai_workouts  # noqa: F401
 import mcp_server.tools.goal  # noqa: F401
 import mcp_server.tools.hrv  # noqa: F401
 import mcp_server.tools.iqos  # noqa: F401

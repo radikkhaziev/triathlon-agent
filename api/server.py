@@ -153,11 +153,21 @@ class SPAStaticFiles(StaticFiles):
         from starlette.exceptions import HTTPException as StarletteHTTPException
 
         try:
-            return await super().get_response(path, scope)
+            resp = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+                resp = await super().get_response("index.html", scope)
+            else:
+                raise
+
+        # Hashed assets (/assets/index-abc123.js) — cache aggressively
+        # index.html and SPA fallback routes — never cache (so deploys take effect immediately)
+        if "/assets/" in path:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+
+        return resp
 
 
 if os.path.isdir(_spa_dir):

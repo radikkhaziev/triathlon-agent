@@ -101,14 +101,15 @@ Nine tables. Full column specs in `data/database.py`.
 
 | Module | Status | Notes |
 |---|---|---|
-| `data/*` | Done | Models, Intervals.icu client, metrics pipeline, DFA a1, database ORM |
-| `ai/*` | Done | Claude + Gemini (optional) morning reports, shared prompts |
-| `bot/*` | Done | /morning, /web, scheduler (5 jobs), CLI, formatter |
-| `api/*` | Done | REST endpoints, dashboard_routes (scaffold), auth |
-| `mcp_server/` | Done | 15 tools + 3 resources |
-| `webapp/` (React SPA) | Migration | See `docs/REACT_MIGRATION_PLAN.md` |
+| `data/*` | Done | Models, Intervals.icu client (read + write), metrics pipeline, DFA a1, database ORM |
+| `ai/*` | Done | Claude + Gemini morning reports, workout generation (`generate_workout`), shared prompts |
+| `bot/*` | Done | /morning, /web, /stick, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
+| `api/*` | Done | REST endpoints, dashboard_routes (scaffold), auth, SPA fallback with cache headers |
+| `mcp_server/` | Done | 18 tools + 3 resources (includes `suggest_workout`, `remove_ai_workout`, `list_ai_workouts`) |
+| `webapp/` (React SPA) | Done | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme |
+| Adaptive Training Plan | Phase 1 done | Write API, AI workout generation, MCP tools, `ai_workouts` table. See `docs/ADAPTIVE_TRAINING_PLAN.md` |
 
-**Webapp pages status:** All pending React migration — Landing, Login, Report, Plan, Activities, Activity, Wellness, Dashboard.
+**Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
 
 ---
 
@@ -239,18 +240,23 @@ React 18 + TypeScript + Vite SPA. Dark theme, Inter font, mobile-first. Telegram
 
 | Route | Component | API Source |
 |---|---|---|
-| `/` | Landing | — |
-| `/login` | Login | `POST /api/auth/verify-code` |
-| `/report` | Report | `GET /api/report` |
-| `/wellness` | Wellness | `GET /api/wellness-day` |
-| `/plan` | Plan | `GET /api/scheduled-workouts` |
-| `/activities` | Activities | `GET /api/activities-week` |
-| `/activity/:id` | Activity | `GET /api/activity/{id}/details` |
-| `/dashboard` | Dashboard | Multiple endpoints |
+| `/` | Today / Landing | `/api/report` + `/api/scheduled-workouts` | Auth → Today hub, anon → Landing |
+| `/login` | Login | `POST /api/auth/verify-code` | Desktop auth |
+| `/wellness` | Wellness | `GET /api/wellness-day` | Full day analytics with DayNav |
+| `/plan` | Plan | `GET /api/scheduled-workouts` | Weekly plan with WeekNav |
+| `/activities` | Activities | `GET /api/activities-week` | Weekly activities with WeekNav |
+| `/activity/:id` | Activity | `GET /api/activity/{id}/details` | Detail page, bottom tabs hidden |
+| `/dashboard` | Dashboard | Multiple endpoints | 3 tabs: Load, Goal, Week |
+| `/settings` | Settings | — | Read-only profile + logout |
+| `/report` | redirect | — | Redirects to `/wellness` |
+
+### Navigation
+
+Bottom tabs: Today, Plan, Activities, Wellness, More (→ Dashboard, Settings). Hidden on `/activity/:id` and `/login`.
 
 ### Shared Components
 
-Layout, MetricCard, Gauge (canvas), TabSwitcher, WeekNav, DayNav, WorkoutCard, ActivityCard, ZoneChart (Chart.js), StatusBadge, LoadingSpinner, ErrorMessage.
+Layout (with BottomTabs), MetricCard, Gauge, TabSwitcher, WeekNav, DayNav, ZoneChart, ZoneBar, SportCtlBars, AiRecommendation, SyncButton, StatusBadge, LoadingSpinner, ErrorMessage.
 
 ### Auth
 
@@ -368,6 +374,8 @@ Four tabs: Today (recovery + AI), Calendar (activities + plan), Load (CTL/ATL/TS
 | `ACTIVITIES_PAGE.md` | Activities page architecture |
 | `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends |
 | `HRV_IMPLEMENTATION_PLAN.md` | Level 1 implementation steps |
+| `ADAPTIVE_TRAINING_PLAN.md` | Adaptive Training Plan — 4 phases: Write API, adaptation, training log, ramp tests |
+| `intervals_icu_openapi.json` | Intervals.icu OpenAPI 3.0 spec (official, full API reference) |
 
 ---
 
@@ -378,15 +386,23 @@ Four tabs: Today (recovery + AI), Calendar (activities + plan), Load (CTL/ATL/TS
 3. ~~Post-activity notification~~ — Done
 4. ~~Evening report~~ — Done
 5. ~~Morning prompt + DFA~~ — Done
-6. **Activity Details** — new table, MCP tool, Intervals.icu API
+6. ~~Activity Details~~ — Done (table, API, MCP tool, React page, sync job, CLI backfill)
 7. ~~Scheduled Workouts page~~ — Done
-8. **React Migration** — webapp/ → React SPA. Prerequisite for Dashboard. See `docs/REACT_MIGRATION_PLAN.md`
-9. **Web Dashboard** — Today/Calendar/Load/Goal tabs. React components post-migration
-10. **Bot commands** — /start /status /week /goal /zones /iqos
+8. ~~React Migration~~ — Done (React 18 + TypeScript + Vite + Tailwind)
+9. ~~Web Dashboard~~ — Done (3 tabs: Load, Goal, Week)
+10. **Bot commands** — /start /status /week /goal /zones
 11. ~~Web Auth~~ — Done
 12. ~~Mood Tracking~~ — Done
-13. **MCP Phase 2** — replace fixed prompt with tool-use
-14. **MCP Phase 3** — free-form Telegram chat
+13. ~~IQOS Tracking~~ — Done (/stick command + MCP tool)
+14. ~~Adaptive Training Plan Phase 1~~ — Done (Write API, AI workout generation, MCP tools, `ai_workouts` table)
+15. ~~Webapp Restructure~~ — Done (Bottom tabs, Today hub, merge Report→Wellness, Settings stub)
+16. **Adaptive Training Plan Phase 2** — HumanGo workout adaptation (`[Adapted]` events). See `docs/ADAPTIVE_TRAINING_PLAN.md`
+17. **Adaptive Training Plan Phase 3** — Training Log + personal patterns + learning. See `docs/ADAPTIVE_TRAINING_PLAN.md`
+18. **Adaptive Training Plan Phase 4** — Ramp tests (Ride + Run protocols). See `docs/ADAPTIVE_TRAINING_PLAN.md`
+19. **MCP Phase 2** — replace fixed prompt with tool-use
+20. **MCP Phase 3** — free-form Telegram chat
+21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
+22. **Workout Cards** — HTML-карточки с упражнениями и анимациями для AI-тренировок (зарядка, разминка, силовая). Static files via nginx (`/static/workouts/{id}.html`). Future idea
 
 ---
 

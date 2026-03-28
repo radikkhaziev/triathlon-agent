@@ -19,7 +19,7 @@ export default function Wellness() {
   const [hrvTab, setHrvTab] = useState('flatt_esco')
 
   return (
-    <Layout title="Wellness" backTo="/">
+    <Layout title="Wellness">
       <DayNav
         currentDate={currentDate}
         isToday={isToday}

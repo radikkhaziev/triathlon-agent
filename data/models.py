@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ReadinessLevel(str, Enum):
@@ -180,6 +180,51 @@ class Wellness(BaseModel):
     protein: float | None = None
     fat_total: float | None = None
     locked: bool | None = None
+
+
+class WorkoutStep(BaseModel):
+    """A single step in a structured workout for Intervals.icu workout_doc."""
+
+    text: str = ""  # step label: "Warm-up", "Tempo", etc.
+    duration: int = 0  # seconds (0 for repeat groups)
+    reps: int | None = None  # repeat count (e.g. 3 for 3x intervals)
+    hr: dict | None = None  # {"units": "%lthr", "value": 75}
+    power: dict | None = None  # {"units": "%ftp", "value": 80}
+    pace: dict | None = None  # {"units": "%pace", "value": 90}
+    cadence: dict | None = None  # {"units": "rpm", "value": 90}
+    steps: list["WorkoutStep"] | None = None  # sub-steps for repeat groups
+
+
+class PlannedWorkout(BaseModel):
+    """AI-generated workout to push to Intervals.icu (Phase 1: Adaptive Training Plan)."""
+
+    sport: str  # "Ride" | "Run" | "Swim" | "WeightTraining"
+    name: str  # "Z2 Endurance + 3x5m Tempo"
+    steps: list[WorkoutStep]  # structured workout steps
+    duration_minutes: int  # 60
+    target_tss: int | None = None  # estimated TSS
+    rationale: str = ""  # why this workout
+    target_date: date = Field(default_factory=date.today)
+    slot: str = "morning"  # "morning" | "evening"
+    suffix: str = "generated"  # "generated" | "adapted"
+
+    @property
+    def external_id(self) -> str:
+        return f"tricoach:{self.target_date}:{self.sport.lower()}:{self.slot}"
+
+    def to_intervals_event(self) -> dict:
+        """Convert to Intervals.icu POST /events JSON body with workout_doc."""
+        return {
+            "category": "WORKOUT",
+            "type": self.sport,
+            "name": f"AI: {self.name} ({self.suffix})",
+            "start_date_local": f"{self.target_date}T00:00:00",
+            "moving_time": self.duration_minutes * 60,
+            "external_id": self.external_id,
+            "workout_doc": {
+                "steps": [s.model_dump(exclude_none=True) for s in self.steps],
+            },
+        }
 
 
 class GoalProgress(BaseModel):

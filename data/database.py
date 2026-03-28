@@ -296,6 +296,29 @@ class IqosDailyRow(Base):
     )
 
 
+class AiWorkoutRow(Base):
+    """AI-generated workout pushed to Intervals.icu (Phase 1: Adaptive Training Plan)."""
+
+    __tablename__ = "ai_workouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
+    sport: Mapped[str] = mapped_column(String(30), nullable=False)
+    slot: Mapped[str] = mapped_column(String(10), nullable=False, default="morning")
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    intervals_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Intervals.icu event ID
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_tss: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
 # ---------------------------------------------------------------------------
 # CRUD — Wellness
 # ---------------------------------------------------------------------------
@@ -1167,3 +1190,101 @@ async def get_iqos_range(
             .order_by(IqosDailyRow.date.asc())
         )
         return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# CRUD — AI Workouts
+# ---------------------------------------------------------------------------
+
+
+async def save_ai_workout(
+    *,
+    date_str: str,
+    sport: str,
+    slot: str,
+    external_id: str,
+    intervals_id: int | None,
+    name: str,
+    description: str | None,
+    duration_minutes: int | None,
+    target_tss: int | None,
+    rationale: str | None,
+) -> AiWorkoutRow:
+    """Upsert an AI-generated workout (by external_id)."""
+    async with get_session() as session:
+        stmt = (
+            insert(AiWorkoutRow)
+            .values(
+                date=date_str,
+                sport=sport,
+                slot=slot,
+                external_id=external_id,
+                intervals_id=intervals_id,
+                name=name,
+                description=description,
+                duration_minutes=duration_minutes,
+                target_tss=target_tss,
+                rationale=rationale,
+                status="active",
+            )
+            .on_conflict_do_update(
+                index_elements=["external_id"],
+                set_={
+                    "intervals_id": intervals_id,
+                    "name": name,
+                    "description": description,
+                    "duration_minutes": duration_minutes,
+                    "target_tss": target_tss,
+                    "rationale": rationale,
+                    "status": "active",
+                    "updated_at": datetime.now(timezone.utc),
+                },
+            )
+            .returning(AiWorkoutRow)
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.scalar_one()
+
+
+async def get_ai_workout_by_external_id(external_id: str) -> AiWorkoutRow | None:
+    """Fetch an AI workout by its external_id."""
+    async with get_session() as session:
+        result = await session.execute(select(AiWorkoutRow).where(AiWorkoutRow.external_id == external_id))
+        return result.scalar_one_or_none()
+
+
+async def get_ai_workouts_upcoming(days_ahead: int = 7) -> list[AiWorkoutRow]:
+    """Fetch active AI workouts for the upcoming days."""
+    today_str = str(date.today())
+    end_str = str(date.today() + timedelta(days=days_ahead))
+    async with get_session() as session:
+        result = await session.execute(
+            select(AiWorkoutRow)
+            .where(AiWorkoutRow.date >= today_str)
+            .where(AiWorkoutRow.date <= end_str)
+            .where(AiWorkoutRow.status == "active")
+            .order_by(AiWorkoutRow.date.asc())
+        )
+        return list(result.scalars().all())
+
+
+async def get_ai_workouts_for_date(dt: date) -> list[AiWorkoutRow]:
+    """Fetch active AI workouts for a specific date."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(AiWorkoutRow).where(AiWorkoutRow.date == str(dt)).where(AiWorkoutRow.status == "active")
+        )
+        return list(result.scalars().all())
+
+
+async def cancel_ai_workout(external_id: str) -> AiWorkoutRow | None:
+    """Mark an AI workout as cancelled."""
+    async with get_session() as session:
+        result = await session.execute(select(AiWorkoutRow).where(AiWorkoutRow.external_id == external_id))
+        row = result.scalar_one_or_none()
+        if row:
+            row.status = "cancelled"
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+        return row

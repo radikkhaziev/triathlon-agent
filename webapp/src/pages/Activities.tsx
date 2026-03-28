@@ -22,7 +22,7 @@ export default function Activities() {
   }
 
   return (
-    <Layout title="Активности" backTo="/">
+    <Layout title="Активности">
       {data && (
         <WeekNav
           weekStart={data.week_start}

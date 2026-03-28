@@ -28,7 +28,7 @@ export default function Landing() {
         <div className="flex gap-3 flex-wrap justify-center max-[480px]:flex-col max-[480px]:items-stretch">
           {isAuthenticated ? (
             <>
-              <Link to="/report" className="btn-primary">📊 Dashboard</Link>
+              <Link to="/" className="btn-primary">📊 Dashboard</Link>
               <Link to="/plan" className="btn-secondary">📋 Training Plan</Link>
               <Link to="/activities" className="btn-secondary">🏃 Activities</Link>
               <Link to="/wellness" className="btn-secondary">💚 Wellness</Link>

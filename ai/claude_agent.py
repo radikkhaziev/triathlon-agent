@@ -1,12 +1,14 @@
+import json
 import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
 
 import anthropic
 
-from ai.prompts import MORNING_REPORT_PROMPT, get_system_prompt
+from ai.prompts import MORNING_REPORT_PROMPT, WORKOUT_GENERATION_PROMPT, get_system_prompt
 from bot.formatter import format_duration, sport_emoji
 from config import settings
+from data.models import PlannedWorkout, WorkoutStep
 from data.utils import extract_sport_ctl_tuple
 
 logger = logging.getLogger(__name__)
@@ -148,6 +150,99 @@ class ClaudeAgent:
             logger.exception("Claude API call failed")
             raise
 
+    async def generate_workout(
+        self,
+        wellness_row,
+        hrv_flatt,
+        hrv_aie,
+        rhr_row,
+    ) -> PlannedWorkout | None:
+        """Generate a structured workout based on current athlete state.
+
+        Returns PlannedWorkout, or None if rest day is recommended.
+        """
+        hrv_today = float(wellness_row.hrv) if wellness_row.hrv else 0
+        hrv_7d = hrv_flatt.rmssd_7d if hrv_flatt else 0
+        hrv_delta = (hrv_today - hrv_7d) / hrv_7d * 100 if hrv_today and hrv_7d else 0.0
+        hrv_status = hrv_flatt.status if hrv_flatt else "insufficient_data"
+
+        tsb = (wellness_row.ctl - wellness_row.atl) if wellness_row.ctl and wellness_row.atl else 0
+        ctl_swim, ctl_bike, ctl_run = extract_sport_ctl_tuple(wellness_row.sport_info)
+
+        event_date = settings.GOAL_EVENT_DATE
+        weeks_remaining = max(0, (event_date - date.today()).days // 7)
+
+        yesterday_summary = await _format_yesterday_dfa()
+
+        prompt = WORKOUT_GENERATION_PROMPT.format(
+            athlete_age=settings.ATHLETE_AGE,
+            lthr_run=settings.ATHLETE_LTHR_RUN,
+            lthr_bike=settings.ATHLETE_LTHR_BIKE,
+            ftp=settings.ATHLETE_FTP,
+            css=settings.ATHLETE_CSS,
+            goal_event=settings.GOAL_EVENT_NAME,
+            goal_date=settings.GOAL_EVENT_DATE,
+            weeks_remaining=weeks_remaining,
+            recovery_score=wellness_row.recovery_score or 0,
+            recovery_category=wellness_row.recovery_category or "unknown",
+            hrv_delta=hrv_delta,
+            hrv_status=hrv_status,
+            rhr_today=f"{rhr_row.rhr_today:.0f}" if rhr_row and rhr_row.rhr_today else "—",
+            rhr_30d=f"{rhr_row.rhr_30d:.0f}" if rhr_row and rhr_row.rhr_30d else "—",
+            sleep_score=wellness_row.sleep_score or 0,
+            ctl=wellness_row.ctl or 0,
+            atl=wellness_row.atl or 0,
+            tsb=tsb,
+            ramp_rate=wellness_row.ramp_rate or 0,
+            ctl_swim=ctl_swim,
+            ctl_bike=ctl_bike,
+            ctl_run=ctl_run,
+            ctl_swim_target=settings.GOAL_SWIM_CTL_TARGET,
+            ctl_bike_target=settings.GOAL_BIKE_CTL_TARGET,
+            ctl_run_target=settings.GOAL_RUN_CTL_TARGET,
+            yesterday_summary=yesterday_summary,
+        )
+
+        try:
+            message = await self.client.messages.create(
+                model=self.model,
+                max_tokens=512,
+                system=get_system_prompt(),
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = message.content[0].text.strip()
+
+            # Parse JSON response (strip markdown fences if present)
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+            data = json.loads(text)
+
+            # Rest day
+            if data.get("sport") == "Rest":
+                logger.info("AI recommended rest day: %s", data.get("rationale", ""))
+                return None
+
+            # Parse steps into WorkoutStep models
+            raw_steps = data.get("steps", [])
+            steps = [_parse_step(s) for s in raw_steps]
+
+            return PlannedWorkout(
+                sport=data["sport"],
+                name=data["name"],
+                steps=steps,
+                duration_minutes=data["duration_minutes"],
+                target_tss=data.get("target_tss"),
+                rationale=data.get("rationale", ""),
+                target_date=date.today(),
+            )
+        except json.JSONDecodeError:
+            logger.exception("Failed to parse workout JSON from Claude: %s", text[:200])
+            return None
+        except Exception:
+            logger.exception("Workout generation failed")
+            return None
+
     async def analyze_week(
         self,
         activities_summary: str,
@@ -234,6 +329,23 @@ def _format_planned_workouts(workouts: list | None) -> str:
             parts.append(f"  Детали: {w.description}")
         lines.append("\n".join(parts))
     return "\n".join(lines)
+
+
+def _parse_step(raw: dict) -> WorkoutStep:
+    """Parse a raw step dict from Claude JSON into a WorkoutStep model."""
+    sub_steps = None
+    if "steps" in raw and raw["steps"]:
+        sub_steps = [_parse_step(s) for s in raw["steps"]]
+    return WorkoutStep(
+        text=raw.get("text", ""),
+        duration=raw.get("duration", 0),
+        reps=raw.get("reps"),
+        hr=raw.get("hr"),
+        power=raw.get("power"),
+        pace=raw.get("pace"),
+        cadence=raw.get("cadence"),
+        steps=sub_steps,
+    )
 
 
 def _swc_verdict(hrv_today: float, hrv_row) -> str:
