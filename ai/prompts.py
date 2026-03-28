@@ -1,3 +1,6 @@
+import zoneinfo
+from datetime import datetime
+
 from config import settings
 
 SYSTEM_PROMPT = """
@@ -316,6 +319,8 @@ SYSTEM_PROMPT_CHAT = """
 You are a personal AI triathlon coach available via Telegram chat.
 Answer the athlete's question concisely. Use tools to fetch current data when needed.
 
+Today's date: {today}
+
 Athlete profile:
 - Experienced triathlete, age {athlete_age}
 - Target race: {goal_event} ({goal_date})
@@ -347,7 +352,11 @@ Scales: energy 1-5, mood 1-5, anxiety 1-5 (1=calm, 5=very anxious), social 1-5.
 
 
 def get_system_prompt_chat() -> str:
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).strftime("%Y-%m-%d")
+
     return SYSTEM_PROMPT_CHAT.format(
+        today=today,
         athlete_age=settings.ATHLETE_AGE,
         goal_event=settings.GOAL_EVENT_NAME,
         goal_date=settings.GOAL_EVENT_DATE,
