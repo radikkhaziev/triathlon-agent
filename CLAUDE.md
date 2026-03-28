@@ -399,6 +399,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 | `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends |
 | `MOOD_TRACKING.md` | Mood tracking via MCP — scales, workflow |
 | `WORKOUT_CARDS.md` | Workout Cards — exercise library + workout composition from cards |
+| `MCP_PHASE2.md` | MCP Phase 2 — tool-use для утреннего анализа, tool definitions, fallback |
 | `intervals_icu_openapi.json` | Intervals.icu OpenAPI 3.0 spec (official, full API reference) |
 
 ---
@@ -423,7 +424,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 16. ~~Adaptive Training Plan Phase 2~~ — Done (HumanGo parser, adaptation rules, clamp engine, scheduler integration, 33 unit tests)
 17. ~~Adaptive Training Plan Phase 3~~ — Done (training_log table, pre/actual/post lifecycle, compliance detection, MCP tools, 10 tests)
 18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
-19. **MCP Phase 2** — replace fixed prompt with tool-use
+19. **MCP Phase 2** — replace fixed prompt with tool-use. See `docs/MCP_PHASE2.md`
 20. **MCP Phase 3** — free-form Telegram chat. Идея: объединить с #19 — tool-use для утреннего анализа + free-form chat используют одну инфраструктуру (Claude + MCP tools). Утренний — автоматический вызов, chat — по запросу пользователя
 21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
 22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + CSS stick figure animations, Jinja templates, 4 MCP tools, static file serving)
