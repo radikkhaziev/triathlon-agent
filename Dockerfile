@@ -25,6 +25,8 @@ RUN poetry config virtualenvs.create false && \
 
 COPY . .
 
+RUN mkdir -p /app/static/exercises /app/static/workouts
+
 # Copy built SPA from frontend stage
 COPY --from=frontend /webapp/dist ./webapp/dist
 

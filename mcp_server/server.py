@@ -23,6 +23,7 @@ import mcp_server.tools.training_log  # noqa: F401
 
 # Register tools (side-effect imports)
 import mcp_server.tools.wellness  # noqa: F401
+import mcp_server.tools.workout_cards  # noqa: F401
 from mcp_server.app import mcp  # noqa: F401 — re-export
 
 # Register resources

@@ -44,7 +44,10 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - static_data:/app/static
     restart: unless-stopped
 
 volumes:
   pgdata:
+  static_data:

@@ -139,8 +139,13 @@ async def telegram_webhook(request: Request) -> Response:
 
 app.mount("/mcp", _mcp_app)
 
+# Serve workout card static HTML files
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_static_dir = os.path.join(_project_root, "static")
+os.makedirs(_static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
 # Serve React SPA — check for dist/ (production build), fallback to webapp/ root
-_project_root = os.path.dirname(os.path.dirname(__file__))
 _webapp_dist = os.path.join(_project_root, "webapp", "dist")
 _webapp_root = os.path.join(_project_root, "webapp")
 _spa_dir = _webapp_dist if os.path.isdir(_webapp_dist) else _webapp_root

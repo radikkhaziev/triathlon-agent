@@ -370,14 +370,52 @@ class TrainingLogRow(Base):
     post_ra_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     recovery_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class ExerciseCardRow(Base):
+    """Exercise card in the workout library."""
+
+    __tablename__ = "exercise_cards"
+
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    name_ru: Mapped[str] = mapped_column(String(200), nullable=False)
+    name_en: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    muscles: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    equipment: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    group_tag: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    default_sets: Mapped[int] = mapped_column(Integer, default=2)
+    default_reps: Mapped[int] = mapped_column(Integer, default=15)
+    default_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps: Mapped[list] = mapped_column(JSON, nullable=False)
+    focus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    breath: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    animation_html: Mapped[str] = mapped_column(Text, nullable=False)
+    animation_css: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class WorkoutCardRow(Base):
+    """Composed workout from exercise library cards."""
+
+    __tablename__ = "workout_cards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[str] = mapped_column(String(10), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    exercises: Mapped[list] = mapped_column(JSON, nullable=False)
+    total_duration_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    equipment_summary: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    intervals_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 # ---------------------------------------------------------------------------
@@ -1371,9 +1409,7 @@ async def get_training_log_for_date(dt: date | str) -> list[TrainingLogRow]:
     date_str = str(dt)
     async with get_session() as session:
         result = await session.execute(
-            select(TrainingLogRow)
-            .where(TrainingLogRow.date == date_str)
-            .order_by(TrainingLogRow.id.asc())
+            select(TrainingLogRow).where(TrainingLogRow.date == date_str).order_by(TrainingLogRow.id.asc())
         )
         return list(result.scalars().all())
 
@@ -1383,9 +1419,7 @@ async def get_training_log_range(days_back: int = 14) -> list[TrainingLogRow]:
     from_date = str(date.today() - timedelta(days=days_back))
     async with get_session() as session:
         result = await session.execute(
-            select(TrainingLogRow)
-            .where(TrainingLogRow.date >= from_date)
-            .order_by(TrainingLogRow.date.desc())
+            select(TrainingLogRow).where(TrainingLogRow.date >= from_date).order_by(TrainingLogRow.date.desc())
         )
         return list(result.scalars().all())
 
@@ -1423,13 +1457,135 @@ async def get_training_log_unfilled_post() -> list[TrainingLogRow]:
 async def update_training_log(log_id: int, **kwargs) -> TrainingLogRow | None:
     """Update a training log entry with actual or post data."""
     async with get_session() as session:
-        result = await session.execute(
-            select(TrainingLogRow).where(TrainingLogRow.id == log_id)
-        )
+        result = await session.execute(select(TrainingLogRow).where(TrainingLogRow.id == log_id))
         row = result.scalar_one_or_none()
         if row:
             for k, v in kwargs.items():
                 setattr(row, k, v)
             row.updated_at = datetime.now(timezone.utc)
             await session.commit()
+        return row
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Workout Cards (Exercise Library + Composed Workouts)
+# ---------------------------------------------------------------------------
+
+
+async def save_exercise_card(
+    *,
+    exercise_id: str,
+    name_ru: str,
+    name_en: str | None = None,
+    muscles: str | None = None,
+    equipment: str | None = None,
+    group_tag: str | None = None,
+    default_sets: int = 2,
+    default_reps: int = 15,
+    default_duration_sec: int | None = None,
+    steps: list[str],
+    focus: str | None = None,
+    breath: str | None = None,
+    animation_html: str,
+    animation_css: str,
+) -> ExerciseCardRow:
+    """Upsert an exercise card (by id)."""
+    values = dict(
+        id=exercise_id,
+        name_ru=name_ru,
+        name_en=name_en,
+        muscles=muscles,
+        equipment=equipment,
+        group_tag=group_tag,
+        default_sets=default_sets,
+        default_reps=default_reps,
+        default_duration_sec=default_duration_sec,
+        steps=steps,
+        focus=focus,
+        breath=breath,
+        animation_html=animation_html,
+        animation_css=animation_css,
+    )
+    update_values = {k: v for k, v in values.items() if k != "id"}
+    update_values["updated_at"] = datetime.now(timezone.utc)
+
+    async with get_session() as session:
+        stmt = (
+            insert(ExerciseCardRow)
+            .values(**values)
+            .on_conflict_do_update(index_elements=["id"], set_=update_values)
+            .returning(ExerciseCardRow)
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.scalar_one()
+
+
+async def get_exercise_card(exercise_id: str) -> ExerciseCardRow | None:
+    """Fetch a single exercise card by ID."""
+    async with get_session() as session:
+        return await session.get(ExerciseCardRow, exercise_id)
+
+
+async def get_exercise_cards(
+    equipment: str | None = None,
+    group_tag: str | None = None,
+    muscles: str | None = None,
+) -> list[ExerciseCardRow]:
+    """List exercise cards with optional filters."""
+    async with get_session() as session:
+        query = select(ExerciseCardRow)
+        if equipment:
+            query = query.where(ExerciseCardRow.equipment.ilike(f"%{equipment}%"))
+        if group_tag:
+            query = query.where(ExerciseCardRow.group_tag.ilike(f"%{group_tag}%"))
+        if muscles:
+            query = query.where(ExerciseCardRow.muscles.ilike(f"%{muscles}%"))
+        query = query.order_by(ExerciseCardRow.group_tag, ExerciseCardRow.name_ru)
+        result = await session.execute(query)
+        return list(result.scalars().all())
+
+
+async def get_exercise_cards_by_ids(ids: list[str]) -> list[ExerciseCardRow]:
+    """Fetch multiple exercise cards by IDs."""
+    async with get_session() as session:
+        result = await session.execute(select(ExerciseCardRow).where(ExerciseCardRow.id.in_(ids)))
+        return list(result.scalars().all())
+
+
+async def update_exercise_card_fields(exercise_id: str, **kwargs) -> ExerciseCardRow | None:
+    """Update specific fields of an exercise card."""
+    async with get_session() as session:
+        result = await session.execute(select(ExerciseCardRow).where(ExerciseCardRow.id == exercise_id))
+        row = result.scalar_one_or_none()
+        if row:
+            for k, v in kwargs.items():
+                setattr(row, k, v)
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+        return row
+
+
+async def save_workout_card(
+    *,
+    date_str: str,
+    name: str,
+    exercises: list[dict],
+    total_duration_min: int | None = None,
+    equipment_summary: str | None = None,
+    intervals_id: int | None = None,
+) -> WorkoutCardRow:
+    """Create a workout card entry."""
+    async with get_session() as session:
+        row = WorkoutCardRow(
+            date=date_str,
+            name=name,
+            exercises=exercises,
+            total_duration_min=total_duration_min,
+            equipment_summary=equipment_summary,
+            intervals_id=intervals_id,
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
         return row

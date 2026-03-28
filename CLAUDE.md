@@ -59,8 +59,8 @@ triathlon-agent/
 │   ├── server.py                # FastAPI + static + webhook
 │   ├── routes.py                # REST endpoints + auth
 │   └── auth.py                  # one-time codes + JWT
-├── mcp_server/                  # FastMCP: 21 tools + 3 resources
-│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_details, activity_hrv, scheduled_workouts, ai_workouts, mood, iqos
+├── mcp_server/                  # FastMCP: 29 tools + 3 resources
+│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_details, activity_hrv, scheduled_workouts, ai_workouts, mood, iqos, workout_cards
 │   └── resources/               # athlete profile, goal, thresholds
 ├── webapp/                      # React SPA (Vite + TypeScript + Tailwind)
 │   ├── index.html               # Vite entry
@@ -73,6 +73,12 @@ triathlon-agent/
 │       ├── pages/               # Today, Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings
 │       ├── hooks/               # useApi, useWeekNav, useDayNav
 │       └── styles/              # Tailwind + light theme CSS vars
+├── templates/
+│   ├── exercise_card.html           # Jinja2 template for exercise cards
+│   └── workout_page.html            # Jinja2 template for composed workouts
+├── static/
+│   ├── exercises/                   # Generated exercise card HTML files
+│   └── workouts/                    # Generated workout HTML files
 ├── migrations/
 ├── docs/
 └── tests/
@@ -82,7 +88,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Eleven tables. Full column specs in `data/database.py`.
+Thirteen tables. Full column specs in `data/database.py`.
 
 | Table | PK | Purpose |
 |---|---|---|
@@ -97,6 +103,8 @@ Eleven tables. Full column specs in `data/database.py`.
 | `training_log` | autoincrement | Training log: pre-context, actual, post-outcome. Compliance detection + personal patterns |
 | `mood_checkins` | autoincrement | Emotional state: energy/mood/anxiety/social (1-5) + note. Via MCP only |
 | `iqos_daily` | date string | Daily IQOS stick counter. Incremented via /stick bot command. Queried via MCP |
+| `exercise_cards` | id string | Exercise library: animation HTML/CSS, metadata, steps, focus |
+| `workout_cards` | autoincrement | Composed workouts from exercise cards with custom sets/reps |
 
 ---
 
@@ -108,7 +116,7 @@ Eleven tables. Full column specs in `data/database.py`.
 | `ai/*` | Done | Claude + Gemini morning reports, workout generation (`generate_workout`), shared prompts |
 | `bot/*` | Done | /start, /morning, /web, /stick, /whoami, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
-| `mcp_server/` | Done | 25 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details) |
+| `mcp_server/` | Done | 29 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
 | `webapp/` (React SPA) | Done | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme |
 | Adaptive Training Plan | Phase 4 done | Write API, AI workout generation, HumanGo adaptation, training log, ramp tests + threshold drift. See `docs/ADAPTIVE_TRAINING_PLAN.md` |
 
@@ -229,6 +237,8 @@ POST /api/jobs/sync-activities          — trigger sync (owner auth)
 GET  /health
 POST /telegram/webhook                  — webhook mode only
 POST /mcp                               — MCP (Streamable HTTP, Bearer auth)
+GET  /static/exercises/{id}.html        — generated exercise card HTML (StaticFiles)
+GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles)
 ```
 
 **Dashboard API** (scaffold, mock data): `/api/dashboard`, `/api/training-load`, `/api/goal`, `/api/weekly-summary`, job trigger stubs.
@@ -328,11 +338,11 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 
 ---
 
-## MCP Server (25 tools + 3 resources)
+## MCP Server (29 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, Bearer auth via `MCP_AUTH_TOKEN`).
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks.
+**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout.
 
 **Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
@@ -414,9 +424,10 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 17. ~~Adaptive Training Plan Phase 3~~ — Done (training_log table, pre/actual/post lifecycle, compliance detection, MCP tools, 10 tests)
 18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
 19. **MCP Phase 2** — replace fixed prompt with tool-use
-20. **MCP Phase 3** — free-form Telegram chat
+20. **MCP Phase 3** — free-form Telegram chat. Идея: объединить с #19 — tool-use для утреннего анализа + free-form chat используют одну инфраструктуру (Claude + MCP tools). Утренний — автоматический вызов, chat — по запросу пользователя
 21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
-22. **Workout Cards** — Библиотека упражнений (HTML-карточки с CSS-анимациями) + сборка зарядок из карточек. MCP tools: `create_exercise_card`, `list_exercise_cards`, `compose_workout`. See `docs/WORKOUT_CARDS.md`
+22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + CSS stick figure animations, Jinja templates, 4 MCP tools, static file serving)
+23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя). Связано с #21 Gemini — делать вместе
 
 ---
 

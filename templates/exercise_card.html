@@ -1,0 +1,219 @@
+{% if standalone|default(true) %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ name_ru }}{% if name_en %} ({{ name_en }}){% endif %}</title>
+{% endif %}
+<style>
+{% if standalone|default(true) %}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f8fafc;
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  min-height: 100dvh;
+}
+{% endif %}
+.card-{{ exercise_id }} {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  padding: 20px;
+  max-width: 380px;
+  width: 100%;
+  margin: 0 auto;
+}
+.card-{{ exercise_id }} .header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.card-{{ exercise_id }} .badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: #eff6ff;
+  color: #3b82f6;
+}
+.card-{{ exercise_id }} .badge.equip {
+  background: #fef3c7;
+  color: #d97706;
+}
+.card-{{ exercise_id }} h1 {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 4px;
+}
+.card-{{ exercise_id }} .subtitle {
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 16px;
+}
+.card-{{ exercise_id }} .anim-container {
+  position: relative;
+  height: 180px;
+  background: #f1f5f9;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.card-{{ exercise_id }} .floor {
+  position: absolute;
+  bottom: 0;
+  left: 10%;
+  right: 10%;
+  height: 3px;
+  background: #cbd5e1;
+  border-radius: 2px;
+}
+.card-{{ exercise_id }} .breath {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 11px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 10;
+}
+.card-{{ exercise_id }} .breath-dot {
+  width: 8px;
+  height: 8px;
+  background: #34d399;
+  border-radius: 50%;
+  animation: breathe-{{ exercise_id }} 2s ease-in-out infinite;
+}
+@keyframes breathe-{{ exercise_id }} {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.4); opacity: 1; }
+}
+.card-{{ exercise_id }} .details {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.card-{{ exercise_id }} .detail-box {
+  flex: 1;
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.card-{{ exercise_id }} .detail-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1e293b;
+}
+.card-{{ exercise_id }} .detail-label {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+.card-{{ exercise_id }} .instructions {
+  margin-bottom: 16px;
+}
+.card-{{ exercise_id }} .instructions h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 10px;
+}
+.card-{{ exercise_id }} .step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+}
+.card-{{ exercise_id }} .step-num {
+  min-width: 22px;
+  height: 22px;
+  background: #eff6ff;
+  color: #3b82f6;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.card-{{ exercise_id }} .focus {
+  background: #f0fdf4;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 13px;
+  color: #166534;
+  line-height: 1.5;
+}
+.card-{{ exercise_id }} .focus strong {
+  color: #15803d;
+}
+
+/* === Unique animation === */
+{{ animation_css | safe }}
+</style>
+{% if standalone|default(true) %}
+</head>
+<body>
+{% endif %}
+<div class="card-{{ exercise_id }}">
+  <div class="header">
+    <span class="badge">{{ group_tag }}</span>
+    {% if equipment and equipment != "Без инвентаря" %}
+    <span class="badge equip">{{ equipment }}</span>
+    {% endif %}
+  </div>
+
+  <h1>{{ name_ru }}</h1>
+  <p class="subtitle">{% if name_en %}{{ name_en }} &bull; {% endif %}{{ muscles }}</p>
+
+  <div class="anim-container">
+    {% if breath %}
+    <div class="breath">
+      <div class="breath-dot"></div>
+      {{ breath }}
+    </div>
+    {% endif %}
+    {{ animation_html | safe }}
+    <div class="floor"></div>
+  </div>
+
+  <div class="details">
+    <div class="detail-box">
+      <div class="detail-value">{{ sets_reps }}</div>
+      <div class="detail-label">{{ sets_reps_label }}</div>
+    </div>
+    <div class="detail-box">
+      <div class="detail-value">{{ duration }}</div>
+      <div class="detail-label">общее время</div>
+    </div>
+  </div>
+
+  <div class="instructions">
+    <h3>Выполнение</h3>
+    {% for step in steps %}
+    <div class="step"><span class="step-num">{{ loop.index }}</span> {{ step }}</div>
+    {% endfor %}
+  </div>
+
+  <div class="focus">
+    <strong>Зачем:</strong> {{ focus }}
+  </div>
+</div>
+{% if standalone|default(true) %}
+</body>
+</html>
+{% endif %}

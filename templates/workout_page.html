@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ name }}</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f8fafc;
+  min-height: 100dvh;
+}
+.workout-header {
+  background: #fff;
+  padding: 20px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: center;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.workout-header h1 {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 8px;
+}
+.workout-meta {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  font-size: 13px;
+  color: #64748b;
+}
+.workout-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workout-body {
+  padding: 16px;
+  max-width: 420px;
+  margin: 0 auto;
+}
+.exercise-wrapper {
+  margin-bottom: 16px;
+}
+.exercise-number {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.divider {
+  height: 1px;
+  background: #e2e8f0;
+  margin: 8px 0 16px;
+}
+</style>
+{% for card_css in cards_css %}
+<style>
+{{ card_css | safe }}
+</style>
+{% endfor %}
+</head>
+<body>
+<div class="workout-header">
+  <h1>{{ name }}</h1>
+  <div class="workout-meta">
+    <span>{{ exercise_count }} упр.</span>
+    {% if total_duration %}
+    <span>~{{ total_duration }} мин</span>
+    {% endif %}
+    {% if equipment_summary %}
+    <span>{{ equipment_summary }}</span>
+    {% endif %}
+  </div>
+</div>
+<div class="workout-body">
+  {% for card_html in cards_html %}
+  <div class="exercise-wrapper">
+    <div class="exercise-number">{{ loop.index }} / {{ exercise_count }}</div>
+    {{ card_html | safe }}
+  </div>
+  {% if not loop.last %}
+  <div class="divider"></div>
+  {% endif %}
+  {% endfor %}
+</div>
+</body>
+</html>
