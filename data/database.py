@@ -684,10 +684,18 @@ async def save_wellness(
                 # Prepare tasks for parallel execution
                 tasks: dict[str, asyncio.Task] = {}
                 if need_claude:
-                    prompt_claude = await build_morning_prompt(**prompt_kwargs)
                     agent = ClaudeAgent()
 
                     async def _claude():
+                        from config import settings as _settings
+
+                        if _settings.AI_USE_TOOL_USE:
+                            try:
+                                return await agent.get_morning_recommendation_v2(date.fromisoformat(row.id))
+                            except Exception:
+                                logger.warning("Tool-use V2 failed, falling back to V1", exc_info=True)
+                        # V1 fallback
+                        prompt_claude = await build_morning_prompt(**prompt_kwargs)
                         return await agent.get_morning_recommendation(
                             wellness_row=row,
                             hrv_flatt=hrv_flatt,

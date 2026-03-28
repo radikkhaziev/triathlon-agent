@@ -290,7 +290,7 @@ async def compose_workout(
 3. Рендерить каждую карточку через Jinja-шаблон с кастомными reps/sets
 4. Обернуть в workout page template (header + нумерация + scroll)
 5. Сохранить в `static/workouts/{date}-{slug}.html`
-6. Если `push_to_intervals` — создать event в Intervals.icu (category=WORKOUT, type=Strength)
+6. Если `push_to_intervals` — создать event в Intervals.icu (category=WORKOUT, type=Other)
 7. Сохранить запись в `workout_cards`
 8. Вернуть URL страницы
 

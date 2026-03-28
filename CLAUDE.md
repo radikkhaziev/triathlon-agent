@@ -52,9 +52,10 @@ triathlon-agent/
 │   ├── workout_adapter.py       # HumanGo parser + adaptation engine (ATP Phase 2)
 │   └── utils.py                 # SPORT_MAP, extract_sport_ctl
 ├── ai/
-│   ├── claude_agent.py          # Claude API — morning analysis + workout generation
+│   ├── claude_agent.py          # Claude API — morning analysis (V2 tool-use + V1 fallback) + workout generation
 │   ├── gemini_agent.py          # Gemini — optional second opinion
-│   └── prompts.py               # system + report prompts
+│   ├── prompts.py               # system + report prompts (V1 + V2)
+│   └── tool_definitions.py      # Tool-use definitions + handlers for Claude API (MCP Phase 2)
 ├── api/
 │   ├── server.py                # FastAPI + static + webhook
 │   ├── routes.py                # REST endpoints + auth
@@ -113,7 +114,7 @@ Thirteen tables. Full column specs in `data/database.py`.
 | Module | Status | Notes |
 |---|---|---|
 | `data/*` | Done | Models, Intervals.icu client (read + write), metrics pipeline, DFA a1, database ORM |
-| `ai/*` | Done | Claude + Gemini morning reports, workout generation (`generate_workout`), shared prompts |
+| `ai/*` | Done | Claude tool-use morning analysis (V2) + V1 fallback, Gemini, workout generation, prompts, tool definitions |
 | `bot/*` | Done | /start, /morning, /web, /stick, /whoami, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
 | `mcp_server/` | Done | 28 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
@@ -163,6 +164,9 @@ MCP_AUTH_TOKEN=...                # Bearer token for /mcp endpoint
 # Adaptive Training Plan
 AI_WORKOUT_ENABLED=true           # Enable AI workout generation and MCP tools
 AI_WORKOUT_AUTO_PUSH=true         # Auto-push generated workouts in morning cron
+
+# AI Tool-Use (MCP Phase 2)
+AI_USE_TOOL_USE=true              # Tool-use for morning analysis (vs fixed prompt V1)
 ```
 
 ---
@@ -400,6 +404,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 | `MOOD_TRACKING.md` | Mood tracking via MCP — scales, workflow |
 | `WORKOUT_CARDS.md` | Workout Cards — exercise library + workout composition from cards |
 | `MCP_PHASE2.md` | MCP Phase 2 — tool-use для утреннего анализа, tool definitions, fallback |
+| `MCP_PHASE3.md` | MCP Phase 3 — free-form Telegram chat, stateless, owner-only, two-tier architecture |
 | `intervals_icu_openapi.json` | Intervals.icu OpenAPI 3.0 spec (official, full API reference) |
 
 ---
@@ -424,10 +429,10 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 16. ~~Adaptive Training Plan Phase 2~~ — Done (HumanGo parser, adaptation rules, clamp engine, scheduler integration, 33 unit tests)
 17. ~~Adaptive Training Plan Phase 3~~ — Done (training_log table, pre/actual/post lifecycle, compliance detection, MCP tools, 10 tests)
 18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
-19. **MCP Phase 2** — replace fixed prompt with tool-use. See `docs/MCP_PHASE2.md`
-20. **MCP Phase 3** — free-form Telegram chat. Идея: объединить с #19 — tool-use для утреннего анализа + free-form chat используют одну инфраструктуру (Claude + MCP tools). Утренний — автоматический вызов, chat — по запросу пользователя
+19. ~~MCP Phase 2~~ — Done (Tool-use for morning analysis: 14 tools, SYSTEM_PROMPT_V2, tool-use loop, V1 fallback, AI_USE_TOOL_USE config, 18 tests)
+20. **MCP Phase 3** — free-form Telegram chat. Tool-use инфраструктура из Phase 2 переиспользуется (те же tools/handlers). Утренний — автоматический, chat — по запросу
 21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
-22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + CSS stick figure animations, Jinja templates, 4 MCP tools, static file serving)
+22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + CSS stick figure animations, Jinja templates, 5 MCP tools, static file serving)
 23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя). Связано с #21 Gemini — делать вместе
 
 ---

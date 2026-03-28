@@ -5,7 +5,8 @@ from datetime import date, datetime, timedelta
 
 import anthropic
 
-from ai.prompts import MORNING_REPORT_PROMPT, WORKOUT_GENERATION_PROMPT, get_system_prompt
+from ai.prompts import MORNING_REPORT_PROMPT, WORKOUT_GENERATION_PROMPT, get_system_prompt, get_system_prompt_v2
+from ai.tool_definitions import MORNING_TOOLS, TOOL_HANDLERS
 from bot.formatter import format_duration, sport_emoji
 from config import settings
 from data.models import PlannedWorkout, WorkoutStep
@@ -149,6 +150,70 @@ class ClaudeAgent:
         except Exception:
             logger.exception("Claude API call failed")
             raise
+
+    async def get_morning_recommendation_v2(self, target_date: date) -> str:
+        """Generate morning AI recommendation using tool-use.
+
+        Claude decides which tools to call to gather data,
+        then synthesizes a recommendation.
+        """
+        system = get_system_prompt_v2()
+        messages: list[dict] = [
+            {"role": "user", "content": f"Сгенерируй утренний отчёт за {target_date.strftime('%Y-%m-%d')}"},
+        ]
+
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=4096,
+            system=system,
+            messages=messages,
+            tools=MORNING_TOOLS,
+        )
+
+        # Tool-use loop
+        iterations = 0
+        max_iterations = 10
+
+        while response.stop_reason == "tool_use" and iterations < max_iterations:
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    result = await self._execute_tool(block.name, block.input)
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result, default=str),
+                        }
+                    )
+
+            # response.content — list of ContentBlock; SDK accepts as-is
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=system,
+                messages=messages,
+                tools=MORNING_TOOLS,
+            )
+            iterations += 1
+
+        # Extract text response
+        text_blocks = [b.text for b in response.content if b.type == "text"]
+        return "\n".join(text_blocks) if text_blocks else "Не удалось сгенерировать отчёт"
+
+    async def _execute_tool(self, name: str, input_data: dict) -> dict:
+        """Execute a tool call and return the result."""
+        handler = TOOL_HANDLERS.get(name)
+        if not handler:
+            return {"error": f"Unknown tool: {name}"}
+        try:
+            return await handler(**input_data)
+        except Exception as e:
+            logger.warning("Tool %s failed: %s", name, e)
+            return {"error": str(e)}
 
     async def generate_workout(
         self,
