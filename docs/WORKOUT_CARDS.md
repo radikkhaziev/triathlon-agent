@@ -489,11 +489,13 @@ create_exercise_card(
 
 ### Критерии готовности
 
-- [ ] `create_exercise_card` рендерит HTML из шаблона + сохраняет метаданные в БД
-- [ ] `update_exercise_card` обновляет поля + перегенерирует HTML
-- [ ] `list_exercise_cards` возвращает библиотеку с фильтрами
-- [ ] `compose_workout` валидирует exercise_id + генерирует сборную HTML-страницу с кастомными reps/sets
-- [ ] HTML-страницы доступны по URL и корректно отображаются на мобильном
-- [ ] Static файлы переживают перезапуск контейнера (Docker volume)
-- [ ] Push to Intervals.icu работает (optional)
-- [ ] Минимум 10 упражнений в библиотеке
+- [x] `create_exercise_card` рендерит HTML из шаблона + сохраняет метаданные в БД
+- [x] `update_exercise_card` обновляет поля + перегенерирует HTML
+- [x] `list_exercise_cards` возвращает библиотеку с фильтрами
+- [x] `compose_workout` валидирует exercise_id + генерирует сборную HTML-страницу с кастомными reps/sets
+- [x] HTML-страницы доступны по URL и корректно отображаются на мобильном
+- [x] Static файлы переживают перезапуск контейнера (Docker volume)
+- [x] Push to Intervals.icu работает (с workout_doc steps для Garmin sync)
+- [x] Минимум 10 упражнений в библиотеке
+- [x] MCP tool `list_workout_cards` — просмотр созданных зарядок (аналог `list_ai_workouts` для `workout_cards` таблицы)
+- [x] DB функция `get_workout_cards()` в database.py — запрос за последние N дней

@@ -11,6 +11,7 @@ from data.database import (
     get_exercise_card,
     get_exercise_cards,
     get_exercise_cards_by_ids,
+    get_workout_cards,
     save_exercise_card,
     save_workout_card,
     update_exercise_card_fields,
@@ -368,6 +369,32 @@ async def compose_workout(
     # Push to Intervals.icu if requested
     intervals_id = None
     if push_to_intervals:
+        # Build workout_doc steps from exercises
+        workout_steps = []
+        for i, ex in enumerate(exercises):
+            card = cards_by_id[ex["id"]]
+            sets = ex.get("sets") or card.default_sets or 2
+            reps = ex.get("reps") or card.default_reps or 15
+            dur_sec = ex.get("duration_sec") or card.default_duration_sec
+            is_last = i == len(exercises) - 1
+
+            if dur_sec:
+                work_sec = dur_sec
+            else:
+                work_sec = max(15, reps * 3)
+
+            sub_steps = [{"text": "Работа", "duration": work_sec}]
+            if not is_last:
+                sub_steps.append({"text": "Отдых", "duration": 15})
+
+            workout_steps.append(
+                {
+                    "text": card.name_ru,
+                    "reps": sets,
+                    "steps": sub_steps,
+                }
+            )
+
         try:
             client = IntervalsClient()
             event = {
@@ -375,7 +402,12 @@ async def compose_workout(
                 "start_date_local": f"{date_str}T06:00:00",
                 "name": name,
                 "type": "Other",
+                "moving_time": total_duration_sec,
                 "description": f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}",
+                "external_id": f"workout-card:{date_str}:{slug}",
+                "workout_doc": {
+                    "steps": workout_steps,
+                },
             }
             result = await client.create_event(event)
             intervals_id = result.get("id")
@@ -398,3 +430,30 @@ async def compose_workout(
     if intervals_id:
         parts.append(f"Pushed to Intervals.icu (event #{intervals_id})")
     return "\n".join(parts)
+
+
+@mcp.tool()
+async def list_workout_cards(days_back: int = 30) -> dict:
+    """List composed workouts (зарядки) for the last N days.
+
+    Returns workout name, date, exercise count, duration, and Intervals.icu event ID.
+
+    Args:
+        days_back: Number of days to look back (default: 30).
+    """
+    rows = await get_workout_cards(days_back=days_back)
+    return {
+        "count": len(rows),
+        "workouts": [
+            {
+                "id": r.id,
+                "date": r.date,
+                "name": r.name,
+                "exercises": r.exercises,
+                "total_duration_min": r.total_duration_min,
+                "equipment_summary": r.equipment_summary,
+                "intervals_id": r.intervals_id,
+            }
+            for r in rows
+        ],
+    }

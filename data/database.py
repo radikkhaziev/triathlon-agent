@@ -1589,3 +1589,15 @@ async def save_workout_card(
         await session.commit()
         await session.refresh(row)
         return row
+
+
+async def get_workout_cards(days_back: int = 30) -> list[WorkoutCardRow]:
+    """Fetch workout cards for the last N days, newest first."""
+    cutoff = str(date.today() - timedelta(days=days_back))
+    async with get_session() as session:
+        result = await session.execute(
+            select(WorkoutCardRow)
+            .where(WorkoutCardRow.date >= cutoff)
+            .order_by(WorkoutCardRow.date.desc(), WorkoutCardRow.id.desc())
+        )
+        return list(result.scalars().all())
