@@ -319,6 +319,67 @@ class AiWorkoutRow(Base):
     )
 
 
+class TrainingLogRow(Base):
+    """Training log entry — pre-context, actual, post-outcome (ATP Phase 3)."""
+
+    __tablename__ = "training_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
+    sport: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    # What was planned
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # humango | ai | adapted | none
+    original_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Adaptation (if any)
+    adapted_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    adapted_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    adapted_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    adaptation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Pre-workout context
+    pre_recovery_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_recovery_category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    pre_hrv_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    pre_hrv_delta_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_rhr_today: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_rhr_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    pre_tsb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_ctl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_atl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_ra_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pre_sleep_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Actual (filled after activity sync)
+    actual_activity_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    actual_sport: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    actual_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actual_avg_hr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_tss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_max_zone_time: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    compliance: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Post-outcome (filled next morning)
+    post_recovery_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_hrv_delta_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_rhr_today: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_sleep_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    post_ra_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recovery_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 # ---------------------------------------------------------------------------
 # CRUD — Wellness
 # ---------------------------------------------------------------------------
@@ -1285,6 +1346,90 @@ async def cancel_ai_workout(external_id: str) -> AiWorkoutRow | None:
         row = result.scalar_one_or_none()
         if row:
             row.status = "cancelled"
+            row.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+        return row
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Training Log (ATP Phase 3)
+# ---------------------------------------------------------------------------
+
+
+async def create_training_log(**kwargs) -> TrainingLogRow:
+    """Create a training log entry with pre-context."""
+    async with get_session() as session:
+        row = TrainingLogRow(**kwargs)
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row
+
+
+async def get_training_log_for_date(dt: date | str) -> list[TrainingLogRow]:
+    """Fetch training log entries for a specific date."""
+    date_str = str(dt)
+    async with get_session() as session:
+        result = await session.execute(
+            select(TrainingLogRow)
+            .where(TrainingLogRow.date == date_str)
+            .order_by(TrainingLogRow.id.asc())
+        )
+        return list(result.scalars().all())
+
+
+async def get_training_log_range(days_back: int = 14) -> list[TrainingLogRow]:
+    """Fetch training log entries for the last N days."""
+    from_date = str(date.today() - timedelta(days=days_back))
+    async with get_session() as session:
+        result = await session.execute(
+            select(TrainingLogRow)
+            .where(TrainingLogRow.date >= from_date)
+            .order_by(TrainingLogRow.date.desc())
+        )
+        return list(result.scalars().all())
+
+
+async def get_training_log_unfilled_actual() -> list[TrainingLogRow]:
+    """Fetch log entries with no actual data yet (compliance is NULL).
+
+    Uses 1-day buffer to avoid marking 'skipped' prematurely
+    (Garmin sync can be delayed).
+    """
+    cutoff = str(date.today() - timedelta(days=1))
+    async with get_session() as session:
+        result = await session.execute(
+            select(TrainingLogRow)
+            .where(TrainingLogRow.compliance.is_(None))
+            .where(TrainingLogRow.date < cutoff)
+            .order_by(TrainingLogRow.date.asc())
+        )
+        return list(result.scalars().all())
+
+
+async def get_training_log_unfilled_post() -> list[TrainingLogRow]:
+    """Fetch log entries with actual data but no post-outcome yet."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(TrainingLogRow)
+            .where(TrainingLogRow.compliance.isnot(None))
+            .where(TrainingLogRow.post_recovery_score.is_(None))
+            .where(TrainingLogRow.date < str(date.today()))
+            .order_by(TrainingLogRow.date.asc())
+        )
+        return list(result.scalars().all())
+
+
+async def update_training_log(log_id: int, **kwargs) -> TrainingLogRow | None:
+    """Update a training log entry with actual or post data."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(TrainingLogRow).where(TrainingLogRow.id == log_id)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            for k, v in kwargs.items():
+                setattr(row, k, v)
             row.updated_at = datetime.now(timezone.utc)
             await session.commit()
         return row

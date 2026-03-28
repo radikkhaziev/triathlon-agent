@@ -773,12 +773,45 @@ def create_ramp_test(sport: str, target_date: date) -> PlannedWorkout:
 3. Детектирует HRVT1 (a1=0.75) и HRVT2 (a1=0.50)
 4. Сохраняет в `activity_hrv`
 
-Если новые пороги отличаются от текущих (>5%), утренний отчёт следующего дня включает:
+Если новые пороги отличаются от текущих (>5%), утренний отчёт следующего дня включает threshold drift блок (см. ниже).
+
+### Threshold drift detection
+
+Сравниваем HRVT1/HRVT2 из последних 2-3 ramp-тестов с текущими config-значениями (`ATHLETE_LTHR_RUN`, `ATHLETE_FTP`). Если устойчивый сдвиг — уведомляем атлета.
+
+Логика:
+- Берём последние 2-3 валидных HRVT1 из `activity_hrv` (только ramp-тесты или progressive activities)
+- Сравниваем среднее с config LTHR/FTP
+- Если расхождение >5% и стабильно (2+ теста в одном направлении) → threshold drift alert
+
+Config **не обновляется автоматически** — атлет решает сам. Агент только подсвечивает расхождение.
+
+### Утреннее Telegram-сообщение (обновлённый формат)
+
+Telegram-сообщение — компактный summary, детали в webapp. Формат:
+
 ```
-📊 Обновлены пороги:
-HRVT1: 148 → 152 bpm (+2.7%)
-HRVT2: 168 → 170 bpm (+1.2%)
+Recovery 72 (good), HRV 🟢
+🏃 Tempo Run 40min
+TSB: -22 ⚠️ (productive overreach)
+
+🔔 ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ
+━━━━━━━━━━━━━━━━━━━━━
+HRVT1 стабильно 158 bpm (3 теста)
+Текущий LTHR: 153 bpm (+3.3%)
+→ Обнови LTHR в настройках
+
+[Кнопка: Открыть отчёт]
 ```
+
+**Блоки:**
+1. **Recovery + HRV** — всегда. Одна строка: score, category, HRV emoji (🟢/🟡/🔴)
+2. **Тренировка на сегодня** — если есть. Название + "(adapted)" если адаптирована
+3. **TSB** — если < -10 (⚠️ productive overreach) или < -25 (🔴 overtraining risk)
+4. **Threshold drift** — только если обнаружен сдвиг. Яркий блок с разделителем
+5. **Кнопка** "Открыть отчёт" — InlineKeyboardButton с web_app URL
+
+AI-рекомендация **не дублируется** в Telegram — доступна только в webapp.
 
 ### MCP tools
 
@@ -815,18 +848,22 @@ async def create_ramp_test(sport: str, target_date: str) -> str:
 - [x] Утренний cron: Phase 2 (adapt existing) + Phase 1 (generate new) в `_generate_and_push_workout()`
 - [x] 33 unit-тестов на реальных HumanGo описаниях (Bike/Run/Swim)
 
-### Этап 3: Фаза 3 — Training Log + обучение (2-3 дня)
-- [ ] Таблица `training_log` + Alembic миграция + ORM
-- [ ] Запись pre-контекста в утреннем cron
-- [ ] Заполнение actual-данных при sync activities
-- [ ] Заполнение post-данных на следующий день
-- [ ] Compliance detection
-- [ ] MCP tools: `get_training_log`, `get_personal_patterns`
-- [ ] `compute_personal_patterns()` — еженедельный анализ
-- [ ] Prompt enrichment: персональные паттерны в контексте Claude
+### Этап 3: Фаза 3 — Training Log + обучение — Done
+- [x] Таблица `training_log` (30 полей: pre/actual/post) + Alembic миграция + ORM
+- [x] 6 CRUD функций (create, get_for_date, get_range, unfilled_actual, unfilled_post, update)
+- [x] Запись pre-контекста в утреннем cron (`_record_training_log_pre`)
+- [x] Заполнение actual-данных при sync activities (`_fill_training_log_actual`)
+- [x] Заполнение post-данных на следующий день (`_fill_training_log_post` + `recovery_delta`)
+- [x] Compliance detection (`_detect_compliance`: followed_original/adapted/ai/modified/skipped)
+- [x] MCP tools: `get_training_log` (14-day history), `get_personal_patterns` (90-day analysis)
+- [x] 10 unit-тестов (CRUD, unfilled queries, compliance detection 4 scenarios)
+- [ ] `compute_personal_patterns()` — еженедельный cron job (данных пока нет, запустится после накопления 30+ записей)
+- [ ] Prompt enrichment: персональные паттерны в контексте Claude (после накопления данных)
 
-### Этап 4: Фаза 4 — Ramp-тесты (1-2 дня)
+### Этап 4: Фаза 4 — Ramp-тесты + threshold drift (1-2 дня)
 - [ ] Ramp протоколы (Ride + Run) в Intervals.icu workout syntax
 - [ ] Проверка свежести порогов в утреннем cron
 - [ ] MCP tools: `get_threshold_freshness`, `create_ramp_test`
-- [ ] Telegram уведомление о предложении ramp-теста
+- [ ] Threshold drift detection: сравнение HRVT с config (LTHR/FTP), alert при >5% сдвиге
+- [ ] Обновлённый формат утреннего Telegram-сообщения (compact summary + threshold drift блок)
+- [ ] Убрать дублирование AI-рекомендации в Telegram (оставить только в webapp)

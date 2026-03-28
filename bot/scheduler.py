@@ -16,7 +16,13 @@ from data.database import (
     get_activities_for_date,
     get_activity_hrv_for_date,
     get_ai_workout_by_external_id,
+    get_ai_workouts_for_date,
     get_existing_detail_ids,
+    create_training_log,
+    get_training_log_for_date,
+    get_training_log_unfilled_actual,
+    get_training_log_unfilled_post,
+    update_training_log,
     get_hrv_analysis,
     get_rhr_analysis,
     get_scheduled_workouts_for_date,
@@ -314,6 +320,115 @@ async def _get_latest_ra(dt: date) -> float | None:
     return None
 
 
+async def _record_training_log_pre(wellness_row, dt: date) -> None:
+    """Record pre-workout context in training_log for today."""
+
+    # Don't duplicate — skip if already recorded for this date
+    existing = await get_training_log_for_date(dt)
+    if existing:
+        return
+
+    workouts = await get_scheduled_workouts_for_date(dt)
+    ai_workouts = await get_ai_workouts_for_date(dt)
+
+    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
+    rhr_row = await get_rhr_analysis(str(dt))
+
+    hrv_status = hrv_flatt.status if hrv_flatt else "insufficient_data"
+    hrv_7d = hrv_flatt.rmssd_7d if hrv_flatt else 0
+    hrv_today = float(wellness_row.hrv) if wellness_row.hrv else 0
+    hrv_delta = ((hrv_today - hrv_7d) / hrv_7d * 100) if hrv_today and hrv_7d else 0.0
+    tsb = (wellness_row.ctl - wellness_row.atl) if wellness_row.ctl and wellness_row.atl else 0
+    ra = await _get_latest_ra(dt)
+
+    pre_kwargs = dict(
+        pre_recovery_score=wellness_row.recovery_score,
+        pre_recovery_category=wellness_row.recovery_category,
+        pre_hrv_status=hrv_status,
+        pre_hrv_delta_pct=round(hrv_delta, 1),
+        pre_rhr_today=rhr_row.rhr_today if rhr_row else None,
+        pre_rhr_status=rhr_row.status if rhr_row else None,
+        pre_tsb=round(tsb, 1),
+        pre_ctl=wellness_row.ctl,
+        pre_atl=wellness_row.atl,
+        pre_ra_pct=ra,
+        pre_sleep_score=wellness_row.sleep_score,
+    )
+
+    if workouts:
+        for w in workouts:
+            # Check if this workout was adapted
+            adapted = next(
+                (a for a in ai_workouts if a.sport == w.type and "adapted" in (a.rationale or "").lower()),
+                None,
+            )
+            await create_training_log(
+                date=str(dt),
+                sport=w.type,
+                source="adapted" if adapted else "humango",
+                original_name=w.name,
+                original_description=(w.description or "")[:500],
+                original_duration_sec=w.moving_time,
+                adapted_name=adapted.name if adapted else None,
+                adapted_description=adapted.description if adapted else None,
+                adapted_duration_sec=(adapted.duration_minutes * 60) if adapted else None,
+                adaptation_reason=adapted.rationale if adapted else None,
+                **pre_kwargs,
+            )
+    elif ai_workouts:
+        for a in ai_workouts:
+            await create_training_log(
+                date=str(dt),
+                sport=a.sport,
+                source="ai",
+                original_name=a.name,
+                original_duration_sec=(a.duration_minutes or 0) * 60,
+                **pre_kwargs,
+            )
+    else:
+        await create_training_log(
+            date=str(dt),
+            source="none",
+            **pre_kwargs,
+        )
+
+    logger.info("Training log pre-context recorded for %s", dt)
+
+
+async def _fill_training_log_post(wellness_row, dt: date) -> None:
+    """Fill post-outcome for yesterday's training_log entry using today's wellness."""
+
+    yesterday = dt - timedelta(days=1)
+    unfilled = await get_training_log_unfilled_post()
+    targets = [r for r in unfilled if r.date == str(yesterday)]
+
+    if not targets:
+        return
+
+    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
+    hrv_7d = hrv_flatt.rmssd_7d if hrv_flatt else 0
+    hrv_today = float(wellness_row.hrv) if wellness_row.hrv else 0
+    hrv_delta = ((hrv_today - hrv_7d) / hrv_7d * 100) if hrv_today and hrv_7d else 0.0
+    rhr_row = await get_rhr_analysis(str(dt))
+    ra = await _get_latest_ra(dt)
+
+    for log in targets:
+        pre_score = log.pre_recovery_score or 0
+        post_score = wellness_row.recovery_score or 0
+
+        await update_training_log(
+            log.id,
+            post_recovery_score=post_score,
+            post_hrv_delta_pct=round(hrv_delta, 1),
+            post_rhr_today=rhr_row.rhr_today if rhr_row else None,
+            post_sleep_score=wellness_row.sleep_score,
+            post_ra_pct=ra,
+            recovery_delta=round(post_score - pre_score, 1),
+        )
+
+    logger.info("Training log post-outcome filled for %s (%d entries)", yesterday, len(targets))
+
+
 async def sync_activities_job(days: int = 90) -> int:
     """Sync completed activities from Intervals.icu into the activities table.
 
@@ -338,7 +453,79 @@ async def sync_activities_job(days: int = 90) -> int:
     if synced_ids:
         await _fetch_missing_details(intervals, synced_ids)
 
+    # Fill training log actual data for unfilled entries
+    try:
+        await _fill_training_log_actual()
+    except Exception:
+        logger.warning("Failed to fill training log actual data", exc_info=True)
+
     return count
+
+
+async def _fill_training_log_actual() -> None:
+    """Fill actual workout data for training_log entries that have no compliance yet."""
+
+    unfilled = await get_training_log_unfilled_actual()
+    if not unfilled:
+        return
+
+    filled_count = 0
+    for log in unfilled:
+        log_date = date.fromisoformat(log.date)
+        activities = await get_activities_for_date(log_date)
+
+        if not activities:
+            # No activity for this date — mark as skipped
+            await update_training_log(log.id, compliance="skipped")
+            filled_count += 1
+            continue
+
+        # Match by sport if specified
+        matched = None
+        if log.sport:
+            matched = next((a for a in activities if a.type == log.sport), None)
+        if not matched:
+            matched = activities[0]  # best guess — first activity of the day
+
+        compliance = _detect_compliance(log, matched)
+
+        await update_training_log(
+            log.id,
+            actual_activity_id=matched.id,
+            actual_sport=matched.type,
+            actual_duration_sec=matched.moving_time,
+            actual_avg_hr=matched.average_hr,
+            actual_tss=matched.icu_training_load,
+            compliance=compliance,
+        )
+        filled_count += 1
+
+    if filled_count:
+        logger.info("Training log actual filled: %d entries", filled_count)
+
+
+def _detect_compliance(log, activity) -> str:
+    """Detect which plan variant the athlete followed."""
+    if log.source == "none":
+        return "unplanned"
+
+    actual_dur = activity.moving_time or 0
+
+    # Check adapted match
+    if log.adapted_duration_sec:
+        adapted_ratio = actual_dur / log.adapted_duration_sec if log.adapted_duration_sec else 0
+        if 0.7 <= adapted_ratio <= 1.3:
+            return "followed_adapted"
+
+    # Check original match
+    if log.original_duration_sec:
+        original_ratio = actual_dur / log.original_duration_sec if log.original_duration_sec else 0
+        if 0.7 <= original_ratio <= 1.3:
+            if log.source == "ai":
+                return "followed_ai"
+            return "followed_original"
+
+    return "modified"
 
 
 async def _fetch_missing_details(intervals: IntervalsClient, activity_ids: list[str]) -> int:
@@ -429,6 +616,17 @@ async def daily_metrics_job(
             await _generate_and_push_workout(row, dt)
         except Exception:
             logger.warning("Failed to generate/push AI workout", exc_info=True)
+
+    # Training Log: record pre-context for today + fill post-outcome for yesterday
+    if ai_is_new:
+        try:
+            await _record_training_log_pre(row, dt)
+        except Exception:
+            logger.warning("Failed to record training log pre-context", exc_info=True)
+        try:
+            await _fill_training_log_post(row, dt)
+        except Exception:
+            logger.warning("Failed to fill training log post-outcome", exc_info=True)
 
 
 async def scheduled_workouts_job() -> None:
