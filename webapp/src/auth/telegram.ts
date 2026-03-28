@@ -2,6 +2,7 @@ export interface TelegramWebApp {
   initData: string
   ready: () => void
   expand: () => void
+  requestFullscreen?: () => void
   showAlert?: (message: string) => void
   themeParams?: Record<string, string>
 }
