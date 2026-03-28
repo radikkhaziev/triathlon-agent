@@ -372,7 +372,7 @@ async def compose_workout(
             client = IntervalsClient()
             event = {
                 "category": "WORKOUT",
-                "start_date_local": date_str,
+                "start_date_local": f"{date_str}T06:00:00",
                 "name": name,
                 "type": "Other",
                 "description": f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}",
