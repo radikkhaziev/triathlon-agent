@@ -176,7 +176,7 @@ def _enrich_sport_info(wellness, sport_ctl: dict[str, float]) -> None:
 async def _send_morning_report(row, bot: Bot) -> None:
     """Send morning briefing to Telegram when AI recommendation is ready."""
     summary = build_morning_message(row)
-    webapp_url = f"{settings.API_BASE_URL}/report.html"
+    webapp_url = f"{settings.API_BASE_URL}/report"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
 
     await bot.send_message(

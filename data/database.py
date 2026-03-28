@@ -284,6 +284,18 @@ class MoodCheckinRow(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class IqosDailyRow(Base):
+    """Daily IQOS stick counter. One row per date."""
+
+    __tablename__ = "iqos_daily"
+
+    date: Mapped[str] = mapped_column(String, primary_key=True)  # "YYYY-MM-DD"
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
 # ---------------------------------------------------------------------------
 # CRUD — Wellness
 # ---------------------------------------------------------------------------
@@ -1088,5 +1100,70 @@ async def get_mood_checkins(
             .where(MoodCheckinRow.timestamp >= cutoff_dt)
             .where(MoodCheckinRow.timestamp <= end_dt)
             .order_by(MoodCheckinRow.timestamp.asc())
+        )
+        return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# CRUD — IQOS Daily
+# ---------------------------------------------------------------------------
+
+
+async def increment_iqos_stick(target_date: date | None = None) -> IqosDailyRow:
+    """Increment IQOS stick count for the given date (default: today).
+
+    Creates a new row if none exists for the date, otherwise increments count by 1.
+    Returns the updated IqosDailyRow.
+    """
+    dt = target_date or date.today()
+    date_str = str(dt)
+
+    async with get_session() as session:
+        stmt = (
+            insert(IqosDailyRow)
+            .values(date=date_str, count=1, updated=datetime.now(timezone.utc))
+            .on_conflict_do_update(
+                index_elements=["date"],
+                set_={"count": IqosDailyRow.count + 1, "updated": datetime.now(timezone.utc)},
+            )
+            .returning(IqosDailyRow)
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.scalars().one()
+
+
+async def get_iqos_daily(target_date: date | None = None) -> IqosDailyRow | None:
+    """Get IQOS stick count for a single date (default: today)."""
+    dt = target_date or date.today()
+    date_str = str(dt)
+
+    async with get_session() as session:
+        result = await session.execute(select(IqosDailyRow).where(IqosDailyRow.date == date_str))
+        return result.scalar_one_or_none()
+
+
+async def get_iqos_range(
+    target_date: str | None = None,
+    days_back: int = 7,
+) -> list[IqosDailyRow]:
+    """Get IQOS stick counts for a date range.
+
+    Args:
+        target_date: Reference date in YYYY-MM-DD format. Defaults to today.
+        days_back: Number of days to look back (inclusive). Default is 7.
+
+    Returns:
+        List of IqosDailyRow objects, ordered by date (oldest first).
+    """
+    ref = date.fromisoformat(target_date) if target_date else date.today()
+    from_date = ref - timedelta(days=days_back - 1)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(IqosDailyRow)
+            .where(IqosDailyRow.date >= str(from_date))
+            .where(IqosDailyRow.date <= str(ref))
+            .order_by(IqosDailyRow.date.asc())
         )
         return list(result.scalars().all())

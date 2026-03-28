@@ -9,7 +9,7 @@ from api.auth import generate_code
 from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
-from data.database import get_wellness
+from data.database import get_wellness, increment_iqos_stick
 from data.intervals_client import IntervalsClient
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     summary = build_morning_message(row)
-    webapp_url = f"{settings.API_BASE_URL}/report.html"
+    webapp_url = f"{settings.API_BASE_URL}/report"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
     await update.message.reply_text(summary, reply_markup=keyboard)
 
@@ -46,11 +46,22 @@ async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     code = generate_code(str(update.effective_user.id))
-    login_url = f"{settings.API_BASE_URL}/login.html"
+    login_url = f"{settings.API_BASE_URL}/login"
     await update.message.reply_text(
         f"🔑 Код: `{code}`\n\nДействует 5 минут. Введите на странице:\n{login_url}",
         parse_mode="Markdown",
     )
+
+
+async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /stick command — increment IQOS stick counter for today."""
+    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        await update.message.reply_text("У вас нет доступа к этому боту.")
+        return
+
+    dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
+    row = await increment_iqos_stick(dt)
+    await update.message.reply_text(f"🚬 Стик #{row.count} за {dt.strftime('%d.%m')}")
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -106,6 +117,7 @@ def build_application() -> Application:
     app = builder.build()
     app.add_handler(CommandHandler("morning", morning))
     app.add_handler(CommandHandler("web", web_login))
+    app.add_handler(CommandHandler("stick", stick))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     return app
 
