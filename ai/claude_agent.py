@@ -223,6 +223,12 @@ class ClaudeAgent:
                 logger.info("AI recommended rest day: %s", data.get("rationale", ""))
                 return None
 
+            # Validate sport type
+            valid_sports = {"Ride", "Run", "Swim", "WeightTraining"}
+            if data.get("sport") not in valid_sports:
+                logger.warning("AI returned invalid sport: %s", data.get("sport"))
+                return None
+
             # Parse steps into WorkoutStep models
             raw_steps = data.get("steps", [])
             steps = [_parse_step(s) for s in raw_steps]

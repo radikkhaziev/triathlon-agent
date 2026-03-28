@@ -33,8 +33,8 @@ def upgrade() -> None:
         sa.Column("target_tss", sa.Integer(), nullable=True),
         sa.Column("rationale", sa.Text(), nullable=True),
         sa.Column("status", sa.String(20), nullable=False, server_default="active"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("external_id"),
     )

@@ -390,7 +390,7 @@ Four tabs: Today (recovery + AI), Calendar (activities + plan), Load (CTL/ATL/TS
 7. ~~Scheduled Workouts page~~ — Done
 8. ~~React Migration~~ — Done (React 18 + TypeScript + Vite + Tailwind)
 9. ~~Web Dashboard~~ — Done (3 tabs: Load, Goal, Week)
-10. **Bot commands** — /start /status /week /goal /zones
+10. ~~Bot commands~~ — Done (/start with description + webapp link)
 11. ~~Web Auth~~ — Done
 12. ~~Mood Tracking~~ — Done
 13. ~~IQOS Tracking~~ — Done (/stick command + MCP tool)

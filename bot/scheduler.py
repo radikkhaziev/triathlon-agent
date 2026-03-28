@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
+from ai.claude_agent import ClaudeAgent
 from bot.formatter import build_evening_message, build_morning_message, build_post_activity_message
 from config import settings
 from data.database import (
@@ -14,12 +15,16 @@ from data.database import (
     get_activities_for_ctl,
     get_activities_for_date,
     get_activity_hrv_for_date,
+    get_ai_workout_by_external_id,
     get_existing_detail_ids,
+    get_hrv_analysis,
+    get_rhr_analysis,
     get_scheduled_workouts_for_date,
     get_session,
     get_wellness,
     save_activities,
     save_activity_details,
+    save_ai_workout,
     save_scheduled_workouts,
     save_wellness,
 )
@@ -189,19 +194,11 @@ async def _send_morning_report(row, bot: Bot) -> None:
 
 async def _generate_and_push_workout(wellness_row, dt: date) -> None:
     """Generate an AI workout and push it to Intervals.icu (if no workout planned)."""
-    from ai.claude_agent import ClaudeAgent
-    from data.database import (
-        get_ai_workout_by_external_id,
-        get_hrv_analysis,
-        get_rhr_analysis,
-        get_scheduled_workouts_for_date,
-        save_ai_workout,
-    )
 
     # Check if there's already a planned workout for today
     existing_workouts = await get_scheduled_workouts_for_date(dt)
     if existing_workouts:
-        logger.info("Skipping AI workout generation — %d workout(s) already planned for %s", len(existing_workouts), dt)
+        logger.info("Skipping AI workout — %d workout(s) planned for %s", len(existing_workouts), dt)
         return
 
     # Skip if recovery is low (rest day)

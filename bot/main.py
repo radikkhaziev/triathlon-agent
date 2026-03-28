@@ -20,6 +20,25 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start command — welcome message with bot description."""
+    webapp_url = settings.API_BASE_URL
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Открыть приложение", web_app=WebAppInfo(url=webapp_url))],
+        ]
+    )
+    await update.message.reply_text(
+        "Triathlon AI Coach — персональный тренер на основе данных.\n\n"
+        "Что умеет бот:\n"
+        "• Утренний анализ готовности (HRV, recovery, sleep)\n"
+        "• AI-рекомендации по тренировкам\n"
+        "• Адаптация плана под текущее состояние\n"
+        "• Отслеживание прогресса к гонке\n\n",
+        reply_markup=keyboard,
+    )
+
+
 async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /morning command — build report from current DB data."""
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
@@ -115,6 +134,7 @@ def build_application() -> Application:
     if settings.TELEGRAM_WEBHOOK_URL:
         builder = builder.updater(None)
     app = builder.build()
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("morning", morning))
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))

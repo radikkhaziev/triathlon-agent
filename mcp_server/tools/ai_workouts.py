@@ -12,7 +12,7 @@ from data.database import (
     save_ai_workout,
 )
 from data.intervals_client import IntervalsClient
-from data.models import PlannedWorkout
+from data.models import PlannedWorkout, WorkoutStep
 from mcp_server.app import mcp
 
 logger = logging.getLogger(__name__)
@@ -55,8 +55,6 @@ async def suggest_workout(
         return "AI workout generation is disabled (AI_WORKOUT_ENABLED=false)"
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
-
-    from data.models import WorkoutStep
 
     def _parse(raw: dict) -> WorkoutStep:
         subs = [_parse(s) for s in raw.get("steps", [])] or None
