@@ -502,16 +502,32 @@ async def _fill_training_log_actual() -> None:
     """Fill actual workout data for training_log entries that have no compliance yet."""
 
     unfilled = await get_training_log_unfilled_actual()
+    logger.info("Training log actual: %d unfilled entries", len(unfilled))
     if not unfilled:
         return
 
     filled_count = 0
     for log in unfilled:
         log_date = date.fromisoformat(log.date)
+        logger.info(
+            "Training log #%d: date=%s sport=%s workout_id=%s",
+            log.id,
+            log.date,
+            log.sport,
+            log.workout_id,
+        )
         activities = await get_activities_for_date(log_date)
+        logger.info(
+            "Training log #%d: found %d activities for %s: %s",
+            log.id,
+            len(activities),
+            log.date,
+            [(a.id, a.type, a.moving_time) for a in activities],
+        )
 
         if not activities:
             # No activity for this date — mark as skipped
+            logger.info("Training log #%d: no activities, marking skipped", log.id)
             await update_training_log(log.id, compliance="skipped")
             filled_count += 1
             continue
@@ -520,10 +536,26 @@ async def _fill_training_log_actual() -> None:
         matched = None
         if log.sport:
             matched = next((a for a in activities if a.type == log.sport), None)
+            logger.info(
+                "Training log #%d: sport match '%s' → %s",
+                log.id,
+                log.sport,
+                matched.id if matched else "no match",
+            )
         if not matched:
             matched = activities[0]  # best guess — first activity of the day
+            logger.info("Training log #%d: fallback to first activity %s", log.id, matched.id)
 
         compliance = _detect_compliance(log, matched)
+        logger.info(
+            "Training log #%d: compliance=%s (activity=%s, sport=%s, duration=%s, hr=%s)",
+            log.id,
+            compliance,
+            matched.id,
+            matched.type,
+            matched.moving_time,
+            matched.average_hr,
+        )
 
         await update_training_log(
             log.id,
