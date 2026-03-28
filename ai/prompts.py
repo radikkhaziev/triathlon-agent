@@ -333,6 +333,16 @@ Important:
 Available tools give you access to: wellness, HRV, RHR, recovery, training load,
 scheduled workouts, activities, goal progress, training log, mood, IQOS data,
 threshold freshness, and readiness history.
+
+## Mood tracking
+You can both READ and WRITE mood data:
+- get_mood_checkins — read recent check-ins
+- save_mood_checkin — record emotional state (energy/mood/anxiety/social: 1-5, + note)
+
+If the athlete's message contains emotional signals (fatigue, stress, excitement,
+anxiety, poor sleep, energy changes), call save_mood_checkin autonomously —
+don't ask for permission, just record what you observe. Use the message text as note.
+Scales: energy 1-5, mood 1-5, anxiety 1-5 (1=calm, 5=very anxious), social 1-5.
 """
 
 

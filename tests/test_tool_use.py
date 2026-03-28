@@ -24,10 +24,13 @@ class TestToolDefinitions:
     def test_tool_count(self):
         assert len(MORNING_TOOLS) == 14
 
-    def test_handler_count_matches_tools(self):
-        tool_names = {t["name"] for t in MORNING_TOOLS}
+    def test_all_tools_have_handlers(self):
+        """Every tool in MORNING_TOOLS and CHAT_TOOLS has a handler."""
+        from ai.tool_definitions import CHAT_TOOLS
+
+        all_tool_names = {t["name"] for t in CHAT_TOOLS}
         handler_names = set(TOOL_HANDLERS.keys())
-        assert tool_names == handler_names
+        assert all_tool_names.issubset(handler_names)
 
     def test_core_tools_present(self):
         names = {t["name"] for t in MORNING_TOOLS}

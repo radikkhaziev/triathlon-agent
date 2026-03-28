@@ -25,6 +25,7 @@ from data.database import (
     get_mood_checkins,
     get_session,
     get_training_log_range,
+    save_mood_checkin,
 )
 from data.ramp_tests import detect_threshold_drift, get_threshold_freshness_data
 from data.utils import extract_sport_ctl, format_duration
@@ -684,6 +685,7 @@ async def handle_get_mood_checkins(date_str: str | None = None, days_back: int =
     return {
         "checkins": [
             {
+                "id": row.id,
                 "timestamp": row.timestamp.isoformat(),
                 "energy": row.energy,
                 "mood": row.mood,
@@ -719,12 +721,54 @@ async def handle_get_iqos_sticks(target_date: str = "", days_back: int = 0) -> d
     }
 
 
+async def handle_save_mood_checkin(
+    energy: int | None = None,
+    mood: int | None = None,
+    anxiety: int | None = None,
+    social: int | None = None,
+    note: str | None = None,
+) -> dict:
+    try:
+        row = await save_mood_checkin(energy=energy, mood=mood, anxiety=anxiety, social=social, note=note)
+        return {
+            "id": row.id,
+            "timestamp": row.timestamp.isoformat(),
+            "energy": row.energy,
+            "mood": row.mood,
+            "anxiety": row.anxiety,
+            "social": row.social,
+            "note": row.note,
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # Handler dispatch map
 # ---------------------------------------------------------------------------
 
-# Chat tools — copy of MORNING_TOOLS (not alias) to allow adding chat-only tools later
-CHAT_TOOLS = [*MORNING_TOOLS]
+# Chat-only tool definitions (not in MORNING_TOOLS — morning analysis only reads data)
+SAVE_MOOD_CHECKIN_TOOL = {
+    "name": "save_mood_checkin",
+    "description": (
+        "Record a mood check-in. At least one field required. "
+        "Scales 1-5: energy, mood, anxiety (1=calm, 5=very anxious), social. "
+        "Call autonomously when athlete's message contains emotional signals."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "energy": {"type": "integer", "description": "Energy level 1-5"},
+            "mood": {"type": "integer", "description": "Mood 1-5"},
+            "anxiety": {"type": "integer", "description": "Anxiety 1-5 (1=calm, 5=very anxious)"},
+            "social": {"type": "integer", "description": "Social desire 1-5"},
+            "note": {"type": "string", "description": "Optional text note"},
+        },
+    },
+}
+
+# Chat tools — MORNING_TOOLS + chat-only tools (save_mood_checkin)
+CHAT_TOOLS = [*MORNING_TOOLS, SAVE_MOOD_CHECKIN_TOOL]
 
 TOOL_HANDLERS = {
     "get_recovery": handle_get_recovery,
@@ -741,4 +785,6 @@ TOOL_HANDLERS = {
     "get_readiness_history": handle_get_readiness_history,
     "get_mood_checkins": handle_get_mood_checkins,
     "get_iqos_sticks": handle_get_iqos_sticks,
+    # Phase 3 chat-only:
+    "save_mood_checkin": handle_save_mood_checkin,
 }

@@ -13,9 +13,17 @@ from ai.tool_definitions import CHAT_TOOLS, MORNING_TOOLS, TOOL_HANDLERS
 
 
 class TestChatTools:
-    def test_chat_tools_is_copy_not_alias(self):
-        assert CHAT_TOOLS is not MORNING_TOOLS
-        assert CHAT_TOOLS == MORNING_TOOLS
+    def test_chat_tools_extends_morning_tools(self):
+        assert len(CHAT_TOOLS) > len(MORNING_TOOLS)
+        morning_names = {t["name"] for t in MORNING_TOOLS}
+        chat_names = {t["name"] for t in CHAT_TOOLS}
+        assert morning_names.issubset(chat_names)
+
+    def test_save_mood_checkin_in_chat_only(self):
+        morning_names = {t["name"] for t in MORNING_TOOLS}
+        chat_names = {t["name"] for t in CHAT_TOOLS}
+        assert "save_mood_checkin" in chat_names
+        assert "save_mood_checkin" not in morning_names
 
     def test_chat_tools_independent(self):
         """Modifying CHAT_TOOLS doesn't affect MORNING_TOOLS."""
@@ -221,6 +229,47 @@ class TestHandleChatMessage:
             await handle_chat_message(update, None)
 
         update.message.reply_text.assert_called_with("Ошибка при обработке. Попробуй ещё раз.")
+
+
+# ---------------------------------------------------------------------------
+# handle_save_mood_checkin handler
+# ---------------------------------------------------------------------------
+
+
+class TestHandleSaveMoodCheckin:
+    @pytest.mark.asyncio
+    async def test_saves_mood(self):
+        from ai.tool_definitions import handle_save_mood_checkin
+
+        fake_row = SimpleNamespace(
+            id=42,
+            timestamp=SimpleNamespace(isoformat=lambda: "2026-03-28T10:00:00+00:00"),
+            energy=2,
+            mood=3,
+            anxiety=4,
+            social=3,
+            note="устал",
+        )
+        with patch("ai.tool_definitions.save_mood_checkin", new=AsyncMock(return_value=fake_row)):
+            result = await handle_save_mood_checkin(energy=2, mood=3, anxiety=4, social=3, note="устал")
+
+        assert result["id"] == 42
+        assert result["energy"] == 2
+        assert result["mood"] == 3
+        assert result["note"] == "устал"
+
+    @pytest.mark.asyncio
+    async def test_validation_error(self):
+        from ai.tool_definitions import handle_save_mood_checkin
+
+        with patch(
+            "ai.tool_definitions.save_mood_checkin",
+            new=AsyncMock(side_effect=ValueError("At least one field required")),
+        ):
+            result = await handle_save_mood_checkin()
+
+        assert "error" in result
+        assert "At least one field" in result["error"]
 
 
 # ---------------------------------------------------------------------------

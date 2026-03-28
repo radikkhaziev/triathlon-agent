@@ -178,6 +178,8 @@ TOOL_HANDLERS = {
     "get_readiness_history": handle_get_readiness_history,
     "get_mood_checkins": handle_get_mood_checkins,
     "get_iqos_sticks": handle_get_iqos_sticks,
+    # Phase 3 chat-only (не в MORNING_TOOLS, но в общем TOOL_HANDLERS):
+    "save_mood_checkin": handle_save_mood_checkin,
 }
 ```
 

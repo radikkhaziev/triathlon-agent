@@ -210,9 +210,8 @@ class ClaudeAgent:
     async def get_morning_recommendation_v2(self, target_date: date) -> str:
         """Generate morning AI recommendation using tool-use."""
         system = get_system_prompt_v2()
-        messages: list[dict] = [
-            {"role": "user", "content": f"Сгенерируй утренний отчёт за {target_date.strftime('%Y-%m-%d')}"},
-        ]
+        prompt = f"Сгенерируй утренний отчёт за {target_date.strftime('%Y-%m-%d')}"
+        messages: list[dict] = [{"role": "user", "content": prompt}]
         result = await self._run_tool_use_loop(system, messages, MORNING_TOOLS, max_tokens=4096)
         return result or "Не удалось сгенерировать отчёт"
 
