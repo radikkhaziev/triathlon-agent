@@ -21,7 +21,7 @@ export default function Layout({
 }: LayoutProps) {
   return (
     <>
-      <div className={`px-4 mx-auto ${hideBottomTabs ? 'pb-8' : 'pb-20'}`} style={{ maxWidth, paddingTop: 'max(env(safe-area-inset-top), 12px)' }}>
+      <div className={`px-4 mx-auto ${hideBottomTabs ? 'pb-8' : 'pb-20'}`} style={{ maxWidth }}>
         {backTo && (
           <Link to={backTo} className="inline-flex items-center gap-1 text-[13px] text-accent no-underline pt-3">
             &larr; {backLabel}

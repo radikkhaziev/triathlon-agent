@@ -18,7 +18,6 @@ export default function App() {
     if (tg) {
       tg.ready()
       tg.expand()
-      tg.requestFullscreen?.()
     }
   }, [])
 
