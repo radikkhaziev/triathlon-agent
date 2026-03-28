@@ -11,7 +11,7 @@ from sqlalchemy import exists, func, select
 
 from api.auth import create_jwt, verify_code, verify_jwt
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
-from bot.scheduler import scheduled_workouts_job, sync_activities_job
+from bot.scheduler import daily_metrics_job, scheduled_workouts_job, sync_activities_job
 from config import settings
 from data.database import (
     ActivityDetailRow,
@@ -602,6 +602,28 @@ async def job_sync_activities(authorization: str | None = Header(default=None)) 
         "status": "ok",
         "synced_count": synced_count,
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+    }
+
+
+@router.post("/api/jobs/sync-wellness")
+async def job_sync_wellness(authorization: str | None = Header(default=None)) -> dict:
+    """Trigger wellness sync for today (owner only)."""
+    _require_owner(authorization)
+
+    try:
+        await daily_metrics_job()
+    except Exception:
+        logger.exception("sync-wellness job failed")
+        raise HTTPException(status_code=502, detail="Sync failed")
+
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today_str = str(datetime.now(tz).date())
+    row = await get_wellness(datetime.now(tz).date())
+
+    return {
+        "status": "ok",
+        "date": today_str,
+        "has_data": row is not None,
     }
 
 

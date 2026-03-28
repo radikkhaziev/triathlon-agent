@@ -8,6 +8,7 @@ import StatusBadge from '../components/StatusBadge'
 import TabSwitcher from '../components/TabSwitcher'
 import AiRecommendation from '../components/AiRecommendation'
 import SportCtlBars from '../components/SportCtlBars'
+import SyncButton from '../components/SyncButton'
 import { useDayNav } from '../hooks/useDayNav'
 import { useApi } from '../hooks/useApi'
 import { num } from '../lib/formatters'
@@ -15,7 +16,7 @@ import type { WellnessResponse, HRVBlock } from '../api/types'
 
 export default function Wellness() {
   const { currentDate, dateStr, isToday, prev, next } = useDayNav()
-  const { data, loading, error } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
+  const { data, loading, error, reload } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
   const [hrvTab, setHrvTab] = useState('flatt_esco')
 
   return (
@@ -28,6 +29,14 @@ export default function Wellness() {
         onPrev={prev}
         onNext={next}
       />
+
+      {isToday && data?.role === 'owner' && (
+        <SyncButton
+          endpoint="/api/jobs/sync-wellness"
+          lastSyncedAt={null}
+          onSynced={() => reload()}
+        />
+      )}
 
       {loading && <LoadingSpinner />}
       {error && <ErrorMessage message="Не удалось загрузить данные." />}
