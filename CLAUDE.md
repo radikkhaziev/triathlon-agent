@@ -114,8 +114,8 @@ Thirteen tables. Full column specs in `data/database.py`.
 | Module | Status | Notes |
 |---|---|---|
 | `data/*` | Done | Models, Intervals.icu client (read + write), metrics pipeline, DFA a1, database ORM |
-| `ai/*` | Done | Claude tool-use morning analysis (V2) + V1 fallback, Gemini, workout generation, prompts, tool definitions |
-| `bot/*` | Done | /start, /morning, /web, /stick, /whoami, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
+| `ai/*` | Done | Claude tool-use morning analysis (V2) + free-form chat + V1 fallback, Gemini, workout generation, prompts, tool definitions |
+| `bot/*` | Done | /start, /morning, /web, /stick, /whoami, free-form chat, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
 | `mcp_server/` | Done | 28 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
 | `webapp/` (React SPA) | Done | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme |
@@ -167,6 +167,7 @@ AI_WORKOUT_AUTO_PUSH=true         # Auto-push generated workouts in morning cron
 
 # AI Tool-Use (MCP Phase 2)
 AI_USE_TOOL_USE=true              # Tool-use for morning analysis (vs fixed prompt V1)
+AI_CHAT_ENABLED=true              # Free-form Telegram chat (Phase 3)
 ```
 
 ---
@@ -221,6 +222,7 @@ Runs once daily for current date (not backfill). Model: `claude-sonnet-4-6`, max
 /web      — one-time code for desktop login (5 min TTL)
 /stick    — increment IQOS stick counter for today, replies with current count
 /whoami   — show current user info (chat_id, role)
+<text>   — free-form AI chat (Phase 3, owner only, stateless, tool-use)
 ```
 
 ---
@@ -393,7 +395,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 | `DFA_ALPHA1_PLAN.md` | DFA a1 pipeline — FIT → RR → thresholds → Ra/Da |
 | `PROCESS_FIT_JOB.md` | FIT processing pipeline + quality testing |
 | `ESS_BANISTER_PLAN.md` | ESS/Banister pipeline |
-| `MCP_INTEGRATION_PLAN.md` | MCP roadmap — Phase 1 (done), Phase 2-3 (future) |
+| `MCP_INTEGRATION_PLAN.md` | MCP roadmap — Phase 1-3 (all done) |
 | `ACTIVITY_DETAILS_PHASE1.md` | Activity Details — fetch & store |
 | `ACTIVITY_DETAILS_PHASE2.md` | Activity Details — web + MCP display |
 | `SCHEDULED_WORKOUTS_PAGE.md` | Workouts page architecture |
@@ -430,7 +432,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 17. ~~Adaptive Training Plan Phase 3~~ — Done (training_log table, pre/actual/post lifecycle, compliance detection, MCP tools, 10 tests)
 18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
 19. ~~MCP Phase 2~~ — Done (Tool-use for morning analysis: 14 tools, SYSTEM_PROMPT_V2, tool-use loop, V1 fallback, AI_USE_TOOL_USE config, 18 tests)
-20. **MCP Phase 3** — free-form Telegram chat. Tool-use инфраструктура из Phase 2 переиспользуется (те же tools/handlers). Утренний — автоматический, chat — по запросу
+20. ~~MCP Phase 3~~ — Done (Free-form Telegram chat: stateless, owner-only, tool-use via Phase 2 infra, Markdown fallback, AI_CHAT_ENABLED kill switch, 13 tests)
 21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
 22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + CSS stick figure animations, Jinja templates, 5 MCP tools, static file serving)
 23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя). Связано с #21 Gemini — делать вместе

@@ -12,7 +12,6 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
-from bot.formatter import format_duration
 from config import settings
 from data.database import (
     ActivityHrvRow,
@@ -28,7 +27,7 @@ from data.database import (
     get_training_log_range,
 )
 from data.ramp_tests import detect_threshold_drift, get_threshold_freshness_data
-from data.utils import extract_sport_ctl
+from data.utils import extract_sport_ctl, format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -723,6 +722,9 @@ async def handle_get_iqos_sticks(target_date: str = "", days_back: int = 0) -> d
 # ---------------------------------------------------------------------------
 # Handler dispatch map
 # ---------------------------------------------------------------------------
+
+# Chat tools — copy of MORNING_TOOLS (not alias) to allow adding chat-only tools later
+CHAT_TOOLS = [*MORNING_TOOLS]
 
 TOOL_HANDLERS = {
     "get_recovery": handle_get_recovery,

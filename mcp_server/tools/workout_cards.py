@@ -1,5 +1,6 @@
 """MCP tools for workout exercise cards library and workout composition."""
 
+import hashlib
 import logging
 import os
 import re
@@ -91,8 +92,6 @@ def _validate_exercise_id(exercise_id: str) -> str | None:
 
 
 def _slugify(text: str) -> str:
-    import hashlib
-
     h = hashlib.md5(text.encode()).hexdigest()[:8]
     ascii_part = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:30]
     return f"{ascii_part}-{h}" if ascii_part else h

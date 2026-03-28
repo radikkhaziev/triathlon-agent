@@ -5,8 +5,14 @@ from datetime import date, datetime, timedelta
 
 import anthropic
 
-from ai.prompts import MORNING_REPORT_PROMPT, WORKOUT_GENERATION_PROMPT, get_system_prompt, get_system_prompt_v2
-from ai.tool_definitions import MORNING_TOOLS, TOOL_HANDLERS
+from ai.prompts import (
+    MORNING_REPORT_PROMPT,
+    WORKOUT_GENERATION_PROMPT,
+    get_system_prompt,
+    get_system_prompt_chat,
+    get_system_prompt_v2,
+)
+from ai.tool_definitions import CHAT_TOOLS, MORNING_TOOLS, TOOL_HANDLERS
 from bot.formatter import format_duration, sport_emoji
 from config import settings
 from data.models import PlannedWorkout, WorkoutStep
@@ -151,29 +157,27 @@ class ClaudeAgent:
             logger.exception("Claude API call failed")
             raise
 
-    async def get_morning_recommendation_v2(self, target_date: date) -> str:
-        """Generate morning AI recommendation using tool-use.
+    async def _run_tool_use_loop(
+        self,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int = 4096,
+        max_iterations: int = 10,
+    ) -> str:
+        """Run Claude API with tool-use loop. Returns final text response.
 
-        Claude decides which tools to call to gather data,
-        then synthesizes a recommendation.
+        Shared between morning analysis (V2) and free-form chat.
         """
-        system = get_system_prompt_v2()
-        messages: list[dict] = [
-            {"role": "user", "content": f"Сгенерируй утренний отчёт за {target_date.strftime('%Y-%m-%d')}"},
-        ]
-
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             system=system,
             messages=messages,
-            tools=MORNING_TOOLS,
+            tools=tools,
         )
 
-        # Tool-use loop
         iterations = 0
-        max_iterations = 10
-
         while response.stop_reason == "tool_use" and iterations < max_iterations:
             tool_results = []
             for block in response.content:
@@ -193,16 +197,31 @@ class ClaudeAgent:
 
             response = await self.client.messages.create(
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=max_tokens,
                 system=system,
                 messages=messages,
-                tools=MORNING_TOOLS,
+                tools=tools,
             )
             iterations += 1
 
-        # Extract text response
         text_blocks = [b.text for b in response.content if b.type == "text"]
-        return "\n".join(text_blocks) if text_blocks else "Не удалось сгенерировать отчёт"
+        return "\n".join(text_blocks)
+
+    async def get_morning_recommendation_v2(self, target_date: date) -> str:
+        """Generate morning AI recommendation using tool-use."""
+        system = get_system_prompt_v2()
+        messages: list[dict] = [
+            {"role": "user", "content": f"Сгенерируй утренний отчёт за {target_date.strftime('%Y-%m-%d')}"},
+        ]
+        result = await self._run_tool_use_loop(system, messages, MORNING_TOOLS, max_tokens=4096)
+        return result or "Не удалось сгенерировать отчёт"
+
+    async def chat(self, user_message: str) -> str:
+        """Handle a free-form chat message. Stateless: no conversation history."""
+        system = get_system_prompt_chat()
+        messages: list[dict] = [{"role": "user", "content": user_message}]
+        result = await self._run_tool_use_loop(system, messages, CHAT_TOOLS, max_tokens=2048)
+        return result or "Не удалось обработать запрос."
 
     async def _execute_tool(self, name: str, input_data: dict) -> dict:
         """Execute a tool call and return the result."""

@@ -83,6 +83,37 @@ async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"🚬 Стик #{row.count} за {dt.strftime('%d.%m')}")
 
 
+async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle free-form text messages — AI chat via tool-use (Phase 3)."""
+    if not settings.AI_CHAT_ENABLED:
+        return
+
+    # Owner only — silent ignore for others
+    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        return
+
+    user_text = update.message.text
+    if not user_text or not user_text.strip():
+        return
+
+    await update.message.chat.send_action("typing")
+
+    try:
+        from ai.claude_agent import ClaudeAgent
+
+        agent = ClaudeAgent()
+        response = await agent.chat(user_text)
+
+        # Telegram Markdown is fragile — fallback to plain text on parse error
+        try:
+            await update.message.reply_text(response, parse_mode="Markdown")
+        except Exception:
+            await update.message.reply_text(response)
+    except Exception as e:
+        logger.error("Chat error: %s", e, exc_info=True)
+        await update.message.reply_text("Ошибка при обработке. Попробуй ещё раз.")
+
+
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     lines = [
@@ -139,6 +170,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
+    # Phase 3: free-form chat — last handler, catches all remaining text
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat_message))
     return app
 
 
