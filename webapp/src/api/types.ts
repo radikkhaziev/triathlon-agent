@@ -307,6 +307,13 @@ export interface ScheduledList {
   workouts: { date: string; sport: string; workout_name: string; planned_tss: number }[]
 }
 
+// Recovery Trend (Dashboard)
+export interface RecoveryTrendSeries {
+  dates: string[]
+  recovery: (number | null)[]
+  hrv: (number | null)[]
+}
+
 // Progress / Efficiency Trends
 export interface ProgressActivity {
   date: string
