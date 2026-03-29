@@ -9,7 +9,7 @@ from api.auth import generate_code
 from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
-from data.database import get_wellness, increment_iqos_stick
+from data.database import IqosDailyRow, WellnessRow
 from data.intervals_client import IntervalsClient
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
-    row = await get_wellness(dt)
+    row = await WellnessRow.get(dt)
 
     if not row:
         await update.message.reply_text("Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут.")
@@ -79,7 +79,7 @@ async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
-    row = await increment_iqos_stick(dt)
+    row = await IqosDailyRow.increment(dt)
     await update.message.reply_text(f"🚬 Стик #{row.count} за {dt.strftime('%d.%m')}")
 
 

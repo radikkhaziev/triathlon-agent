@@ -467,7 +467,7 @@ class TestComposeWorkoutValidation:
         """Exercise IDs not in DB should be reported as missing."""
         from mcp_server.tools.workout_cards import compose_workout
 
-        with patch("mcp_server.tools.workout_cards.get_exercise_cards_by_ids", new=AsyncMock(return_value=[])):
+        with patch("mcp_server.tools.workout_cards.ExerciseCardRow.get_by_ids", new=AsyncMock(return_value=[])):
             result = await compose_workout(
                 name="Test",
                 exercises=[{"id": "nonexistent-exercise"}],
@@ -481,7 +481,7 @@ class TestComposeWorkoutValidation:
 
         found_card = _make_card(exercise_id="clamshell")
         with patch(
-            "mcp_server.tools.workout_cards.get_exercise_cards_by_ids",
+            "mcp_server.tools.workout_cards.ExerciseCardRow.get_by_ids",
             new=AsyncMock(return_value=[found_card]),
         ):
             result = await compose_workout(
@@ -504,8 +504,8 @@ class TestComposeWorkoutValidation:
         wc_module._STATIC_DIR = str(tmp_path)
         try:
             with (
-                patch("mcp_server.tools.workout_cards.get_exercise_cards_by_ids", new=AsyncMock(return_value=[])),
-                patch("mcp_server.tools.workout_cards.save_workout_card", new=AsyncMock()),
+                patch("mcp_server.tools.workout_cards.ExerciseCardRow.get_by_ids", new=AsyncMock(return_value=[])),
+                patch("mcp_server.tools.workout_cards.WorkoutCardRow.save", new=AsyncMock()),
                 patch("mcp_server.tools.workout_cards.settings") as mock_settings,
             ):
                 mock_settings.API_BASE_URL = "https://example.com"
@@ -527,7 +527,7 @@ class TestCreateExerciseCardValidation:
     async def test_path_traversal_blocked(self):
         from mcp_server.tools.workout_cards import create_exercise_card
 
-        with patch("mcp_server.tools.workout_cards.save_exercise_card", new=AsyncMock()) as mock_save:
+        with patch("mcp_server.tools.workout_cards.ExerciseCardRow.save", new=AsyncMock()) as mock_save:
             result = await create_exercise_card(
                 exercise_id="../etc/passwd",
                 name_ru="Evil",
@@ -549,7 +549,7 @@ class TestCreateExerciseCardValidation:
     async def test_uppercase_blocked(self):
         from mcp_server.tools.workout_cards import create_exercise_card
 
-        with patch("mcp_server.tools.workout_cards.save_exercise_card", new=AsyncMock()) as mock_save:
+        with patch("mcp_server.tools.workout_cards.ExerciseCardRow.save", new=AsyncMock()) as mock_save:
             result = await create_exercise_card(
                 exercise_id="ClamShell",
                 name_ru="Моллюск",
@@ -577,7 +577,7 @@ class TestUpdateExerciseCardValidation:
     async def test_path_traversal_blocked(self):
         from mcp_server.tools.workout_cards import update_exercise_card
 
-        with patch("mcp_server.tools.workout_cards.get_exercise_card", new=AsyncMock()) as mock_get:
+        with patch("mcp_server.tools.workout_cards.ExerciseCardRow.get", new=AsyncMock()) as mock_get:
             result = await update_exercise_card(exercise_id="../../bad")
 
         mock_get.assert_not_called()
@@ -586,7 +586,7 @@ class TestUpdateExerciseCardValidation:
     async def test_valid_id_not_found_returns_message(self):
         from mcp_server.tools.workout_cards import update_exercise_card
 
-        with patch("mcp_server.tools.workout_cards.get_exercise_card", new=AsyncMock(return_value=None)):
+        with patch("mcp_server.tools.workout_cards.ExerciseCardRow.get", new=AsyncMock(return_value=None)):
             result = await update_exercise_card(exercise_id="clamshell", name_ru="Updated")
 
         assert "not found" in result
@@ -595,7 +595,7 @@ class TestUpdateExerciseCardValidation:
         """Providing no fields to update should report that."""
         from mcp_server.tools.workout_cards import update_exercise_card
 
-        with patch("mcp_server.tools.workout_cards.get_exercise_card", new=AsyncMock(return_value=_make_card())):
+        with patch("mcp_server.tools.workout_cards.ExerciseCardRow.get", new=AsyncMock(return_value=_make_card())):
             result = await update_exercise_card(exercise_id="clamshell")
 
         assert "No fields to update" in result

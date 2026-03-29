@@ -7,13 +7,7 @@ from datetime import date, timedelta
 
 from bot.scheduler import daily_metrics_job, sync_activities_job
 from config import settings
-from data.database import (
-    get_activities_without_details,
-    get_session,
-    get_wellness,
-    save_activity_details,
-    save_scheduled_workouts,
-)
+from data.database import ActivityDetailRow, ActivityRow, ScheduledWorkoutRow, WellnessRow, get_session
 from data.intervals_client import IntervalsClient
 
 
@@ -177,14 +171,14 @@ async def _sync_workouts(days: int = 14) -> None:
 
     client = IntervalsClient()
     workouts = await client.get_events(oldest=today, newest=newest)
-    count = await save_scheduled_workouts(workouts, oldest=today, newest=newest)
+    count = await ScheduledWorkoutRow.save_bulk(workouts, oldest=today, newest=newest)
     print(f"Synced {count} workouts.")
 
 
 async def _backfill_details(days: int = 0) -> None:
     client = IntervalsClient()
     cutoff = str(date.today() - timedelta(days=days)) if days > 0 else None
-    activities = await get_activities_without_details(since_date=cutoff)
+    activities = await ActivityRow.get_without_details(since_date=cutoff)
 
     total = len(activities)
     print(f"Backfill details: {total} activities without details")
@@ -203,7 +197,7 @@ async def _backfill_details(days: int = 0) -> None:
                 print("  Warning: intervals fetch failed, saving detail only")
                 intervals_data = None
 
-            await save_activity_details(act.id, detail, intervals_data)
+            await ActivityDetailRow.save(act.id, detail, intervals_data)
         except Exception as exc:
             print(f"  Error: {exc}")
 
@@ -219,13 +213,13 @@ def _shell() -> None:
         "Available variables:\n"
         "  settings     - app settings\n"
         "  get_session  - async session context manager\n"
-        "  get_wellness - fetch wellness row by date\n"
+        "  WellnessRow  - wellness model (use WellnessRow.get(date))\n"
         "  asyncio.run  - run async functions\n"
     )
     ctx = {
         "settings": settings,
         "get_session": get_session,
-        "get_wellness": get_wellness,
+        "WellnessRow": WellnessRow,
         "asyncio": asyncio,
         "date": date,
         "timedelta": timedelta,

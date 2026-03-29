@@ -10,30 +10,16 @@ from ai.claude_agent import ClaudeAgent
 from bot.formatter import build_evening_message, build_morning_message, build_post_activity_message
 from config import settings
 from data.database import (
+    ActivityDetailRow,
     ActivityHrvRow,
     ActivityRow,
-    create_training_log,
-    get_activities_for_ctl,
-    get_activities_for_date,
-    get_activity_hrv_for_date,
-    get_ai_workout_by_external_id,
-    get_ai_workouts_for_date,
-    get_ai_workouts_upcoming,
-    get_existing_detail_ids,
-    get_hrv_analysis,
-    get_rhr_analysis,
-    get_scheduled_workouts_for_date,
+    AiWorkoutRow,
+    HrvAnalysisRow,
+    RhrAnalysisRow,
+    ScheduledWorkoutRow,
+    TrainingLogRow,
+    WellnessRow,
     get_session,
-    get_training_log_for_date,
-    get_training_log_unfilled_actual,
-    get_training_log_unfilled_post,
-    get_wellness,
-    save_activities,
-    save_activity_details,
-    save_ai_workout,
-    save_scheduled_workouts,
-    save_wellness,
-    update_training_log,
 )
 from data.hrv_activity import process_fit_job as _process_fit_job
 from data.intervals_client import IntervalsClient
@@ -94,17 +80,17 @@ async def evening_report_job(bot: Bot | None = None) -> None:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
 
-    row = await get_wellness(today)
-    activities = await get_activities_for_date(today)
+    row = await WellnessRow.get(today)
+    activities = await ActivityRow.get_for_date(today)
 
     # Skip if no data at all
     if not activities and row is None:
         logger.debug("Evening report skipped — no data for %s", today)
         return
 
-    hrv_analyses = await get_activity_hrv_for_date(today)
+    hrv_analyses = await ActivityHrvRow.get_for_date(today)
     tomorrow = today + timedelta(days=1)
-    tomorrow_workouts = await get_scheduled_workouts_for_date(tomorrow)
+    tomorrow_workouts = await ScheduledWorkoutRow.get_for_date(tomorrow)
 
     msg = build_evening_message(row, activities, hrv_analyses, tomorrow_workouts)
 
@@ -214,12 +200,12 @@ async def _generate_and_push_workout(wellness_row, dt: date) -> None:
     Phase 1: if no planned workout → AI generates from scratch (suffix=generated)
     Phase 2: if planned workout exists → adapt if recovery requires it (suffix=adapted)
     """
-    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
-    rhr_row = await get_rhr_analysis(str(dt))
+    hrv_flatt = await HrvAnalysisRow.get(str(dt), "flatt_esco")
+    rhr_row = await RhrAnalysisRow.get(str(dt))
     hrv_status = hrv_flatt.status if hrv_flatt else "insufficient_data"
     tsb = (wellness_row.ctl - wellness_row.atl) if wellness_row.ctl and wellness_row.atl else 0
 
-    existing_workouts = await get_scheduled_workouts_for_date(dt)
+    existing_workouts = await ScheduledWorkoutRow.get_for_date(dt)
 
     if existing_workouts:
         # Phase 2: try to adapt existing workout
@@ -269,7 +255,7 @@ async def _generate_and_push_workout(wellness_row, dt: date) -> None:
         logger.info("Skipping AI workout generation — recovery is low for %s", dt)
         return
 
-    hrv_aie = await get_hrv_analysis(str(dt), "ai_endurance")
+    hrv_aie = await HrvAnalysisRow.get(str(dt), "ai_endurance")
     agent = ClaudeAgent()
     workout = await agent.generate_workout(wellness_row, hrv_flatt, hrv_aie, rhr_row)
 
@@ -283,7 +269,7 @@ async def _generate_and_push_workout(wellness_row, dt: date) -> None:
 async def _push_workout(workout, dt: date) -> None:
     """Push a PlannedWorkout to Intervals.icu and save to local DB."""
 
-    existing = await get_ai_workout_by_external_id(workout.external_id)
+    existing = await AiWorkoutRow.get_by_external_id(workout.external_id)
     if existing and existing.status == "active":
         logger.info("Workout already exists: %s", workout.external_id)
         return
@@ -293,7 +279,7 @@ async def _push_workout(workout, dt: date) -> None:
     result = await intervals.create_event(event_data)
     intervals_id = result.get("id")
 
-    await save_ai_workout(
+    await AiWorkoutRow.save(
         date_str=str(dt),
         sport=workout.sport,
         slot=workout.slot,
@@ -328,13 +314,13 @@ async def _maybe_suggest_ramp(wellness_row, dt: date) -> None:
 
     # Don't suggest if there's already a workout planned for tomorrow
     tomorrow = dt + timedelta(days=1)
-    planned = await get_scheduled_workouts_for_date(tomorrow)
+    planned = await ScheduledWorkoutRow.get_for_date(tomorrow)
     if planned:
         logger.info("Skipping ramp suggestion — workout planned for %s", tomorrow)
         return
 
     # Check if we already pushed a ramp test recently
-    upcoming = await get_ai_workouts_upcoming(days_ahead=14)
+    upcoming = await AiWorkoutRow.get_upcoming(days_ahead=14)
     if any("Ramp Test" in (w.name or "") for w in upcoming):
         return
 
@@ -349,7 +335,7 @@ async def _maybe_suggest_ramp(wellness_row, dt: date) -> None:
 async def _get_latest_ra(dt: date) -> float | None:
     """Get the latest Ra (readiness) from yesterday's DFA analysis."""
     yesterday = dt - timedelta(days=1)
-    hrv_analyses = await get_activity_hrv_for_date(yesterday)
+    hrv_analyses = await ActivityHrvRow.get_for_date(yesterday)
     for h in hrv_analyses:
         if h.ra_pct is not None:
             return h.ra_pct
@@ -360,15 +346,15 @@ async def _record_training_log_pre(wellness_row, dt: date) -> None:
     """Record pre-workout context in training_log for today."""
 
     # Don't duplicate — skip if already recorded for this date
-    existing = await get_training_log_for_date(dt)
+    existing = await TrainingLogRow.get_for_date(dt)
     if existing:
         return
 
-    workouts = await get_scheduled_workouts_for_date(dt)
-    ai_workouts = await get_ai_workouts_for_date(dt)
+    workouts = await ScheduledWorkoutRow.get_for_date(dt)
+    ai_workouts = await AiWorkoutRow.get_for_date(dt)
 
-    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
-    rhr_row = await get_rhr_analysis(str(dt))
+    hrv_flatt = await HrvAnalysisRow.get(str(dt), "flatt_esco")
+    rhr_row = await RhrAnalysisRow.get(str(dt))
 
     hrv_status = hrv_flatt.status if hrv_flatt else "insufficient_data"
     hrv_7d = hrv_flatt.rmssd_7d if hrv_flatt else 0
@@ -398,7 +384,7 @@ async def _record_training_log_pre(wellness_row, dt: date) -> None:
                 (a for a in ai_workouts if a.sport == w.type and "adapted" in (a.rationale or "").lower()),
                 None,
             )
-            await create_training_log(
+            await TrainingLogRow.create(
                 date=str(dt),
                 sport=w.type,
                 source="adapted" if adapted else "humango",
@@ -413,7 +399,7 @@ async def _record_training_log_pre(wellness_row, dt: date) -> None:
             )
     elif ai_workouts:
         for a in ai_workouts:
-            await create_training_log(
+            await TrainingLogRow.create(
                 date=str(dt),
                 sport=a.sport,
                 source="ai",
@@ -422,7 +408,7 @@ async def _record_training_log_pre(wellness_row, dt: date) -> None:
                 **pre_kwargs,
             )
     else:
-        await create_training_log(
+        await TrainingLogRow.create(
             date=str(dt),
             source="none",
             **pre_kwargs,
@@ -435,24 +421,24 @@ async def _fill_training_log_post(wellness_row, dt: date) -> None:
     """Fill post-outcome for yesterday's training_log entry using today's wellness."""
 
     yesterday = dt - timedelta(days=1)
-    unfilled = await get_training_log_unfilled_post()
+    unfilled = await TrainingLogRow.get_unfilled_post()
     targets = [r for r in unfilled if r.date == str(yesterday)]
 
     if not targets:
         return
 
-    hrv_flatt = await get_hrv_analysis(str(dt), "flatt_esco")
+    hrv_flatt = await HrvAnalysisRow.get(str(dt), "flatt_esco")
     hrv_7d = hrv_flatt.rmssd_7d if hrv_flatt else 0
     hrv_today = float(wellness_row.hrv) if wellness_row.hrv else 0
     hrv_delta = ((hrv_today - hrv_7d) / hrv_7d * 100) if hrv_today and hrv_7d else 0.0
-    rhr_row = await get_rhr_analysis(str(dt))
+    rhr_row = await RhrAnalysisRow.get(str(dt))
     ra = await _get_latest_ra(dt)
 
     for log in targets:
         pre_score = log.pre_recovery_score or 0
         post_score = wellness_row.recovery_score or 0
 
-        await update_training_log(
+        await TrainingLogRow.update(
             log.id,
             post_recovery_score=post_score,
             post_hrv_delta_pct=round(hrv_delta, 1),
@@ -481,7 +467,7 @@ async def sync_activities_job(days: int = 90) -> int:
     newest = today
 
     activities = await intervals.get_activities(oldest=oldest, newest=newest)
-    count = await save_activities(activities)
+    count = await ActivityRow.save_bulk(activities)
     logger.info("Synced %d activities (%s → %s)", count, oldest, newest)
 
     # Fetch details for activities that don't have them yet
@@ -501,7 +487,7 @@ async def sync_activities_job(days: int = 90) -> int:
 async def _fill_training_log_actual() -> None:
     """Fill actual workout data for training_log entries that have no compliance yet."""
 
-    unfilled = await get_training_log_unfilled_actual()
+    unfilled = await TrainingLogRow.get_unfilled_actual()
     logger.info("Training log actual: %d unfilled entries", len(unfilled))
     if not unfilled:
         return
@@ -516,7 +502,7 @@ async def _fill_training_log_actual() -> None:
             log.sport,
             log.workout_id,
         )
-        activities = await get_activities_for_date(log_date)
+        activities = await ActivityRow.get_for_date(log_date)
         logger.info(
             "Training log #%d: found %d activities for %s: %s",
             log.id,
@@ -528,7 +514,7 @@ async def _fill_training_log_actual() -> None:
         if not activities:
             # No activity for this date — mark as skipped
             logger.info("Training log #%d: no activities, marking skipped", log.id)
-            await update_training_log(log.id, compliance="skipped")
+            await TrainingLogRow.update(log.id, compliance="skipped")
             filled_count += 1
             continue
 
@@ -557,7 +543,7 @@ async def _fill_training_log_actual() -> None:
             matched.average_hr,
         )
 
-        await update_training_log(
+        await TrainingLogRow.update(
             log.id,
             actual_activity_id=matched.id,
             actual_sport=matched.type,
@@ -601,7 +587,7 @@ async def _fetch_missing_details(intervals: IntervalsClient, activity_ids: list[
 
     Returns count of details fetched.
     """
-    existing_ids = await get_existing_detail_ids(activity_ids)
+    existing_ids = await ActivityDetailRow.get_existing_ids(activity_ids)
     missing_ids = [aid for aid in activity_ids if aid not in existing_ids]
     if not missing_ids:
         return 0
@@ -620,7 +606,7 @@ async def _fetch_missing_details(intervals: IntervalsClient, activity_ids: list[
                 logger.warning("Failed to fetch intervals for %s, saving detail only", aid)
                 intervals_data = None
 
-            await save_activity_details(aid, detail, intervals_data)
+            await ActivityDetailRow.save(aid, detail, intervals_data)
             fetched += 1
             logger.debug("Fetched details for activity %s", aid)
         except Exception:
@@ -648,7 +634,7 @@ async def daily_metrics_job(
 
     # Enrich sport_info with per-sport CTL from DB (not API)
     try:
-        activity_rows = await get_activities_for_ctl(days=90, as_of=dt)
+        activity_rows = await ActivityRow.get_for_ctl(days=90, as_of=dt)
         activities = [
             Activity(
                 id=r.id,
@@ -669,7 +655,7 @@ async def daily_metrics_job(
     past_deadline = datetime.now(tz).hour >= 11
     run_ai = is_today and (has_sleep or past_deadline)
 
-    row, ai_is_new = await save_wellness(dt, wellness=wellness, run_ai=run_ai)
+    row, ai_is_new = await WellnessRow.save(dt, wellness=wellness, run_ai=run_ai)
 
     # Send morning report once — only when AI recommendation first appears
     if ai_is_new and bot is not None:
@@ -713,5 +699,5 @@ async def scheduled_workouts_job() -> None:
     newest = today + timedelta(days=14)
 
     workouts = await intervals.get_events(oldest=today, newest=newest)
-    count = await save_scheduled_workouts(workouts, oldest=today, newest=newest)
+    count = await ScheduledWorkoutRow.save_bulk(workouts, oldest=today, newest=newest)
     logger.info("Synced %d scheduled workouts (%s → %s)", count, today, newest)

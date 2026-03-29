@@ -365,15 +365,15 @@ class ClaudeAgent:
 
 async def _format_yesterday_dfa() -> str:
     """Format yesterday's DFA data for the morning AI prompt."""
-    from data.database import get_activities_for_date, get_activity_hrv_for_date
+    from data.database import ActivityHrvRow, ActivityRow
 
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     yesterday = datetime.now(tz).date() - timedelta(days=1)
-    activities = await get_activities_for_date(yesterday)
+    activities = await ActivityRow.get_for_date(yesterday)
     if not activities:
         return "Нет данных DFA за вчера"
 
-    hrv_analyses = await get_activity_hrv_for_date(yesterday)
+    hrv_analyses = await ActivityHrvRow.get_for_date(yesterday)
     hrv_map = {h.activity_id: h for h in hrv_analyses}
 
     lines = []

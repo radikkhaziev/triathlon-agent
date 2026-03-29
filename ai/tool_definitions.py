@@ -17,15 +17,13 @@ from data.database import (
     ActivityHrvRow,
     ActivityRow,
     HrvAnalysisRow,
+    IqosDailyRow,
+    MoodCheckinRow,
     RhrAnalysisRow,
     ScheduledWorkoutRow,
+    TrainingLogRow,
     WellnessRow,
-    get_iqos_daily,
-    get_iqos_range,
-    get_mood_checkins,
     get_session,
-    get_training_log_range,
-    save_mood_checkin,
 )
 from data.ramp_tests import detect_threshold_drift, get_threshold_freshness_data
 from data.utils import extract_sport_ctl, format_duration
@@ -594,7 +592,7 @@ async def handle_get_activities(target_date: str = "", days_back: int = 7) -> di
 
 
 async def handle_get_training_log(days_back: int = 14) -> dict:
-    rows = await get_training_log_range(days_back=days_back)
+    rows = await TrainingLogRow.get_range(days_back=days_back)
 
     entries = []
     for r in rows:
@@ -677,7 +675,7 @@ async def handle_get_readiness_history(sport: str = "", days_back: int = 30) -> 
 
 
 async def handle_get_mood_checkins(date_str: str | None = None, days_back: int = 7) -> dict:
-    checkins = await get_mood_checkins(target_date=date_str, days_back=days_back)
+    checkins = await MoodCheckinRow.get_range(target_date=date_str, days_back=days_back)
 
     ref = date_module.fromisoformat(date_str) if date_str else date_module.today()
     from_date = ref - timedelta(days=days_back - 1)
@@ -704,10 +702,10 @@ async def handle_get_iqos_sticks(target_date: str = "", days_back: int = 0) -> d
     ref = date_module.fromisoformat(target_date) if target_date else date_module.today()
 
     if days_back == 0:
-        row = await get_iqos_daily(ref)
+        row = await IqosDailyRow.get(ref)
         return {"date": str(ref), "count": row.count if row else 0}
 
-    rows = await get_iqos_range(target_date=str(ref), days_back=days_back)
+    rows = await IqosDailyRow.get_range(target_date=str(ref), days_back=days_back)
     from_date = ref - timedelta(days=days_back - 1)
     rows_by_date = {r.date: r.count for r in rows}
     total = sum(rows_by_date.values())
@@ -729,7 +727,7 @@ async def handle_save_mood_checkin(
     note: str | None = None,
 ) -> dict:
     try:
-        row = await save_mood_checkin(energy=energy, mood=mood, anxiety=anxiety, social=social, note=note)
+        row = await MoodCheckinRow.save(energy=energy, mood=mood, anxiety=anxiety, social=social, note=note)
         return {
             "id": row.id,
             "timestamp": row.timestamp.isoformat(),

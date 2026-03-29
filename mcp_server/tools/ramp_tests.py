@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from data.database import save_ai_workout
+from data.database import AiWorkoutRow
 from data.intervals_client import IntervalsClient
 from data.ramp_tests import create_ramp_test, detect_threshold_drift, get_threshold_freshness_data
 from mcp_server.app import mcp
@@ -59,7 +59,7 @@ async def create_ramp_test_tool(
     result = await client.create_event(event_data)
     intervals_id = result.get("id")
 
-    await save_ai_workout(
+    await AiWorkoutRow.save(
         date_str=str(dt),
         sport=sport,
         slot=workout.slot,

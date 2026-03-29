@@ -372,9 +372,9 @@ class TestGenerateWorkout:
 
 class TestAiWorkoutsCRUD:
     async def test_save_and_get_by_external_id(self, _test_db):
-        from data.database import get_ai_workout_by_external_id, save_ai_workout
+        from data.database import AiWorkoutRow
 
-        row = await save_ai_workout(
+        row = await AiWorkoutRow.save(
             date_str="2026-03-29",
             sport="Ride",
             slot="morning",
@@ -389,15 +389,15 @@ class TestAiWorkoutsCRUD:
         assert row.external_id == "tricoach:2026-03-29:ride:morning"
         assert row.status == "active"
 
-        fetched = await get_ai_workout_by_external_id("tricoach:2026-03-29:ride:morning")
+        fetched = await AiWorkoutRow.get_by_external_id("tricoach:2026-03-29:ride:morning")
         assert fetched is not None
         assert fetched.name == "Z2 Endurance"
         assert fetched.intervals_id == 12345
 
     async def test_upsert_updates_existing(self, _test_db):
-        from data.database import get_ai_workout_by_external_id, save_ai_workout
+        from data.database import AiWorkoutRow
 
-        await save_ai_workout(
+        await AiWorkoutRow.save(
             date_str="2026-03-30",
             sport="Run",
             slot="morning",
@@ -410,7 +410,7 @@ class TestAiWorkoutsCRUD:
             rationale="v1",
         )
 
-        await save_ai_workout(
+        await AiWorkoutRow.save(
             date_str="2026-03-30",
             sport="Run",
             slot="morning",
@@ -423,14 +423,14 @@ class TestAiWorkoutsCRUD:
             rationale="v2",
         )
 
-        fetched = await get_ai_workout_by_external_id("tricoach:2026-03-30:run:morning")
+        fetched = await AiWorkoutRow.get_by_external_id("tricoach:2026-03-30:run:morning")
         assert fetched.name == "Easy Run v2"
         assert fetched.intervals_id == 222
 
     async def test_cancel_ai_workout(self, _test_db):
-        from data.database import cancel_ai_workout, save_ai_workout
+        from data.database import AiWorkoutRow
 
-        await save_ai_workout(
+        await AiWorkoutRow.save(
             date_str="2026-03-31",
             sport="Swim",
             slot="morning",
@@ -443,15 +443,15 @@ class TestAiWorkoutsCRUD:
             rationale="test",
         )
 
-        row = await cancel_ai_workout("tricoach:2026-03-31:swim:morning")
+        row = await AiWorkoutRow.cancel("tricoach:2026-03-31:swim:morning")
         assert row is not None
         assert row.status == "cancelled"
 
     async def test_get_upcoming(self, _test_db):
-        from data.database import get_ai_workouts_upcoming, save_ai_workout
+        from data.database import AiWorkoutRow
 
         today = str(date.today())
-        await save_ai_workout(
+        await AiWorkoutRow.save(
             date_str=today,
             sport="Ride",
             slot="morning",
@@ -464,14 +464,14 @@ class TestAiWorkoutsCRUD:
             rationale="test",
         )
 
-        rows = await get_ai_workouts_upcoming(days_ahead=1)
+        rows = await AiWorkoutRow.get_upcoming(days_ahead=1)
         names = [r.name for r in rows]
         assert "Today Ride" in names
 
     async def test_get_for_date(self, _test_db):
-        from data.database import get_ai_workouts_for_date, save_ai_workout
+        from data.database import AiWorkoutRow
 
-        await save_ai_workout(
+        await AiWorkoutRow.save(
             date_str="2026-04-01",
             sport="Run",
             slot="morning",
@@ -484,6 +484,6 @@ class TestAiWorkoutsCRUD:
             rationale="test",
         )
 
-        rows = await get_ai_workouts_for_date(date(2026, 4, 1))
+        rows = await AiWorkoutRow.get_for_date(date(2026, 4, 1))
         assert len(rows) >= 1
         assert any(r.name == "April Run" for r in rows)

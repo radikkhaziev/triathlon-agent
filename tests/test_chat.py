@@ -250,7 +250,7 @@ class TestHandleSaveMoodCheckin:
             social=3,
             note="устал",
         )
-        with patch("ai.tool_definitions.save_mood_checkin", new=AsyncMock(return_value=fake_row)):
+        with patch("ai.tool_definitions.MoodCheckinRow.save", new=AsyncMock(return_value=fake_row)):
             result = await handle_save_mood_checkin(energy=2, mood=3, anxiety=4, social=3, note="устал")
 
         assert result["id"] == 42
@@ -263,7 +263,7 @@ class TestHandleSaveMoodCheckin:
         from ai.tool_definitions import handle_save_mood_checkin
 
         with patch(
-            "ai.tool_definitions.save_mood_checkin",
+            "ai.tool_definitions.MoodCheckinRow.save",
             new=AsyncMock(side_effect=ValueError("At least one field required")),
         ):
             result = await handle_save_mood_checkin()

@@ -8,15 +8,7 @@ import re
 from jinja2 import Environment, FileSystemLoader
 
 from config import settings
-from data.database import (
-    get_exercise_card,
-    get_exercise_cards,
-    get_exercise_cards_by_ids,
-    get_workout_cards,
-    save_exercise_card,
-    save_workout_card,
-    update_exercise_card_fields,
-)
+from data.database import ExerciseCardRow, WorkoutCardRow
 from data.intervals_client import IntervalsClient
 from mcp_server.app import mcp
 
@@ -132,7 +124,7 @@ async def create_exercise_card(
 
     _ensure_dirs()
 
-    card = await save_exercise_card(
+    card = await ExerciseCardRow.save(
         exercise_id=exercise_id,
         name_ru=name_ru,
         name_en=name_en,
@@ -185,7 +177,7 @@ async def update_exercise_card(
     if err:
         return err
 
-    existing = await get_exercise_card(exercise_id)
+    existing = await ExerciseCardRow.get(exercise_id)
     if not existing:
         return f"Exercise card '{exercise_id}' not found in library."
 
@@ -211,7 +203,7 @@ async def update_exercise_card(
     if not kwargs:
         return "No fields to update."
 
-    card = await update_exercise_card_fields(exercise_id, **kwargs)
+    card = await ExerciseCardRow.update_fields(exercise_id, **kwargs)
 
     _ensure_dirs()
     ctx = _build_card_context(card)
@@ -238,7 +230,7 @@ async def list_exercise_cards(
 
     Optional filters: equipment ("Мини-петля"), group_tag ("День А"), muscles ("ягодичная").
     """
-    cards = await get_exercise_cards(equipment=equipment, group_tag=group_tag, muscles=muscles)
+    cards = await ExerciseCardRow.get_list(equipment=equipment, group_tag=group_tag, muscles=muscles)
     return {
         "count": len(cards),
         "exercises": [
@@ -295,7 +287,7 @@ async def compose_workout(
 
     # Validate all exercise IDs
     requested_ids = [e["id"] for e in exercises]
-    found_cards = await get_exercise_cards_by_ids(requested_ids)
+    found_cards = await ExerciseCardRow.get_by_ids(requested_ids)
     found_ids = {c.id for c in found_cards}
     missing = [eid for eid in requested_ids if eid not in found_ids]
     if missing:
@@ -416,7 +408,7 @@ async def compose_workout(
             return f"HTML generated: {url}\nError pushing to Intervals.icu: {e}\nResponse: {resp_body}"
 
     # Save to DB
-    await save_workout_card(
+    await WorkoutCardRow.save(
         date_str=date_str,
         name=name,
         exercises=exercises,
@@ -440,7 +432,7 @@ async def list_workout_cards(days_back: int = 30) -> dict:
     Args:
         days_back: Number of days to look back (default: 30).
     """
-    rows = await get_workout_cards(days_back=days_back)
+    rows = await WorkoutCardRow.get_list(days_back=days_back)
     return {
         "count": len(rows),
         "workouts": [

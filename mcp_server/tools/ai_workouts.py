@@ -4,13 +4,7 @@ import logging
 from datetime import date
 
 from config import settings
-from data.database import (
-    cancel_ai_workout,
-    get_ai_workout_by_external_id,
-    get_ai_workouts_for_date,
-    get_ai_workouts_upcoming,
-    save_ai_workout,
-)
+from data.database import AiWorkoutRow
 from data.intervals_client import IntervalsClient
 from data.models import PlannedWorkout, WorkoutStep
 from mcp_server.app import mcp
@@ -80,7 +74,7 @@ async def suggest_workout(
     )
 
     # Check for existing AI workout on this date+sport
-    existing = await get_ai_workout_by_external_id(workout.external_id)
+    existing = await AiWorkoutRow.get_by_external_id(workout.external_id)
 
     # Push to Intervals.icu
     client = IntervalsClient()
@@ -101,7 +95,7 @@ async def suggest_workout(
         return f"Error pushing to Intervals.icu: {e}"
 
     # Save to local DB
-    await save_ai_workout(
+    await AiWorkoutRow.save(
         date_str=str(dt),
         sport=sport,
         slot=workout.slot,
@@ -140,7 +134,7 @@ async def remove_ai_workout(
         return "AI workout generation is disabled (AI_WORKOUT_ENABLED=false)"
 
     dt = date.fromisoformat(target_date)
-    targets = await get_ai_workouts_for_date(dt)
+    targets = await AiWorkoutRow.get_for_date(dt)
     if sport:
         targets = [w for w in targets if w.sport.lower() == sport.lower()]
 
@@ -155,7 +149,7 @@ async def remove_ai_workout(
                 await client.delete_event(w.intervals_id)
             except Exception:
                 logger.warning("Failed to delete event %s from Intervals.icu", w.intervals_id)
-        await cancel_ai_workout(w.external_id)
+        await AiWorkoutRow.cancel(w.external_id)
         removed.append(f"AI: {w.name} ({w.sport})")
 
     return f"Removed {len(removed)} workout(s): " + ", ".join(removed)
@@ -171,7 +165,7 @@ async def list_ai_workouts(days_ahead: int = 7) -> dict:
     Args:
         days_ahead: Number of days to look ahead (default: 7).
     """
-    rows = await get_ai_workouts_upcoming(days_ahead=days_ahead)
+    rows = await AiWorkoutRow.get_upcoming(days_ahead=days_ahead)
     return {
         "count": len(rows),
         "workouts": [

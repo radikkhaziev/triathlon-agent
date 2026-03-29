@@ -1,6 +1,6 @@
 """MCP tools for Training Log (ATP Phase 3)."""
 
-from data.database import get_training_log_range
+from data.database import TrainingLogRow
 from mcp_server.app import mcp
 
 
@@ -15,7 +15,7 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
         target_date: Not used yet (reserved). Default: today.
         days_back: Number of days to look back (default: 14).
     """
-    rows = await get_training_log_range(days_back=days_back)
+    rows = await TrainingLogRow.get_range(days_back=days_back)
 
     entries = []
     for r in rows:
@@ -36,21 +36,29 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
                 "sleep": r.pre_sleep_score,
                 "ra": r.pre_ra_pct,
             },
-            "actual": {
-                "activity_id": r.actual_activity_id,
-                "sport": r.actual_sport,
-                "duration_min": (r.actual_duration_sec // 60) if r.actual_duration_sec else None,
-                "avg_hr": r.actual_avg_hr,
-                "tss": r.actual_tss,
-            } if r.compliance else None,
+            "actual": (
+                {
+                    "activity_id": r.actual_activity_id,
+                    "sport": r.actual_sport,
+                    "duration_min": (r.actual_duration_sec // 60) if r.actual_duration_sec else None,
+                    "avg_hr": r.actual_avg_hr,
+                    "tss": r.actual_tss,
+                }
+                if r.compliance
+                else None
+            ),
             "compliance": r.compliance,
-            "post": {
-                "recovery": r.post_recovery_score,
-                "hrv_delta": r.post_hrv_delta_pct,
-                "sleep": r.post_sleep_score,
-                "ra": r.post_ra_pct,
-                "recovery_delta": r.recovery_delta,
-            } if r.post_recovery_score is not None else None,
+            "post": (
+                {
+                    "recovery": r.post_recovery_score,
+                    "hrv_delta": r.post_hrv_delta_pct,
+                    "sleep": r.post_sleep_score,
+                    "ra": r.post_ra_pct,
+                    "recovery_delta": r.recovery_delta,
+                }
+                if r.post_recovery_score is not None
+                else None
+            ),
         }
         entries.append(entry)
 
@@ -70,12 +78,11 @@ async def get_personal_patterns(days_back: int = 90) -> dict:
     Args:
         days_back: Days of history to analyze (default: 90).
     """
-    rows = await get_training_log_range(days_back=days_back)
+    rows = await TrainingLogRow.get_range(days_back=days_back)
 
     # Filter to entries with complete data (pre + actual + post)
     complete = [
-        r for r in rows
-        if r.compliance and r.post_recovery_score is not None and r.pre_recovery_score is not None
+        r for r in rows if r.compliance and r.post_recovery_score is not None and r.pre_recovery_score is not None
     ]
 
     if len(complete) < 30:
@@ -111,8 +118,7 @@ async def get_personal_patterns(days_back: int = 90) -> dict:
 
     total_compliance = sum(compliance_counts.values())
     compliance_rates = {
-        k: {"count": v, "pct": round(v / total_compliance * 100, 1)}
-        for k, v in compliance_counts.items()
+        k: {"count": v, "pct": round(v / total_compliance * 100, 1)} for k, v in compliance_counts.items()
     }
 
     # HRV sensitivity: avg recovery_delta when HRV green vs yellow vs red
