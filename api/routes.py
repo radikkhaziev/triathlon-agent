@@ -24,6 +24,7 @@ from data.database import (
     get_session,
 )
 from data.utils import extract_sport_ctl, format_duration, serialize_activity_details, serialize_activity_hrv
+from mcp_server.tools.progress import get_efficiency_trend
 
 logger = logging.getLogger(__name__)
 
@@ -665,3 +666,14 @@ async def activity_details(
         "details": serialize_activity_details(detail) if detail else None,
         "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
     }
+
+
+@router.get("/api/progress")
+async def progress(
+    sport: str = Query(default="", description="bike, run, or swim. Empty = all"),
+    days: int = Query(default=90, ge=7, le=365),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Aerobic efficiency trend: EF for Bike/Run, SWOLF + Pace for Swim."""
+    _require_viewer(authorization)
+    return await get_efficiency_trend(sport=sport, days_back=days)

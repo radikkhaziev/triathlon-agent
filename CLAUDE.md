@@ -60,8 +60,8 @@ triathlon-agent/
 │   ├── server.py                # FastAPI + static + webhook
 │   ├── routes.py                # REST endpoints + auth
 │   └── auth.py                  # one-time codes + JWT
-├── mcp_server/                  # FastMCP: 28 tools + 3 resources
-│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_details, activity_hrv, scheduled_workouts, ai_workouts, mood, iqos, workout_cards
+├── mcp_server/                  # FastMCP: 29 tools + 3 resources
+│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_details, activity_hrv, scheduled_workouts, ai_workouts, training_log, mood, iqos, workout_cards
 │   └── resources/               # athlete profile, goal, thresholds
 ├── webapp/                      # React SPA (Vite + TypeScript + Tailwind)
 │   ├── index.html               # Vite entry
@@ -89,7 +89,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Thirteen tables. Full column specs in `data/database.py`.
+Fourteen tables. Full column specs in `data/database.py`.
 
 | Table | PK | Purpose |
 |---|---|---|
@@ -98,6 +98,7 @@ Thirteen tables. Full column specs in `data/database.py`.
 | `rhr_analysis` | date | RHR baselines: 7d/30d/60d means, bounds (±0.5 SD of 30d), trend. Inverted: high RHR = red |
 | `scheduled_workouts` | event ID | Planned workouts from Intervals.icu calendar. Synced hourly |
 | `activities` | activity ID | Completed activities. Synced hourly at :30 |
+| `activity_details` | activity_id FK | Extended stats: HR/power/pace zones, zone times, intervals, EF, decoupling |
 | `activity_hrv` | activity_id FK | Post-activity DFA a1: quality, thresholds (HRVT1/HRVT2), Ra, Da. Processed every 5 min |
 | `pa_baseline` | autoincrement | Pa values for Readiness (Ra) calculation. 14-day rolling baseline |
 | `ai_workouts` | autoincrement | AI-generated/adapted workouts pushed to Intervals.icu. External ID for dedup |
@@ -117,7 +118,7 @@ Thirteen tables. Full column specs in `data/database.py`.
 | `ai/*` | Done | Claude tool-use morning analysis (V2) + free-form chat + V1 fallback, Gemini, workout generation, prompts, tool definitions |
 | `bot/*` | Done | /start, /morning, /web, /stick, /whoami, free-form chat, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
-| `mcp_server/` | Done | 28 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
+| `mcp_server/` | Done | 29 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
 | `webapp/` (React SPA) | Done | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme |
 | Adaptive Training Plan | Phase 4 done | Write API, AI workout generation, HumanGo adaptation, training log, ramp tests + threshold drift. See `docs/ADAPTIVE_TRAINING_PLAN.md` |
 
@@ -219,12 +220,13 @@ Runs once daily for current date (not backfill). Model: `claude-sonnet-4-6`, max
 ## Bot Commands (bot/main.py)
 
 ```
-/start    — welcome message with bot description + Mini App button
-/morning  — morning report + Mini App button
-/web      — one-time code for desktop login (5 min TTL)
-/stick    — increment IQOS stick counter for today, replies with current count
-/whoami   — show current user info (chat_id, role)
-<text>   — free-form AI chat (Phase 3, owner only, stateless, tool-use)
+/start      — welcome message with bot description + Mini App button
+/morning    — morning report + Mini App button
+/dashboard  — dashboard link (Mini App)
+/web        — one-time code for desktop login (5 min TTL)
+/stick      — increment IQOS stick counter for today, replies with current count
+/whoami     — show current user info (chat_id, role)
+<text>     — free-form AI chat (Phase 3, owner only, stateless, tool-use)
 ```
 
 ---
@@ -310,8 +312,10 @@ Production: Docker multi-stage — Node 20 builds SPA → Python 3.12 serves `we
 python -m bot.cli shell
 python -m bot.cli backfill [date|range|quarter|month]  # default: last 180 days
 python -m bot.cli sync-workouts [days_ahead]            # default: 14
-python -m bot.cli sync-activities
-python -m bot.cli process-fit
+python -m bot.cli sync-activities [days_back]           # default: 90
+python -m bot.cli backfill-details [days_back]          # default: all without details
+python -m bot.cli refetch-details [days_back]           # default: 180 — re-fetch existing details (updates zone_times etc)
+python -m bot.cli backfill-max-zone                     # fill actual_max_zone_time in training_log
 ```
 
 ---
@@ -404,11 +408,13 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 | `ACTIVITIES_PAGE.md` | Activities page architecture |
 | `ADAPTIVE_TRAINING_PLAN.md` | Adaptive Training Plan — 4 phases: Write API, adaptation, training log, ramp tests |
 | `GEMINI_ROLE_SPEC.md` | Gemini role — weekly pattern analyst (depends on ATP Phase 3) |
-| `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends |
+| `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends. Данные уже в `activity_details`, миграции не нужны |
 | `MOOD_TRACKING.md` | Mood tracking via MCP — scales, workflow |
 | `WORKOUT_CARDS.md` | Workout Cards — exercise library + workout composition from cards |
 | `MCP_PHASE2.md` | MCP Phase 2 — tool-use для утреннего анализа, tool definitions, fallback |
 | `MCP_PHASE3.md` | MCP Phase 3 — free-form Telegram chat, stateless, owner-only, two-tier architecture |
+| `ACTUAL_MAX_ZONE_TIME_SPEC.md` | Спека заполнения actual_max_zone_time — реализовано |
+| `TODO_WORKOUT_DISTANCE.md` | Distance-based workouts — реализовано, Этап 0 (API верификация) pending |
 | `intervals_icu_openapi.json` | Intervals.icu OpenAPI 3.0 spec (official, full API reference) |
 
 ---

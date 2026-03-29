@@ -14,6 +14,7 @@ import mcp_server.tools.goal  # noqa: F401
 import mcp_server.tools.hrv  # noqa: F401
 import mcp_server.tools.iqos  # noqa: F401
 import mcp_server.tools.mood  # noqa: F401
+import mcp_server.tools.progress  # noqa: F401
 import mcp_server.tools.ramp_tests  # noqa: F401
 import mcp_server.tools.recovery  # noqa: F401
 import mcp_server.tools.rhr  # noqa: F401

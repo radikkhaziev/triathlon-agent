@@ -827,6 +827,7 @@ class ActivityDetailRow(Base):
     power_zone_times: Mapped[list | None] = mapped_column(JSON, nullable=True)  # seconds per power zone
     pace_zone_times: Mapped[list | None] = mapped_column(JSON, nullable=True)  # seconds per pace zone
     intervals: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    pool_length: Mapped[float | None] = mapped_column(Float, nullable=True)  # meters (25 or 50)
 
     # Mapping: Intervals.icu JSON key → ActivityDetailRow column
     _DETAIL_FIELD_MAP = {
@@ -853,6 +854,7 @@ class ActivityDetailRow(Base):
         "pace_zones": "pace_zones",
         "icu_hr_zone_times": "hr_zone_times",
         "pace_zone_times": "pace_zone_times",
+        "pool_length": "pool_length",
     }
 
     # --- CRUD ---
@@ -890,6 +892,15 @@ class ActivityDetailRow(Base):
         """Fetch activity details by activity ID."""
         async with get_session() as session:
             return await session.get(cls, activity_id)
+
+    @classmethod
+    async def get_bulk(cls, activity_ids: list[str]) -> dict[str, "ActivityDetailRow"]:
+        """Fetch multiple activity details by IDs. Returns {activity_id: row}."""
+        if not activity_ids:
+            return {}
+        async with get_session() as session:
+            result = await session.execute(select(cls).where(cls.activity_id.in_(activity_ids)))
+            return {r.activity_id: r for r in result.scalars().all()}
 
     @classmethod
     async def get_existing_ids(cls, activity_ids: list[str]) -> set[str]:

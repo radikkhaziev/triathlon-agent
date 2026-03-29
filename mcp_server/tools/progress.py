@@ -1,0 +1,222 @@
+"""MCP tools for aerobic efficiency and progress tracking."""
+
+import logging
+from collections import defaultdict
+from datetime import date, timedelta
+
+from config import settings
+from data.database import ActivityDetailRow, ActivityRow
+from mcp_server.app import mcp
+
+logger = logging.getLogger(__name__)
+
+# Sport type groupings
+_BIKE_TYPES = {"Ride", "VirtualRide"}
+_RUN_TYPES = {"Run", "TrailRun"}
+_SWIM_TYPES = {"Swim"}
+
+# Minimum duration (seconds) for meaningful steady-state comparison
+_MIN_DURATION = {"bike": 30 * 60, "run": 20 * 60, "swim": 15 * 60}
+
+# Z2 HR ranges as fraction of LTHR (from CLAUDE.md)
+_Z2_BIKE = (0.68, 0.83)
+_Z2_RUN = (0.72, 0.82)
+
+
+def _sport_group(activity_type: str) -> str | None:
+    """Map Intervals.icu activity type to sport group."""
+    if activity_type in _BIKE_TYPES:
+        return "bike"
+    if activity_type in _RUN_TYPES:
+        return "run"
+    if activity_type in _SWIM_TYPES:
+        return "swim"
+    return None
+
+
+def _is_z2(avg_hr: float | None, sport: str) -> bool:
+    """Check if average HR is in Z2 range for the sport."""
+    if not avg_hr:
+        return False
+    if sport == "bike":
+        lthr = settings.ATHLETE_LTHR_BIKE
+        lo, hi = _Z2_BIKE
+    elif sport == "run":
+        lthr = settings.ATHLETE_LTHR_RUN
+        lo, hi = _Z2_RUN
+    else:
+        return True  # Swim: no HR filter
+    ratio = avg_hr / lthr
+    return lo <= ratio <= hi
+
+
+def _calc_swolf(pace: float, avg_stride: float, pool_length: float) -> float | None:
+    """Calculate SWOLF from pace, stride and pool length.
+
+    pace: m/s, avg_stride: m/stroke, pool_length: meters.
+    SWOLF = time_per_length + strokes_per_length.
+    """
+    if not pace or pace <= 0 or not avg_stride or avg_stride <= 0 or not pool_length or pool_length <= 0:
+        return None
+    time_per_length = pool_length / pace
+    strokes_per_length = pool_length / avg_stride
+    return round(time_per_length + strokes_per_length, 1)
+
+
+def _week_key(dt: date) -> str:
+    """ISO week string: 2026-W12."""
+    return f"{dt.isocalendar()[0]}-W{dt.isocalendar()[1]:02d}"
+
+
+def _trend_pct(values: list[float]) -> dict:
+    """Calculate trend from first to last value."""
+    if len(values) < 2 or values[0] == 0:
+        return {"direction": "insufficient_data", "pct": 0}
+    change = (values[-1] - values[0]) / abs(values[0]) * 100
+    direction = "rising" if change > 1 else "falling" if change < -1 else "stable"
+    return {"direction": direction, "pct": round(change, 1)}
+
+
+@mcp.tool()
+async def get_efficiency_trend(
+    sport: str = "",
+    days_back: int = 90,
+    group_by: str = "week",
+) -> dict:
+    """Get aerobic efficiency trend over time.
+
+    Bike: EF = Normalized Power / Avg HR (higher = fitter). From Intervals.icu icu_efficiency_factor.
+    Run: EF = Speed / Avg HR (higher = fitter). From Intervals.icu icu_efficiency_factor.
+    Swim: Pace per 100m trend (lower = faster) + SWOLF (lower = more efficient).
+
+    Only includes Z2 steady-state sessions for meaningful comparison.
+    Minimum duration: bike 30min, run 20min, swim 15min.
+
+    Args:
+        sport: "bike", "run", or "swim". Empty string = all three sports.
+        days_back: Lookback period in days (default: 90).
+        group_by: "week" for weekly averages, "activity" for individual data points.
+    """
+    since = date.today() - timedelta(days=days_back)
+    activities, _ = await ActivityRow.get_range(since, date.today())
+
+    # Filter by sport
+    target_sports = {sport.lower()} if sport else {"bike", "run", "swim"}
+
+    # Pre-filter activities before bulk DB fetch
+    filtered = []
+    for act in activities:
+        sg = _sport_group(act.type)
+        if not sg or sg not in target_sports:
+            continue
+        if (act.moving_time or 0) < _MIN_DURATION.get(sg, 0):
+            continue
+        if sg in ("bike", "run") and not _is_z2(act.average_hr, sg):
+            continue
+        filtered.append((act, sg))
+
+    if not filtered:
+        return {"data_points": 0, "activities": []}
+
+    # Bulk fetch details (single query)
+    detail_map = await ActivityDetailRow.get_bulk([act.id for act, _ in filtered])
+
+    # Collect matching activities with details
+    results: dict[str, list[dict]] = defaultdict(list)
+
+    for act, sg in filtered:
+        detail = detail_map.get(act.id)
+        if not detail:
+            continue
+
+        act_date = act.start_date_local.date() if hasattr(act.start_date_local, "date") else act.start_date_local
+        entry = {
+            "date": str(act_date),
+            "id": act.id,
+            "duration_min": round((act.moving_time or 0) / 60),
+            "avg_hr": act.average_hr,
+        }
+
+        if sg in ("bike", "run"):
+            ef = detail.efficiency_factor
+            if not ef or ef <= 0:
+                continue
+            entry["ef"] = round(ef, 4)
+            entry["decoupling"] = round(detail.decoupling, 1) if detail.decoupling else None
+            entry["np"] = detail.normalized_power if sg == "bike" else None
+            entry["pace"] = round(detail.pace, 4) if detail.pace else None
+        elif sg == "swim":
+            if not detail.pace or detail.pace <= 0:
+                continue
+            pace_100m = 100 / detail.pace  # seconds per 100m
+            entry["pace_100m"] = round(pace_100m, 1)
+            entry["distance"] = detail.distance
+            pool_length = detail.pool_length or 25.0
+            entry["pool_length"] = pool_length
+            swolf = _calc_swolf(detail.pace, detail.avg_stride, pool_length)
+            entry["swolf"] = swolf
+
+        results[sg].append(entry)
+
+    # Build response per sport
+    response = {}
+    for sg in sorted(results.keys()):
+        entries = sorted(results[sg], key=lambda e: e["date"])
+        sport_resp: dict = {
+            "sport": sg,
+            "period": f"{entries[0]['date']} to {entries[-1]['date']}" if entries else "",
+            "data_points": len(entries),
+            "activities": entries,
+        }
+
+        if group_by == "week":
+            weekly = _group_weekly(entries, sg)
+            sport_resp["weekly"] = weekly
+
+            # Trend
+            if sg in ("bike", "run"):
+                ef_values = [w["ef_mean"] for w in weekly if w["ef_mean"]]
+                sport_resp["metric"] = "efficiency_factor"
+                sport_resp["unit"] = "W/bpm" if sg == "bike" else "(m/s)/bpm"
+                sport_resp["trend"] = _trend_pct(ef_values)
+            elif sg == "swim":
+                pace_values = [w["pace_mean"] for w in weekly if w["pace_mean"]]
+                swolf_values = [w["swolf_mean"] for w in weekly if w["swolf_mean"]]
+                sport_resp["metrics"] = {
+                    "pace_100m": {"unit": "sec/100m", "trend": _trend_pct(pace_values)},
+                    "swolf": {"unit": "points", "trend": _trend_pct(swolf_values)},
+                }
+
+        response[sg] = sport_resp
+
+    if len(response) == 1:
+        return next(iter(response.values()))
+    return response
+
+
+def _group_weekly(entries: list[dict], sport: str) -> list[dict]:
+    """Group activity entries by ISO week."""
+    weeks: dict[str, list[dict]] = defaultdict(list)
+    for e in entries:
+        dt = date.fromisoformat(e["date"])
+        weeks[_week_key(dt)].append(e)
+
+    result = []
+    for week in sorted(weeks.keys()):
+        items = weeks[week]
+        row: dict = {"week": week, "sessions": len(items)}
+
+        if sport in ("bike", "run"):
+            efs = [e["ef"] for e in items if e.get("ef")]
+            decs = [e["decoupling"] for e in items if e.get("decoupling") is not None]
+            row["ef_mean"] = round(sum(efs) / len(efs), 4) if efs else None
+            row["decoupling_mean"] = round(sum(decs) / len(decs), 1) if decs else None
+        elif sport == "swim":
+            paces = [e["pace_100m"] for e in items if e.get("pace_100m")]
+            swolfs = [e["swolf"] for e in items if e.get("swolf")]
+            row["pace_mean"] = round(sum(paces) / len(paces), 1) if paces else None
+            row["swolf_mean"] = round(sum(swolfs) / len(swolfs), 1) if swolfs else None
+
+        result.append(row)
+
+    return result
