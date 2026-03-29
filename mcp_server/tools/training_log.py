@@ -43,6 +43,7 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
                     "duration_min": (r.actual_duration_sec // 60) if r.actual_duration_sec else None,
                     "avg_hr": r.actual_avg_hr,
                     "tss": r.actual_tss,
+                    "max_zone": r.actual_max_zone_time,
                 }
                 if r.compliance
                 else None
@@ -135,6 +136,39 @@ async def get_personal_patterns(days_back: int = 90) -> dict:
                 "avg_delta": round(sum(deltas) / len(deltas), 1),
             }
 
+    # Recovery response by zone (recovery × intensity matrix)
+    zone_groups: dict[str, list[float]] = {}
+    for r in complete:
+        zone = r.actual_max_zone_time or "unknown"
+        zone_groups.setdefault(zone, []).append(r.recovery_delta or 0)
+
+    recovery_by_zone = {}
+    for zone, deltas in sorted(zone_groups.items()):
+        if deltas:
+            recovery_by_zone[zone] = {
+                "count": len(deltas),
+                "avg_delta": round(sum(deltas) / len(deltas), 1),
+                "min_delta": round(min(deltas), 1),
+                "max_delta": round(max(deltas), 1),
+            }
+
+    # Recovery × intensity matrix: category + zone → avg delta
+    matrix: dict[str, dict[str, list[float]]] = {}
+    for r in complete:
+        cat = r.pre_recovery_category or "moderate"
+        zone = r.actual_max_zone_time or "unknown"
+        matrix.setdefault(cat, {}).setdefault(zone, [])
+        matrix[cat][zone].append(r.recovery_delta or 0)
+
+    recovery_intensity_matrix = {}
+    for cat, zones_map in matrix.items():
+        recovery_intensity_matrix[cat] = {}
+        for zone, deltas in sorted(zones_map.items()):
+            recovery_intensity_matrix[cat][zone] = {
+                "count": len(deltas),
+                "avg_delta": round(sum(deltas) / len(deltas), 1),
+            }
+
     # Skipped vs trained recovery comparison
     skipped_deltas = [r.recovery_delta or 0 for r in complete if r.compliance == "skipped"]
     trained_deltas = [r.recovery_delta or 0 for r in complete if r.compliance != "skipped"]
@@ -144,6 +178,8 @@ async def get_personal_patterns(days_back: int = 90) -> dict:
         "entries_total": len(rows),
         "entries_complete": len(complete),
         "recovery_response_by_category": recovery_response,
+        "recovery_response_by_zone": recovery_by_zone,
+        "recovery_intensity_matrix": recovery_intensity_matrix,
         "compliance_rates": compliance_rates,
         "hrv_sensitivity": hrv_sensitivity,
         "skipped_avg_delta": round(sum(skipped_deltas) / max(len(skipped_deltas), 1), 1),

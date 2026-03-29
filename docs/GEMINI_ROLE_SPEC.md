@@ -418,7 +418,7 @@ IQOS:
 | Зависимость | Статус | Описание |
 |---|---|---|
 | `training_log` таблица | ✅ Фаза 3 ATP | Основной источник данных для Gemini |
-| `actual_max_zone_time` заполнение | ⚠️ **Блокер** | Поле объявлено в `TrainingLogRow` (`String(10)`), но **нигде не заполняется**. Без него матрица `recovery × intensity` невозможна |
+| `actual_max_zone_time` заполнение | ✅ Выполнено | Реализовано в `bot/utils.py:compute_max_zone()`. Заполняется при compliance detection + CLI backfill. Спека: `docs/ACTUAL_MAX_ZONE_TIME_SPEC.md` |
 | `personal_patterns` таблица | Эта спека | Хранение результатов анализа |
 | `PersonalPatterns` Pydantic модель | Эта спека | Валидация Gemini JSON output |
 | `build_morning_prompt()` | Существует | Дополнить секцией персональных паттернов |
@@ -426,7 +426,7 @@ IQOS:
 
 **Блокеры:**
 1. **30+ записей в `training_log`** — полноценный анализ невозможен до этого. До этого Gemini не вызывается.
-2. **`actual_max_zone_time` не заполняется** — compliance detection в training_log должен записывать зону (Z1-Z5) по результатам активности. Без этого паттерны Recovery Response и Personal Thresholds работают только по `pre_recovery_category` (как MCP tool), без разбивки по интенсивности.
+2. ~~**`actual_max_zone_time` не заполняется**~~ — ✅ Выполнено. `compute_max_zone()` в `bot/utils.py` заполняет поле при compliance detection. CLI `backfill-max-zone` для существующих записей.
 
 ---
 
@@ -434,7 +434,7 @@ IQOS:
 
 | # | Задача | Зависит от | Файлы |
 |---|---|---|---|
-| 0 | ⚠️ Заполнение `actual_max_zone_time` в compliance detection | Фаза 3 ATP | `data/database.py` (TrainingLogRow) |
+| 0 | ✅ Заполнение `actual_max_zone_time` в compliance detection | Фаза 3 ATP | `bot/utils.py` (`compute_max_zone()`), `bot/cli.py` (`backfill-max-zone`) |
 | 1 | `PersonalPatterns` Pydantic модель | — | `data/models.py` |
 | 2 | Таблица `personal_patterns` + Alembic миграция | #1 | `data/database.py`, миграция |
 | 3 | `WEEKLY_PATTERNS_PROMPT` | — | `ai/prompts.py` |
@@ -460,13 +460,13 @@ GET /api/patterns?date=YYYY-MM-DD    — конкретный анализ по 
 - Prompt enrichment: `prompt_snippet` включается в `build_morning_prompt()`
 - REST API: `/api/patterns` возвращает корректный JSON
 
-**Критический путь:** `actual_max_zone_time` заполнение (#0) → Фаза 3 ATP (`training_log` 30+ записей) → `analyze_patterns()` (#4) → prompt enrichment (#7).
+**Критический путь:** ~~`actual_max_zone_time` заполнение (#0)~~ ✅ → Фаза 3 ATP (`training_log` 30+ записей) → `analyze_patterns()` (#4) → prompt enrichment (#7).
 
 ---
 
 ## Критерии готовности
 
-- [ ] `actual_max_zone_time` заполняется при compliance detection
+- [x] `actual_max_zone_time` заполняется при compliance detection
 - [ ] `PersonalPatterns` Pydantic модель в `data/models.py`
 - [ ] `weekly_patterns_job` запускается в понедельник 03:00
 - [ ] Gemini получает полный training_log + wellness за 60 дней
