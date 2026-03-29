@@ -160,6 +160,7 @@ CREATE TABLE workout_cards (
     id                 SERIAL PRIMARY KEY,
     date               VARCHAR(10) NOT NULL,       -- "2026-03-28"
     name               VARCHAR(200) NOT NULL,      -- "Утренняя зарядка — День Б"
+    sport              VARCHAR(30) NOT NULL DEFAULT 'Other',  -- "Swim" | "Ride" | "Run" | "Other"
     exercises          JSONB NOT NULL,             -- [{id: "clamshell", sets: 2, reps: 15}, ...]
     total_duration_min INTEGER,
     equipment_summary  VARCHAR(200),               -- "Мини-петля" (comma-separated)
@@ -270,6 +271,7 @@ async def compose_workout(
     exercises: list[dict],           # [{"id": "clamshell", "sets": 2, "reps": 15}, ...]
     target_date: str | None = None,  # "2026-03-28"
     push_to_intervals: bool = False, # создать event в Intervals.icu
+    sport: str = "Other",            # "Swim" | "Ride" | "Run" | "Other"
 ) -> str:
     """Compose a workout from exercise library cards.
 
@@ -281,6 +283,8 @@ async def compose_workout(
     Returns URL to the workout page.
 
     If push_to_intervals=True, also creates a WORKOUT event in Intervals.icu.
+    Sport type determines how the event appears in Intervals.icu:
+    "Swim" for swim drills, "Ride"/"Run" for sport-specific, "Other" for зарядки.
     """
 ```
 
@@ -290,7 +294,7 @@ async def compose_workout(
 3. Рендерить каждую карточку через Jinja-шаблон с кастомными reps/sets
 4. Обернуть в workout page template (header + нумерация + scroll)
 5. Сохранить в `static/workouts/{date}-{slug}.html`
-6. Если `push_to_intervals` — создать event в Intervals.icu (category=WORKOUT, type=Other)
+6. Если `push_to_intervals` — создать event в Intervals.icu (category=WORKOUT, type=sport)
 7. Сохранить запись в `workout_cards`
 8. Вернуть URL страницы
 

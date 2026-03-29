@@ -1531,6 +1531,7 @@ class WorkoutCardRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     date: Mapped[str] = mapped_column(String(10), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    sport: Mapped[str] = mapped_column(String(30), nullable=False, default="Other", server_default="Other")
     exercises: Mapped[list] = mapped_column(JSON, nullable=False)
     total_duration_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     equipment_summary: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -1545,6 +1546,7 @@ class WorkoutCardRow(Base):
         *,
         date_str: str,
         name: str,
+        sport: str = "Other",
         exercises: list[dict],
         total_duration_min: int | None = None,
         equipment_summary: str | None = None,
@@ -1555,6 +1557,7 @@ class WorkoutCardRow(Base):
             row = cls(
                 date=date_str,
                 name=name,
+                sport=sport,
                 exercises=exercises,
                 total_duration_min=total_duration_min,
                 equipment_summary=equipment_summary,

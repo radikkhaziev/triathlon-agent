@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import re
+from datetime import date
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -13,6 +14,8 @@ from data.intervals_client import IntervalsClient
 from mcp_server.app import mcp
 
 logger = logging.getLogger(__name__)
+
+VALID_SPORTS = frozenset({"Swim", "Ride", "Run", "Other"})
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _TEMPLATES_DIR = os.path.join(_PROJECT_ROOT, "templates")
@@ -256,6 +259,7 @@ async def compose_workout(
     exercises: list[dict],
     target_date: str | None = None,
     push_to_intervals: bool = False,
+    sport: str = "Other",
 ) -> str:
     """Compose a workout from exercise library cards.
 
@@ -274,8 +278,10 @@ async def compose_workout(
         exercises: List of exercise entries with custom sets/reps.
         target_date: Date in YYYY-MM-DD format. Default: today.
         push_to_intervals: Create event in Intervals.icu calendar.
+        sport: Sport type for Intervals.icu — "Swim", "Ride", "Run", "Other". Default: "Other".
     """
-    from datetime import date
+    if sport not in VALID_SPORTS:
+        return f"Invalid sport '{sport}'. Must be one of: {', '.join(sorted(VALID_SPORTS))}"
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
     date_str = str(dt)
@@ -392,7 +398,7 @@ async def compose_workout(
                 "category": "WORKOUT",
                 "start_date_local": f"{date_str}T06:00:00",
                 "name": name,
-                "type": "Other",
+                "type": sport,
                 "moving_time": total_duration_sec,
                 "description": f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}",
                 "external_id": f"workout-card:{date_str}:{slug}",
@@ -411,6 +417,7 @@ async def compose_workout(
     await WorkoutCardRow.save(
         date_str=date_str,
         name=name,
+        sport=sport,
         exercises=exercises,
         total_duration_min=total_duration_min,
         equipment_summary=equipment_summary,
@@ -440,6 +447,7 @@ async def list_workout_cards(days_back: int = 30) -> dict:
                 "id": r.id,
                 "date": r.date,
                 "name": r.name,
+                "sport": r.sport,
                 "exercises": r.exercises,
                 "total_duration_min": r.total_duration_min,
                 "equipment_summary": r.equipment_summary,

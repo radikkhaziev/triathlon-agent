@@ -105,7 +105,7 @@ Thirteen tables. Full column specs in `data/database.py`.
 | `mood_checkins` | autoincrement | Emotional state: energy/mood/anxiety/social (1-5) + note. Via MCP only |
 | `iqos_daily` | date string | Daily IQOS stick counter. Incremented via /stick bot command. Queried via MCP |
 | `exercise_cards` | id string | Exercise library: animation HTML/CSS, metadata, steps, focus |
-| `workout_cards` | autoincrement | Composed workouts from exercise cards with custom sets/reps |
+| `workout_cards` | autoincrement | Composed workouts from exercise cards with custom sets/reps. Sport type (Swim/Ride/Run/Other) |
 
 ---
 
