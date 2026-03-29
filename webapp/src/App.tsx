@@ -11,6 +11,7 @@ import Activities from './pages/Activities'
 import Activity from './pages/Activity'
 import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
+import Progress from './pages/Progress'
 
 export default function App() {
   useEffect(() => {
@@ -32,6 +33,7 @@ export default function App() {
       <Route path="/plan" element={<Plan />} />
       <Route path="/activities" element={<Activities />} />
       <Route path="/activity/:id" element={<Activity />} />
+      <Route path="/progress" element={<Progress />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="*" element={<Navigate to="/" />} />

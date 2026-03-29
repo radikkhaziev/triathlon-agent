@@ -15,6 +15,7 @@ const TABS: Tab[] = [
 ]
 
 const MORE_ITEMS: Tab[] = [
+  { path: '/progress', label: 'Progress', icon: '📈' },
   { path: '/dashboard', label: 'Dashboard', icon: '📊' },
   { path: '/settings', label: 'Settings', icon: '⚙️' },
 ]
