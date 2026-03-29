@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, delete, func, select
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -740,6 +740,7 @@ class PaBaselineRow(Base):
     """Pa (power/pace at fixed DFA a1) baseline for Ra calculation."""
 
     __tablename__ = "pa_baseline"
+    __table_args__ = (UniqueConstraint("activity_type", "date", name="uq_pa_baseline_activity_type_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     activity_type: Mapped[str] = mapped_column(String)  # "Ride" | "Run"
@@ -756,25 +757,25 @@ class PaBaselineRow(Base):
     ) -> None:
         """Save or update a Pa baseline data point (dedup on activity_type + date)."""
         async with get_session() as session:
-            # Check for existing entry on same date + type
-            result = await session.execute(
-                select(cls).where(cls.activity_type == activity_type).where(cls.date == dt).limit(1)
-            )
-            existing = result.scalar_one_or_none()
-            if existing:
-                existing.pa_value = pa_value
-                existing.dfa_a1_ref = dfa_a1_ref
-                existing.quality = quality
-            else:
-                session.add(
-                    cls(
-                        activity_type=activity_type,
-                        date=dt,
-                        pa_value=pa_value,
-                        dfa_a1_ref=dfa_a1_ref,
-                        quality=quality,
-                    )
+            stmt = (
+                insert(cls)
+                .values(
+                    activity_type=activity_type,
+                    date=dt,
+                    pa_value=pa_value,
+                    dfa_a1_ref=dfa_a1_ref,
+                    quality=quality,
                 )
+                .on_conflict_do_update(
+                    index_elements=["activity_type", "date"],
+                    set_={
+                        "pa_value": pa_value,
+                        "dfa_a1_ref": dfa_a1_ref,
+                        "quality": quality,
+                    },
+                )
+            )
+            await session.execute(stmt)
             await session.commit()
 
     @classmethod
@@ -787,7 +788,8 @@ class PaBaselineRow(Base):
                 select(cls.pa_value)
                 .where(cls.activity_type == activity_type)
                 .where(cls.date >= cutoff)
-                .where(cls.quality != "poor")
+                .where(cls.date <= str(ref))
+                .where((cls.quality != "poor") | (cls.quality.is_(None)))
                 .order_by(cls.date.desc())
             )
             values = [row[0] for row in result.all()]
@@ -973,15 +975,16 @@ class ScheduledWorkoutRow(Base):
                 count += 1
 
             # --- delete stale rows in the synced date range ---
-            if oldest is not None and newest is not None and incoming_ids:
+            if oldest is not None and newest is not None:
                 oldest_str = oldest.strftime("%Y-%m-%d")
                 newest_str = newest.strftime("%Y-%m-%d")
 
                 stale_q = delete(cls).where(
                     cls.start_date_local >= oldest_str,
                     cls.start_date_local <= newest_str,
-                    cls.id.notin_(incoming_ids),
                 )
+                if incoming_ids:
+                    stale_q = stale_q.where(cls.id.notin_(incoming_ids))
                 result = await session.execute(stale_q)
 
                 if result.rowcount:
@@ -1381,7 +1384,7 @@ class TrainingLogRow(Base):
     @classmethod
     async def get_range(cls, days_back: int = 14) -> list[TrainingLogRow]:
         """Fetch training log entries for the last N days."""
-        from_date = str(date.today() - timedelta(days=days_back))
+        from_date = str(date.today() - timedelta(days=days_back - 1))
         async with get_session() as session:
             result = await session.execute(select(cls).where(cls.date >= from_date).order_by(cls.date.desc()))
             return list(result.scalars().all())
@@ -1620,7 +1623,7 @@ class WorkoutCardRow(Base):
     @classmethod
     async def get_list(cls, days_back: int = 30) -> list[WorkoutCardRow]:
         """Fetch workout cards for the last N days, newest first."""
-        cutoff = str(date.today() - timedelta(days=days_back))
+        cutoff = str(date.today() - timedelta(days=days_back - 1))
         async with get_session() as session:
             result = await session.execute(
                 select(cls).where(cls.date >= cutoff).order_by(cls.date.desc(), cls.id.desc())

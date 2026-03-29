@@ -214,6 +214,9 @@ export interface ActivityDetails {
   hr_zones: number[] | null
   power_zones: number[] | null
   pace_zones: number[] | null
+  hr_zone_times: number[] | null
+  power_zone_times: number[] | null
+  pace_zone_times: number[] | null
   intervals: ActivityInterval[] | null
 }
 

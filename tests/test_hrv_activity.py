@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import numpy as np
 import pytest
 
@@ -368,3 +370,31 @@ class TestActivityHrvCRUD:
         baseline = await PaBaselineRow.get_average("Ride", days=14)
         assert baseline is not None
         assert 200 < baseline < 210
+
+    @pytest.mark.asyncio
+    async def test_pa_baseline_excludes_future_rows(self):
+        """Average should include only rows up to as_of date."""
+        from data.database import PaBaselineRow
+
+        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-20", pa_value=200.0, quality="good")
+        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-21", pa_value=210.0, quality="good")
+        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-22", pa_value=220.0, quality="good")
+        # Future row relative to as_of=2026-03-22; should not affect average.
+        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-25", pa_value=1000.0, quality="good")
+
+        baseline = await PaBaselineRow.get_average("Ride", days=14, as_of=date(2026, 3, 22))
+        assert baseline is not None
+        assert abs(baseline - 210.0) < 1e-9
+
+    @pytest.mark.asyncio
+    async def test_pa_baseline_includes_null_quality(self):
+        """Rows with NULL quality are valid and should be included."""
+        from data.database import PaBaselineRow
+
+        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-20", pa_value=200.0, quality="good")
+        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-21", pa_value=210.0, quality=None)
+        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-22", pa_value=220.0, quality="good")
+
+        baseline = await PaBaselineRow.get_average("Ride", days=14, as_of=date(2026, 3, 22))
+        assert baseline is not None
+        assert abs(baseline - 210.0) < 1e-9

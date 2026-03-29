@@ -76,6 +76,7 @@ async def test_session(_test_db, monkeypatch):
     factory = async_sessionmaker(bind=engine, expire_on_commit=False)
 
     monkeypatch.setattr(db_module, "_SessionLocal", factory)
+    monkeypatch.setattr(db_module, "_engine", None)
 
     yield
 

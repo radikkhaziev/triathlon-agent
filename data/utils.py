@@ -129,6 +129,9 @@ def serialize_activity_details(detail: ActivityDetailRow) -> dict:
         "hr_zones": detail.hr_zones,
         "power_zones": detail.power_zones,
         "pace_zones": detail.pace_zones,
+        "hr_zone_times": detail.hr_zone_times,
+        "power_zone_times": detail.power_zone_times,
+        "pace_zone_times": detail.pace_zone_times,
         "intervals": detail.intervals,
     }
 

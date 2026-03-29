@@ -1,17 +1,16 @@
 import hashlib
-import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from telegram import Update
 
 from api.dashboard_routes import router as dashboard_router
 from api.routes import router
+from api.telegram_webhook import router as telegram_webhook_router
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -113,28 +112,7 @@ app.add_middleware(MCPAuthMiddleware)
 
 app.include_router(router)
 app.include_router(dashboard_router)
-
-
-@app.post("/telegram/webhook")
-async def telegram_webhook(request: Request) -> Response:
-    """Receive Telegram updates via webhook."""
-    tg_app = getattr(request.app.state, "tg_app", None)
-    if tg_app is None:
-        return Response(status_code=503, content="Bot not configured for webhook mode")
-
-    # Verify secret token (set during set_webhook)
-    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    expected = hashlib.sha256(settings.TELEGRAM_BOT_TOKEN.get_secret_value().encode()).hexdigest()[:32]
-    if not hmac.compare_digest(secret, expected):
-        return Response(status_code=403, content="Forbidden")
-
-    data = await request.json()
-    update = Update.de_json(data, tg_app.bot)
-    try:
-        await tg_app.process_update(update)
-    except Exception:
-        logger.exception("Error processing Telegram update")
-    return Response(status_code=200)
+app.include_router(telegram_webhook_router)
 
 
 app.mount("/mcp", _mcp_app)
