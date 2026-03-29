@@ -288,7 +288,24 @@ async def compose_workout(
     """
 ```
 
-Логика:
+### `remove_workout_card`
+
+Удаляет зарядку из БД и из Intervals.icu (если была запушена).
+
+```python
+@mcp.tool()
+async def remove_workout_card(
+    card_id: int,                    # ID из list_workout_cards
+) -> str:
+    """Remove a composed workout (зарядка) by its ID.
+
+    Deletes from local DB and from Intervals.icu calendar (if it was pushed there).
+    Use list_workout_cards to find the card_id.
+    """
+```
+
+### `compose_workout` — логика
+
 1. **Валидация:** проверить все exercise_id существуют в библиотеке, вернуть ошибку если нет
 2. Загрузить данные каждого упражнения из БД
 3. Рендерить каждую карточку через Jinja-шаблон с кастомными reps/sets
@@ -499,7 +516,8 @@ create_exercise_card(
 - [x] `compose_workout` валидирует exercise_id + генерирует сборную HTML-страницу с кастомными reps/sets
 - [x] HTML-страницы доступны по URL и корректно отображаются на мобильном
 - [x] Static файлы переживают перезапуск контейнера (Docker volume)
-- [x] Push to Intervals.icu работает (с workout_doc steps для Garmin sync)
+- [x] Push to Intervals.icu работает (с workout_doc steps для Garmin sync, sport type: Swim/Ride/Run/Other)
+- [x] `remove_workout_card` удаляет из БД + из Intervals.icu
 - [x] Минимум 10 упражнений в библиотеке
 - [x] MCP tool `list_workout_cards` — просмотр созданных зарядок (аналог `list_ai_workouts` для `workout_cards` таблицы)
 - [x] DB функция `get_workout_cards()` в database.py — запрос за последние N дней

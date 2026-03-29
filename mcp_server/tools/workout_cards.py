@@ -431,6 +431,35 @@ async def compose_workout(
 
 
 @mcp.tool()
+async def remove_workout_card(card_id: int) -> str:
+    """Remove a composed workout (зарядка) by its ID.
+
+    Deletes from local DB and from Intervals.icu calendar (if it was pushed there).
+    Use list_workout_cards to find the card_id.
+
+    Args:
+        card_id: Workout card ID (from list_workout_cards).
+    """
+    row = await WorkoutCardRow.get_by_id(card_id)
+    if not row:
+        return f"Workout card #{card_id} not found."
+
+    # Delete from Intervals.icu if pushed
+    intervals_warning = ""
+    if row.intervals_id:
+        try:
+            client = IntervalsClient()
+            await client.delete_event(row.intervals_id)
+        except Exception as e:
+            logger.warning("Failed to delete event %s from Intervals.icu: %s", row.intervals_id, e)
+            intervals_warning = f" (warning: failed to remove from Intervals.icu, event ID {row.intervals_id})"
+
+    name = row.name
+    await WorkoutCardRow.delete(card_id)
+    return f"Removed workout card #{card_id}: {name}{intervals_warning}"
+
+
+@mcp.tool()
 async def list_workout_cards(days_back: int = 30) -> dict:
     """List composed workouts (зарядки) for the last N days.
 

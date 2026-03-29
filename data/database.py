@@ -1569,6 +1569,25 @@ class WorkoutCardRow(Base):
             return row
 
     @classmethod
+    async def get_by_id(cls, card_id: int) -> WorkoutCardRow | None:
+        """Fetch a single workout card by ID."""
+        async with get_session() as session:
+            result = await session.execute(select(cls).where(cls.id == card_id))
+            return result.scalar_one_or_none()
+
+    @classmethod
+    async def delete(cls, card_id: int) -> bool:
+        """Delete a workout card by ID. Returns True if deleted."""
+        async with get_session() as session:
+            result = await session.execute(select(cls).where(cls.id == card_id))
+            row = result.scalar_one_or_none()
+            if not row:
+                return False
+            await session.delete(row)
+            await session.commit()
+            return True
+
+    @classmethod
     async def get_list(cls, days_back: int = 30) -> list[WorkoutCardRow]:
         """Fetch workout cards for the last N days, newest first."""
         cutoff = str(date.today() - timedelta(days=days_back))
