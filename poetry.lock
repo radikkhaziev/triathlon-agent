@@ -1120,6 +1120,24 @@ files = [
 colors = ["colorama"]
 
 [[package]]
+name = "jinja2"
+version = "3.1.6"
+description = "A very fast and expressive template engine."
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "jinja2-3.1.6-py3-none-any.whl", hash = "sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67"},
+    {file = "jinja2-3.1.6.tar.gz", hash = "sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d"},
+]
+
+[package.dependencies]
+MarkupSafe = ">=2.0"
+
+[package.extras]
+i18n = ["Babel (>=2.7)"]
+
+[[package]]
 name = "jiter"
 version = "0.13.0"
 description = "Fast iterable JSON parser."
@@ -3107,4 +3125,4 @@ gemini = ["google-genai"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12"
-content-hash = "3b6a93efefed95c535940b460a4e1b46d3fa9075eb4794e9e01b80eca85462db"
+content-hash = "5aac239d9b55543c41659fea8b88da1bf97cdcc82be3137794cdae224682f190"

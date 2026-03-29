@@ -296,7 +296,7 @@ class TestActivityHrvCRUD:
     @pytest.mark.asyncio
     async def test_save_and_get_activity_hrv(self):
         """Save an activity_hrv row and verify it persists."""
-        from data.database import ActivityHrvRow, ActivityRow, get_session, save_activity_hrv
+        from data.database import ActivityHrvRow, ActivityRow, get_session
 
         # First create the parent activity
         async with get_session() as session:
@@ -321,7 +321,7 @@ class TestActivityHrvCRUD:
             dfa_a1_warmup=1.05,
             processing_status="processed",
         )
-        await save_activity_hrv(hrv_row)
+        await ActivityHrvRow.save(hrv_row)
 
         # Verify
         async with get_session() as session:
@@ -333,7 +333,7 @@ class TestActivityHrvCRUD:
     @pytest.mark.asyncio
     async def test_get_unprocessed_activities(self):
         """Should return activities without HRV analysis."""
-        from data.database import ActivityRow, get_session, get_unprocessed_activities
+        from data.database import ActivityRow, get_session
 
         # Create activities
         async with get_session() as session:
@@ -348,23 +348,23 @@ class TestActivityHrvCRUD:
                 )
             await session.commit()
 
-        unprocessed = await get_unprocessed_activities(batch_size=10)
+        unprocessed = await ActivityRow.get_unprocessed(batch_size=10)
         assert len(unprocessed) == 3
 
     @pytest.mark.asyncio
     async def test_pa_baseline(self):
         """Save and retrieve Pa baseline."""
-        from data.database import get_pa_baseline, save_pa_baseline
+        from data.database import PaBaselineRow
 
         # Need at least 3 data points
         for i in range(5):
-            await save_pa_baseline(
+            await PaBaselineRow.save(
                 activity_type="Ride",
                 dt=f"2026-03-{20 + i:02d}",
                 pa_value=200.0 + i,
                 quality="good",
             )
 
-        baseline = await get_pa_baseline("Ride", days=14)
+        baseline = await PaBaselineRow.get_average("Ride", days=14)
         assert baseline is not None
         assert 200 < baseline < 210

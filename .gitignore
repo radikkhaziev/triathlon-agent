@@ -16,6 +16,10 @@ dist/
 
 .claude/
 
+# Generated workout card HTML files
+static/exercises/*.html
+static/workouts/*.html
+
 # Webapp
 webapp/node_modules/
 webapp/dist/

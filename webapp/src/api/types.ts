@@ -125,6 +125,7 @@ export interface WellnessResponse {
   stress: StressData
   ai_recommendation: string | null
   ai_recommendation_gemini: string | null
+  updated_at?: string | null
 }
 
 // Scheduled Workouts

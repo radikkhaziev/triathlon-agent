@@ -15,11 +15,11 @@ export default function Activity() {
   )
 
   if (!id || !/^i\d+$/.test(id)) {
-    return <Layout backTo="/activities" backLabel="Назад к активностям"><ErrorMessage message="Invalid or missing activity ID." /></Layout>
+    return <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs><ErrorMessage message="Invalid or missing activity ID." /></Layout>
   }
 
-  if (loading) return <Layout backTo="/activities" backLabel="Назад к активностям"><LoadingSpinner /></Layout>
-  if (error || !data) return <Layout backTo="/activities" backLabel="Назад к активностям"><ErrorMessage message="Не удалось загрузить активность." /></Layout>
+  if (loading) return <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs><LoadingSpinner /></Layout>
+  if (error || !data) return <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs><ErrorMessage message="Не удалось загрузить активность." /></Layout>
 
   const d = data.details
   const hrv = data.hrv
@@ -31,7 +31,7 @@ export default function Activity() {
   const subParts = [fmtDateShort(data.date), data.duration, data.icu_training_load != null ? `TSS ${data.icu_training_load}` : null, data.average_hr != null ? `\u2764\uFE0F ${data.average_hr} bpm` : null].filter(Boolean)
 
   return (
-    <Layout backTo="/activities" backLabel="Назад к активностям">
+    <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs>
       {/* Header */}
       <div className="py-4 pb-3">
         <div className="text-xl font-bold flex items-center gap-2">{icon} {sportLabel(data.type)}</div>

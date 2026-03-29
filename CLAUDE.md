@@ -41,25 +41,27 @@ triathlon-agent/
 ├── bot/
 │   ├── main.py                  # bot entry (polling + webhook)
 │   ├── cli.py                   # shell, backfill, sync-workouts, sync-activities
-│   ├── scheduler.py             # 5 cron jobs
+│   ├── scheduler.py             # 5 cron jobs + AI workout auto-push
 │   └── formatter.py             # report formatting
 ├── data/
 │   ├── intervals_client.py      # Intervals.icu API client
 │   ├── metrics.py               # dual HRV, RHR, recovery, per-sport CTL, ESS/Banister
 │   ├── hrv_activity.py          # DFA a1 pipeline (FIT → RR → DFA → thresholds → Ra/Da)
 │   ├── database.py              # SQLAlchemy ORM + CRUD
-│   ├── models.py                # Pydantic data models
+│   ├── models.py                # Pydantic data models (WorkoutStep, PlannedWorkout, etc.)
+│   ├── workout_adapter.py       # HumanGo parser + adaptation engine (ATP Phase 2)
 │   └── utils.py                 # SPORT_MAP, extract_sport_ctl
 ├── ai/
-│   ├── claude_agent.py          # Claude API — morning analysis
+│   ├── claude_agent.py          # Claude API — morning analysis (V2 tool-use + V1 fallback) + workout generation
 │   ├── gemini_agent.py          # Gemini — optional second opinion
-│   └── prompts.py               # system + report prompts
+│   ├── prompts.py               # system + report prompts (V1 + V2)
+│   └── tool_definitions.py      # Tool-use definitions + handlers for Claude API (MCP Phase 2)
 ├── api/
 │   ├── server.py                # FastAPI + static + webhook
 │   ├── routes.py                # REST endpoints + auth
 │   └── auth.py                  # one-time codes + JWT
-├── mcp_server/                  # FastMCP: 15 tools + 3 resources
-│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_hrv, scheduled_workouts, mood, iqos
+├── mcp_server/                  # FastMCP: 29 tools + 3 resources
+│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_details, activity_hrv, scheduled_workouts, ai_workouts, training_log, mood, iqos, workout_cards
 │   └── resources/               # athlete profile, goal, thresholds
 ├── webapp/                      # React SPA (Vite + TypeScript + Tailwind)
 │   ├── index.html               # Vite entry
@@ -69,9 +71,15 @@ triathlon-agent/
 │       ├── api/                 # apiClient + TypeScript types
 │       ├── auth/                # AuthProvider, useAuth, Telegram SDK
 │       ├── components/          # Layout, MetricCard, Gauge, TabSwitcher, WeekNav
-│       ├── pages/               # Landing, Login, Report, Wellness, Plan, Activities, Activity, Dashboard
+│       ├── pages/               # Today, Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings
 │       ├── hooks/               # useApi, useWeekNav, useDayNav
-│       └── styles/              # Tailwind + --tg-theme-* CSS vars
+│       └── styles/              # Tailwind + light theme CSS vars
+├── templates/
+│   ├── exercise_card.html           # Jinja2 template for exercise cards
+│   └── workout_page.html            # Jinja2 template for composed workouts
+├── static/
+│   ├── exercises/                   # Generated exercise card HTML files
+│   └── workouts/                    # Generated workout HTML files
 ├── migrations/
 ├── docs/
 └── tests/
@@ -81,7 +89,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Nine tables. Full column specs in `data/database.py`.
+Fourteen tables. Full column specs in `data/database.py`.
 
 | Table | PK | Purpose |
 |---|---|---|
@@ -90,10 +98,15 @@ Nine tables. Full column specs in `data/database.py`.
 | `rhr_analysis` | date | RHR baselines: 7d/30d/60d means, bounds (±0.5 SD of 30d), trend. Inverted: high RHR = red |
 | `scheduled_workouts` | event ID | Planned workouts from Intervals.icu calendar. Synced hourly |
 | `activities` | activity ID | Completed activities. Synced hourly at :30 |
+| `activity_details` | activity_id FK | Extended stats: HR/power/pace zones, zone times, intervals, EF, decoupling |
 | `activity_hrv` | activity_id FK | Post-activity DFA a1: quality, thresholds (HRVT1/HRVT2), Ra, Da. Processed every 5 min |
 | `pa_baseline` | autoincrement | Pa values for Readiness (Ra) calculation. 14-day rolling baseline |
+| `ai_workouts` | autoincrement | AI-generated/adapted workouts pushed to Intervals.icu. External ID for dedup |
+| `training_log` | autoincrement | Training log: pre-context, actual, post-outcome. Compliance detection + personal patterns |
 | `mood_checkins` | autoincrement | Emotional state: energy/mood/anxiety/social (1-5) + note. Via MCP only |
 | `iqos_daily` | date string | Daily IQOS stick counter. Incremented via /stick bot command. Queried via MCP |
+| `exercise_cards` | id string | Exercise library: animation HTML/CSS, metadata, steps, focus |
+| `workout_cards` | autoincrement | Composed workouts from exercise cards with custom sets/reps. Sport type (Swim/Ride/Run/Other) |
 
 ---
 
@@ -101,14 +114,15 @@ Nine tables. Full column specs in `data/database.py`.
 
 | Module | Status | Notes |
 |---|---|---|
-| `data/*` | Done | Models, Intervals.icu client, metrics pipeline, DFA a1, database ORM |
-| `ai/*` | Done | Claude + Gemini (optional) morning reports, shared prompts |
-| `bot/*` | Done | /morning, /web, scheduler (5 jobs), CLI, formatter |
-| `api/*` | Done | REST endpoints, dashboard_routes (scaffold), auth |
-| `mcp_server/` | Done | 15 tools + 3 resources |
-| `webapp/` (React SPA) | Migration | See `docs/REACT_MIGRATION_PLAN.md` |
+| `data/*` | Done | Models, Intervals.icu client (read + write), metrics pipeline, DFA a1, database ORM |
+| `ai/*` | Done | Claude tool-use morning analysis (V2) + free-form chat + V1 fallback, Gemini, workout generation, prompts, tool definitions |
+| `bot/*` | Done | /start, /morning, /web, /stick, /whoami, free-form chat, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
+| `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
+| `mcp_server/` | Done | 29 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
+| `webapp/` (React SPA) | Done | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme |
+| Adaptive Training Plan | Phase 4 done | Write API, AI workout generation, HumanGo adaptation, training log, ramp tests + threshold drift. See `docs/ADAPTIVE_TRAINING_PLAN.md` |
 
-**Webapp pages status:** All pending React migration — Landing, Login, Report, Plan, Activities, Activity, Wellness, Dashboard.
+**Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
 
 ---
 
@@ -147,6 +161,14 @@ HRV_ALGORITHM=flatt_esco          # or "ai_endurance"
 JWT_SECRET=                       # if empty, uses TELEGRAM_BOT_TOKEN
 JWT_EXPIRY_DAYS=7
 MCP_AUTH_TOKEN=...                # Bearer token for /mcp endpoint
+
+# Adaptive Training Plan
+AI_WORKOUT_ENABLED=true           # Enable AI workout generation and MCP tools
+AI_WORKOUT_AUTO_PUSH=true         # Auto-push generated workouts in morning cron
+
+# AI Tool-Use (MCP Phase 2)
+AI_USE_TOOL_USE=true              # Tool-use for morning analysis (vs fixed prompt V1)
+AI_CHAT_ENABLED=true              # Free-form Telegram chat (Phase 3)
 ```
 
 ---
@@ -189,6 +211,8 @@ Runs once daily for current date (not backfill). Model: `claude-sonnet-4-6`, max
 
 **Workout suggestion rules:** Recovery excellent+TSB>0 → any intensity; good → Z2; moderate/sleep<50 → Z1-Z2 45-60min; low/red RMSSD → rest/Z1≤30min; TSB<-25 → Z1-Z2 cap; HRV delta<-15% → Z1-Z2 max.
 
+**Distance-based workouts:** `WorkoutStep` supports `distance` (meters) as alternative to `duration` (seconds). Mutually exclusive. Swim: always distance + pace. Run intervals: distance + pace/hr. Ride: always duration + power. When `PlannedWorkout` has distance steps, `to_intervals_event()` uses plain text `description` (Способ A) instead of `workout_doc` — more reliable for Intervals.icu distance parsing. `target: "PACE"` set for Swim/Run.
+
 **Gemini** (optional, gated by `GOOGLE_AI_API_KEY`): `gemini-2.5-flash`, parallel call via `asyncio.gather`. Result in `ai_recommendation_gemini`. Shown as second tab in webapp, not in Telegram.
 
 ---
@@ -196,10 +220,13 @@ Runs once daily for current date (not backfill). Model: `claude-sonnet-4-6`, max
 ## Bot Commands (bot/main.py)
 
 ```
-/morning  — morning report + Mini App button
-/web      — one-time code for desktop login (5 min TTL)
-/stick    — increment IQOS stick counter for today, replies with current count
-/start, /status, /week, /goal, /zones — not yet implemented
+/start      — welcome message with bot description + Mini App button
+/morning    — morning report + Mini App button
+/dashboard  — dashboard link (Mini App)
+/web        — one-time code for desktop login (5 min TTL)
+/stick      — increment IQOS stick counter for today, replies with current count
+/whoami     — show current user info (chat_id, role)
+<text>     — free-form AI chat (Phase 3, owner only, stateless, tool-use)
 ```
 
 ---
@@ -214,11 +241,14 @@ GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA
 POST /api/auth/verify-code              — verify one-time code → JWT
 GET  /api/auth/me                       — auth status
+POST /api/jobs/sync-wellness            — trigger wellness sync (owner auth)
 POST /api/jobs/sync-workouts            — trigger sync (owner auth)
 POST /api/jobs/sync-activities          — trigger sync (owner auth)
 GET  /health
 POST /telegram/webhook                  — webhook mode only
 POST /mcp                               — MCP (Streamable HTTP, Bearer auth)
+GET  /static/exercises/{id}.html        — generated exercise card HTML (StaticFiles)
+GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles)
 ```
 
 **Dashboard API** (scaffold, mock data): `/api/dashboard`, `/api/training-load`, `/api/goal`, `/api/weekly-summary`, job trigger stubs.
@@ -231,26 +261,31 @@ POST /mcp                               — MCP (Streamable HTTP, Bearer auth)
 
 > Full migration plan: `docs/REACT_MIGRATION_PLAN.md`
 
-React 18 + TypeScript + Vite SPA. Dark theme, Inter font, mobile-first. Telegram Mini App compatible.
+React 18 + TypeScript + Vite SPA. Light theme, Inter font, mobile-first. Telegram Mini App compatible.
 
-**Stack:** React 18 + TypeScript, Vite 6, React Router v7, Tailwind CSS v3 (JIT), Chart.js v4 + react-chartjs-2, React Context (no Redux).
+**Stack:** React 18 + TypeScript, Vite 6, React Router v7, Tailwind CSS v3 (JIT), Chart.js v4, React Context (no Redux).
 
 ### Pages
 
 | Route | Component | API Source |
 |---|---|---|
-| `/` | Landing | — |
-| `/login` | Login | `POST /api/auth/verify-code` |
-| `/report` | Report | `GET /api/report` |
-| `/wellness` | Wellness | `GET /api/wellness-day` |
-| `/plan` | Plan | `GET /api/scheduled-workouts` |
-| `/activities` | Activities | `GET /api/activities-week` |
-| `/activity/:id` | Activity | `GET /api/activity/{id}/details` |
-| `/dashboard` | Dashboard | Multiple endpoints |
+| `/` | Today / Landing | `/api/report` + `/api/scheduled-workouts` | Auth → Today hub, anon → Landing |
+| `/login` | Login | `POST /api/auth/verify-code` | Desktop auth |
+| `/wellness` | Wellness | `GET /api/wellness-day` | Full day analytics with DayNav |
+| `/plan` | Plan | `GET /api/scheduled-workouts` | Weekly plan with WeekNav |
+| `/activities` | Activities | `GET /api/activities-week` | Weekly activities with WeekNav |
+| `/activity/:id` | Activity | `GET /api/activity/{id}/details` | Detail page, bottom tabs hidden |
+| `/dashboard` | Dashboard | Multiple endpoints | 3 tabs: Load, Goal, Week |
+| `/settings` | Settings | — | Read-only profile + logout |
+| `/report` | redirect | — | Redirects to `/wellness` |
+
+### Navigation
+
+Bottom tabs: Today, Plan, Activities, Wellness, More (→ Dashboard, Settings). Hidden on `/activity/:id` and `/login`.
 
 ### Shared Components
 
-Layout, MetricCard, Gauge (canvas), TabSwitcher, WeekNav, DayNav, WorkoutCard, ActivityCard, ZoneChart (Chart.js), StatusBadge, LoadingSpinner, ErrorMessage.
+Layout (with BottomTabs), MetricCard, Gauge, TabSwitcher, WeekNav, DayNav, ZoneChart, ZoneBar, SportCtlBars, AiRecommendation, SyncButton, StatusBadge, LoadingSpinner, ErrorMessage.
 
 ### Auth
 
@@ -277,8 +312,10 @@ Production: Docker multi-stage — Node 20 builds SPA → Python 3.12 serves `we
 python -m bot.cli shell
 python -m bot.cli backfill [date|range|quarter|month]  # default: last 180 days
 python -m bot.cli sync-workouts [days_ahead]            # default: 14
-python -m bot.cli sync-activities
-python -m bot.cli process-fit
+python -m bot.cli sync-activities [days_back]           # default: 90
+python -m bot.cli backfill-details [days_back]          # default: all without details
+python -m bot.cli refetch-details [days_back]           # default: 180 — re-fetch existing details (updates zone_times etc)
+python -m bot.cli backfill-max-zone                     # fill actual_max_zone_time in training_log
 ```
 
 ---
@@ -313,11 +350,11 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 
 ---
 
-## MCP Server (15 tools + 3 resources)
+## MCP Server (29 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, Bearer auth via `MCP_AUTH_TOKEN`).
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks.
+**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards.
 
 **Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
@@ -339,15 +376,15 @@ MCP tool `get_iqos_sticks(target_date, days_back)`: `days_back=0` returns single
 
 ---
 
-## Activity Details (#6 — Future)
+## Activity Details (#6 — Done)
 
-Extended per-activity stats (HR, power, pace, zones, intervals, efficiency). New table `activity_details`. Two phases: fetch & store, then web + MCP display. Full spec: `docs/ACTIVITY_DETAILS_PHASE1.md`, `docs/ACTIVITY_DETAILS_PHASE2.md`.
+Extended per-activity stats (HR, power, pace, zones, intervals, efficiency). Table `activity_details` + `activity_hrv`. Sync job fetches details for new activities. React page `/activity/:id` with zones, intervals, DFA a1. MCP tool `get_activity_details`. Full spec: `docs/ACTIVITY_DETAILS_PHASE1.md`, `docs/ACTIVITY_DETAILS_PHASE2.md`.
 
 ---
 
-## Web Dashboard (#9 — Future, post-React migration)
+## Web Dashboard (#9 — Done)
 
-Four tabs: Today (recovery + AI), Calendar (activities + plan), Load (CTL/ATL/TSB charts), Goal (per-sport progress). Manual job triggers. Implemented as React components. Full spec: `docs/WEB_DASHBOARD.md` (when created).
+Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly summary). Manual job triggers (sync workouts, sync activities). Implemented as React components. Full spec: `docs/WEB_DASHBOARD.md`.
 
 ---
 
@@ -356,18 +393,29 @@ Four tabs: Today (recovery + AI), Calendar (activities + plan), Load (CTL/ATL/TS
 | Document | Description |
 |---|---|
 | `REACT_MIGRATION_PLAN.md` | React migration — stack, structure, migration order, Docker |
+| `WEBAPP_RESTRUCTURE.md` | Webapp restructure — bottom tabs, Today hub, merged Wellness, Settings |
+| `WEB_DASHBOARD.md` | Web Dashboard — 3 tabs: Load, Goal, Week |
+| `WEB_AUTH_MODEL.md` | Auth: 3 roles, Telegram initData, JWT |
 | `HRV_MODULE_SPEC.md` | HRV architecture — Level 1 (RMSSD) + Level 2 (DFA a1) |
+| `HRV_IMPLEMENTATION_PLAN.md` | Level 1 implementation steps |
 | `DFA_ALPHA1_PLAN.md` | DFA a1 pipeline — FIT → RR → thresholds → Ra/Da |
 | `PROCESS_FIT_JOB.md` | FIT processing pipeline + quality testing |
 | `ESS_BANISTER_PLAN.md` | ESS/Banister pipeline |
-| `MCP_INTEGRATION_PLAN.md` | MCP roadmap — Phase 1 (done), Phase 2-3 (future) |
+| `MCP_INTEGRATION_PLAN.md` | MCP roadmap — Phase 1-3 (all done) |
 | `ACTIVITY_DETAILS_PHASE1.md` | Activity Details — fetch & store |
 | `ACTIVITY_DETAILS_PHASE2.md` | Activity Details — web + MCP display |
-| `WEB_AUTH_MODEL.md` | Auth: 3 roles, Telegram initData, JWT |
 | `SCHEDULED_WORKOUTS_PAGE.md` | Workouts page architecture |
 | `ACTIVITIES_PAGE.md` | Activities page architecture |
-| `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends |
-| `HRV_IMPLEMENTATION_PLAN.md` | Level 1 implementation steps |
+| `ADAPTIVE_TRAINING_PLAN.md` | Adaptive Training Plan — 4 phases: Write API, adaptation, training log, ramp tests |
+| `GEMINI_ROLE_SPEC.md` | Gemini role — weekly pattern analyst (depends on ATP Phase 3) |
+| `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends. Данные уже в `activity_details`, миграции не нужны |
+| `MOOD_TRACKING.md` | Mood tracking via MCP — scales, workflow |
+| `WORKOUT_CARDS.md` | Workout Cards — exercise library + workout composition from cards |
+| `MCP_PHASE2.md` | MCP Phase 2 — tool-use для утреннего анализа, tool definitions, fallback |
+| `MCP_PHASE3.md` | MCP Phase 3 — free-form Telegram chat, stateless, owner-only, two-tier architecture |
+| `ACTUAL_MAX_ZONE_TIME_SPEC.md` | Спека заполнения actual_max_zone_time — реализовано |
+| `TODO_WORKOUT_DISTANCE.md` | Distance-based workouts — реализовано, Этап 0 (API верификация) pending |
+| `intervals_icu_openapi.json` | Intervals.icu OpenAPI 3.0 spec (official, full API reference) |
 
 ---
 
@@ -378,15 +426,24 @@ Four tabs: Today (recovery + AI), Calendar (activities + plan), Load (CTL/ATL/TS
 3. ~~Post-activity notification~~ — Done
 4. ~~Evening report~~ — Done
 5. ~~Morning prompt + DFA~~ — Done
-6. **Activity Details** — new table, MCP tool, Intervals.icu API
+6. ~~Activity Details~~ — Done (table, API, MCP tool, React page, sync job, CLI backfill)
 7. ~~Scheduled Workouts page~~ — Done
-8. **React Migration** — webapp/ → React SPA. Prerequisite for Dashboard. See `docs/REACT_MIGRATION_PLAN.md`
-9. **Web Dashboard** — Today/Calendar/Load/Goal tabs. React components post-migration
-10. **Bot commands** — /start /status /week /goal /zones /iqos
+8. ~~React Migration~~ — Done (React 18 + TypeScript + Vite + Tailwind)
+9. ~~Web Dashboard~~ — Done (3 tabs: Load, Goal, Week)
+10. ~~Bot commands~~ — Done (/start with description + webapp link)
 11. ~~Web Auth~~ — Done
 12. ~~Mood Tracking~~ — Done
-13. **MCP Phase 2** — replace fixed prompt with tool-use
-14. **MCP Phase 3** — free-form Telegram chat
+13. ~~IQOS Tracking~~ — Done (/stick command + MCP tool)
+14. ~~Adaptive Training Plan Phase 1~~ — Done (Write API, AI workout generation, MCP tools, `ai_workouts` table)
+15. ~~Webapp Restructure~~ — Done (Bottom tabs, Today hub, merge Report→Wellness, Settings stub)
+16. ~~Adaptive Training Plan Phase 2~~ — Done (HumanGo parser, adaptation rules, clamp engine, scheduler integration, 33 unit tests)
+17. ~~Adaptive Training Plan Phase 3~~ — Done (training_log table, pre/actual/post lifecycle, compliance detection, MCP tools, 10 tests)
+18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
+19. ~~MCP Phase 2~~ — Done (Tool-use for morning analysis: 14 tools, SYSTEM_PROMPT_V2, tool-use loop, V1 fallback, AI_USE_TOOL_USE config, 18 tests)
+20. ~~MCP Phase 3~~ — Done (Free-form Telegram chat: stateless, owner-only, tool-use via Phase 2 infra, Markdown fallback, AI_CHAT_ENABLED kill switch, 13 tests)
+21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
+22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + CSS stick figure animations, Jinja templates, 5 MCP tools, static file serving)
+23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя). Связано с #21 Gemini — делать вместе
 
 ---
 

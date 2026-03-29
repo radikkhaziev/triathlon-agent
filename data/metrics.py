@@ -355,10 +355,10 @@ async def calculate_rmssd_status(algorithm: str | None = None, *, session=None) 
         algorithm: "flatt_esco" or "ai_endurance". Defaults to settings.HRV_ALGORITHM.
         session: optional AsyncSession to reuse an existing transaction.
     """
-    from data.database import get_hrv_history
+    from data.database import WellnessRow
 
     algo = algorithm or settings.HRV_ALGORITHM
-    hrv_history = await get_hrv_history(days=60, session=session)
+    hrv_history = await WellnessRow.get_hrv_history(days=60, session=session)
     n = len(hrv_history)
     MIN_DAYS = 14
 
@@ -390,9 +390,9 @@ async def calculate_rhr_status(*, session=None) -> RhrStatus:
     Args:
         session: optional AsyncSession to reuse an existing transaction.
     """
-    from data.database import get_rhr_history
+    from data.database import WellnessRow
 
-    rhr_history = await get_rhr_history(days=60, session=session)
+    rhr_history = await WellnessRow.get_rhr_history(days=60, session=session)
     n = len(rhr_history)
     MIN_DAYS = 7
 

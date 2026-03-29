@@ -7,13 +7,7 @@ from datetime import date, timedelta
 
 from bot.scheduler import daily_metrics_job, sync_activities_job
 from config import settings
-from data.database import (
-    get_activities_without_details,
-    get_session,
-    get_wellness,
-    save_activity_details,
-    save_scheduled_workouts,
-)
+from data.database import ActivityDetailRow, ActivityRow, ScheduledWorkoutRow, WellnessRow, get_session
 from data.intervals_client import IntervalsClient
 
 
@@ -78,6 +72,20 @@ def main() -> None:
         help="Limit to last N days (default: 0 = all)",
     )
 
+    refetch_parser = sub.add_parser(
+        "refetch-details",
+        help="Re-fetch activity details from Intervals.icu for ALL activities (updates zone_times etc).",
+    )
+    refetch_parser.add_argument(
+        "days",
+        nargs="?",
+        type=int,
+        default=180,
+        help="Number of days back to re-fetch (default: 180)",
+    )
+
+    sub.add_parser("backfill-max-zone", help="Backfill actual_max_zone_time for training_log entries")
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -90,6 +98,10 @@ def main() -> None:
         asyncio.run(_sync_activities(args.days))
     elif args.command == "backfill-details":
         asyncio.run(_backfill_details(args.days))
+    elif args.command == "refetch-details":
+        asyncio.run(_refetch_details(args.days))
+    elif args.command == "backfill-max-zone":
+        asyncio.run(_backfill_max_zone())
 
 
 def _parse_period(period: str | None) -> tuple[date, date]:
@@ -177,14 +189,14 @@ async def _sync_workouts(days: int = 14) -> None:
 
     client = IntervalsClient()
     workouts = await client.get_events(oldest=today, newest=newest)
-    count = await save_scheduled_workouts(workouts, oldest=today, newest=newest)
+    count = await ScheduledWorkoutRow.save_bulk(workouts, oldest=today, newest=newest)
     print(f"Synced {count} workouts.")
 
 
 async def _backfill_details(days: int = 0) -> None:
     client = IntervalsClient()
     cutoff = str(date.today() - timedelta(days=days)) if days > 0 else None
-    activities = await get_activities_without_details(since_date=cutoff)
+    activities = await ActivityRow.get_without_details(since_date=cutoff)
 
     total = len(activities)
     print(f"Backfill details: {total} activities without details")
@@ -203,7 +215,7 @@ async def _backfill_details(days: int = 0) -> None:
                 print("  Warning: intervals fetch failed, saving detail only")
                 intervals_data = None
 
-            await save_activity_details(act.id, detail, intervals_data)
+            await ActivityDetailRow.save(act.id, detail, intervals_data)
         except Exception as exc:
             print(f"  Error: {exc}")
 
@@ -219,18 +231,85 @@ def _shell() -> None:
         "Available variables:\n"
         "  settings     - app settings\n"
         "  get_session  - async session context manager\n"
-        "  get_wellness - fetch wellness row by date\n"
+        "  WellnessRow  - wellness model (use WellnessRow.get(date))\n"
         "  asyncio.run  - run async functions\n"
     )
     ctx = {
         "settings": settings,
         "get_session": get_session,
-        "get_wellness": get_wellness,
+        "WellnessRow": WellnessRow,
         "asyncio": asyncio,
         "date": date,
         "timedelta": timedelta,
     }
     code.interact(banner=banner, local=ctx)
+
+
+async def _refetch_details(days: int = 180) -> None:
+    """Re-fetch activity details from Intervals.icu for existing activities.
+
+    Unlike backfill-details (which skips existing), this re-fetches ALL activities
+    to update columns added after initial fetch (e.g. hr_zone_times, power_zone_times).
+    """
+    client = IntervalsClient()
+    cutoff = str(date.today() - timedelta(days=days))
+
+    async with get_session() as session:
+        from sqlalchemy import select as sa_select
+
+        result = await session.execute(
+            sa_select(ActivityRow)
+            .where(ActivityRow.start_date_local >= cutoff)
+            .order_by(ActivityRow.start_date_local.desc())
+        )
+        activities = list(result.scalars().all())
+
+    total = len(activities)
+    updated = 0
+    print(f"Re-fetch details: {total} activities (last {days} days)")
+
+    for i, act in enumerate(activities, 1):
+        print(f"[{i}/{total}] {act.id} ({act.start_date_local}, {act.type}) ...", end=" ")
+        try:
+            detail = await client.get_activity_detail(act.id)
+            if detail is None:
+                print("404, skip")
+                continue
+
+            # Check if API returns zone_times
+            has_zt = "icu_hr_zone_times" in detail or "icu_zone_times" in detail
+            try:
+                intervals_data = await client.get_activity_intervals(act.id)
+            except Exception:
+                intervals_data = None
+
+            await ActivityDetailRow.save(act.id, detail, intervals_data)
+            updated += 1
+            print(f"OK (zone_times: {has_zt})")
+        except Exception as exc:
+            print(f"Error: {exc}")
+
+        if i < total:
+            await asyncio.sleep(1)
+
+    print(f"\nRe-fetched {updated}/{total} activities.")
+    print("Now run: python -m bot.cli backfill-max-zone")
+
+
+async def _backfill_max_zone() -> None:
+    """Backfill actual_max_zone_time for training_log entries with activity but no zone."""
+    from bot.utils import compute_max_zone
+    from data.database import TrainingLogRow
+
+    rows = await TrainingLogRow.get_range(days_back=365)
+    count = 0
+    for row in rows:
+        if row.actual_activity_id and not row.actual_max_zone_time:
+            zone = await compute_max_zone(row.actual_activity_id, sport=row.actual_sport)
+            if zone:
+                await TrainingLogRow.update(row.id, actual_max_zone_time=zone)
+                count += 1
+    print(f"Backfilled {count} entries")
 
 
 if __name__ == "__main__":

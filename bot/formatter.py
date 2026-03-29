@@ -228,20 +228,39 @@ def build_evening_message(
     return "\n".join(lines)
 
 
-def build_morning_message(row: WellnessRow) -> str:
-    """Build full morning report text from a WellnessRow (summary + AI recommendation)."""
-    recovery = None
-    if row.recovery_score is not None:
-        recovery = RecoveryScore(
-            score=row.recovery_score,
-            category=row.recovery_category or "moderate",
-            recommendation=row.recovery_recommendation or "zone1_long",
-        )
+def build_morning_message(
+    row: WellnessRow,
+    threshold_drift: dict | None = None,
+) -> str:
+    """Build compact morning Telegram message.
 
-    wellness = Wellness(sleep_score=row.sleep_score, sleep_secs=row.sleep_secs)
-    summary = build_report_summary(recovery=recovery, sleep_data=wellness)
+    Format: Recovery + HRV, TSB warning, threshold drift.
+    AI recommendation NOT included — available only in webapp.
+    """
+    lines = []
 
-    if row.ai_recommendation:
-        summary += f"\n\n{row.ai_recommendation}"
+    # Recovery + HRV — one line
+    score = row.recovery_score or 0
+    cat = row.recovery_category or "moderate"
+    cat_display = CATEGORY_DISPLAY.get(cat, ("", cat))[1]
+    hrv_emoji = STATUS_EMOJI.get(row.readiness_level or "", "⚪")
+    lines.append(f"Recovery {score:.0f} ({cat_display}), HRV {hrv_emoji}")
 
-    return summary
+    # TSB warning
+    tsb = (row.ctl - row.atl) if row.ctl and row.atl else None
+    if tsb is not None and tsb < -25:
+        lines.append(f"TSB: {tsb:+.0f} 🔴 (overtraining risk)")
+    elif tsb is not None and tsb < -10:
+        lines.append(f"TSB: {tsb:+.0f} ⚠️ (productive overreach)")
+
+    # Threshold drift block
+    if threshold_drift and threshold_drift.get("alerts"):
+        lines.append("")
+        lines.append("🔔 ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━")
+        for alert in threshold_drift["alerts"]:
+            lines.append(f"HRVT1 стабильно {alert['measured_avg']} bpm " f"({alert['tests_count']} теста)")
+            lines.append(f"Текущий LTHR: {alert['config_value']} bpm " f"({alert['diff_pct']:+.1f}%)")
+            lines.append("→ Обнови LTHR в настройках")
+
+    return "\n".join(lines)

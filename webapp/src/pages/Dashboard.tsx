@@ -3,28 +3,26 @@ import { Chart, registerables } from 'chart.js'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
-import Gauge from '../components/Gauge'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
-import type { DashboardResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList } from '../api/types'
+import type { TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList } from '../api/types'
 
 Chart.register(...registerables)
 
-const TABS = ['today', 'load', 'goal', 'week'] as const
+const TABS = ['load', 'goal', 'week'] as const
 type TabKey = typeof TABS[number]
 
 const TAB_LABELS: Record<TabKey, string> = {
-  today: 'Today',
   load: 'Load',
   goal: 'Goal',
   week: 'Week',
 }
 
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState<TabKey>('today')
+  const [activeTab, setActiveTab] = useState<TabKey>('load')
 
   return (
-    <Layout backTo="/" maxWidth="480px">
+    <Layout maxWidth="480px">
       {/* Sticky Tabs */}
       <div className="flex gap-1 py-3 sticky top-0 bg-bg z-10">
         {TABS.map(tab => (
@@ -42,67 +40,10 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {activeTab === 'today' && <TodayTab />}
       {activeTab === 'load' && <LoadTab />}
       {activeTab === 'goal' && <GoalTab />}
       {activeTab === 'week' && <WeekTab />}
     </Layout>
-  )
-}
-
-function TodayTab() {
-  const [data, setData] = useState<DashboardResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    apiFetch<DashboardResponse>('/api/dashboard')
-      .then(setData)
-      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
-      .finally(() => setLoading(false))
-  }, [])
-
-  if (loading) return <LoadingSpinner />
-  if (error) return <ErrorMessage message={error} />
-  if (!data?.has_data) return <div className="text-center py-6 text-text-dim text-sm">No data for today.</div>
-
-  const colors: Record<string, string> = { green: '#22c55e', yellow: '#f59e0b', red: '#ef4444' }
-  const color = colors[data.readiness_level] || colors.yellow
-  const hrvDelta = data.hrv_baseline ? ((data.hrv_last - data.hrv_baseline) / data.hrv_baseline * 100).toFixed(0) : '\u2014'
-
-  return (
-    <>
-      <div className="flex justify-center py-4">
-        <div className="relative w-40 h-40">
-          <Gauge score={data.readiness_score} color={color} size={160} lineWidth={12} />
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center">
-            <div className="text-4xl font-bold leading-none">{data.readiness_score}</div>
-            <div className="text-xs text-text-dim mt-0.5">Readiness</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 mb-4">
-        <MetricCard label="HRV \u0394" value={`${Number(hrvDelta) > 0 ? '+' : ''}${hrvDelta}%`} />
-        <MetricCard label="Sleep" value={data.sleep_score != null ? String(data.sleep_score) : '\u2014'} />
-        <MetricCard label="RHR" value={data.resting_hr ? `${data.resting_hr.toFixed(0)}` : '\u2014'} />
-        <MetricCard label="CTL" value={data.ctl?.toFixed(0) ?? '\u2014'} />
-      </div>
-
-      <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
-        <div className="text-sm font-bold mb-2">AI Recommendation</div>
-        <p className="text-[13px] leading-relaxed whitespace-pre-wrap">{data.ai_recommendation || 'No recommendation available.'}</p>
-      </div>
-    </>
-  )
-}
-
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-[var(--surface)] rounded-xl p-3 text-center">
-      <div className="text-[22px] font-bold">{value}</div>
-      <div className="text-[11px] text-text-dim mt-0.5">{label}</div>
-    </div>
   )
 }
 

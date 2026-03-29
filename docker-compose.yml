@@ -3,7 +3,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 123456
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_DB: triathlon-intervals
     ports:
       - "127.0.0.1:5432:5432"
@@ -44,7 +44,10 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - static_data:/app/static
     restart: unless-stopped
 
 volumes:
   pgdata:
+  static_data:

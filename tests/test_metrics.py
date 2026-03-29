@@ -318,7 +318,7 @@ class TestRmssdAiEndurance:
 class TestCalculateRmssdStatus:
     @pytest.mark.asyncio
     async def test_insufficient_data(self):
-        with patch("data.database.get_hrv_history", new_callable=AsyncMock, return_value=[50.0] * 5):
+        with patch("data.database.WellnessRow.get_hrv_history", new_callable=AsyncMock, return_value=[50.0] * 5):
             with patch("config.settings") as mock_settings:
                 mock_settings.HRV_ALGORITHM = "flatt_esco"
                 result = await calculate_rmssd_status()
@@ -329,7 +329,7 @@ class TestCalculateRmssdStatus:
     @pytest.mark.asyncio
     async def test_flatt_esco_dispatched(self):
         history = [50.0] * 20
-        with patch("data.database.get_hrv_history", new_callable=AsyncMock, return_value=history):
+        with patch("data.database.WellnessRow.get_hrv_history", new_callable=AsyncMock, return_value=history):
             with patch("config.settings") as mock_settings:
                 mock_settings.HRV_ALGORITHM = "flatt_esco"
                 result = await calculate_rmssd_status()
@@ -338,7 +338,7 @@ class TestCalculateRmssdStatus:
     @pytest.mark.asyncio
     async def test_ai_endurance_dispatched(self):
         history = [50.0] * 20
-        with patch("data.database.get_hrv_history", new_callable=AsyncMock, return_value=history):
+        with patch("data.database.WellnessRow.get_hrv_history", new_callable=AsyncMock, return_value=history):
             with patch("config.settings") as mock_settings:
                 mock_settings.HRV_ALGORITHM = "ai_endurance"
                 result = await calculate_rmssd_status()
@@ -353,7 +353,7 @@ class TestCalculateRmssdStatus:
 class TestCalculateRhrStatus:
     @pytest.mark.asyncio
     async def test_insufficient_data(self):
-        with patch("data.database.get_rhr_history", new_callable=AsyncMock, return_value=[42.0] * 3):
+        with patch("data.database.WellnessRow.get_rhr_history", new_callable=AsyncMock, return_value=[42.0] * 3):
             result = await calculate_rhr_status()
         assert result.status == "insufficient_data"
         assert result.days_needed == 4
@@ -361,7 +361,7 @@ class TestCalculateRhrStatus:
     @pytest.mark.asyncio
     async def test_normal_rhr(self):
         history = [42.0] * 20
-        with patch("data.database.get_rhr_history", new_callable=AsyncMock, return_value=history):
+        with patch("data.database.WellnessRow.get_rhr_history", new_callable=AsyncMock, return_value=history):
             result = await calculate_rhr_status()
         assert result.status == "yellow"  # within bounds
         assert result.rhr_today == 42.0
@@ -369,14 +369,14 @@ class TestCalculateRhrStatus:
     @pytest.mark.asyncio
     async def test_elevated_rhr_is_red(self):
         history = [42.0] * 19 + [52.0]  # spike
-        with patch("data.database.get_rhr_history", new_callable=AsyncMock, return_value=history):
+        with patch("data.database.WellnessRow.get_rhr_history", new_callable=AsyncMock, return_value=history):
             result = await calculate_rhr_status()
         assert result.status == "red"
 
     @pytest.mark.asyncio
     async def test_low_rhr_is_green(self):
         history = [42.0] * 19 + [35.0]  # drop
-        with patch("data.database.get_rhr_history", new_callable=AsyncMock, return_value=history):
+        with patch("data.database.WellnessRow.get_rhr_history", new_callable=AsyncMock, return_value=history):
             result = await calculate_rhr_status()
         assert result.status == "green"
 
@@ -388,7 +388,9 @@ class TestCalculateRhrStatus:
 
 class TestCalculateEss:
     def test_threshold_effort_one_hour(self):
-        ess = calculate_ess(60, 158, 42, 182)
+        from config import settings
+
+        ess = calculate_ess(60, settings.ATHLETE_LTHR_RUN, 42, 182)
         assert abs(ess - 100) < 1  # ~100 by definition
 
     def test_easy_effort(self):

@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 
-from data.database import get_mood_checkins, save_mood_checkin
+from data.database import MoodCheckinRow
 from mcp_server.app import mcp
 
 
@@ -31,7 +31,7 @@ async def save_mood_checkin_tool(
         note: Optional text note
     """
     try:
-        row = await save_mood_checkin(energy=energy, mood=mood, anxiety=anxiety, social=social, note=note)
+        row = await MoodCheckinRow.save(energy=energy, mood=mood, anxiety=anxiety, social=social, note=note)
         return {
             "id": row.id,
             "timestamp": row.timestamp.isoformat(),
@@ -55,7 +55,7 @@ async def get_mood_checkins_tool(date_str: str | None = None, days_back: int = 7
         date_str: Reference date in YYYY-MM-DD format. Defaults to today.
         days_back: Number of days to look back (inclusive). Default is 7.
     """
-    checkins = await get_mood_checkins(target_date=date_str, days_back=days_back)
+    checkins = await MoodCheckinRow.get_range(target_date=date_str, days_back=days_back)
 
     ref = date.fromisoformat(date_str) if date_str else date.today()
     from_date = ref - timedelta(days=days_back - 1)

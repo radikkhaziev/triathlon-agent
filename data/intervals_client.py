@@ -209,6 +209,50 @@ class IntervalsClient:
                 return None
             raise
 
+    # ------------------------------------------------------------------
+    # Write Events (Adaptive Training Plan — Phase 1)
+    # ------------------------------------------------------------------
+
+    async def create_event(self, event: dict) -> dict:
+        """Create a workout event on the athlete's Intervals.icu calendar.
+
+        POST /athlete/{id}/events
+        Returns the created event dict with server-generated ID.
+        """
+        resp = await self._request(
+            "POST",
+            f"/athlete/{self._athlete_id}/events",
+            json=event,
+        )
+        return resp.json()
+
+    async def update_event(self, event_id: int, event: dict) -> dict:
+        """Update an existing event on the athlete's calendar.
+
+        PUT /athlete/{id}/events/{event_id}
+        Returns the updated event dict.
+        """
+        resp = await self._request(
+            "PUT",
+            f"/athlete/{self._athlete_id}/events/{event_id}",
+            json=event,
+        )
+        return resp.json()
+
+    async def delete_event(self, event_id: int) -> None:
+        """Delete an event from the athlete's calendar.
+
+        DELETE /athlete/{id}/events/{event_id}
+        """
+        await self._request(
+            "DELETE",
+            f"/athlete/{self._athlete_id}/events/{event_id}",
+        )
+
+    # ------------------------------------------------------------------
+    # Read Events
+    # ------------------------------------------------------------------
+
     async def get_events(
         self,
         oldest: date | None = None,

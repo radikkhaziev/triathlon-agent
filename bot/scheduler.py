@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
@@ -7,26 +6,22 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from bot.formatter import build_evening_message, build_morning_message, build_post_activity_message
-from config import settings
-from data.database import (
-    ActivityHrvRow,
-    ActivityRow,
-    get_activities_for_ctl,
-    get_activities_for_date,
-    get_activity_hrv_for_date,
-    get_existing_detail_ids,
-    get_scheduled_workouts_for_date,
-    get_session,
-    get_wellness,
-    save_activities,
-    save_activity_details,
-    save_scheduled_workouts,
-    save_wellness,
+from bot.utils import (
+    enrich_sport_info,
+    fetch_missing_details,
+    fill_training_log_actual,
+    fill_training_log_post,
+    generate_and_push_workout,
+    maybe_suggest_ramp,
+    record_training_log_pre,
 )
+from config import settings
+from data.database import ActivityHrvRow, ActivityRow, ScheduledWorkoutRow, WellnessRow, get_session
 from data.hrv_activity import process_fit_job as _process_fit_job
 from data.intervals_client import IntervalsClient
 from data.metrics import calculate_sport_ctl
 from data.models import Activity
+from data.ramp_tests import detect_threshold_drift
 
 logger = logging.getLogger(__name__)
 
@@ -71,26 +66,22 @@ async def _send_post_activity_notification(activity_id: str, bot: Bot) -> None:
     await bot.send_message(chat_id=settings.TELEGRAM_CHAT_ID, text=msg)
 
 
-# Map canonical sport → Intervals.icu type names
-_CANONICAL_TO_TYPE = {"swim": "Swim", "bike": "Ride", "run": "Run"}
-
-
 async def evening_report_job(bot: Bot | None = None) -> None:
     """Send evening summary report to Telegram at 21:00."""
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
 
-    row = await get_wellness(today)
-    activities = await get_activities_for_date(today)
+    row = await WellnessRow.get(today)
+    activities = await ActivityRow.get_for_date(today)
 
     # Skip if no data at all
     if not activities and row is None:
         logger.debug("Evening report skipped — no data for %s", today)
         return
 
-    hrv_analyses = await get_activity_hrv_for_date(today)
+    hrv_analyses = await ActivityHrvRow.get_for_date(today)
     tomorrow = today + timedelta(days=1)
-    tomorrow_workouts = await get_scheduled_workouts_for_date(tomorrow)
+    tomorrow_workouts = await ScheduledWorkoutRow.get_for_date(tomorrow)
 
     msg = build_evening_message(row, activities, hrv_analyses, tomorrow_workouts)
 
@@ -154,29 +145,17 @@ async def create_scheduler(bot: Bot | None = None) -> AsyncIOScheduler:
     return scheduler
 
 
-def _enrich_sport_info(wellness, sport_ctl: dict[str, float]) -> None:
-    """Merge per-sport CTL into wellness.sport_info before persistence."""
-    existing_info = list(wellness.sport_info) if wellness.sport_info else []
-    existing_types = {(e.get("type") or "").lower(): i for i, e in enumerate(existing_info)}
-
-    for canonical, ctl_val in sport_ctl.items():
-        if ctl_val < 0:
-            continue
-        iv_type = _CANONICAL_TO_TYPE[canonical]
-        iv_type_lower = iv_type.lower()
-        if iv_type_lower in existing_types:
-            existing_info[existing_types[iv_type_lower]]["ctl"] = ctl_val
-        else:
-            existing_info.append({"type": iv_type, "ctl": ctl_val})
-
-    if existing_info:
-        wellness.sport_info = existing_info
-
-
 async def _send_morning_report(row, bot: Bot) -> None:
     """Send morning briefing to Telegram when AI recommendation is ready."""
-    summary = build_morning_message(row)
-    webapp_url = f"{settings.API_BASE_URL}/report"
+    # Check threshold drift for alert
+    drift = None
+    try:
+        drift = await detect_threshold_drift()
+    except Exception:
+        logger.warning("Failed to check threshold drift", exc_info=True)
+
+    summary = build_morning_message(row, threshold_drift=drift)
+    webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
 
     await bot.send_message(
@@ -203,53 +182,21 @@ async def sync_activities_job(days: int = 90) -> int:
     newest = today
 
     activities = await intervals.get_activities(oldest=oldest, newest=newest)
-    count = await save_activities(activities)
+    count = await ActivityRow.save_bulk(activities)
     logger.info("Synced %d activities (%s → %s)", count, oldest, newest)
 
     # Fetch details for activities that don't have them yet
     synced_ids = [a.id for a in activities]
     if synced_ids:
-        await _fetch_missing_details(intervals, synced_ids)
+        await fetch_missing_details(intervals, synced_ids)
+
+    # Fill training log actual data for unfilled entries
+    try:
+        await fill_training_log_actual()
+    except Exception:
+        logger.warning("Failed to fill training log actual data", exc_info=True)
 
     return count
-
-
-async def _fetch_missing_details(intervals: IntervalsClient, activity_ids: list[str]) -> int:
-    """Fetch and save activity details for IDs that lack an activity_details row.
-
-    Returns count of details fetched.
-    """
-    existing_ids = await get_existing_detail_ids(activity_ids)
-    missing_ids = [aid for aid in activity_ids if aid not in existing_ids]
-    if not missing_ids:
-        return 0
-
-    fetched = 0
-    for i, aid in enumerate(missing_ids):
-        try:
-            detail = await intervals.get_activity_detail(aid)
-            if detail is None:
-                logger.debug("Activity %s not found (404), skipping", aid)
-                continue
-
-            try:
-                intervals_data = await intervals.get_activity_intervals(aid)
-            except Exception:
-                logger.warning("Failed to fetch intervals for %s, saving detail only", aid)
-                intervals_data = None
-
-            await save_activity_details(aid, detail, intervals_data)
-            fetched += 1
-            logger.debug("Fetched details for activity %s", aid)
-        except Exception:
-            logger.warning("Failed to fetch details for activity %s", aid, exc_info=True)
-
-        if i < len(missing_ids) - 1:
-            await asyncio.sleep(1)
-
-    if fetched:
-        logger.info("Fetched details for %d new activities", fetched)
-    return fetched
 
 
 async def daily_metrics_job(
@@ -266,7 +213,7 @@ async def daily_metrics_job(
 
     # Enrich sport_info with per-sport CTL from DB (not API)
     try:
-        activity_rows = await get_activities_for_ctl(days=90, as_of=dt)
+        activity_rows = await ActivityRow.get_for_ctl(days=90, as_of=dt)
         activities = [
             Activity(
                 id=r.id,
@@ -278,7 +225,7 @@ async def daily_metrics_job(
             for r in activity_rows
         ]
         sport_ctl = calculate_sport_ctl(activities)
-        _enrich_sport_info(wellness, sport_ctl)
+        enrich_sport_info(wellness, sport_ctl)
     except Exception:
         logger.warning("Failed to enrich sport_info with per-sport CTL", exc_info=True)
 
@@ -287,7 +234,7 @@ async def daily_metrics_job(
     past_deadline = datetime.now(tz).hour >= 11
     run_ai = is_today and (has_sleep or past_deadline)
 
-    row, ai_is_new = await save_wellness(dt, wellness=wellness, run_ai=run_ai)
+    row, ai_is_new = await WellnessRow.save(dt, wellness=wellness, run_ai=run_ai)
 
     # Send morning report once — only when AI recommendation first appears
     if ai_is_new and bot is not None:
@@ -295,6 +242,32 @@ async def daily_metrics_job(
             await _send_morning_report(row, bot)
         except Exception:
             logger.warning("Failed to send morning report", exc_info=True)
+
+    # Generate AI workout if enabled and auto-push is on
+    if ai_is_new and settings.AI_WORKOUT_ENABLED and settings.AI_WORKOUT_AUTO_PUSH:
+        try:
+            await generate_and_push_workout(row, dt)
+        except Exception:
+            logger.warning("Failed to generate/push AI workout", exc_info=True)
+
+    # Suggest ramp test if thresholds are stale
+    if ai_is_new and settings.AI_WORKOUT_ENABLED:
+        try:
+            await maybe_suggest_ramp(row, dt)
+        except Exception:
+            logger.warning("Failed to check/suggest ramp test", exc_info=True)
+
+    # Training Log: record pre-context for today + fill post-outcome for yesterday
+    # Independent of AI — runs on every first wellness save
+    if is_today and row:
+        try:
+            await record_training_log_pre(row, dt)
+        except Exception:
+            logger.warning("Failed to record training log pre-context", exc_info=True)
+        try:
+            await fill_training_log_post(row, dt)
+        except Exception:
+            logger.warning("Failed to fill training log post-outcome", exc_info=True)
 
 
 async def scheduled_workouts_job() -> None:
@@ -305,5 +278,5 @@ async def scheduled_workouts_job() -> None:
     newest = today + timedelta(days=14)
 
     workouts = await intervals.get_events(oldest=today, newest=newest)
-    count = await save_scheduled_workouts(workouts, oldest=today, newest=newest)
+    count = await ScheduledWorkoutRow.save_bulk(workouts, oldest=today, newest=newest)
     logger.info("Synced %d scheduled workouts (%s → %s)", count, today, newest)

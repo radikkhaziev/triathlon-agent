@@ -59,5 +59,13 @@ class Settings(BaseSettings):
     # MCP
     MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access
 
+    # AI Workout Generation (Phase 1: Adaptive Training Plan)
+    AI_WORKOUT_ENABLED: bool = True  # Enable AI workout generation and MCP tools
+    AI_WORKOUT_AUTO_PUSH: bool = True  # Auto-push generated workouts to Intervals.icu in morning cron
+
+    # AI Tool-Use (MCP Phase 2)
+    AI_USE_TOOL_USE: bool = True  # Tool-use for morning analysis (vs fixed prompt V1)
+    AI_CHAT_ENABLED: bool = True  # Free-form Telegram chat (Phase 3)
+
 
 settings = Settings()

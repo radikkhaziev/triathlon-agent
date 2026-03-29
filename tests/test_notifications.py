@@ -268,11 +268,11 @@ class TestBuildEveningMessage:
 class TestGetActivitiesForDate:
     @pytest.mark.asyncio
     async def test_returns_activities(self):
-        from data.database import get_activities_for_date, save_activities
+        from data.database import ActivityRow
         from data.models import Activity
 
         dt = date(2026, 3, 24)
-        await save_activities(
+        await ActivityRow.save_bulk(
             [
                 Activity(id="i701", start_date_local=dt, type="Ride", icu_training_load=80, moving_time=3600),
                 Activity(id="i702", start_date_local=dt, type="Run", icu_training_load=40, moving_time=2400),
@@ -282,7 +282,7 @@ class TestGetActivitiesForDate:
             ]
         )
 
-        result = await get_activities_for_date(dt)
+        result = await ActivityRow.get_for_date(dt)
         assert len(result) == 2
         ids = {r.id for r in result}
         assert "i701" in ids
@@ -291,27 +291,27 @@ class TestGetActivitiesForDate:
 
     @pytest.mark.asyncio
     async def test_empty_date(self):
-        from data.database import get_activities_for_date
+        from data.database import ActivityRow
 
-        result = await get_activities_for_date(date(2099, 1, 1))
+        result = await ActivityRow.get_for_date(date(2099, 1, 1))
         assert result == []
 
 
 class TestGetActivityHrvForDate:
     @pytest.mark.asyncio
     async def test_returns_hrv_rows(self):
-        from data.database import ActivityHrvRow, get_activity_hrv_for_date, save_activities, save_activity_hrv
+        from data.database import ActivityHrvRow, ActivityRow
         from data.models import Activity
 
         dt = date(2026, 3, 24)
-        await save_activities(
+        await ActivityRow.save_bulk(
             [
                 Activity(id="i801", start_date_local=dt, type="Ride", icu_training_load=80, moving_time=3600),
                 Activity(id="i802", start_date_local=dt, type="Run", icu_training_load=40, moving_time=2400),
             ]
         )
 
-        await save_activity_hrv(
+        await ActivityHrvRow.save(
             ActivityHrvRow(
                 activity_id="i801",
                 date="2026-03-24",
@@ -319,7 +319,7 @@ class TestGetActivityHrvForDate:
                 processing_status="processed",
             )
         )
-        await save_activity_hrv(
+        await ActivityHrvRow.save(
             ActivityHrvRow(
                 activity_id="i802",
                 date="2026-03-24",
@@ -328,7 +328,7 @@ class TestGetActivityHrvForDate:
             )
         )
 
-        result = await get_activity_hrv_for_date(dt)
+        result = await ActivityHrvRow.get_for_date(dt)
         assert len(result) == 2
         statuses = {r.processing_status for r in result}
         assert "processed" in statuses
@@ -336,7 +336,7 @@ class TestGetActivityHrvForDate:
 
     @pytest.mark.asyncio
     async def test_empty_date(self):
-        from data.database import get_activity_hrv_for_date
+        from data.database import ActivityHrvRow
 
-        result = await get_activity_hrv_for_date(date(2099, 1, 1))
+        result = await ActivityHrvRow.get_for_date(date(2099, 1, 1))
         assert result == []

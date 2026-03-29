@@ -2,19 +2,8 @@
 
 from data.database import WellnessRow, get_session
 from data.utils import extract_sport_ctl
+from data.utils import tsb_zone as _tsb_zone
 from mcp_server.app import mcp
-
-
-def _tsb_zone(tsb: float | None) -> str | None:
-    if tsb is None:
-        return None
-    if tsb > 10:
-        return "under_training"
-    if tsb >= -10:
-        return "optimal"
-    if tsb >= -25:
-        return "productive_overreach"
-    return "overtraining_risk"
 
 
 @mcp.tool()

@@ -1,14 +1,16 @@
 import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { getTelegramWebApp } from './auth/telegram'
+import { useAuth } from './auth/useAuth'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
-import Report from './pages/Report'
+import Today from './pages/Today'
 import Wellness from './pages/Wellness'
 import Plan from './pages/Plan'
 import Activities from './pages/Activities'
 import Activity from './pages/Activity'
 import Dashboard from './pages/Dashboard'
+import Settings from './pages/Settings'
 
 export default function App() {
   useEffect(() => {
@@ -19,16 +21,19 @@ export default function App() {
     }
   }, [])
 
+  const { isAuthenticated } = useAuth()
+
   return (
     <Routes>
-      <Route path="/" element={<Landing />} />
+      <Route path="/" element={isAuthenticated ? <Today /> : <Landing />} />
       <Route path="/login" element={<Login />} />
-      <Route path="/report" element={<Report />} />
+      <Route path="/report" element={<Navigate to="/wellness" />} />
       <Route path="/wellness" element={<Wellness />} />
       <Route path="/plan" element={<Plan />} />
       <Route path="/activities" element={<Activities />} />
       <Route path="/activity/:id" element={<Activity />} />
       <Route path="/dashboard" element={<Dashboard />} />
+      <Route path="/settings" element={<Settings />} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
   )

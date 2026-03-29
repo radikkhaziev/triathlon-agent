@@ -6,27 +6,25 @@ import zoneinfo
 from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from sqlalchemy import exists, func, select
 
-from api.auth import create_jwt, verify_code, verify_jwt
+from api.auth import check_rate_limit, create_jwt, verify_code, verify_jwt
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
-from bot.scheduler import scheduled_workouts_job, sync_activities_job
+from bot.scheduler import daily_metrics_job, scheduled_workouts_job, sync_activities_job
 from config import settings
 from data.database import (
     ActivityDetailRow,
     ActivityHrvRow,
     ActivityRow,
+    HrvAnalysisRow,
+    RhrAnalysisRow,
     ScheduledWorkoutRow,
     WellnessRow,
-    get_activities_range,
-    get_hrv_analysis,
-    get_rhr_analysis,
-    get_scheduled_workouts_range,
     get_session,
-    get_wellness,
 )
 from data.utils import extract_sport_ctl, format_duration, serialize_activity_details, serialize_activity_hrv
+from mcp_server.tools.progress import get_efficiency_trend
 
 logger = logging.getLogger(__name__)
 
@@ -224,8 +222,12 @@ def health() -> dict:
 
 
 @router.post("/api/auth/verify-code")
-async def auth_verify_code(body: dict) -> dict:
+async def auth_verify_code(request: Request, body: dict) -> dict:
     """Verify a one-time code from /web bot command and return JWT."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again in 5 minutes.")
+
     code = str(body.get("code", "")).strip()
     if not code:
         raise HTTPException(status_code=400, detail="Code is required")
@@ -256,12 +258,12 @@ async def _build_wellness_response(row, target_date: date) -> dict:
     recommendation_text = RECOMMENDATION_TEXT.get(row.recovery_recommendation or "", row.recovery_recommendation or "")
 
     # HRV — both algorithms
-    hrv_flatt = await get_hrv_analysis(target_str, "flatt_esco")
-    hrv_aie = await get_hrv_analysis(target_str, "ai_endurance")
+    hrv_flatt = await HrvAnalysisRow.get(target_str, "flatt_esco")
+    hrv_aie = await HrvAnalysisRow.get(target_str, "ai_endurance")
     hrv_today = float(row.hrv) if row.hrv else None
 
     # RHR
-    rhr_row = await get_rhr_analysis(target_str)
+    rhr_row = await RhrAnalysisRow.get(target_str)
 
     # Training load
     tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
@@ -320,6 +322,8 @@ async def _build_wellness_response(row, target_date: date) -> dict:
         # --- AI ---
         "ai_recommendation": row.ai_recommendation,
         "ai_recommendation_gemini": row.ai_recommendation_gemini,
+        # --- Sync metadata ---
+        "updated_at": row.updated.isoformat() if row.updated else None,
     }
 
 
@@ -338,7 +342,7 @@ async def morning_report(authorization: str | None = Header(default=None)) -> di
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
     today_str = str(today)
-    row = await get_wellness(today)
+    row = await WellnessRow.get(today)
 
     if row is None:
         return {"date": today_str, "has_data": False, "role": role}
@@ -376,7 +380,7 @@ async def wellness_day(
         target = today
 
     target_str = str(target)
-    row = await get_wellness(target)
+    row = await WellnessRow.get(target)
     has_prev = await _wellness_has_prev(target)
     has_next = target < today
 
@@ -419,7 +423,7 @@ async def scheduled_workouts(
     monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
     sunday = monday + timedelta(days=6)
 
-    workouts, last_synced_at = await get_scheduled_workouts_range(monday, sunday)
+    workouts, last_synced_at = await ScheduledWorkoutRow.get_range(monday, sunday)
 
     # Group by date
     by_date: dict[str, list] = {}
@@ -530,7 +534,7 @@ async def activities_week(
     monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
     sunday = monday + timedelta(days=6)
 
-    activities, last_synced_at = await get_activities_range(monday, sunday)
+    activities, last_synced_at = await ActivityRow.get_range(monday, sunday)
 
     by_date: dict[str, list] = {}
     for a in activities:
@@ -605,6 +609,28 @@ async def job_sync_activities(authorization: str | None = Header(default=None)) 
     }
 
 
+@router.post("/api/jobs/sync-wellness")
+async def job_sync_wellness(authorization: str | None = Header(default=None)) -> dict:
+    """Trigger wellness sync for today (owner only)."""
+    _require_owner(authorization)
+
+    try:
+        await daily_metrics_job()
+    except Exception:
+        logger.exception("sync-wellness job failed")
+        raise HTTPException(status_code=502, detail="Sync failed")
+
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today_str = str(datetime.now(tz).date())
+    row = await WellnessRow.get(datetime.now(tz).date())
+
+    return {
+        "status": "ok",
+        "date": today_str,
+        "has_data": row is not None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Activity Details
 # ---------------------------------------------------------------------------
@@ -640,3 +666,14 @@ async def activity_details(
         "details": serialize_activity_details(detail) if detail else None,
         "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
     }
+
+
+@router.get("/api/progress")
+async def progress(
+    sport: str = Query(default="", description="bike, run, or swim. Empty = all"),
+    days: int = Query(default=90, ge=7, le=365),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Aerobic efficiency trend: EF for Bike/Run, SWOLF + Pace for Swim."""
+    _require_viewer(authorization)
+    return await get_efficiency_trend(sport=sport, days_back=days)

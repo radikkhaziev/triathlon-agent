@@ -1,178 +1,79 @@
 # Triathlon AI Agent
 
-Personal AI agent for triathlon training. Syncs data from Intervals.icu, runs dual-algorithm HRV analysis, calculates training load, processes post-activity DFA alpha 1, and sends AI-powered recommendations via Telegram.
+A personal AI assistant for triathlon training. It connects to your fitness data, monitors your recovery, evaluates your training plan, and tells you each morning whether to push hard or take it easy.
 
-## Features
+## What It Does
 
-- **Morning Reports** — automated daily analysis of sleep, HRV, and training readiness with AI recommendation
-- **Dual HRV Analysis** — Flatt & Esco (acute) + AIEndurance (chronic) algorithms, both always computed
-- **RHR Baseline Tracking** — 7d/30d/60d resting heart rate baselines with trend analysis
-- **DFA Alpha 1** — post-activity HRV analysis: HRVT1/HRVT2 thresholds, Readiness (Ra), Durability (Da) from FIT files
-- **Training Load Tracking** — CTL/ATL/TSB from Intervals.icu, per-sport CTL for swim/bike/run
-- **AI Recommendations** — Claude AI daily analysis with workout suggestions; optional Gemini second opinion
-- **ESS/Banister Recovery Model** — stress score + recovery model calibrated against HRV
-- **Evening Digest** — daily summary at 21:00 with activities, DFA analysis, tomorrow's plan
-- **Telegram Bot** — `/morning` command with Mini App
-- **Web Dashboard** — morning report, training plan, activities (dark theme, mobile-first)
-- **Goal Tracking** — progress toward target race (e.g., Ironman 70.3)
-- **MCP Server** — 12 tools + 3 resources for Claude Desktop integration
+Every morning you get a message in Telegram with a simple traffic light: green (full load), yellow (be careful), or red (rest day). Behind that signal is a system that pulls together your heart rate variability, resting heart rate, sleep quality, training load, and recent workout history to figure out how ready your body is to train.
 
-## Quick Start
+### Daily Recovery Assessment
 
-### 1. Clone and configure
+The agent tracks two independent HRV algorithms simultaneously. It watches for trends -- not just today's number, but how it compares to your 7-day and 60-day baselines. Same for resting heart rate (where higher means worse, unlike HRV). It combines everything into a recovery score from 0 to 100, then translates that into a plain recommendation: which heart rate zones are safe today, and for how long.
 
-```bash
-git clone https://github.com/your-username/triathlon-agent.git
-cd triathlon-agent
-cp .env.example .env
-# Edit .env with your credentials
-```
+### Training Plan Awareness
 
-### 2. Install dependencies
+If you have workouts scheduled in Intervals.icu, the agent sees them. It checks whether today's planned session matches your recovery state. If you're supposed to do threshold intervals but your HRV has been declining for three days, it'll say so. If nothing is planned but you're feeling great, it suggests what to do.
 
-```bash
-poetry install
-```
+### Workout Adaptation
 
-### 3. Start PostgreSQL
+When your recovery doesn't match the plan, the system doesn't just warn you -- it adapts. Planned workouts can be automatically adjusted: intensity capped, duration shortened, or the session replaced entirely based on your current state. These adapted workouts are pushed directly to your Intervals.icu calendar.
 
-```bash
-docker compose up -d db
-```
+### Post-Activity Analysis
 
-### 4. Run migrations
+After each workout, the system processes the results. It looks at which heart rate or power zone you actually spent the most time in, checks your aerobic decoupling, and logs the outcome. The next morning, it can tell you how yesterday's session affected your recovery -- building a personal database of how your body responds to different training loads at different recovery levels.
 
-```bash
-poetry run alembic upgrade head
-```
+### Race Goal Tracking
 
-### 5. Run the bot (polling mode, local dev)
+The agent knows your target event (date, distance, required fitness). It tracks per-sport training load (swim/bike/run separately) against your goals and flags if you're falling behind in any discipline.
 
-```bash
-python -m bot.main
-```
+## How You Interact With It
 
-### 6. Run the API server (separate terminal)
+**Telegram Bot** -- your daily touchpoint. Morning reports arrive automatically. You can ask questions in free text and the AI responds with context from all your data. There's also a `/stick` command for tracking daily habits.
 
-```bash
-uvicorn api.server:app --reload
-```
+**Telegram Mini App** -- a mobile dashboard inside Telegram. Shows today's status, weekly training plan, activity history, detailed workout analytics with zone breakdowns, and a dashboard with training load charts and goal progress.
 
-## Docker
+**Desktop Web** -- the same dashboard accessible from a browser, authenticated via a one-time code from the bot.
 
-```bash
-docker compose up -d                    # db + migrate + api (webhook mode)
-docker compose --profile polling up -d  # db + migrate + api + bot (polling mode)
-docker compose up -d db                 # PostgreSQL only
-```
+**MCP Server** -- for AI assistants like Claude. Exposes 29 tools covering wellness, HRV, training load, recovery, workouts, activities, mood tracking, and more. This is how Claude in desktop mode can query your training data directly.
 
-### Running CLI commands in Docker
+## The AI Layer
 
-In production (webhook mode), use `docker compose run` for CLI commands:
+Two AI models work together:
 
-```bash
-docker compose run --rm api python -m bot.cli backfill
-docker compose run --rm api python -m bot.cli backfill-details
-docker compose run --rm api python -m bot.cli sync-workouts
-docker compose run --rm api python -m bot.cli sync-activities
-docker compose run --rm api alembic upgrade head
-```
+**Claude** handles the daily morning analysis. Using tool-use, it pulls exactly the data it needs -- recovery score, HRV trends, scheduled workouts, recent activities -- and produces a concise assessment in Russian. It also powers free-form chat: you can ask anything about your training and it will query the relevant data before answering.
 
-## Database
+**Gemini** (planned) will run weekly pattern analysis. With enough training history, it will find personal patterns like "after Zone 2 rides when recovery is above 70, you bounce back in one day -- but Zone 3 runs below recovery 60 take two days to recover from." These patterns feed back into Claude's daily recommendations.
 
-Seven tables: `wellness`, `hrv_analysis`, `rhr_analysis`, `scheduled_workouts`, `activities`, `activity_hrv`, `pa_baseline`.
+## Exercise Library
 
-### Migrations
+The agent includes a visual exercise library with animated stick-figure cards for warm-up routines, strength work, and stretching. Workouts can be composed from these cards and pushed to Intervals.icu with the correct sport type.
 
-```bash
-poetry run alembic upgrade head                      # apply all
-poetry run alembic downgrade -1                      # rollback last
-poetry run alembic revision --autogenerate -m "msg"  # generate new
-```
+## Mood Tracking
 
-## CLI Commands
+Claude silently tracks emotional state during conversations -- energy, mood, anxiety, and social connection on a 1-5 scale. Over time, this builds a dataset that correlates emotional patterns with HRV, sleep, and training data. No manual input required; the AI picks up signals from natural conversation.
 
-```bash
-python -m bot.cli backfill                           # wellness, last 180 days
-python -m bot.cli backfill 2026-03-01                # single day
-python -m bot.cli backfill 2026-01-01:2026-03-23     # date range
-python -m bot.cli backfill 2026Q1                    # quarter
-python -m bot.cli backfill 2026-03                   # month
-python -m bot.cli sync-workouts                      # scheduled workouts, 14 days ahead
-python -m bot.cli sync-workouts 30                   # 30 days ahead
-python -m bot.cli sync-activities                    # completed activities
-python -m bot.cli backfill-details                   # activity details from Intervals.icu API
-python -m bot.cli shell                              # interactive Python shell
-```
-
-## Web Pages
-
-| Page | URL | Description |
-|---|---|---|
-| Landing | `/` | Public page — features, links to dashboard/plan/Telegram |
-| Login | `/login` | Desktop auth — 6-digit code from `/web` bot command |
-| Morning Report | `/report` | Recovery gauge, HRV/RHR/sleep metrics, AI recommendation |
-| Wellness | `/wellness` | Day-by-day wellness navigation with all metrics |
-| Training Plan | `/plan` | Scheduled workouts by week, sync button, HumanGo descriptions |
-| Activities | `/activities` | Completed activities by week, inline detail expansion |
-| Activity | `/activity/:id` | Full activity details — zones, intervals, DFA alpha 1 |
-| Dashboard | `/dashboard` | Tabbed dashboard — Today/Load/Goal/Week |
-
-## API Endpoints
+## Data Flow
 
 ```
-GET  /api/report                        — morning report (grouped JSON)
-GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun)
-GET  /api/activities-week?week_offset=0 — weekly activities (Mon-Sun)
-POST /api/jobs/sync-workouts            — trigger plan sync (initData auth)
-POST /api/jobs/sync-activities          — trigger activities sync (initData auth)
-GET  /health                            — healthcheck
-POST /telegram/webhook                  — Telegram updates (webhook mode)
-POST /mcp                               — MCP server (Streamable HTTP, Bearer auth)
+Intervals.icu  ──sync──>  PostgreSQL  ──analyze──>  AI (Claude / Gemini)
+                               |                          |
+                               v                          v
+                     Telegram Mini App             Telegram Bot
+                     (dashboard, charts)        (morning reports, chat)
+                               |
+                               v
+                       MCP Server (29 tools)
+                  (for AI assistants like Claude Desktop)
 ```
 
-## MCP Server
+All fitness data originates from Intervals.icu, which aggregates from Garmin, Strava, or direct uploads. The agent syncs wellness data every 10 minutes, workouts hourly, and activities at the half-hour mark. Everything is stored locally in PostgreSQL -- no third-party analytics platforms.
 
-12 tools for Claude Desktop: wellness, HRV analysis, RHR analysis, training load, recovery, goal progress, scheduled workouts, activities, activity HRV (DFA alpha 1), thresholds history, readiness history.
+## Project Status
 
-Run standalone: `python -m mcp_server`
+The core system is fully operational: daily syncing, dual-HRV analysis, recovery scoring, morning reports, workout adaptation, training log with compliance detection, post-activity zone analysis, Telegram bot with AI chat, web dashboard, and MCP server.
 
-Production: mounted at `/mcp` in FastAPI, protected by Bearer token (`MCP_AUTH_TOKEN`).
+Currently waiting on data accumulation (~30 days of training log entries) to enable Gemini weekly pattern analysis. Next planned feature: efficiency tracking (EF trends for bike/run, SWOLF for swimming) to visualize aerobic fitness progress over time.
 
-## Project Structure
+## Tech Stack
 
-```
-bot/           Telegram bot (main, scheduler, formatter, CLI)
-data/          Intervals.icu client, metrics, HRV activity (DFA), database ORM
-ai/            Claude API + Gemini (optional), prompts
-api/           FastAPI server, routes, dashboard routes
-mcp_server/    MCP tools and resources
-webapp/        Web pages (HTML + Chart.js + Tailwind)
-migrations/    Alembic database migrations
-docs/          Design documents and implementation plans
-tests/         Unit tests
-config.py      Centralized settings (pydantic-settings)
-```
-
-## Environment Variables
-
-See `.env.example` for the full list. Key variables:
-
-| Variable | Description |
-|---|---|
-| `INTERVALS_API_KEY` | Intervals.icu API key |
-| `INTERVALS_ATHLETE_ID` | Intervals.icu athlete ID |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token |
-| `TELEGRAM_CHAT_ID` | Your Telegram chat ID |
-| `TELEGRAM_WEBHOOK_URL` | Webhook base URL (empty = polling mode) |
-| `ANTHROPIC_API_KEY` | Anthropic API key (Claude) |
-| `GOOGLE_AI_API_KEY` | Google AI API key (Gemini, optional) |
-| `DATABASE_URL` | PostgreSQL connection string |
-| `HRV_ALGORITHM` | Primary HRV algorithm: `flatt_esco` or `ai_endurance` |
-| `MCP_AUTH_TOKEN` | Bearer token for MCP server |
-| `GOAL_EVENT_NAME` | Target race name |
-| `GOAL_EVENT_DATE` | Target race date (YYYY-MM-DD) |
-
-## License
-
-MIT
+Python 3.12, FastAPI, PostgreSQL, React + TypeScript (Vite), python-telegram-bot, Anthropic Claude API, Google Gemini API, Docker Compose.

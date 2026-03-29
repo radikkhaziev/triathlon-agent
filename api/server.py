@@ -139,8 +139,13 @@ async def telegram_webhook(request: Request) -> Response:
 
 app.mount("/mcp", _mcp_app)
 
+# Serve workout card static HTML files
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_static_dir = os.path.join(_project_root, "static")
+os.makedirs(_static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
 # Serve React SPA — check for dist/ (production build), fallback to webapp/ root
-_project_root = os.path.dirname(os.path.dirname(__file__))
 _webapp_dist = os.path.join(_project_root, "webapp", "dist")
 _webapp_root = os.path.join(_project_root, "webapp")
 _spa_dir = _webapp_dist if os.path.isdir(_webapp_dist) else _webapp_root
@@ -153,11 +158,21 @@ class SPAStaticFiles(StaticFiles):
         from starlette.exceptions import HTTPException as StarletteHTTPException
 
         try:
-            return await super().get_response(path, scope)
+            resp = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+                resp = await super().get_response("index.html", scope)
+            else:
+                raise
+
+        # Hashed assets (/assets/index-abc123.js) — cache aggressively
+        # index.html and SPA fallback routes — never cache (so deploys take effect immediately)
+        if "/assets/" in path:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+
+        return resp
 
 
 if os.path.isdir(_spa_dir):

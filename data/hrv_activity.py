@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 from fitparse import FitFile
 
-from data.database import ActivityHrvRow, ActivityRow, get_pa_baseline, save_activity_hrv, save_pa_baseline
+from data.database import ActivityHrvRow, ActivityRow, PaBaselineRow
 from data.intervals_client import IntervalsClient
 
 logger = logging.getLogger(__name__)
@@ -706,11 +706,11 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
                 activity_type=activity_type,
                 processing_status="no_rr_data",
             )
-            await save_activity_hrv(row)
+            await ActivityHrvRow.save(row)
             return "no_rr_data"
 
         # 2-8. CPU-bound computation in executor
-        baseline_pa = await get_pa_baseline(activity_type, as_of=date_cls.fromisoformat(activity_date))
+        baseline_pa = await PaBaselineRow.get_average(activity_type, as_of=date_cls.fromisoformat(activity_date))
         result = await loop.run_in_executor(
             None,
             _compute_hrv,
@@ -732,13 +732,13 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
                 rr_count=result.get("rr_count"),
                 processing_status=status,
             )
-            await save_activity_hrv(row)
+            await ActivityHrvRow.save(row)
             return status
 
         # Save Pa baseline for future Ra calculations
         if result["pa_baseline_data"]:
             pb = result["pa_baseline_data"]
-            await save_pa_baseline(
+            await PaBaselineRow.save(
                 activity_type=activity_type,
                 dt=activity_date,
                 pa_value=pb["pa_value"],
@@ -779,7 +779,7 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
         if result["da_result"]:
             row.da_pct = result["da_result"]["da_pct"]
 
-        await save_activity_hrv(row)
+        await ActivityHrvRow.save(row)
         logger.info(
             "Processed HRV for %s: a1=%.3f, quality=%s, thresholds=%s",
             activity_id,
@@ -798,7 +798,7 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
                 activity_type=activity_type,
                 processing_status="error",
             )
-            await save_activity_hrv(row)
+            await ActivityHrvRow.save(row)
         except Exception:
             logger.exception("Failed to save error status for %s", activity_id)
         return "error"
@@ -817,9 +817,7 @@ async def process_fit_job(batch_size: int = 2) -> list[tuple[str, str]]:
 
     Returns list of (activity_id, processing_status) tuples.
     """
-    from data.database import get_unprocessed_activities
-
-    activities = await get_unprocessed_activities(batch_size=batch_size)
+    activities = await ActivityRow.get_unprocessed(batch_size=batch_size)
     if not activities:
         logger.debug("No unprocessed activities for DFA analysis")
         return []
