@@ -823,6 +823,9 @@ class ActivityDetailRow(Base):
     hr_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
     power_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
     pace_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    hr_zone_times: Mapped[list | None] = mapped_column(JSON, nullable=True)  # seconds per HR zone
+    power_zone_times: Mapped[list | None] = mapped_column(JSON, nullable=True)  # seconds per power zone
+    pace_zone_times: Mapped[list | None] = mapped_column(JSON, nullable=True)  # seconds per pace zone
     intervals: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Mapping: Intervals.icu JSON key → ActivityDetailRow column
@@ -848,6 +851,8 @@ class ActivityDetailRow(Base):
         "icu_hr_zones": "hr_zones",
         "icu_power_zones": "power_zones",
         "pace_zones": "pace_zones",
+        "icu_hr_zone_times": "hr_zone_times",
+        "pace_zone_times": "pace_zone_times",
     }
 
     # --- CRUD ---
@@ -869,6 +874,11 @@ class ActivityDetailRow(Base):
             for api_key, col_name in cls._DETAIL_FIELD_MAP.items():
                 if api_key in detail_json:
                     setattr(row, col_name, detail_json[api_key])
+
+            # icu_zone_times is ZoneTime[] ({id, secs}) — extract seconds array
+            raw_zt = detail_json.get("icu_zone_times")
+            if raw_zt and isinstance(raw_zt, list):
+                row.power_zone_times = [z.get("secs", 0) for z in raw_zt if isinstance(z, dict)]
 
             if intervals_json is not None:
                 row.intervals = intervals_json

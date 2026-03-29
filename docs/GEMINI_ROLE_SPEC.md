@@ -251,7 +251,7 @@ scheduler.add_job(
 
 ### Хранение результатов
 
-**Вариант A: таблица `personal_patterns`**
+**Таблица `personal_patterns`:**
 
 ```sql
 CREATE TABLE personal_patterns (
@@ -260,7 +260,7 @@ CREATE TABLE personal_patterns (
     period_days     INTEGER NOT NULL DEFAULT 60,
     records_analyzed INTEGER NOT NULL,
     patterns_json   JSONB NOT NULL,          -- полный JSON результат
-    prompt_snippet  TEXT NOT NULL,            -- сжатый текст для Claude промпта
+    prompt_snippet  TEXT NOT NULL,            -- сжатый текст для Claude промпта (max 2000 символов)
     model           VARCHAR(50) DEFAULT 'gemini-2.5-flash',
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -268,19 +268,47 @@ CREATE TABLE personal_patterns (
 CREATE INDEX idx_personal_patterns_date ON personal_patterns(analysis_date DESC);
 ```
 
-**Вариант B: колонка в wellness** — менее чисто, patterns не привязаны к конкретному дню.
+**Pydantic модель `PersonalPatterns`** (добавить в `data/models.py`):
 
-Рекомендация: **Вариант A** — отдельная таблица. Паттерны обновляются раз в неделю, а не ежедневно.
+```python
+class PatternEntry(BaseModel):
+    summary: str
+    confidence: str = "low"  # "low" | "medium" | "high"
+    sample_size: int = 0
 
-### Утренний Gemini отчёт
+class PersonalPatterns(BaseModel):
+    analysis_date: str
+    period_days: int = 60
+    records_analyzed: int = 0
+    patterns: dict[str, PatternEntry | dict] = {}
+    recommendations: list[str] = []
+    prompt_snippet: str = Field(default="", max_length=2000)
+```
+
+Парсинг через `model_validate_json()` с try/except — Gemini может вернуть невалидный JSON. `prompt_snippet` ограничен 2000 символов (Gemini без ограничения может выдать 1000+ слов).
+
+### Утренний Gemini отчёт → deprecated
 
 Ежедневный Gemini отчёт (текущий `ai_recommendation_gemini`) **убирается**. Вместо него — еженедельный анализ паттернов. Это устраняет дублирование и даёт Gemini осмысленную роль.
 
 **Миграция:**
 1. `get_morning_recommendation()` в `gemini_agent.py` → deprecated
-2. Новый `analyze_patterns()` в `gemini_agent.py`
+2. Новый `analyze_patterns()` в `gemini_agent.py` — с `response_mime_type: "application/json"` (см. ниже)
 3. `wellness.ai_recommendation_gemini` остаётся для обратной совместимости (старые записи)
 4. Webapp: вместо таба "Gemini" → "Паттерны" (показывает последний анализ)
+
+**Важно при удалении:** в `database.py` строка ~335 `need_gemini = run_ai and row.ai_recommendation_gemini is None` — при каждом `refresh()` проверяется, нет ли Gemini-ответа, и запускается генерация. При миграции:
+- Убрать Gemini из `refresh()` и `daily_metrics_job`
+- Не обнулять `ai_recommendation_gemini` в старых записях
+- Webapp: для старых дней показывать legacy Gemini, для новых — таб "Паттерны"
+
+### Разграничение `get_personal_patterns()` (MCP) vs Gemini-анализ
+
+В `mcp_server/tools/training_log.py` уже есть MCP-инструмент `get_personal_patterns()` — детерминированный (без LLM), 5 паттернов, группировка только по `pre_recovery_category` (без зон интенсивности). Gemini-анализ — 8 паттернов, с матрицей `recovery × intensity`, LLM-инференс.
+
+**Решение:** два отдельных use case:
+- **MCP `get_personal_patterns()`** — быстрый детерминированный анализ для Claude tool-use (real-time). Без изменений.
+- **Gemini `analyze_patterns()`** — глубокий еженедельный анализ. Результат в таблице `personal_patterns`. `prompt_snippet` обогащает утренний промпт Claude.
 
 ---
 
@@ -295,14 +323,34 @@ CREATE INDEX idx_personal_patterns_date ON personal_patterns(analysis_date DESC)
 - HRV Sensitivity: статистика yellow/red
 - Рекомендации Gemini
 
-### Report page
+### Wellness page (бывший Report)
 
 - Tab 1: Claude (утренняя рекомендация) — без изменений
 - Tab 2: Паттерны (последний Gemini анализ) — вместо дублирующего отчёта
+- Для старых дней (до миграции): показывать legacy `ai_recommendation_gemini`
+
+**Файлы:** `webapp/src/pages/Wellness.tsx`, `webapp/src/components/AiRecommendation.tsx`. (`Report.tsx` не существует — `/report` редиректит на `/wellness`.)
 
 ---
 
 ## Промпт для Gemini
+
+### JSON mode — обязательно
+
+Текущий `gemini_agent.py` использует `generate_content_stream()` без `response_mime_type`. Для `analyze_patterns()` **обязательно** использовать JSON mode:
+
+```python
+config = {
+    "system_instruction": WEEKLY_PATTERNS_PROMPT,
+    "max_output_tokens": 8192,
+    "thinking_config": types.ThinkingConfig(thinking_budget=4096),
+    "response_mime_type": "application/json",  # обязательно
+}
+```
+
+Без этого Gemini может вернуть markdown-обёрнутый JSON (` ```json ... ``` `), невалидный JSON, или пропустить поля. Дополнительно парсить через `PersonalPatterns.model_validate_json()` с try/except.
+
+### Промпт
 
 ```python
 WEEKLY_PATTERNS_PROMPT = """
@@ -357,6 +405,9 @@ IQOS:
 
 Если данных недостаточно для уверенного вывода (< 10 записей в группе),
 укажи confidence: "low" и не включай в prompt_snippet.
+
+ВАЖНО: Если данных по mood или IQOS нет (0 записей) — пропусти соответствующие
+паттерны (iqos_correlation, mood-related). НЕ выдумывай корреляции на пустых данных.
 """
 ```
 
@@ -366,12 +417,16 @@ IQOS:
 
 | Зависимость | Статус | Описание |
 |---|---|---|
-| `training_log` таблица | Фаза 3 ATP | Основной источник данных для Gemini |
+| `training_log` таблица | ✅ Фаза 3 ATP | Основной источник данных для Gemini |
+| `actual_max_zone_time` заполнение | ⚠️ **Блокер** | Поле объявлено в `TrainingLogRow` (`String(10)`), но **нигде не заполняется**. Без него матрица `recovery × intensity` невозможна |
 | `personal_patterns` таблица | Эта спека | Хранение результатов анализа |
+| `PersonalPatterns` Pydantic модель | Эта спека | Валидация Gemini JSON output |
 | `build_morning_prompt()` | Существует | Дополнить секцией персональных паттернов |
-| `gemini_agent.py` | Существует | Добавить `analyze_patterns()`, deprecated `get_morning_recommendation()` |
+| `gemini_agent.py` | Существует | Добавить `analyze_patterns()` с JSON mode, deprecated `get_morning_recommendation()` |
 
-**Важно:** полноценный анализ паттернов возможен только после 30+ записей в `training_log`. До этого — Gemini работает в текущем режиме (утренний отчёт) или не вызывается.
+**Блокеры:**
+1. **30+ записей в `training_log`** — полноценный анализ невозможен до этого. До этого Gemini не вызывается.
+2. **`actual_max_zone_time` не заполняется** — compliance detection в training_log должен записывать зону (Z1-Z5) по результатам активности. Без этого паттерны Recovery Response и Personal Thresholds работают только по `pre_recovery_category` (как MCP tool), без разбивки по интенсивности.
 
 ---
 
@@ -379,24 +434,48 @@ IQOS:
 
 | # | Задача | Зависит от | Файлы |
 |---|---|---|---|
-| 1 | Таблица `personal_patterns` + Alembic миграция | — | `data/database.py`, миграция |
-| 2 | `analyze_patterns()` в `gemini_agent.py` | training_log (Фаза 3 ATP) | `ai/gemini_agent.py` |
+| 0 | ⚠️ Заполнение `actual_max_zone_time` в compliance detection | Фаза 3 ATP | `data/database.py` (TrainingLogRow) |
+| 1 | `PersonalPatterns` Pydantic модель | — | `data/models.py` |
+| 2 | Таблица `personal_patterns` + Alembic миграция | #1 | `data/database.py`, миграция |
 | 3 | `WEEKLY_PATTERNS_PROMPT` | — | `ai/prompts.py` |
-| 4 | `weekly_patterns_job` в scheduler | #2 | `bot/scheduler.py` |
-| 5 | Prompt enrichment в `build_morning_prompt()` | #1 | `ai/claude_agent.py` |
-| 6 | Webapp: tab "Паттерны" | #1 | `webapp/src/pages/Report.tsx` |
-| 7 | Убрать ежедневный Gemini отчёт | #2 | `ai/gemini_agent.py`, `data/database.py` |
+| 4 | `analyze_patterns()` в `gemini_agent.py` (с JSON mode) | #1, #3, training_log | `ai/gemini_agent.py` |
+| 5 | `weekly_patterns_job` в scheduler | #4 | `bot/scheduler.py` |
+| 6 | REST API: `GET /api/patterns` | #2 | `api/routes.py` |
+| 7 | Prompt enrichment в `build_morning_prompt()` | #2 | `ai/claude_agent.py` |
+| 8 | Webapp: tab "Паттерны" | #6 | `webapp/src/pages/Wellness.tsx`, `webapp/src/components/AiRecommendation.tsx` |
+| 9 | Убрать ежедневный Gemini из `refresh()` | #4 | `ai/gemini_agent.py`, `data/database.py` (строка ~335) |
+| 10 | Тесты | #4, #6 | `tests/test_patterns.py` |
 
-**Критический путь:** Фаза 3 ATP (`training_log`) → эта спека (#2, #4) → prompt enrichment (#5).
+### REST API
+
+```
+GET /api/patterns                    — последний анализ паттернов
+GET /api/patterns?date=YYYY-MM-DD    — конкретный анализ по дате
+```
+
+### Тесты (минимум)
+
+- Mock Gemini response → парсинг через `PersonalPatterns.model_validate_json()` → сохранение в БД
+- `weekly_patterns_job`: < 30 записей → skip, 30+ → вызов Gemini
+- Prompt enrichment: `prompt_snippet` включается в `build_morning_prompt()`
+- REST API: `/api/patterns` возвращает корректный JSON
+
+**Критический путь:** `actual_max_zone_time` заполнение (#0) → Фаза 3 ATP (`training_log` 30+ записей) → `analyze_patterns()` (#4) → prompt enrichment (#7).
 
 ---
 
 ## Критерии готовности
 
+- [ ] `actual_max_zone_time` заполняется при compliance detection
+- [ ] `PersonalPatterns` Pydantic модель в `data/models.py`
 - [ ] `weekly_patterns_job` запускается в понедельник 03:00
 - [ ] Gemini получает полный training_log + wellness за 60 дней
-- [ ] Результат сохраняется в `personal_patterns` как JSON
+- [ ] Gemini использует JSON mode (`response_mime_type: "application/json"`)
+- [ ] Результат парсится через `PersonalPatterns.model_validate_json()` и сохраняется в `personal_patterns`
 - [ ] `prompt_snippet` включается в утренний промпт Claude
-- [ ] Webapp показывает tab "Паттерны" с последним анализом
-- [ ] Ежедневный Gemini отчёт убран (legacy данные доступны)
+- [ ] `GET /api/patterns` возвращает последний анализ
+- [ ] Webapp (`Wellness.tsx`) показывает tab "Паттерны" с последним анализом
+- [ ] Ежедневный Gemini отчёт убран из `refresh()` (legacy данные доступны)
 - [ ] При < 30 записей в training_log — Gemini не вызывается (недостаточно данных)
+- [ ] При 0 записей mood/IQOS — соответствующие паттерны пропускаются
+- [ ] Тесты: mock Gemini → parse → save, weekly job skip, API endpoint, prompt enrichment

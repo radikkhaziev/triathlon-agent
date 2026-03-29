@@ -388,7 +388,9 @@ class TestCalculateRhrStatus:
 
 class TestCalculateEss:
     def test_threshold_effort_one_hour(self):
-        ess = calculate_ess(60, 158, 42, 182)
+        from config import settings
+
+        ess = calculate_ess(60, settings.ATHLETE_LTHR_RUN, 42, 182)
         assert abs(ess - 100) < 1  # ~100 by definition
 
     def test_easy_effort(self):

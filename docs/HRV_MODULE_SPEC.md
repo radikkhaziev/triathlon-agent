@@ -353,8 +353,8 @@ Decision matrix (упрощённая, только Level 1):
 - [x] FastAPI: /api/report с grouped JSON
 
 **Не реализовано (Phase 1):**
-- [ ] Telegram: /start, /status, /week, /goal, /zones
-- [ ] Webapp: обновить под новую структуру API
+- [x] Telegram: /start, /status, /week, /goal, /zones
+- [x] Webapp: обновить под новую структуру API
 
 ### Phase 2 (Level 2 — DFA alpha 1) ✅ РЕАЛИЗОВАНА
 
@@ -372,10 +372,10 @@ Decision matrix (упрощённая, только Level 1):
 
 ### Phase 3 (расширения)
 
-- [ ] Banister model calibration (scipy.optimize)
-- [ ] Pa baseline tracking
-- [ ] Decision matrix: Level 1 + Level 2 combined
-- [ ] Race readiness prediction
+- [x] Banister model calibration (scipy.optimize)
+- [x] Pa baseline tracking
+- [x] Decision matrix: Level 1 + Level 2 combined
+- [x] Race readiness prediction
 
 ---
 

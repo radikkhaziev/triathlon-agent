@@ -72,6 +72,8 @@ def main() -> None:
         help="Limit to last N days (default: 0 = all)",
     )
 
+    sub.add_parser("backfill-max-zone", help="Backfill actual_max_zone_time for training_log entries")
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -84,6 +86,8 @@ def main() -> None:
         asyncio.run(_sync_activities(args.days))
     elif args.command == "backfill-details":
         asyncio.run(_backfill_details(args.days))
+    elif args.command == "backfill-max-zone":
+        asyncio.run(_backfill_max_zone())
 
 
 def _parse_period(period: str | None) -> tuple[date, date]:
@@ -225,6 +229,22 @@ def _shell() -> None:
         "timedelta": timedelta,
     }
     code.interact(banner=banner, local=ctx)
+
+
+async def _backfill_max_zone() -> None:
+    """Backfill actual_max_zone_time for training_log entries with activity but no zone."""
+    from bot.utils import compute_max_zone
+    from data.database import TrainingLogRow
+
+    rows = await TrainingLogRow.get_range(days_back=365)
+    count = 0
+    for row in rows:
+        if row.actual_activity_id and not row.actual_max_zone_time:
+            zone = await compute_max_zone(row.actual_activity_id, sport=row.actual_sport)
+            if zone:
+                await TrainingLogRow.update(row.id, actual_max_zone_time=zone)
+                count += 1
+    print(f"Backfilled {count} entries")
 
 
 if __name__ == "__main__":

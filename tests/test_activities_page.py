@@ -127,6 +127,11 @@ class TestGetActivitiesRange:
 
 
 class TestActivitiesWeekEndpoint:
+    @pytest.fixture(autouse=True)
+    def _bypass_auth(self):
+        with patch("api.routes._require_viewer", return_value="owner"):
+            yield
+
     @pytest.fixture
     def client(self):
         from fastapi import FastAPI

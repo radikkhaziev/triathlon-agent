@@ -399,11 +399,11 @@ Telegram Mini App WebAppInfo URL нужно обновить (убрать .html
 
 ## Критерии готовности
 
-- [ ] Все 8 страниц работают идентично текущим
-- [ ] Auth работает: Telegram initData + Desktop JWT + anonymous landing
-- [ ] Telegram Mini App: theme переменные, expand(), ready()
-- [ ] Chart.js графики рендерятся корректно
-- [ ] Canvas gauges работают
-- [ ] Docker multi-stage build проходит
-- [ ] Нет регрессий в API (backend не менялся)
-- [ ] Responsive на мобильных (360px+)
+- [x] Все 8 страниц работают идентично текущим
+- [x] Auth работает: Telegram initData + Desktop JWT + anonymous landing
+- [x] Telegram Mini App: theme переменные, expand(), ready()
+- [x] Chart.js графики рендерятся корректно
+- [x] Canvas gauges работают
+- [x] Docker multi-stage build проходит
+- [x] Нет регрессий в API (backend не менялся)
+- [x] Responsive на мобильных (360px+)

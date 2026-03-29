@@ -109,7 +109,7 @@ class TestComplianceDetection:
     def test_followed_original(self):
         from types import SimpleNamespace
 
-        from bot.scheduler import _detect_compliance
+        from bot.utils import detect_compliance
 
         log = SimpleNamespace(
             source="humango",
@@ -121,12 +121,12 @@ class TestComplianceDetection:
             icu_training_load=65,
             average_hr=142,
         )
-        assert _detect_compliance(log, activity) == "followed_original"
+        assert detect_compliance(log, activity) == "followed_original"
 
     def test_followed_adapted(self):
         from types import SimpleNamespace
 
-        from bot.scheduler import _detect_compliance
+        from bot.utils import detect_compliance
 
         log = SimpleNamespace(
             source="adapted",
@@ -138,12 +138,12 @@ class TestComplianceDetection:
             icu_training_load=45,
             average_hr=135,
         )
-        assert _detect_compliance(log, activity) == "followed_adapted"
+        assert detect_compliance(log, activity) == "followed_adapted"
 
     def test_followed_ai(self):
         from types import SimpleNamespace
 
-        from bot.scheduler import _detect_compliance
+        from bot.utils import detect_compliance
 
         log = SimpleNamespace(
             source="ai",
@@ -155,12 +155,12 @@ class TestComplianceDetection:
             icu_training_load=50,
             average_hr=138,
         )
-        assert _detect_compliance(log, activity) == "followed_ai"
+        assert detect_compliance(log, activity) == "followed_ai"
 
     def test_modified(self):
         from types import SimpleNamespace
 
-        from bot.scheduler import _detect_compliance
+        from bot.utils import detect_compliance
 
         log = SimpleNamespace(
             source="humango",
@@ -172,4 +172,4 @@ class TestComplianceDetection:
             icu_training_load=20,
             average_hr=120,
         )
-        assert _detect_compliance(log, activity) == "modified"
+        assert detect_compliance(log, activity) == "modified"

@@ -138,6 +138,11 @@ class TestGetScheduledWorkoutsRange:
 
 
 class TestScheduledWorkoutsEndpoint:
+    @pytest.fixture(autouse=True)
+    def _bypass_auth(self):
+        with patch("api.routes._require_viewer", return_value="owner"):
+            yield
+
     @pytest.fixture
     def client(self):
         """AsyncClient for the FastAPI app, bypassing static file mount issues."""
@@ -291,31 +296,31 @@ class TestSyncWorkoutsEndpoint:
 
 class TestFormatDuration:
     def test_hours_and_minutes(self):
-        from api.routes import _format_duration
+        from data.utils import format_duration
 
-        assert _format_duration(5400) == "1h 30m"
+        assert format_duration(5400) == "1h 30m"
 
     def test_exact_hour(self):
-        from api.routes import _format_duration
+        from data.utils import format_duration
 
-        assert _format_duration(3600) == "1h"
+        assert format_duration(3600) == "1h"
 
     def test_minutes_only(self):
-        from api.routes import _format_duration
+        from data.utils import format_duration
 
-        assert _format_duration(2700) == "45m"
+        assert format_duration(2700) == "45m"
 
     def test_none(self):
-        from api.routes import _format_duration
+        from data.utils import format_duration
 
-        assert _format_duration(None) is None
+        assert format_duration(None) is None
 
     def test_zero(self):
-        from api.routes import _format_duration
+        from data.utils import format_duration
 
-        assert _format_duration(0) == "0m"
+        assert format_duration(0) == "0m"
 
     def test_two_hours_fifteen(self):
-        from api.routes import _format_duration
+        from data.utils import format_duration
 
-        assert _format_duration(8100) == "2h 15m"
+        assert format_duration(8100) == "2h 15m"
