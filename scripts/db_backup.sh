@@ -17,21 +17,10 @@ DUMP_FILE="$BACKUP_DIR/triathlon_${TIMESTAMP}.dump"
 
 mkdir -p "$BACKUP_DIR"
 
-echo "==> Reading DATABASE_URL from $SSH_HOST:$REMOTE_DIR/.env"
+echo "==> Dumping database on remote server (via docker compose)..."
 
-# Extract DATABASE_URL from remote .env
-REMOTE_DB_URL=$(ssh "$SSH_HOST" "grep -E '^DATABASE_URL=' '$REMOTE_DIR/.env' | cut -d= -f2-")
-
-if [[ -z "$REMOTE_DB_URL" ]]; then
-  echo "ERROR: DATABASE_URL not found in remote .env" >&2
-  exit 1
-fi
-
-echo "==> Dumping database on remote server..."
-
-# Run pg_dump remotely, stream dump here
-# Uses custom format (-Fc) — compatible with pg_restore
-ssh "$SSH_HOST" "pg_dump -Fc '$REMOTE_DB_URL'" > "$DUMP_FILE"
+# pg_dump runs inside the db container; -T disables pseudo-TTY so binary dump streams cleanly
+ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose exec -T db pg_dump -Fc -U postgres triathlon-intervals" > "$DUMP_FILE"
 
 SIZE=$(du -sh "$DUMP_FILE" | cut -f1)
 echo "==> Done: $DUMP_FILE ($SIZE)"
@@ -46,15 +35,24 @@ if [[ "${1:-}" == "--restore" ]]; then
     exit 1
   fi
 
-  LOCAL_DB_URL=$(grep -E '^DATABASE_URL=' "$LOCAL_ENV" | cut -d= -f2-)
+  LOCAL_DB_URL=$(grep -E '^DATABASE_URL=' "$LOCAL_ENV" | cut -d= -f2- | tr -d "\"'")
 
   if [[ -z "$LOCAL_DB_URL" ]]; then
     echo "ERROR: DATABASE_URL not found in local .env" >&2
     exit 1
   fi
 
-  echo "==> Restoring into local database..."
-  # --clean drops existing objects before restore
-  pg_restore --clean --no-owner --no-privileges -d "$LOCAL_DB_URL" "$DUMP_FILE"
+  # Strip +asyncpg driver suffix so psql understands the URL
+  CLEAN_URL="${LOCAL_DB_URL/+asyncpg/}"
+  DB_NAME=$(python3 -c "from urllib.parse import urlparse; print(urlparse('$CLEAN_URL').path.lstrip('/'))")
+
+  echo "==> Dropping local database '$DB_NAME'..."
+  docker exec -i postgres psql -U postgres postgres -c "DROP DATABASE IF EXISTS \"$DB_NAME\";"
+
+  echo "==> Creating empty database '$DB_NAME'..."
+  docker exec -i postgres psql -U postgres postgres -c "CREATE DATABASE \"$DB_NAME\";"
+
+  echo "==> Restoring into '$DB_NAME'..."
+  docker exec -i postgres pg_restore --no-owner --no-privileges -U postgres -d "$DB_NAME" < "$DUMP_FILE"
   echo "==> Restore complete."
 fi

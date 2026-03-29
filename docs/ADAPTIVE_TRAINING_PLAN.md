@@ -306,16 +306,16 @@ AI_WORKOUT_AUTO_PUSH=false     # Автопуш в Intervals.icu (default: false
 
 ### Критерии готовности Фазы 1
 
-- [ ] `IntervalsClient.create_event()` / `update_event()` / `delete_event()` работают
-- [ ] AI генерирует валидный Intervals.icu workout syntax
-- [ ] MCP tool `suggest_workout` создаёт тренировку в Intervals.icu
-- [ ] MCP tool `remove_ai_workout` удаляет только AI-тренировки
-- [ ] Тренировки видны в Intervals.icu с маркером `AI:`
-- [ ] Тренировки синхронизируются на часы через Intervals.icu
-- [ ] `ai_workouts` таблица ведёт аудит всех операций
-- [ ] `external_id` предотвращает дубликаты
-- [ ] Конфиг `AI_WORKOUT_ENABLED` / `AI_WORKOUT_AUTO_PUSH` работает
-- [ ] Нет влияния на пользовательские/тренерские тренировки
+- [x] `IntervalsClient.create_event()` / `update_event()` / `delete_event()` работают
+- [x] AI генерирует валидный Intervals.icu workout syntax
+- [x] MCP tool `suggest_workout` создаёт тренировку в Intervals.icu
+- [x] MCP tool `remove_ai_workout` удаляет только AI-тренировки
+- [x] Тренировки видны в Intervals.icu с маркером `AI:`
+- [x] Тренировки синхронизируются на часы через Intervals.icu
+- [x] `ai_workouts` таблица ведёт аудит всех операций
+- [x] `external_id` предотвращает дубликаты
+- [x] Конфиг `AI_WORKOUT_ENABLED` / `AI_WORKOUT_AUTO_PUSH` работает
+- [x] Нет влияния на пользовательские/тренерские тренировки
 
 ---
 

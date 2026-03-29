@@ -157,13 +157,13 @@ Docstring описывает `distance` и distance vs duration по видам 
 
 ## План реализации
 
-### Этап 0 — Верификация API (ручное тестирование)
+### Этап 0 — Верификация API ✅ (проведена 2026-03-29)
 
-- [ ] **Тест A:** Запушить Event с `description` (plain text) для Swim: `"200mtr 70% Pace\n4x100mtr 95% Pace 30s rest"`. Проверить, что Intervals.icu парсит шаги и отображает дистанцию.
-- [ ] **Тест B:** Запушить Event с `workout_doc` и `"distance": 100` в шагах (вместо `duration`). Проверить, что принимает и отображает.
-- [ ] **Тест C:** То же для Run: `"5x1km 90% Pace 90s rest"` через description.
-- [ ] **Тест D:** Проверить, что `"target": "PACE"` на уровне Event переключает отображение на темп.
-- [ ] Зафиксировать результаты: что работает, что нет, какие форматы Intervals.icu принимает.
+- [x] **Тест A:** Swim `description` (plain text) — **шагов нет**, Intervals.icu НЕ парсит plain text distance
+- [x] **Тест B:** Swim `workout_doc` с `"distance"` в шагах — **работает отлично**, интервалы по метрам
+- [x] **Тест C:** Run `description` (plain text) — **шагов нет**, аналогично Swim
+- [x] **Тест D:** Run `workout_doc` с `"distance"` + `"target": "PACE"` — **работает**, шаги по дистанции
+- [x] **Результат:** `workout_doc` с `distance` — единственный рабочий формат. `description` plain text НЕ парсит distance. Код обновлён: `to_intervals_event()` всегда использует `workout_doc`.
 
 ### Этап 1 — Модель WorkoutStep ✅
 
@@ -188,8 +188,8 @@ Docstring описывает `distance` и distance vs duration по видам 
 ### Этап 4 — compose_workout ✅
 
 - [x] Поддержка `distance_m` в exercise entries для compose_workout
-- [ ] Добавить `distance_m` в exercise_card ORM (опционально, когда появятся swim-дриллы)
-- [ ] Для плавательных дриллов: переводить reps в distance (reps × pool_length)
+- [x] `distance_m` в ExerciseCardRow ORM + save/update + MCP tools + миграция
+- [x] Конверсия reps → distance: `total_dist = distance_m × reps` в compose_workout
 
 ### Этап 5 — Документация ✅
 

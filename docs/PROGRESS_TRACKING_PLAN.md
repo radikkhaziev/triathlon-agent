@@ -282,12 +282,12 @@ Swim не использует EF. Отдельная секция в ответ
 
 ## Критерии готовности
 
-- [ ] `pool_length` колонка в `ActivityDetailRow` + миграция
-- [ ] MCP tool `get_efficiency_trend` возвращает EF для bike/run, SWOLF + pace для swim
-- [ ] Z2 фильтрация работает корректно (пороги из CLAUDE.md: Bike 68-83%, Run 72-82%)
-- [ ] SWOLF вычисляется из `pace` + `avg_stride` + `pool_length`
-- [ ] SWOLF по интервалам (WORK-type) для детального тренда
-- [ ] Группировка по неделям с расчётом тренда (%)
-- [ ] API endpoint возвращает данные
-- [ ] Webapp отображает chart
-- [ ] Тесты: фильтрация Z2, расчёт SWOLF, расчёт тренда, пустые данные
+- [x] `pool_length` колонка в `ActivityDetailRow` + миграция
+- [x] MCP tool `get_efficiency_trend` возвращает EF для bike/run, SWOLF + pace для swim
+- [x] Z2 фильтрация работает корректно (пороги из CLAUDE.md: Bike 68-83%, Run 72-82%)
+- [x] SWOLF вычисляется из `pace` + `avg_stride` + `pool_length`
+- [ ] SWOLF по интервалам (WORK-type) для детального тренда (v2)
+- [x] Группировка по неделям с расчётом тренда (%)
+- [x] API endpoint возвращает данные
+- [ ] Webapp отображает chart (v2)
+- [x] Тесты: фильтрация Z2, расчёт SWOLF, расчёт тренда, пустые данные (23 теста в test_progress.py)

@@ -60,8 +60,8 @@ triathlon-agent/
 │   ├── server.py                # FastAPI + static + webhook
 │   ├── routes.py                # REST endpoints + auth
 │   └── auth.py                  # one-time codes + JWT
-├── mcp_server/                  # FastMCP: 29 tools + 3 resources
-│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_details, activity_hrv, scheduled_workouts, ai_workouts, training_log, mood, iqos, workout_cards
+├── mcp_server/                  # FastMCP: 30 tools + 3 resources
+│   ├── tools/                   # wellness, hrv, rhr, training_load, recovery, goal, activities, activity_details, activity_hrv, scheduled_workouts, ai_workouts, training_log, mood, iqos, workout_cards, progress
 │   └── resources/               # athlete profile, goal, thresholds
 ├── webapp/                      # React SPA (Vite + TypeScript + Tailwind)
 │   ├── index.html               # Vite entry
@@ -98,7 +98,7 @@ Fourteen tables. Full column specs in `data/database.py`.
 | `rhr_analysis` | date | RHR baselines: 7d/30d/60d means, bounds (±0.5 SD of 30d), trend. Inverted: high RHR = red |
 | `scheduled_workouts` | event ID | Planned workouts from Intervals.icu calendar. Synced hourly |
 | `activities` | activity ID | Completed activities. Synced hourly at :30 |
-| `activity_details` | activity_id FK | Extended stats: HR/power/pace zones, zone times, intervals, EF, decoupling |
+| `activity_details` | activity_id FK | Extended stats: HR/power/pace zones, zone times, intervals, EF, decoupling, pool_length |
 | `activity_hrv` | activity_id FK | Post-activity DFA a1: quality, thresholds (HRVT1/HRVT2), Ra, Da. Processed every 5 min |
 | `pa_baseline` | autoincrement | Pa values for Readiness (Ra) calculation. 14-day rolling baseline |
 | `ai_workouts` | autoincrement | AI-generated/adapted workouts pushed to Intervals.icu. External ID for dedup |
@@ -118,7 +118,7 @@ Fourteen tables. Full column specs in `data/database.py`.
 | `ai/*` | Done | Claude tool-use morning analysis (V2) + free-form chat + V1 fallback, Gemini, workout generation, prompts, tool definitions |
 | `bot/*` | Done | /start, /morning, /web, /stick, /whoami, free-form chat, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
-| `mcp_server/` | Done | 29 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
+| `mcp_server/` | Done | 30 tools + 3 resources (includes AI workouts, training log, ramp tests, activity details, workout cards) |
 | `webapp/` (React SPA) | Done | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme |
 | Adaptive Training Plan | Phase 4 done | Write API, AI workout generation, HumanGo adaptation, training log, ramp tests + threshold drift. See `docs/ADAPTIVE_TRAINING_PLAN.md` |
 
@@ -239,6 +239,7 @@ GET  /api/wellness-day?date=YYYY-MM-DD  — wellness for any date (navigable)
 GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun)
 GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA
+GET  /api/progress?sport=bike&days=90   — aerobic efficiency trend (EF/SWOLF/pace)
 POST /api/auth/verify-code              — verify one-time code → JWT
 GET  /api/auth/me                       — auth status
 POST /api/jobs/sync-wellness            — trigger wellness sync (owner auth)
@@ -350,11 +351,11 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 
 ---
 
-## MCP Server (29 tools + 3 resources)
+## MCP Server (30 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, Bearer auth via `MCP_AUTH_TOKEN`).
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards.
+**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards, get_efficiency_trend.
 
 **Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
@@ -408,7 +409,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 | `ACTIVITIES_PAGE.md` | Activities page architecture |
 | `ADAPTIVE_TRAINING_PLAN.md` | Adaptive Training Plan — 4 phases: Write API, adaptation, training log, ramp tests |
 | `GEMINI_ROLE_SPEC.md` | Gemini role — weekly pattern analyst (depends on ATP Phase 3) |
-| `PROGRESS_TRACKING_PLAN.md` | EF + swim pace trends. Данные уже в `activity_details`, миграции не нужны |
+| `PROGRESS_TRACKING_PLAN.md` | EF + SWOLF + pace trends. MCP tool + API done. Webapp chart pending |
 | `MOOD_TRACKING.md` | Mood tracking via MCP — scales, workflow |
 | `WORKOUT_CARDS.md` | Workout Cards — exercise library + workout composition from cards |
 | `MCP_PHASE2.md` | MCP Phase 2 — tool-use для утреннего анализа, tool definitions, fallback |

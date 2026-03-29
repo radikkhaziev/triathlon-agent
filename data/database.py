@@ -1441,6 +1441,7 @@ class ExerciseCardRow(Base):
     default_sets: Mapped[int] = mapped_column(Integer, default=2)
     default_reps: Mapped[int] = mapped_column(Integer, default=15)
     default_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)  # meters per rep (swim drills)
     steps: Mapped[list] = mapped_column(JSON, nullable=False)
     focus: Mapped[str | None] = mapped_column(Text, nullable=True)
     breath: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -1466,6 +1467,7 @@ class ExerciseCardRow(Base):
         default_sets: int = 2,
         default_reps: int = 15,
         default_duration_sec: int | None = None,
+        distance_m: float | None = None,
         steps: list[str],
         focus: str | None = None,
         breath: str | None = None,
@@ -1483,6 +1485,7 @@ class ExerciseCardRow(Base):
             default_sets=default_sets,
             default_reps=default_reps,
             default_duration_sec=default_duration_sec,
+            distance_m=distance_m,
             steps=steps,
             focus=focus,
             breath=breath,

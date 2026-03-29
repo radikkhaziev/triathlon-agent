@@ -110,6 +110,7 @@ async def create_exercise_card(
     animation_css: str,
     breath: str = "",
     default_duration_sec: int | None = None,
+    distance_m: float | None = None,
 ) -> str:
     """Create an exercise card in the library.
 
@@ -120,6 +121,9 @@ async def create_exercise_card(
     Use exercise_id as CSS class prefix for all elements to avoid collisions.
     animation_css: CSS @keyframes and positioning (~30-50 lines).
     Prefix all selectors with .card-{exercise_id} for namespace isolation.
+
+    distance_m: meters per rep — for swim drills (e.g. 25, 50, 100).
+    When set, compose_workout uses distance instead of duration for this exercise.
 
     See the clamshell example in docs/WORKOUT_CARDS.md for reference.
     """
@@ -139,6 +143,7 @@ async def create_exercise_card(
         default_sets=default_sets,
         default_reps=default_reps,
         default_duration_sec=default_duration_sec,
+        distance_m=distance_m,
         steps=steps,
         focus=focus,
         breath=breath,
@@ -168,6 +173,7 @@ async def update_exercise_card(
     default_sets: int | None = None,
     default_reps: int | None = None,
     default_duration_sec: int | None = None,
+    distance_m: float | None = None,
     steps: list[str] | None = None,
     focus: str | None = None,
     breath: str | None = None,
@@ -177,6 +183,7 @@ async def update_exercise_card(
     """Update an existing exercise card.
 
     Only provided fields are updated. HTML file is re-rendered after update.
+    distance_m: meters per rep — for swim drills (e.g. 25, 50, 100).
     """
     err = _validate_exercise_id(exercise_id)
     if err:
@@ -196,6 +203,7 @@ async def update_exercise_card(
         ("default_sets", default_sets),
         ("default_reps", default_reps),
         ("default_duration_sec", default_duration_sec),
+        ("distance_m", distance_m),
         ("steps", steps),
         ("focus", focus),
         ("breath", breath),
@@ -377,10 +385,12 @@ async def compose_workout(
             dur_sec = ex.get("duration_sec") or card.default_duration_sec
             is_last = i == len(exercises) - 1
 
-            # Distance-based step for Swim exercises (from exercise entry dict)
-            distance_m = ex.get("distance_m")
+            # Distance-based step: from exercise entry or card default
+            distance_m = ex.get("distance_m") or card.distance_m
             if distance_m:
-                sub_steps = [{"text": "Работа", "distance": float(distance_m)}]
+                # For swim drills: total distance = reps × distance_m (e.g. 4×25m = 100m)
+                total_dist = float(distance_m) * reps
+                sub_steps = [{"text": "Работа", "distance": total_dist}]
             elif dur_sec:
                 sub_steps = [{"text": "Работа", "duration": dur_sec}]
             else:
@@ -399,7 +409,7 @@ async def compose_workout(
 
         try:
             client = IntervalsClient()
-            # Use PlannedWorkout to auto-select description (distance) vs workout_doc (time)
+            # Use PlannedWorkout to build workout_doc for Intervals.icu
             parsed_steps = WorkoutStep.from_raw_list(workout_steps)
             pw = PlannedWorkout(
                 sport=sport,
