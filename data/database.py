@@ -1366,7 +1366,7 @@ class TrainingLogRow(Base):
         Uses 1-day buffer to avoid marking 'skipped' prematurely
         (Garmin sync can be delayed).
         """
-        cutoff = str(date.today() - timedelta(days=1))
+        cutoff = str(date.today())
         async with get_session() as session:
             result = await session.execute(
                 select(cls).where(cls.compliance.is_(None)).where(cls.date < cutoff).order_by(cls.date.asc())
