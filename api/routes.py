@@ -6,10 +6,10 @@ import zoneinfo
 from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from sqlalchemy import exists, func, select
 
-from api.auth import create_jwt, verify_code, verify_jwt
+from api.auth import check_rate_limit, create_jwt, verify_code, verify_jwt
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from bot.scheduler import daily_metrics_job, scheduled_workouts_job, sync_activities_job
 from config import settings
@@ -221,8 +221,12 @@ def health() -> dict:
 
 
 @router.post("/api/auth/verify-code")
-async def auth_verify_code(body: dict) -> dict:
+async def auth_verify_code(request: Request, body: dict) -> dict:
     """Verify a one-time code from /web bot command and return JWT."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again in 5 minutes.")
+
     code = str(body.get("code", "")).strip()
     if not code:
         raise HTTPException(status_code=400, detail="Code is required")

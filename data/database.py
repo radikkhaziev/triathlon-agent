@@ -34,7 +34,13 @@ def get_engine():
     """Return a singleton async SQLAlchemy engine."""
     global _engine
     if _engine is None:
-        _engine = create_async_engine(settings.DATABASE_URL, echo=False)
+        _engine = create_async_engine(
+            settings.DATABASE_URL,
+            echo=False,
+            pool_size=5,
+            max_overflow=10,
+            pool_recycle=3600,
+        )
     return _engine
 
 

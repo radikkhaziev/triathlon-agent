@@ -146,13 +146,15 @@ async def delete_event(self, event_id: int) -> None:
 class WorkoutStep(BaseModel):
     """Один шаг структурированной тренировки."""
     text: str = ""               # "Warm-up", "Tempo"
-    duration: int = 0            # секунды
+    duration: int = 0            # секунды (mutually exclusive with distance)
+    distance: float | None = None  # метры (100, 200, 1000). Для Swim/Run интервалов
     reps: int | None = None      # повторы (3 для 3x intervals)
     hr: dict | None = None       # {"units": "%lthr", "value": 75}
     power: dict | None = None    # {"units": "%ftp", "value": 80}
     pace: dict | None = None     # {"units": "%pace", "value": 90}
     cadence: dict | None = None  # {"units": "rpm", "value": 90}
     steps: list[WorkoutStep] | None = None  # вложенные шаги (repeat group)
+    # Validation: step must have duration OR distance, not both (repeat groups exempt)
 
 class PlannedWorkout(BaseModel):
     """AI-generated workout to push to Intervals.icu."""

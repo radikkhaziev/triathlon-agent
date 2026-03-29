@@ -204,16 +204,24 @@ WORKOUT_GENERATION_PROMPT = """
 ФОРМАТ steps (Intervals.icu workout_doc):
 Каждый шаг — объект с полями:
 - "text": название шага ("Warm-up", "Tempo", "Cool-down")
-- "duration": длительность в секундах (600 = 10 мин)
+- "duration": длительность в секундах (600 = 10 мин) — ИЛИ "distance" (не оба!)
+- "distance": дистанция в метрах (100, 200, 1000) — для Swim и Run интервалов
 - "hr": целевой пульс {{"units": "%lthr", "value": 75}}
 - "power": целевая мощность {{"units": "%ftp", "value": 80}}
 - "pace": целевой темп {{"units": "%pace", "value": 90}}
 - "cadence": каденс {{"units": "rpm", "value": 90}}
 
+ВАЖНО: каждый шаг использует ЛИБО "duration" (секунды), ЛИБО "distance" (метры), НЕ оба.
+
 Для интервалов с повторами:
 - "text": название ("Tempo intervals")
 - "reps": количество повторов (3, 4, 5...)
-- "steps": [шаг работы, шаг отдыха] — вложенные шаги
+- "steps": [шаг работы, шаг отдыха] — вложенные шаги. Отдых всегда через "duration" (секунды)
+
+КОГДА ИСПОЛЬЗОВАТЬ distance vs duration:
+- Swim: ВСЕГДА "distance" (метры). Типичные: 50, 100, 200, 400, 800. Таргет: "pace" (%pace от CSS)
+- Run интервалы: "distance" для повторов (400м, 1км, 2км). Таргет: "pace" или "hr". Разминка/заминка могут быть "duration" ИЛИ "distance"
+- Ride: ВСЕГДА "duration" (секунды). Таргет: "power" (%ftp)
 
 Пример Ride Z2 + Tempo:
 [
@@ -226,14 +234,33 @@ WORKOUT_GENERATION_PROMPT = """
   {{"text": "Cool-down", "duration": 600, "power": {{"units": "%ftp", "value": 55}}}}
 ]
 
-Пример Run:
+Пример Run с дистанционными интервалами:
 [
-  {{"text": "Warm-up", "duration": 600, "hr": {{"units": "%lthr", "value": 65}}}},
-  {{"text": "Main", "duration": 1500, "hr": {{"units": "%lthr", "value": 78}}}},
-  {{"text": "Cool-down", "duration": 600, "hr": {{"units": "%lthr", "value": 60}}}}
+  {{"text": "Warm-up", "distance": 2000, "hr": {{"units": "%lthr", "value": 70}}}},
+  {{"text": "Intervals", "reps": 5, "steps": [
+    {{"distance": 1000, "pace": {{"units": "%pace", "value": 90}}}},
+    {{"duration": 90}}
+  ]}},
+  {{"text": "Cool-down", "distance": 1000, "hr": {{"units": "%lthr", "value": 65}}}}
 ]
 
-Для Ride используй "power" (units: %ftp). Для Run используй "hr" (units: %lthr). Для Swim используй "pace" (units: %pace).
+Пример Swim техника + интервалы:
+[
+  {{"text": "Warm-up", "distance": 200, "pace": {{"units": "%pace", "value": 70}}}},
+  {{"text": "Drills", "reps": 4, "steps": [
+    {{"distance": 50, "pace": {{"units": "%pace", "value": 60}}}},
+    {{"duration": 20}}
+  ]}},
+  {{"text": "Main set", "reps": 4, "steps": [
+    {{"distance": 100, "pace": {{"units": "%pace", "value": 95}}}},
+    {{"duration": 30}}
+  ]}},
+  {{"text": "Cool-down", "distance": 100, "pace": {{"units": "%pace", "value": 60}}}}
+]
+
+Для Ride используй "power" (units: %ftp), шаги по "duration".
+Для Run используй "pace" или "hr" (units: %lthr), интервалы по "distance", разминка/заминка — "distance" или "duration".
+Для Swim используй "pace" (units: %pace от CSS), все шаги по "distance".
 
 Если рекомендуешь отдых, верни: {{"sport": "Rest", "name": "Rest Day", "steps": [], "duration_minutes": 0, "target_tss": null, "rationale": "причина"}}
 """

@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ReadinessLevel(str, Enum):
@@ -187,12 +187,43 @@ class WorkoutStep(BaseModel):
 
     text: str = ""  # step label: "Warm-up", "Tempo", etc.
     duration: int = 0  # seconds (0 for repeat groups)
+    distance: float | None = None  # meters (e.g. 100, 200, 1000). Mutually exclusive with duration
     reps: int | None = None  # repeat count (e.g. 3 for 3x intervals)
     hr: dict | None = None  # {"units": "%lthr", "value": 75}
     power: dict | None = None  # {"units": "%ftp", "value": 80}
     pace: dict | None = None  # {"units": "%pace", "value": 90}
     cadence: dict | None = None  # {"units": "rpm", "value": 90}
     steps: list["WorkoutStep"] | None = None  # sub-steps for repeat groups
+
+    @model_validator(mode="after")
+    def _check_duration_or_distance(self) -> "WorkoutStep":
+        """Step must have either duration or distance, not both (repeat groups exempt)."""
+        if self.reps and self.steps:
+            return self  # repeat group — size defined by sub-steps
+        if self.duration > 0 and self.distance is not None and self.distance > 0:
+            raise ValueError("Step cannot have both duration and distance; use one or the other")
+        return self
+
+    @classmethod
+    def from_raw_list(cls, raw_steps: list[dict]) -> list["WorkoutStep"]:
+        """Parse a list of raw dicts (e.g. from JSON) into WorkoutStep objects."""
+        result = []
+        for s in raw_steps:
+            subs = cls.from_raw_list(s["steps"]) if s.get("steps") else None
+            result.append(
+                cls(
+                    text=s.get("text", ""),
+                    duration=s.get("duration", 0),
+                    distance=s.get("distance"),
+                    reps=s.get("reps"),
+                    hr=s.get("hr"),
+                    power=s.get("power"),
+                    pace=s.get("pace"),
+                    cadence=s.get("cadence"),
+                    steps=subs,
+                )
+            )
+        return result
 
 
 class PlannedWorkout(BaseModel):
@@ -212,19 +243,104 @@ class PlannedWorkout(BaseModel):
     def external_id(self) -> str:
         return f"tricoach:{self.target_date}:{self.sport.lower()}:{self.slot}"
 
+    @property
+    def has_distance_steps(self) -> bool:
+        """Check if any step uses distance instead of duration."""
+
+        def _has_dist(steps: list[WorkoutStep]) -> bool:
+            for s in steps:
+                if s.distance is not None and s.distance > 0:
+                    return True
+                if s.steps and _has_dist(s.steps):
+                    return True
+            return False
+
+        return _has_dist(self.steps)
+
+    def _steps_to_description(self) -> str:
+        """Convert steps to Intervals.icu plain text format (distance-aware).
+
+        Intervals.icu parses plain text into structured steps.
+        Format: `[reps x] distance/duration [target] [rest]`
+        Units: mtr = meters, km = kilometers, m = minutes, s = seconds.
+        """
+        lines = [self._step_to_text(step) for step in self.steps]
+        return "\n".join(line for line in lines if line.strip())
+
+    def _step_to_text(self, step: WorkoutStep) -> str:
+        """Convert a single WorkoutStep to Intervals.icu plain text line."""
+        parts: list[str] = []
+
+        # Repeat group: "4x100mtr 95% Pace 30s rest"
+        if step.reps and step.steps:
+            work = step.steps[0]
+            rest = step.steps[1] if len(step.steps) > 1 else None
+            prefix = f"{step.reps}x"
+            if work:
+                prefix += self._size_text(work)
+                prefix += self._target_text(work)
+            if rest and rest.duration:
+                prefix += f" {rest.duration}s rest"
+            parts.append(prefix)
+        else:
+            # Single step
+            parts.append(self._size_text(step))
+            parts.append(self._target_text(step))
+
+        return "".join(parts)
+
+    @staticmethod
+    def _size_text(step: WorkoutStep) -> str:
+        if step.distance:
+            d = int(step.distance)
+            if d >= 1000 and d % 1000 == 0:
+                return f"{d // 1000}km"
+            return f"{d}mtr"
+        if step.duration:
+            m, s = divmod(step.duration, 60)
+            if s == 0 and m > 0:
+                return f"{m}m"
+            return f"{step.duration}s"
+        return ""
+
+    @staticmethod
+    def _target_text(step: WorkoutStep) -> str:
+        if step.pace:
+            return f" {step.pace['value']}% Pace"
+        if step.hr:
+            return f" {step.hr['value']}% HR"
+        if step.power:
+            return f" {step.power['value']}% FTP"
+        return ""
+
     def to_intervals_event(self) -> dict:
-        """Convert to Intervals.icu POST /events JSON body with workout_doc."""
-        return {
+        """Convert to Intervals.icu POST /events JSON body.
+
+        Uses plain text description for workouts with distance-based steps
+        (more reliable for Swim/Run distance intervals).
+        Falls back to workout_doc for time-only workouts.
+        """
+        event: dict = {
             "category": "WORKOUT",
             "type": self.sport,
             "name": f"AI: {self.name} ({self.suffix})",
             "start_date_local": f"{self.target_date}T00:00:00",
             "moving_time": self.duration_minutes * 60,
             "external_id": self.external_id,
-            "workout_doc": {
-                "steps": [s.model_dump(exclude_none=True) for s in self.steps],
-            },
         }
+
+        if self.has_distance_steps:
+            # Способ A: plain text — reliable for distance-based steps
+            event["description"] = self._steps_to_description()
+            if self.sport in ("Swim", "Run"):
+                event["target"] = "PACE"
+        else:
+            # Способ B: workout_doc — standard for time-based steps
+            event["workout_doc"] = {
+                "steps": [s.model_dump(exclude_none=True) for s in self.steps],
+            }
+
+        return event
 
 
 class GoalProgress(BaseModel):

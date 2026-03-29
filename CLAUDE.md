@@ -210,6 +210,8 @@ Runs once daily for current date (not backfill). Model: `claude-sonnet-4-6`, max
 
 **Workout suggestion rules:** Recovery excellent+TSB>0 → any intensity; good → Z2; moderate/sleep<50 → Z1-Z2 45-60min; low/red RMSSD → rest/Z1≤30min; TSB<-25 → Z1-Z2 cap; HRV delta<-15% → Z1-Z2 max.
 
+**Distance-based workouts:** `WorkoutStep` supports `distance` (meters) as alternative to `duration` (seconds). Mutually exclusive. Swim: always distance + pace. Run intervals: distance + pace/hr. Ride: always duration + power. When `PlannedWorkout` has distance steps, `to_intervals_event()` uses plain text `description` (Способ A) instead of `workout_doc` — more reliable for Intervals.icu distance parsing. `target: "PACE"` set for Swim/Run.
+
 **Gemini** (optional, gated by `GOOGLE_AI_API_KEY`): `gemini-2.5-flash`, parallel call via `asyncio.gather`. Result in `ai_recommendation_gemini`. Shown as second tab in webapp, not in Telegram.
 
 ---

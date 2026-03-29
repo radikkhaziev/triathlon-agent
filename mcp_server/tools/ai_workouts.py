@@ -29,12 +29,18 @@ async def suggest_workout(
 
     Steps use Intervals.icu workout_doc format. Each step is an object:
     - "text": step label ("Warm-up", "Tempo", "Cool-down")
-    - "duration": seconds (600 = 10 min)
+    - "duration": seconds (600 = 10 min) — OR "distance" (not both!)
+    - "distance": meters (100, 200, 1000) — for Swim and Run distance intervals
     - "hr": {"units": "%lthr", "value": 75} — for Run
     - "power": {"units": "%ftp", "value": 80} — for Ride
     - "pace": {"units": "%pace", "value": 90} — for Swim
     - "cadence": {"units": "rpm", "value": 90}
     For intervals: "reps": 3, "steps": [work_step, rest_step]
+
+    Distance vs duration by sport:
+    - Swim: always "distance" (meters), target "pace" (%pace from CSS)
+    - Run intervals: "distance" for reps (400m, 1km), target "pace" or "hr"
+    - Ride: always "duration" (seconds), target "power" (%ftp)
 
     Args:
         sport: Activity type — "Ride", "Run", "Swim", or "WeightTraining".
@@ -50,23 +56,10 @@ async def suggest_workout(
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
 
-    def _parse(raw: dict) -> WorkoutStep:
-        subs = [_parse(s) for s in raw.get("steps", [])] or None
-        return WorkoutStep(
-            text=raw.get("text", ""),
-            duration=raw.get("duration", 0),
-            reps=raw.get("reps"),
-            hr=raw.get("hr"),
-            power=raw.get("power"),
-            pace=raw.get("pace"),
-            cadence=raw.get("cadence"),
-            steps=subs,
-        )
-
     workout = PlannedWorkout(
         sport=sport,
         name=name,
-        steps=[_parse(s) for s in steps],
+        steps=WorkoutStep.from_raw_list(steps),
         duration_minutes=duration_minutes,
         target_tss=target_tss,
         rationale=rationale,

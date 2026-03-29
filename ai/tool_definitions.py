@@ -27,6 +27,7 @@ from data.database import (
 )
 from data.ramp_tests import detect_threshold_drift, get_threshold_freshness_data
 from data.utils import extract_sport_ctl, format_duration
+from data.utils import tsb_zone as _tsb_zone
 
 logger = logging.getLogger(__name__)
 
@@ -287,18 +288,6 @@ def _hrv_row_to_dict(row: HrvAnalysisRow) -> dict:
         "trend_direction": row.trend_direction,
         "trend_slope": row.trend_slope,
     }
-
-
-def _tsb_zone(tsb: float | None) -> str | None:
-    if tsb is None:
-        return None
-    if tsb > 10:
-        return "under_training"
-    if tsb >= -10:
-        return "optimal"
-    if tsb >= -25:
-        return "productive_overreach"
-    return "overtraining_risk"
 
 
 def _pct(current: float | None, target: float) -> float | None:

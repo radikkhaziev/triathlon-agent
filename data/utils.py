@@ -28,6 +28,23 @@ SPORT_MAP: dict[str, str] = {
 }
 
 
+def tsb_zone(tsb: float | None) -> str | None:
+    """Classify TSB value into a training zone.
+
+    Zones (calibrated for Intervals.icu):
+    >+10 under_training, -10..+10 optimal, -10..-25 productive_overreach, <-25 overtraining_risk.
+    """
+    if tsb is None:
+        return None
+    if tsb > 10:
+        return "under_training"
+    if tsb >= -10:
+        return "optimal"
+    if tsb >= -25:
+        return "productive_overreach"
+    return "overtraining_risk"
+
+
 def extract_sport_ctl(sport_info: list[dict] | None) -> dict[str, float | None]:
     """Extract per-sport CTL from sport_info JSON stored in wellness.
 

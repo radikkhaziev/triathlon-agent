@@ -11,11 +11,13 @@ from jinja2 import Environment, FileSystemLoader
 from config import settings
 from data.database import ExerciseCardRow, WorkoutCardRow
 from data.intervals_client import IntervalsClient
+from data.models import PlannedWorkout, WorkoutStep
 from mcp_server.app import mcp
 
 logger = logging.getLogger(__name__)
 
 VALID_SPORTS = frozenset({"Swim", "Ride", "Run", "Other"})
+
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _TEMPLATES_DIR = os.path.join(_PROJECT_ROOT, "templates")
@@ -375,12 +377,15 @@ async def compose_workout(
             dur_sec = ex.get("duration_sec") or card.default_duration_sec
             is_last = i == len(exercises) - 1
 
-            if dur_sec:
-                work_sec = dur_sec
+            # Distance-based step for Swim exercises (from exercise entry dict)
+            distance_m = ex.get("distance_m")
+            if distance_m:
+                sub_steps = [{"text": "Работа", "distance": float(distance_m)}]
+            elif dur_sec:
+                sub_steps = [{"text": "Работа", "duration": dur_sec}]
             else:
                 work_sec = max(15, reps * 3)
-
-            sub_steps = [{"text": "Работа", "duration": work_sec}]
+                sub_steps = [{"text": "Работа", "duration": work_sec}]
             if not is_last:
                 sub_steps.append({"text": "Отдых", "duration": 15})
 
@@ -394,18 +399,25 @@ async def compose_workout(
 
         try:
             client = IntervalsClient()
-            event = {
-                "category": "WORKOUT",
-                "start_date_local": f"{date_str}T06:00:00",
-                "name": name,
-                "type": sport,
-                "moving_time": total_duration_sec,
-                "description": f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}",
-                "external_id": f"workout-card:{date_str}:{slug}",
-                "workout_doc": {
-                    "steps": workout_steps,
-                },
-            }
+            # Use PlannedWorkout to auto-select description (distance) vs workout_doc (time)
+            parsed_steps = WorkoutStep.from_raw_list(workout_steps)
+            pw = PlannedWorkout(
+                sport=sport,
+                name=name,
+                steps=parsed_steps,
+                duration_minutes=total_duration_min,
+                target_date=dt,
+            )
+            event = pw.to_intervals_event()
+            # Override with compose_workout specifics
+            event["start_date_local"] = f"{date_str}T06:00:00"
+            event["name"] = name  # no "AI:" prefix for workout cards
+            event["external_id"] = f"workout-card:{date_str}:{slug}"
+            desc_prefix = f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}"
+            if "description" in event:
+                event["description"] = f"{desc_prefix}\n\n{event['description']}"
+            else:
+                event["description"] = desc_prefix
             result = await client.create_event(event)
             intervals_id = result.get("id")
         except Exception as e:
