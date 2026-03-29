@@ -39,10 +39,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /dashboard command — alias for /morning."""
+    webapp_url = settings.API_BASE_URL
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть", web_app=WebAppInfo(url=webapp_url))]])
+    await update.message.reply_text("Web Dashboard", reply_markup=keyboard)
+
+
 async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /morning command — build report from current DB data."""
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
-        await update.message.reply_text("У вас нет доступа к этому боту.")
+        await update.message.reply_text("Нет доступа.")
         return
 
     dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
@@ -61,7 +68,7 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /web command — generate one-time login code for desktop browser."""
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
-        await update.message.reply_text("У вас нет доступа к этому боту.")
+        await update.message.reply_text("Нет доступа.")
         return
 
     code = generate_code(str(update.effective_user.id))
@@ -75,7 +82,7 @@ async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /stick command — increment IQOS stick counter for today."""
     if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
-        await update.message.reply_text("У вас нет доступа к этому боту.")
+        await update.message.reply_text("Нет доступа.")
         return
 
     dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
@@ -167,6 +174,7 @@ def build_application() -> Application:
     app = builder.build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("morning", morning))
+    app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
