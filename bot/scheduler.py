@@ -496,11 +496,11 @@ async def _fill_training_log_actual() -> None:
     for log in unfilled:
         log_date = date.fromisoformat(log.date)
         logger.info(
-            "Training log #%d: date=%s sport=%s workout_id=%s",
+            "Training log #%d: date=%s sport=%s name=%s",
             log.id,
             log.date,
             log.sport,
-            log.workout_id,
+            log.original_name,
         )
         activities = await ActivityRow.get_for_date(log_date)
         logger.info(
