@@ -72,6 +72,18 @@ def main() -> None:
         help="Limit to last N days (default: 0 = all)",
     )
 
+    refetch_parser = sub.add_parser(
+        "refetch-details",
+        help="Re-fetch activity details from Intervals.icu for ALL activities (updates zone_times etc).",
+    )
+    refetch_parser.add_argument(
+        "days",
+        nargs="?",
+        type=int,
+        default=180,
+        help="Number of days back to re-fetch (default: 180)",
+    )
+
     sub.add_parser("backfill-max-zone", help="Backfill actual_max_zone_time for training_log entries")
 
     args = parser.parse_args()
@@ -86,6 +98,8 @@ def main() -> None:
         asyncio.run(_sync_activities(args.days))
     elif args.command == "backfill-details":
         asyncio.run(_backfill_details(args.days))
+    elif args.command == "refetch-details":
+        asyncio.run(_refetch_details(args.days))
     elif args.command == "backfill-max-zone":
         asyncio.run(_backfill_max_zone())
 
@@ -229,6 +243,57 @@ def _shell() -> None:
         "timedelta": timedelta,
     }
     code.interact(banner=banner, local=ctx)
+
+
+async def _refetch_details(days: int = 180) -> None:
+    """Re-fetch activity details from Intervals.icu for existing activities.
+
+    Unlike backfill-details (which skips existing), this re-fetches ALL activities
+    to update columns added after initial fetch (e.g. hr_zone_times, power_zone_times).
+    """
+    client = IntervalsClient()
+    cutoff = str(date.today() - timedelta(days=days))
+
+    async with get_session() as session:
+        from sqlalchemy import select as sa_select
+
+        result = await session.execute(
+            sa_select(ActivityRow)
+            .where(ActivityRow.start_date_local >= cutoff)
+            .order_by(ActivityRow.start_date_local.desc())
+        )
+        activities = list(result.scalars().all())
+
+    total = len(activities)
+    updated = 0
+    print(f"Re-fetch details: {total} activities (last {days} days)")
+
+    for i, act in enumerate(activities, 1):
+        print(f"[{i}/{total}] {act.id} ({act.start_date_local}, {act.type}) ...", end=" ")
+        try:
+            detail = await client.get_activity_detail(act.id)
+            if detail is None:
+                print("404, skip")
+                continue
+
+            # Check if API returns zone_times
+            has_zt = "icu_hr_zone_times" in detail or "icu_zone_times" in detail
+            try:
+                intervals_data = await client.get_activity_intervals(act.id)
+            except Exception:
+                intervals_data = None
+
+            await ActivityDetailRow.save(act.id, detail, intervals_data)
+            updated += 1
+            print(f"OK (zone_times: {has_zt})")
+        except Exception as exc:
+            print(f"Error: {exc}")
+
+        if i < total:
+            await asyncio.sleep(1)
+
+    print(f"\nRe-fetched {updated}/{total} activities.")
+    print("Now run: python -m bot.cli backfill-max-zone")
 
 
 async def _backfill_max_zone() -> None:
