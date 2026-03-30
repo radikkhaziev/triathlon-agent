@@ -317,9 +317,10 @@ async def sync_athlete_settings() -> None:
         "Run": {
             "lthr": settings.ATHLETE_LTHR_RUN,
             "max_hr": settings.ATHLETE_MAX_HR,
+            "threshold_pace": round(1000.0 / settings.ATHLETE_THRESHOLD_PACE_RUN, 4),  # sec/km → m/s
         },
         "Swim": {
-            "threshold_pace": round(settings.ATHLETE_CSS / 100, 4),  # sec/100m → sec/m (API expects sec/m)
+            "threshold_pace": round(100.0 / settings.ATHLETE_CSS, 4),  # sec/100m → m/s (API expects speed)
         },
     }
 

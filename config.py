@@ -32,11 +32,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
 
     # Athlete thresholds (from HumanGo tests, Nov-Dec 2025 + Mar 2026)
-    ATHLETE_LTHR_RUN: int = 153
-    ATHLETE_LTHR_BIKE: int = 153
-    ATHLETE_MAX_HR: int = 179
-    ATHLETE_FTP: float = 233
+    ATHLETE_LTHR_RUN: int = 153  # bpm, from HumanGo ramp test
+    ATHLETE_LTHR_BIKE: int = 153  # bpm, from HumanGo ramp test
+    ATHLETE_MAX_HR: int = 179  # bpm
+    ATHLETE_FTP: float = 233  # watts, from HumanGo ramp test, Mar 2026
     ATHLETE_CSS: float = 141  # 2:21/100m from HumanGo, Mar 2026
+    ATHLETE_THRESHOLD_PACE_RUN: float = 295  # sec/km, 4:55/km
     ATHLETE_AGE: int = 43
 
     # Race goal
