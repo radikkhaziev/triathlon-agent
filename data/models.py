@@ -279,6 +279,10 @@ class PlannedWorkout(BaseModel):
         if self.has_distance_steps and self.sport in ("Swim", "Run"):
             event["target"] = "PACE"
 
+        # TODO: ckeck it summer
+        # if self.sport == "Swim":
+        #     event["indoor"] = True
+
         return event
 
 

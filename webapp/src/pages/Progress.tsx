@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { Chart, registerables } from 'chart.js'
+import annotationPlugin from 'chartjs-plugin-annotation'
 import Layout from '../components/Layout'
 import TabSwitcher from '../components/TabSwitcher'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -8,9 +9,9 @@ import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
 import { CHART_COLORS } from '../lib/constants'
 import { num } from '../lib/formatters'
-import type { ProgressResponse } from '../api/types'
+import type { ProgressResponse, DecouplingTrend } from '../api/types'
 
-Chart.register(...registerables)
+Chart.register(...registerables, annotationPlugin)
 
 type Sport = 'bike' | 'run' | 'swim'
 
@@ -26,11 +27,17 @@ const DAYS_TABS = [
   { key: '365', label: '1y' },
 ]
 
+const STATUS_COLORS = {
+  green: '#22c55e',
+  yellow: '#eab308',
+  red: '#ef4444',
+} as const
+
 export default function Progress() {
   const [sport, setSport] = useState<Sport>('bike')
-  const [days, setDays] = useState('90')
+  const [days, setDays] = useState('180')
 
-  const endpoint = `/api/progress?sport=${sport}&days=${days}`
+  const endpoint = `/api/progress?sport=${sport}&days=${days}&strict_filter=true`
   const { data, loading, error } = useApi<ProgressResponse>(endpoint)
 
   return (
@@ -54,7 +61,13 @@ function ProgressContent({ data, sport }: { data: ProgressResponse; sport: Sport
   return (
     <>
       <TrendBadge data={data} sport={sport} />
-      {sport === 'swim' ? <SwimCharts data={data} /> : <EFChart data={data} sport={sport} />}
+      {data.decoupling_trend && <DecouplingBadge trend={data.decoupling_trend} />}
+      {sport === 'swim' ? <SwimCharts data={data} /> : (
+        <>
+          <EFChart data={data} sport={sport} />
+          <DecouplingChart data={data} sport={sport} />
+        </>
+      )}
       <ActivityList data={data} sport={sport} />
     </>
   )
@@ -81,6 +94,28 @@ function TrendBadge({ data, sport }: { data: ProgressResponse; sport: Sport }) {
       <span className="text-sm font-bold" style={{ color }}>
         {arrow} {Math.abs(trend.pct).toFixed(1)}%
       </span>
+    </div>
+  )
+}
+
+function DecouplingBadge({ trend }: { trend: DecouplingTrend }) {
+  const color = STATUS_COLORS[trend.status]
+  const stale = trend.latest.days_since > 14
+
+  return (
+    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[13px] text-text-dim">Decoupling (last {trend.last_n})</span>
+        <span className="text-sm font-bold" style={{ color }}>
+          {trend.median.toFixed(1)}%
+        </span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] text-text-dim">
+          Latest: {trend.latest.value.toFixed(1)}% ({trend.latest.date})
+        </span>
+        {stale && <span className="text-[11px] text-text-dim">stale ({trend.latest.days_since}d ago)</span>}
+      </div>
     </div>
   )
 }
@@ -120,6 +155,122 @@ function EFChart({ data, sport }: { data: ProgressResponse; sport: Sport }) {
 
     return () => { chartInstRef.current?.destroy() }
   }, [data, sport])
+
+  return (
+    <ChartContainer>
+      <canvas ref={chartRef} />
+    </ChartContainer>
+  )
+}
+
+function DecouplingChart({ data, sport }: { data: ProgressResponse; sport: Sport }) {
+  const chartRef = useRef<HTMLCanvasElement>(null)
+  const chartInstRef = useRef<Chart | null>(null)
+  const activities = data.activities.filter(a => a.decoupling != null)
+
+  useEffect(() => {
+    if (!chartRef.current || activities.length < 2) return
+
+    chartInstRef.current?.destroy()
+
+    const labels = activities.map(a => a.date.slice(5))  // MM-DD
+    const values = activities.map(a => a.decoupling!)
+    const colors = activities.map(a => {
+      const abs = Math.abs(a.decoupling!)
+      if (abs < 5) return STATUS_COLORS.green
+      if (abs <= 10) return STATUS_COLORS.yellow
+      return STATUS_COLORS.red
+    })
+
+    chartInstRef.current = new Chart(chartRef.current, {
+      type: 'scatter',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Decoupling %',
+          data: values.map((v, i) => ({ x: i, y: v })),
+          pointBackgroundColor: colors,
+          pointBorderColor: colors,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: `Cardiac Drift — ${sport === 'bike' ? 'Bike' : 'Run'}`, font: { size: 13 } },
+          annotation: {
+            annotations: {
+              greenZone: {
+                type: 'box',
+                yMin: -5, yMax: 5,
+                backgroundColor: STATUS_COLORS.green + '15',
+                borderWidth: 0,
+              },
+              yellowZoneHi: {
+                type: 'box',
+                yMin: 5, yMax: 10,
+                backgroundColor: STATUS_COLORS.yellow + '15',
+                borderWidth: 0,
+              },
+              yellowZoneLo: {
+                type: 'box',
+                yMin: -10, yMax: -5,
+                backgroundColor: STATUS_COLORS.yellow + '15',
+                borderWidth: 0,
+              },
+              redZoneHi: {
+                type: 'box',
+                yMin: 10, yMax: 30,
+                backgroundColor: STATUS_COLORS.red + '10',
+                borderWidth: 0,
+              },
+              redZoneLo: {
+                type: 'box',
+                yMin: -30, yMax: -10,
+                backgroundColor: STATUS_COLORS.red + '10',
+                borderWidth: 0,
+              },
+            },
+          },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                const idx = items[0]?.dataIndex
+                return idx != null ? activities[idx].date : ''
+              },
+              label: (item) => `${(item.raw as { y: number }).y.toFixed(1)}%`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            display: true,
+            ticks: {
+              font: { size: 10 },
+              callback: (val) => labels[val as number] || '',
+              maxRotation: 45,
+            },
+            grid: { color: 'rgba(128,128,128,0.15)' },
+          },
+          y: {
+            grid: { color: 'rgba(128,128,128,0.15)' },
+            ticks: {
+              font: { size: 10 },
+              callback: (val) => `${val}%`,
+            },
+          },
+        },
+      },
+    })
+
+    return () => { chartInstRef.current?.destroy() }
+  }, [data, sport])
+
+  if (activities.length < 2) return null
 
   return (
     <ChartContainer>
@@ -229,7 +380,12 @@ function ActivityList({ data, sport }: { data: ProgressResponse; sport: Sport })
               <>
                 {act.ef != null && <span>{num(act.ef, 4)}</span>}
                 {act.decoupling != null && (
-                  <span className="text-text-dim text-[12px] ml-2">{num(act.decoupling, 1)}% dec</span>
+                  <span
+                    className="text-[12px] ml-2 font-medium"
+                    style={{ color: STATUS_COLORS[act.decoupling_status || 'green'] }}
+                  >
+                    {num(act.decoupling, 1)}%
+                  </span>
                 )}
               </>
             )}

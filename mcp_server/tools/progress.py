@@ -212,20 +212,21 @@ async def get_efficiency_trend(
 
         # Decoupling trend summary (last-5 median) when strict filter is on
         if strict_filter and sg in ("bike", "run"):
-            dec_values = [e["decoupling"] for e in entries if e.get("decoupling") is not None]
-            last_5 = dec_values[-5:] if dec_values else []
+            dec_entries = [(e["decoupling"], e["date"]) for e in entries if e.get("decoupling") is not None]
+            last_5 = [v for v, _ in dec_entries[-5:]]
             if last_5:
                 med = round(median(last_5), 1)
+                last_val, last_date = dec_entries[-1]
                 sport_resp["decoupling_trend"] = {
                     "last_n": len(last_5),
                     "median": med,
                     "status": decoupling_status(med),
                     "values": last_5,
                     "latest": {
-                        "value": dec_values[-1],
-                        "status": decoupling_status(dec_values[-1]),
-                        "date": entries[-1]["date"],
-                        "days_since": (date.today() - date.fromisoformat(entries[-1]["date"])).days,
+                        "value": last_val,
+                        "status": decoupling_status(last_val),
+                        "date": last_date,
+                        "days_since": (date.today() - date.fromisoformat(last_date)).days,
                     },
                 }
 
