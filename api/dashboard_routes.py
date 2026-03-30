@@ -117,6 +117,40 @@ def _generate_activities(days: int) -> list[dict]:
     return activities
 
 
+def _generate_recovery_series(days: int) -> dict:
+    """Generate realistic recovery score + RMSSD series."""
+    dates = _date_range(days)
+    rng = random.Random(77)
+
+    recovery = []
+    hrv = []
+
+    for i in range(days):
+        day_of_week = date.fromisoformat(dates[i]).weekday()
+        # Recovery tends to be higher after rest days, lower after hard training days
+        if day_of_week == 0:  # Monday — post-rest
+            rec = rng.uniform(75, 92)
+            hrv_val = rng.uniform(52, 60)
+        elif day_of_week in (5, 6):  # Weekend — post-hard-session
+            rec = rng.uniform(45, 68)
+            hrv_val = rng.uniform(40, 50)
+        else:
+            rec = rng.uniform(60, 85)
+            hrv_val = rng.uniform(45, 56)
+
+        # Slight upward trend over the period
+        rec += i / days * 5
+        hrv_val += i / days * 3
+
+        recovery.append(round(min(100, rec), 0))
+        hrv.append(round(hrv_val, 1))
+
+    return {"dates": dates, "recovery": recovery, "hrv": hrv}
+
+
+_RECOVERY_21 = _generate_recovery_series(21)
+
+
 # --- Endpoints ---
 
 
@@ -161,6 +195,14 @@ async def training_load(days: int = Query(default=84, le=365)) -> dict:
 async def activities(days: int = Query(default=28, le=180)) -> dict:
     """Completed activities with sport and TSS."""
     return {"activities": _generate_activities(days)}
+
+
+@router.get("/api/recovery-trend")
+async def recovery_trend(days: int = Query(default=21, ge=1, le=90)) -> dict:
+    """Recovery score + RMSSD trend over N days."""
+    if days >= 21:
+        return _RECOVERY_21
+    return {k: v[-days:] if isinstance(v, list) else v for k, v in _RECOVERY_21.items()}
 
 
 @router.get("/api/goal")

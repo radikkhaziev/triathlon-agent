@@ -1,6 +1,6 @@
 """Tests for ATP Phase 3: Training Log."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from data.database import TrainingLogRow
 
@@ -37,6 +37,36 @@ class TestTrainingLogCRUD:
         rows = await TrainingLogRow.get_range(days_back=7)
         assert len(rows) >= 1
 
+    async def test_get_range_days_back_is_inclusive(self, _test_db):
+        today = date.today()
+        in_range_date = today - timedelta(days=6)
+        out_of_range_date = today - timedelta(days=7)
+
+        await TrainingLogRow.create(
+            date=str(today),
+            source="none",
+            pre_recovery_score=60.0,
+            pre_recovery_category="moderate",
+        )
+        await TrainingLogRow.create(
+            date=str(in_range_date),
+            source="none",
+            pre_recovery_score=61.0,
+            pre_recovery_category="moderate",
+        )
+        await TrainingLogRow.create(
+            date=str(out_of_range_date),
+            source="none",
+            pre_recovery_score=62.0,
+            pre_recovery_category="moderate",
+        )
+
+        rows = await TrainingLogRow.get_range(days_back=7)
+        dates = {r.date for r in rows}
+        assert str(today) in dates
+        assert str(in_range_date) in dates
+        assert str(out_of_range_date) not in dates
+
     async def test_unfilled_actual(self, _test_db):
         row = await TrainingLogRow.create(
             date="2026-03-20",
@@ -72,8 +102,9 @@ class TestTrainingLogCRUD:
         assert updated.actual_activity_id == "i12345"
 
     async def test_unfilled_post(self, _test_db):
+        past_date = str(date.today() - timedelta(days=2))
         row = await TrainingLogRow.create(
-            date="2026-03-22",
+            date=past_date,
             sport="Run",
             source="adapted",
             pre_recovery_score=55.0,

@@ -24,3 +24,5 @@ static/workouts/*.html
 webapp/node_modules/
 webapp/dist/
 webapp_old/
+
+backups/

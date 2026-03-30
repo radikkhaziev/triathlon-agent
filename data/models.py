@@ -257,68 +257,12 @@ class PlannedWorkout(BaseModel):
 
         return _has_dist(self.steps)
 
-    def _steps_to_description(self) -> str:
-        """Convert steps to Intervals.icu plain text format (distance-aware).
-
-        Intervals.icu parses plain text into structured steps.
-        Format: `[reps x] distance/duration [target] [rest]`
-        Units: mtr = meters, km = kilometers, m = minutes, s = seconds.
-        """
-        lines = [self._step_to_text(step) for step in self.steps]
-        return "\n".join(line for line in lines if line.strip())
-
-    def _step_to_text(self, step: WorkoutStep) -> str:
-        """Convert a single WorkoutStep to Intervals.icu plain text line."""
-        parts: list[str] = []
-
-        # Repeat group: "4x100mtr 95% Pace 30s rest"
-        if step.reps and step.steps:
-            work = step.steps[0]
-            rest = step.steps[1] if len(step.steps) > 1 else None
-            prefix = f"{step.reps}x"
-            if work:
-                prefix += self._size_text(work)
-                prefix += self._target_text(work)
-            if rest and rest.duration:
-                prefix += f" {rest.duration}s rest"
-            parts.append(prefix)
-        else:
-            # Single step
-            parts.append(self._size_text(step))
-            parts.append(self._target_text(step))
-
-        return "".join(parts)
-
-    @staticmethod
-    def _size_text(step: WorkoutStep) -> str:
-        if step.distance:
-            d = int(step.distance)
-            if d >= 1000 and d % 1000 == 0:
-                return f"{d // 1000}km"
-            return f"{d}mtr"
-        if step.duration:
-            m, s = divmod(step.duration, 60)
-            if s == 0 and m > 0:
-                return f"{m}m"
-            return f"{step.duration}s"
-        return ""
-
-    @staticmethod
-    def _target_text(step: WorkoutStep) -> str:
-        if step.pace:
-            return f" {step.pace['value']}% Pace"
-        if step.hr:
-            return f" {step.hr['value']}% HR"
-        if step.power:
-            return f" {step.power['value']}% FTP"
-        return ""
-
     def to_intervals_event(self) -> dict:
         """Convert to Intervals.icu POST /events JSON body.
 
-        Uses plain text description for workouts with distance-based steps
-        (more reliable for Swim/Run distance intervals).
-        Falls back to workout_doc for time-only workouts.
+        Always uses workout_doc — works for both time-based and distance-based steps.
+        Verified: Intervals.icu parses workout_doc distance correctly (Этап 0 tests).
+        Plain text description does NOT parse distance steps.
         """
         event: dict = {
             "category": "WORKOUT",
@@ -327,18 +271,13 @@ class PlannedWorkout(BaseModel):
             "start_date_local": f"{self.target_date}T00:00:00",
             "moving_time": self.duration_minutes * 60,
             "external_id": self.external_id,
+            "workout_doc": {
+                "steps": [s.model_dump(exclude_none=True) for s in self.steps],
+            },
         }
 
-        if self.has_distance_steps:
-            # Способ A: plain text — reliable for distance-based steps
-            event["description"] = self._steps_to_description()
-            if self.sport in ("Swim", "Run"):
-                event["target"] = "PACE"
-        else:
-            # Способ B: workout_doc — standard for time-based steps
-            event["workout_doc"] = {
-                "steps": [s.model_dump(exclude_none=True) for s in self.steps],
-            }
+        if self.has_distance_steps and self.sport in ("Swim", "Run"):
+            event["target"] = "PACE"
 
         return event
 

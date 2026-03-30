@@ -76,10 +76,15 @@ function ActivityRow({ activity: a }: { activity: ActivityItem }) {
   const [detail, setDetail] = useState<ActivityDetailsResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const cacheRef = useRef<Record<string, ActivityDetailsResponse>>({})
-
   const icon = SPORT_ICONS[a.type || ''] || '\u{1F3C6}'
   const label = sportLabel(a.type)
-  const meta = [a.duration, a.icu_training_load != null ? `TSS ${a.icu_training_load}` : null, a.average_hr != null ? `\u2764\uFE0F ${a.average_hr}` : null].filter(Boolean).join(' \u00B7 ')
+  const meta = [
+    a.duration,
+    a.icu_training_load != null ? `TSS ${a.icu_training_load}` : null,
+    a.average_hr != null ? `\u2764\uFE0F ${Math.round(a.average_hr)} bpm` : null,
+  ]
+    .filter(Boolean)
+    .join(' \u00B7 ')
 
   const toggleDetail = async () => {
     if (expanded) {
@@ -145,6 +150,9 @@ function InlineDetail({ data }: { data: ActivityDetailsResponse }) {
   const d = data.details
   const type = data.type || ''
   if (!d) return <div className="text-xs text-text-dim">Нет детальных данных</div>
+  const hrZones = d.hr_zone_times ?? d.hr_zones
+  const powerZones = d.power_zone_times ?? d.power_zones
+  const paceZones = d.pace_zone_times ?? d.pace_zones
 
   const lines: React.ReactNode[] = []
 
@@ -196,9 +204,9 @@ function InlineDetail({ data }: { data: ActivityDetailsResponse }) {
       <div className="text-xs text-text-dim leading-[1.8]">
         {lines.map((line, i) => <div key={i}>{line}</div>)}
       </div>
-      {d.hr_zones && <ZoneBar zones={d.hr_zones} label="HR Zones" />}
-      {d.power_zones && <ZoneBar zones={d.power_zones} label="Power Zones" />}
-      {d.pace_zones && <ZoneBar zones={d.pace_zones} label="Pace Zones" />}
+      {hrZones && <ZoneBar zones={hrZones} label="HR Zones" />}
+      {powerZones && <ZoneBar zones={powerZones} label="Power Zones" />}
+      {paceZones && <ZoneBar zones={paceZones} label="Pace Zones" />}
       <Link to={`/activity/${data.activity_id}`} className="inline-block mt-2 text-xs text-accent no-underline hover:underline">
         Details &rarr;
       </Link>

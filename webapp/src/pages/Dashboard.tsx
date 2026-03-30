@@ -5,7 +5,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
-import type { TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList } from '../api/types'
+import type { TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList, RecoveryTrendSeries } from '../api/types'
 
 Chart.register(...registerables)
 
@@ -47,20 +47,47 @@ export default function Dashboard() {
   )
 }
 
+function TsbZoneBadge({ tsb }: { tsb: number | null }) {
+  if (tsb === null) return null
+  let label: string, color: string
+  if (tsb > 10) { label = 'Недогрузка'; color = '#3b82f6' }
+  else if (tsb >= -10) { label = 'Оптимум'; color = '#22c55e' }
+  else if (tsb >= -25) { label = 'Продуктивная перегрузка'; color = '#f59e0b' }
+  else { label = 'Риск перетренированности'; color = '#ef4444' }
+
+  const tsbStr = tsb > 0 ? `+${tsb.toFixed(0)}` : tsb.toFixed(0)
+  return (
+    <div className="bg-[var(--surface)] rounded-xl p-3 mb-3 flex justify-between items-center">
+      <span className="text-[13px] text-text-dim">Зона TSB</span>
+      <div className="flex items-center gap-2">
+        <span className="text-[13px] font-mono font-semibold" style={{ color }}>{tsbStr}</span>
+        <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style={{ background: color }}>{label}</span>
+      </div>
+    </div>
+  )
+}
+
 function LoadTab() {
   const loadChartRef = useRef<HTMLCanvasElement>(null)
   const tssChartRef = useRef<HTMLCanvasElement>(null)
+  const recoveryChartRef = useRef<HTMLCanvasElement>(null)
   const chartsRef = useRef<Chart[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [currentTsb, setCurrentTsb] = useState<number | null>(null)
 
   useEffect(() => {
     Promise.all([
       apiFetch<TrainingLoadSeries>('/api/training-load?days=84'),
       apiFetch<ActivitiesSeries>('/api/activities?days=28'),
-    ]).then(([loadData, actData]) => {
+      apiFetch<RecoveryTrendSeries>('/api/recovery-trend?days=21').catch(() => null),
+    ]).then(([loadData, actData, recData]) => {
       chartsRef.current.forEach(c => c.destroy())
       chartsRef.current = []
+
+      if (loadData.tsb?.length) {
+        setCurrentTsb(loadData.tsb[loadData.tsb.length - 1])
+      }
 
       if (loadChartRef.current && loadData.dates?.length) {
         const labels = loadData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
@@ -100,6 +127,54 @@ function LoadTab() {
           options: { ...chartOptions('Daily TSS by Sport'), scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, ticks: { font: { size: 10 } } } } },
         }))
       }
+
+      if (recoveryChartRef.current && recData?.dates?.length) {
+        const labels = recData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
+        chartsRef.current.push(new Chart(recoveryChartRef.current, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: 'Recovery Score',
+                data: recData.recovery,
+                borderColor: '#a855f7',
+                backgroundColor: '#a855f720',
+                fill: true,
+                tension: 0.4,
+                pointRadius: 3,
+                pointBackgroundColor: '#a855f7',
+                borderWidth: 2,
+                yAxisID: 'y',
+              },
+              {
+                label: 'HRV (RMSSD)',
+                data: recData.hrv,
+                borderColor: '#f59e0b',
+                fill: false,
+                tension: 0.4,
+                pointRadius: 2,
+                pointBackgroundColor: '#f59e0b',
+                borderWidth: 1.5,
+                yAxisID: 'y1',
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
+              title: { display: true, text: 'Recovery & HRV (21 days)', font: { size: 13 } },
+            },
+            scales: {
+              x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45 } },
+              y: { min: 0, max: 100, grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } }, position: 'left' },
+              y1: { min: 30, max: 75, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } }, position: 'right' },
+            },
+          },
+        }))
+      }
     }).catch(err => setError(err instanceof Error ? err.message : 'Failed to load')).finally(() => setLoading(false))
 
     return () => { chartsRef.current.forEach(c => c.destroy()) }
@@ -111,7 +186,9 @@ function LoadTab() {
   return (
     <>
       <ChartContainer><canvas ref={loadChartRef} /></ChartContainer>
+      <TsbZoneBadge tsb={currentTsb} />
       <ChartContainer><canvas ref={tssChartRef} /></ChartContainer>
+      <ChartContainer><canvas ref={recoveryChartRef} /></ChartContainer>
     </>
   )
 }
@@ -197,6 +274,12 @@ function WeekTab() {
 
   const sportEmoji: Record<string, string> = { swimming: '🏊', cycling: '🚴', running: '🏃' }
 
+  const sportVals = Object.values(summary?.by_sport || {})
+  const totalDur = sportVals.reduce((a, s) => a + s.duration_sec, 0)
+  const totalDist = sportVals.reduce((a, s) => a + s.distance_m, 0)
+  const totalTss = sportVals.reduce((a, s) => a + s.tss, 0)
+  const showTotal = sportVals.length > 1
+
   return (
     <>
       {sched?.workouts?.length ? (
@@ -211,8 +294,8 @@ function WeekTab() {
               </tr>
             </thead>
             <tbody>
-              {sched.workouts.map((w, i) => (
-                <tr key={i}>
+              {sched.workouts.map((w) => (
+                <tr key={`${w.date}-${w.sport}-${w.workout_name}`}>
                   <td className="py-2 px-1 border-b border-[var(--surface)]">{w.date}</td>
                   <td className="py-2 px-1 border-b border-[var(--surface)]">{sportEmoji[w.sport] || '🏋'} {w.workout_name}</td>
                   <td className="py-2 px-1 border-b border-[var(--surface)]">{w.planned_tss ? w.planned_tss.toFixed(0) : '\u2014'}</td>
@@ -228,12 +311,26 @@ function WeekTab() {
       {summary && (
         <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
           <div className="text-sm font-bold mb-2">Weekly Summary</div>
-          <pre className="text-[13px] leading-relaxed whitespace-pre-wrap">
-            {Object.entries(summary.by_sport || {}).map(([sport, s]) => {
-              const emoji = sportEmoji[sport] || '🏋'
-              return `${emoji} ${sport}: ${(s.duration_sec / 3600).toFixed(1)}h, ${(s.distance_m / 1000).toFixed(1)}km, TSS ${s.tss.toFixed(0)}`
-            }).join('\n')}
-          </pre>
+          {Object.entries(summary.by_sport || {}).map(([sport, s]) => (
+            <div key={sport} className="flex justify-between items-center py-2 border-b border-bg last:border-b-0">
+              <span className="text-sm">{sportEmoji[sport] || '🏋'} <span className="font-semibold capitalize">{sport}</span></span>
+              <div className="flex gap-3 text-[13px]">
+                <span className="text-text-dim">{(s.duration_sec / 3600).toFixed(1)}h</span>
+                <span className="text-text-dim">{(s.distance_m / 1000).toFixed(1)}km</span>
+                <span className="font-semibold">TSS {s.tss.toFixed(0)}</span>
+              </div>
+            </div>
+          ))}
+          {showTotal && (
+            <div className="flex justify-between items-center pt-2 mt-1">
+              <span className="text-sm font-bold">Total</span>
+              <div className="flex gap-3 text-[13px]">
+                <span className="text-text-dim">{(totalDur / 3600).toFixed(1)}h</span>
+                <span className="text-text-dim">{(totalDist / 1000).toFixed(1)}km</span>
+                <span className="font-bold">TSS {totalTss.toFixed(0)}</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </>

@@ -9,7 +9,7 @@ from datetime import date
 from jinja2 import Environment, FileSystemLoader
 
 from config import settings
-from data.database import ExerciseCardRow, WorkoutCardRow
+from data.database import AiWorkoutRow, ExerciseCardRow, WorkoutCardRow
 from data.intervals_client import IntervalsClient
 from data.models import PlannedWorkout, WorkoutStep
 from mcp_server.app import mcp
@@ -110,6 +110,7 @@ async def create_exercise_card(
     animation_css: str,
     breath: str = "",
     default_duration_sec: int | None = None,
+    distance_m: float | None = None,
 ) -> str:
     """Create an exercise card in the library.
 
@@ -120,6 +121,9 @@ async def create_exercise_card(
     Use exercise_id as CSS class prefix for all elements to avoid collisions.
     animation_css: CSS @keyframes and positioning (~30-50 lines).
     Prefix all selectors with .card-{exercise_id} for namespace isolation.
+
+    distance_m: meters per rep — for swim drills (e.g. 25, 50, 100).
+    When set, compose_workout uses distance instead of duration for this exercise.
 
     See the clamshell example in docs/WORKOUT_CARDS.md for reference.
     """
@@ -139,6 +143,7 @@ async def create_exercise_card(
         default_sets=default_sets,
         default_reps=default_reps,
         default_duration_sec=default_duration_sec,
+        distance_m=distance_m,
         steps=steps,
         focus=focus,
         breath=breath,
@@ -168,6 +173,7 @@ async def update_exercise_card(
     default_sets: int | None = None,
     default_reps: int | None = None,
     default_duration_sec: int | None = None,
+    distance_m: float | None = None,
     steps: list[str] | None = None,
     focus: str | None = None,
     breath: str | None = None,
@@ -177,6 +183,7 @@ async def update_exercise_card(
     """Update an existing exercise card.
 
     Only provided fields are updated. HTML file is re-rendered after update.
+    distance_m: meters per rep — for swim drills (e.g. 25, 50, 100).
     """
     err = _validate_exercise_id(exercise_id)
     if err:
@@ -196,6 +203,7 @@ async def update_exercise_card(
         ("default_sets", default_sets),
         ("default_reps", default_reps),
         ("default_duration_sec", default_duration_sec),
+        ("distance_m", distance_m),
         ("steps", steps),
         ("focus", focus),
         ("breath", breath),
@@ -377,15 +385,19 @@ async def compose_workout(
             dur_sec = ex.get("duration_sec") or card.default_duration_sec
             is_last = i == len(exercises) - 1
 
-            # Distance-based step for Swim exercises (from exercise entry dict)
-            distance_m = ex.get("distance_m")
+            # Distance-based step: from exercise entry or card default
+            # Use exercise name in sub-steps so Garmin watch shows it (not generic "Работа")
+            exercise_name = card.name_ru
+            distance_m = ex.get("distance_m") or card.distance_m
             if distance_m:
-                sub_steps = [{"text": "Работа", "distance": float(distance_m)}]
+                # For swim drills: total distance = reps × distance_m (e.g. 4×25m = 100m)
+                total_dist = float(distance_m) * reps
+                sub_steps = [{"text": exercise_name, "distance": total_dist}]
             elif dur_sec:
-                sub_steps = [{"text": "Работа", "duration": dur_sec}]
+                sub_steps = [{"text": exercise_name, "duration": dur_sec}]
             else:
                 work_sec = max(15, reps * 3)
-                sub_steps = [{"text": "Работа", "duration": work_sec}]
+                sub_steps = [{"text": exercise_name, "duration": work_sec}]
             if not is_last:
                 sub_steps.append({"text": "Отдых", "duration": 15})
 
@@ -399,7 +411,7 @@ async def compose_workout(
 
         try:
             client = IntervalsClient()
-            # Use PlannedWorkout to auto-select description (distance) vs workout_doc (time)
+            # Use PlannedWorkout to build workout_doc for Intervals.icu
             parsed_steps = WorkoutStep.from_raw_list(workout_steps)
             pw = PlannedWorkout(
                 sport=sport,
@@ -412,7 +424,8 @@ async def compose_workout(
             # Override with compose_workout specifics
             event["start_date_local"] = f"{date_str}T06:00:00"
             event["name"] = name  # no "AI:" prefix for workout cards
-            event["external_id"] = f"workout-card:{date_str}:{slug}"
+            ext_id = f"tricoach:workout-card:{date_str}:{slug}"
+            event["external_id"] = ext_id
             desc_prefix = f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}"
             if "description" in event:
                 event["description"] = f"{desc_prefix}\n\n{event['description']}"
@@ -424,6 +437,21 @@ async def compose_workout(
             resp_body = getattr(getattr(e, "response", None), "text", "")
             logger.error("Failed to push workout to Intervals.icu: %s | body: %s", e, resp_body)
             return f"HTML generated: {url}\nError pushing to Intervals.icu: {e}\nResponse: {resp_body}"
+
+    # Register in ai_workouts so list_ai_workouts / remove_ai_workout can find it
+    if intervals_id and push_to_intervals:
+        await AiWorkoutRow.save(
+            date_str=date_str,
+            sport=sport,
+            slot="workout-card",
+            external_id=ext_id,
+            intervals_id=intervals_id,
+            name=name,
+            description=f"Workout card: {len(exercises)} exercises, ~{total_duration_min} min",
+            duration_minutes=total_duration_min,
+            target_tss=None,
+            rationale=f"Composed from exercise cards: {url}",
+        )
 
     # Save to DB
     await WorkoutCardRow.save(
@@ -467,6 +495,16 @@ async def remove_workout_card(card_id: int) -> str:
             intervals_warning = f" (warning: failed to remove from Intervals.icu, event ID {row.intervals_id})"
 
     name = row.name
+
+    # Also cancel from ai_workouts if it was registered there
+    if row.intervals_id and row.date:
+        slug = _slugify(name) or row.date
+        ai_ext_id = f"tricoach:workout-card:{row.date}:{slug}"
+        try:
+            await AiWorkoutRow.cancel(ai_ext_id)
+        except Exception:
+            logger.debug("No ai_workouts record for %s", ai_ext_id)
+
     await WorkoutCardRow.delete(card_id)
     return f"Removed workout card #{card_id}: {name}{intervals_warning}"
 

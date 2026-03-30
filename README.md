@@ -34,7 +34,7 @@ The agent knows your target event (date, distance, required fitness). It tracks 
 
 **Desktop Web** -- the same dashboard accessible from a browser, authenticated via a one-time code from the bot.
 
-**MCP Server** -- for AI assistants like Claude. Exposes 29 tools covering wellness, HRV, training load, recovery, workouts, activities, mood tracking, and more. This is how Claude in desktop mode can query your training data directly.
+**MCP Server** -- for AI assistants like Claude. Exposes 30 tools covering wellness, HRV, training load, recovery, workouts, activities, aerobic efficiency trends, mood tracking, and more. This is how Claude in desktop mode can query your training data directly.
 
 ## The AI Layer
 
@@ -62,7 +62,7 @@ Intervals.icu  ──sync──>  PostgreSQL  ──analyze──>  AI (Claude /
                      (dashboard, charts)        (morning reports, chat)
                                |
                                v
-                       MCP Server (29 tools)
+                       MCP Server (30 tools)
                   (for AI assistants like Claude Desktop)
 ```
 
@@ -72,7 +72,7 @@ All fitness data originates from Intervals.icu, which aggregates from Garmin, St
 
 The core system is fully operational: daily syncing, dual-HRV analysis, recovery scoring, morning reports, workout adaptation, training log with compliance detection, post-activity zone analysis, Telegram bot with AI chat, web dashboard, and MCP server.
 
-Currently waiting on data accumulation (~30 days of training log entries) to enable Gemini weekly pattern analysis. Next planned feature: efficiency tracking (EF trends for bike/run, SWOLF for swimming) to visualize aerobic fitness progress over time.
+Aerobic efficiency tracking is live: bike and run show Efficiency Factor trends over time (more watts or speed per heartbeat = fitter), swimming tracks pace and SWOLF (a combined time + stroke count metric where lower is better). All filtered to comparable steady-state Z2 sessions only. Currently waiting on data accumulation (~30 days of training log entries) to enable Gemini weekly pattern analysis.
 
 ## Tech Stack
 

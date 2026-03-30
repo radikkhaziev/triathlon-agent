@@ -127,19 +127,16 @@ class TestGetActivitiesRange:
 
 
 class TestActivitiesWeekEndpoint:
-    @pytest.fixture(autouse=True)
-    def _bypass_auth(self):
-        with patch("api.routes._require_viewer", return_value="owner"):
-            yield
-
     @pytest.fixture
     def client(self):
         from fastapi import FastAPI
 
+        from api.deps import require_viewer
         from api.routes import router
 
         test_app = FastAPI()
         test_app.include_router(router)
+        test_app.dependency_overrides[require_viewer] = lambda: "owner"
         return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
 
     async def test_returns_7_days(self, client):
@@ -215,44 +212,43 @@ class TestSyncActivitiesEndpoint:
     def client(self):
         from fastapi import FastAPI
 
+        from api.deps import require_owner
         from api.routes import router
 
         test_app = FastAPI()
         test_app.include_router(router)
+        test_app.dependency_overrides[require_owner] = lambda: None
         return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
 
     async def test_requires_auth(self, client):
-        with patch("api.routes.settings") as mock_settings:
-            mock_settings.TELEGRAM_BOT_TOKEN.get_secret_value.return_value = "test-token"
-            mock_settings.TIMEZONE = "Europe/Belgrade"
-            async with client as c:
-                resp = await c.post("/api/jobs/sync-activities")
-            assert resp.status_code == 401
+        from fastapi import FastAPI
+
+        from api.routes import router
+
+        app_no_override = FastAPI()
+        app_no_override.include_router(router)
+        async with AsyncClient(transport=ASGITransport(app=app_no_override), base_url="http://test") as c:
+            resp = await c.post("/api/jobs/sync-activities")
+        assert resp.status_code == 401
 
     async def test_runs_sync_job(self, client):
-        with (
-            patch("api.routes.settings") as mock_settings,
-            patch("api.routes._require_owner"),
-            patch("api.routes.sync_activities_job", new_callable=AsyncMock) as mock_job,
-        ):
-            mock_settings.TIMEZONE = "Europe/Belgrade"
+        with (patch("api.routers.jobs.sync_activities_job", new_callable=AsyncMock) as mock_job,):
             await ActivityRow.save_bulk([_make_activity(id="a6001")])
 
             async with client as c:
                 resp = await c.post("/api/jobs/sync-activities")
 
-            assert resp.status_code == 200
+            assert resp.status_code == 202
             data = resp.json()
-            assert data["status"] == "ok"
-            assert data["last_synced_at"] is not None
-            assert "synced_count" in data
+            assert data["status"] == "accepted"
+            assert data["job"] == "sync-activities"
             mock_job.assert_awaited_once()
 
     async def test_returns_502_on_failure(self, client):
         with (
-            patch("api.routes._require_owner"),
-            patch("api.routes.sync_activities_job", new_callable=AsyncMock, side_effect=Exception("API down")),
+            patch("api.routers.jobs.sync_activities_job", new_callable=AsyncMock, side_effect=Exception("API down")),
         ):
             async with client as c:
                 resp = await c.post("/api/jobs/sync-activities")
-            assert resp.status_code == 502
+            # Background tasks fail asynchronously; endpoint still acknowledges acceptance.
+            assert resp.status_code == 202

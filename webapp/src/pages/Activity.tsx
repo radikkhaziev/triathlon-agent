@@ -26,6 +26,9 @@ export default function Activity() {
   const isBike = BIKE_TYPES.includes(data.type || '')
   const isRun = RUN_TYPES.includes(data.type || '')
   const isSwim = data.type === 'Swim'
+  const hrZones = d?.hr_zone_times ?? d?.hr_zones
+  const powerZones = d?.power_zone_times ?? d?.power_zones
+  const paceZones = d?.pace_zone_times ?? d?.pace_zones
   const icon = SPORT_ICONS[data.type || ''] || '\u{1F3C6}'
 
   const subParts = [fmtDateShort(data.date), data.duration, data.icu_training_load != null ? `TSS ${data.icu_training_load}` : null, data.average_hr != null ? `\u2764\uFE0F ${data.average_hr} bpm` : null].filter(Boolean)
@@ -81,9 +84,9 @@ export default function Activity() {
           </div>
 
           {/* Zone Charts */}
-          {d.hr_zones && d.hr_zones.some(v => v > 0) && <ZoneChart zones={d.hr_zones} label="HR Zones" />}
-          {d.power_zones && d.power_zones.some(v => v > 0) && <ZoneChart zones={d.power_zones} label="Power Zones" />}
-          {d.pace_zones && d.pace_zones.some(v => v > 0) && <ZoneChart zones={d.pace_zones} label="Pace Zones" />}
+          {hrZones && hrZones.some(v => v > 0) && <ZoneChart zones={hrZones} label="HR Zones" />}
+          {powerZones && powerZones.some(v => v > 0) && <ZoneChart zones={powerZones} label="Power Zones" />}
+          {paceZones && paceZones.some(v => v > 0) && <ZoneChart zones={paceZones} label="Pace Zones" />}
 
           {/* Intervals */}
           {d.intervals && d.intervals.length > 0 && (

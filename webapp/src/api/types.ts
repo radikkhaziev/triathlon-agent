@@ -214,6 +214,9 @@ export interface ActivityDetails {
   hr_zones: number[] | null
   power_zones: number[] | null
   pace_zones: number[] | null
+  hr_zone_times: number[] | null
+  power_zone_times: number[] | null
+  pace_zone_times: number[] | null
   intervals: ActivityInterval[] | null
 }
 
@@ -305,4 +308,58 @@ export interface WeeklySummary {
 
 export interface ScheduledList {
   workouts: { date: string; sport: string; workout_name: string; planned_tss: number }[]
+}
+
+// Recovery Trend (Dashboard)
+export interface RecoveryTrendSeries {
+  dates: string[]
+  recovery: (number | null)[]
+  hrv: (number | null)[]
+}
+
+// Progress / Efficiency Trends
+export interface ProgressActivity {
+  date: string
+  id: string
+  duration_min: number
+  avg_hr: number | null
+  ef?: number
+  pace_100m?: number
+  swolf?: number | null
+  decoupling?: number | null
+  np?: number | null
+  pace?: number | null
+  distance?: number | null
+  pool_length?: number | null
+}
+
+export interface ProgressWeekly {
+  week: string
+  sessions: number
+  ef_mean?: number | null
+  pace_mean?: number | null
+  swolf_mean?: number | null
+  decoupling_mean?: number | null
+}
+
+export interface ProgressTrend {
+  direction: 'rising' | 'falling' | 'stable' | 'insufficient_data'
+  pct: number
+}
+
+export interface ProgressMetricInfo {
+  unit: string
+  trend: ProgressTrend
+}
+
+export interface ProgressResponse {
+  sport: string
+  period: string
+  data_points: number
+  activities: ProgressActivity[]
+  weekly?: ProgressWeekly[]
+  metric?: string
+  unit?: string
+  trend?: ProgressTrend
+  metrics?: Record<string, ProgressMetricInfo>
 }

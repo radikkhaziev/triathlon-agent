@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -300,20 +300,37 @@ class TestGetActivitiesForDate:
 class TestGetActivityHrvForDate:
     @pytest.mark.asyncio
     async def test_returns_hrv_rows(self):
-        from data.database import ActivityHrvRow, ActivityRow
-        from data.models import Activity
+        from data.database import ActivityHrvRow, ActivityRow, get_session
 
         dt = date(2026, 3, 24)
-        await ActivityRow.save_bulk(
-            [
-                Activity(id="i801", start_date_local=dt, type="Ride", icu_training_load=80, moving_time=3600),
-                Activity(id="i802", start_date_local=dt, type="Run", icu_training_load=40, moving_time=2400),
-            ]
-        )
+        suffix = int(datetime.now(timezone.utc).timestamp() * 1000000) % 1000000000
+        aid1 = f"i{suffix}"
+        aid2 = f"i{suffix + 1}"
+        # Create parent activities explicitly to satisfy FK on activity_hrv.
+        async with get_session() as session:
+            session.add(
+                ActivityRow(
+                    id=aid1,
+                    start_date_local=str(dt),
+                    type="Ride",
+                    icu_training_load=80,
+                    moving_time=3600,
+                )
+            )
+            session.add(
+                ActivityRow(
+                    id=aid2,
+                    start_date_local=str(dt),
+                    type="Run",
+                    icu_training_load=40,
+                    moving_time=2400,
+                )
+            )
+            await session.commit()
 
         await ActivityHrvRow.save(
             ActivityHrvRow(
-                activity_id="i801",
+                activity_id=aid1,
                 date="2026-03-24",
                 activity_type="Ride",
                 processing_status="processed",
@@ -321,7 +338,7 @@ class TestGetActivityHrvForDate:
         )
         await ActivityHrvRow.save(
             ActivityHrvRow(
-                activity_id="i802",
+                activity_id=aid2,
                 date="2026-03-24",
                 activity_type="Run",
                 processing_status="no_rr_data",
@@ -329,10 +346,11 @@ class TestGetActivityHrvForDate:
         )
 
         result = await ActivityHrvRow.get_for_date(dt)
-        assert len(result) == 2
-        statuses = {r.processing_status for r in result}
-        assert "processed" in statuses
-        assert "no_rr_data" in statuses
+        by_id = {r.activity_id: r for r in result}
+        assert aid1 in by_id
+        assert aid2 in by_id
+        assert by_id[aid1].processing_status == "processed"
+        assert by_id[aid2].processing_status == "no_rr_data"
 
     @pytest.mark.asyncio
     async def test_empty_date(self):
