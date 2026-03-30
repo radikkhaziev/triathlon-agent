@@ -141,6 +141,10 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _post_init(application: Application) -> None:
+    from data.intervals_client import sync_athlete_settings
+
+    await sync_athlete_settings()
+
     scheduler = await create_scheduler(bot=application.bot)
     scheduler.start()
     application.bot_data["scheduler"] = scheduler

@@ -70,6 +70,7 @@ async def lifespan(app):
     """Manage MCP sub-app and Telegram webhook lifecycles."""
     async with _mcp_app.router.lifespan_context(_mcp_app):
         # Start Telegram bot in webhook mode if configured
+        # Note: sync_athlete_settings() is called in bot's _post_init (covers both modes)
         if settings.TELEGRAM_WEBHOOK_URL:
             from bot.main import build_application
 
