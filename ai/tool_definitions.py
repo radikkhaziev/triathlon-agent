@@ -730,6 +730,16 @@ async def handle_save_mood_checkin(
         return {"error": str(e)}
 
 
+async def handle_create_github_issue(
+    title: str,
+    body: str,
+    labels: list[str] | None = None,
+) -> dict:
+    from data.github import create_issue
+
+    return await create_issue(title=title, body=body, labels=labels)
+
+
 # ---------------------------------------------------------------------------
 # Handler dispatch map
 # ---------------------------------------------------------------------------
@@ -754,8 +764,30 @@ SAVE_MOOD_CHECKIN_TOOL = {
     },
 }
 
-# Chat tools — MORNING_TOOLS + chat-only tools (save_mood_checkin)
-CHAT_TOOLS = [*MORNING_TOOLS, SAVE_MOOD_CHECKIN_TOOL]
+CREATE_GITHUB_ISSUE_TOOL = {
+    "name": "create_github_issue",
+    "description": (
+        "Create a GitHub issue in the triathlon-agent repository. "
+        "Use for tracking bugs, feature requests, and tasks discovered during conversation. "
+        "Title: English, imperative mood. Body: Markdown with Context, What needs to happen, Acceptance criteria."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Issue title in English, imperative mood ('Add X', 'Fix Y')"},
+            "body": {"type": "string", "description": "Markdown body with structured sections"},
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Labels to apply (e.g. ['bug'], ['enhancement', 'needs-implementation'])",
+            },
+        },
+        "required": ["title", "body"],
+    },
+}
+
+# Chat tools — MORNING_TOOLS + chat-only tools
+CHAT_TOOLS = [*MORNING_TOOLS, SAVE_MOOD_CHECKIN_TOOL, CREATE_GITHUB_ISSUE_TOOL]
 
 TOOL_HANDLERS = {
     "get_recovery": handle_get_recovery,
@@ -774,4 +806,5 @@ TOOL_HANDLERS = {
     "get_iqos_sticks": handle_get_iqos_sticks,
     # Phase 3 chat-only:
     "save_mood_checkin": handle_save_mood_checkin,
+    "create_github_issue": handle_create_github_issue,
 }

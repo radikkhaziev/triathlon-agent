@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # MCP
     MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access
 
+    # GitHub
+    GITHUB_TOKEN: SecretStr = SecretStr("")  # PAT for issue creation
+    GITHUB_REPO: str = "radikkhaziev/triathlon-agent"
+
     # AI Workout Generation (Phase 1: Adaptive Training Plan)
     AI_WORKOUT_ENABLED: bool = True  # Enable AI workout generation and MCP tools
     AI_WORKOUT_AUTO_PUSH: bool = True  # Auto-push generated workouts to Intervals.icu in morning cron
