@@ -455,3 +455,4 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 - Write deterministic tests for metric calculations
 - Keep prompts modular in `prompts.py`
 - Document new env vars in `.env.example`
+- When closing GitHub issues, follow the workflow in `~/.claude/skills/github-workflow/SKILL.md` — add a closing comment with "What was done" + "How to verify" before closing

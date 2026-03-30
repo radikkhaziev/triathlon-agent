@@ -9,7 +9,7 @@ from datetime import date
 from jinja2 import Environment, FileSystemLoader
 
 from config import settings
-from data.database import ExerciseCardRow, WorkoutCardRow
+from data.database import AiWorkoutRow, ExerciseCardRow, WorkoutCardRow
 from data.intervals_client import IntervalsClient
 from data.models import PlannedWorkout, WorkoutStep
 from mcp_server.app import mcp
@@ -422,7 +422,8 @@ async def compose_workout(
             # Override with compose_workout specifics
             event["start_date_local"] = f"{date_str}T06:00:00"
             event["name"] = name  # no "AI:" prefix for workout cards
-            event["external_id"] = f"workout-card:{date_str}:{slug}"
+            ext_id = f"tricoach:workout-card:{date_str}:{slug}"
+            event["external_id"] = ext_id
             desc_prefix = f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}"
             if "description" in event:
                 event["description"] = f"{desc_prefix}\n\n{event['description']}"
@@ -434,6 +435,21 @@ async def compose_workout(
             resp_body = getattr(getattr(e, "response", None), "text", "")
             logger.error("Failed to push workout to Intervals.icu: %s | body: %s", e, resp_body)
             return f"HTML generated: {url}\nError pushing to Intervals.icu: {e}\nResponse: {resp_body}"
+
+    # Register in ai_workouts so list_ai_workouts / remove_ai_workout can find it
+    if intervals_id and push_to_intervals:
+        await AiWorkoutRow.save(
+            date_str=date_str,
+            sport=sport,
+            slot="workout-card",
+            external_id=ext_id,
+            intervals_id=intervals_id,
+            name=name,
+            description=f"Workout card: {len(exercises)} exercises, ~{total_duration_min} min",
+            duration_minutes=total_duration_min,
+            target_tss=None,
+            rationale=f"Composed from exercise cards: {url}",
+        )
 
     # Save to DB
     await WorkoutCardRow.save(
@@ -477,6 +493,16 @@ async def remove_workout_card(card_id: int) -> str:
             intervals_warning = f" (warning: failed to remove from Intervals.icu, event ID {row.intervals_id})"
 
     name = row.name
+
+    # Also cancel from ai_workouts if it was registered there
+    if row.intervals_id and row.date:
+        slug = _slugify(name) or row.date
+        ai_ext_id = f"tricoach:workout-card:{row.date}:{slug}"
+        try:
+            await AiWorkoutRow.cancel(ai_ext_id)
+        except Exception:
+            logger.debug("No ai_workouts record for %s", ai_ext_id)
+
     await WorkoutCardRow.delete(card_id)
     return f"Removed workout card #{card_id}: {name}{intervals_warning}"
 
