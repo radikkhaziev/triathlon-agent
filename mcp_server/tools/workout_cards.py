@@ -386,16 +386,18 @@ async def compose_workout(
             is_last = i == len(exercises) - 1
 
             # Distance-based step: from exercise entry or card default
+            # Use exercise name in sub-steps so Garmin watch shows it (not generic "Работа")
+            exercise_name = card.name_ru
             distance_m = ex.get("distance_m") or card.distance_m
             if distance_m:
                 # For swim drills: total distance = reps × distance_m (e.g. 4×25m = 100m)
                 total_dist = float(distance_m) * reps
-                sub_steps = [{"text": "Работа", "distance": total_dist}]
+                sub_steps = [{"text": exercise_name, "distance": total_dist}]
             elif dur_sec:
-                sub_steps = [{"text": "Работа", "duration": dur_sec}]
+                sub_steps = [{"text": exercise_name, "duration": dur_sec}]
             else:
                 work_sec = max(15, reps * 3)
-                sub_steps = [{"text": "Работа", "duration": work_sec}]
+                sub_steps = [{"text": exercise_name, "duration": work_sec}]
             if not is_last:
                 sub_steps.append({"text": "Отдых", "duration": 15})
 
