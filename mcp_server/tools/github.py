@@ -1,6 +1,6 @@
-"""MCP tool for GitHub issue creation."""
+"""MCP tools for GitHub issue creation and listing."""
 
-from data.github import create_issue
+from data.github import create_issue, list_issues
 from mcp_server.app import mcp
 
 
@@ -22,3 +22,22 @@ async def create_github_issue(
         labels: Labels to apply (e.g. ["bug"], ["enhancement", "needs-implementation"]).
     """
     return await create_issue(title=title, body=body, labels=labels)
+
+
+@mcp.tool()
+async def get_github_issues(
+    state: str = "open",  # "open", "closed", or "all"
+    labels: list[str] | None = None,
+    limit: int = 10,
+) -> dict:
+    """List GitHub issues from the triathlon-agent repository.
+
+    Use to check existing issues before creating new ones (avoid duplicates),
+    review open tasks, or reference issue numbers in conversation.
+
+    Args:
+        state: Filter by state: "open", "closed", or "all". Default: "open".
+        labels: Filter by labels (e.g. ["bug"], ["enhancement"]).
+        limit: Max issues to return (default: 10, max: 100).
+    """
+    return await list_issues(state=state, labels=labels, limit=limit)

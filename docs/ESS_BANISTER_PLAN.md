@@ -51,15 +51,13 @@
 
 ## Параметры (defaults)
 
-| Параметр | Значение | Описание |
-|---|---|---|
-| k | 0.1 | Load sensitivity (conservative) |
-| τ (tau) | 2.0 | Recovery time constant (days) |
-| initial_recovery | 100.0 | Starting R(t) |
-| lookback_days | 90 | History window for Banister model |
+| Параметр | Значение |
+|---|---|
+| k | 0.1 |
+| τ (tau) | 2.0 |
+| initial_recovery | 100.0 |
+| lookback_days | 90 |
 
----
+ESS нормализует нагрузку так, что 1ч@LTHR ≈ 100. Banister-модель рекуррентно обновляет R(t) на основе суточного ESS и двух параметров (k, τ). R(t) вносит 25% в общий Recovery Score (RMSSD 35%, RHR 20%, Sleep 20%). Defaults консервативные; после 4–6 недель данных можно калибровать через scipy.optimize.minimize.
 
-## Будущее: калибровка k и τ
-
-Defaults консервативные. После 4-6 недель данных можно калибровать через scipy.optimize.minimize, минимизируя расхождение модельного R(t) vs реального RMSSD-статуса.
+> Full theory: [docs/knowledge/fitness-fatigue-model.md](knowledge/fitness-fatigue-model.md)

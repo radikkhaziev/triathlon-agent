@@ -730,6 +730,16 @@ async def handle_save_mood_checkin(
         return {"error": str(e)}
 
 
+async def handle_get_github_issues(
+    state: str = "open",
+    labels: list[str] | None = None,
+    limit: int = 10,
+) -> dict:
+    from data.github import list_issues
+
+    return await list_issues(state=state, labels=labels, limit=limit)
+
+
 async def handle_create_github_issue(
     title: str,
     body: str,
@@ -764,6 +774,34 @@ SAVE_MOOD_CHECKIN_TOOL = {
     },
 }
 
+GET_GITHUB_ISSUES_TOOL = {
+    "name": "get_github_issues",
+    "description": (
+        "List GitHub issues from the triathlon-agent repository. "
+        "Use to check existing issues before creating new ones (avoid duplicates), "
+        "review open tasks, or reference issue numbers."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "state": {
+                "type": "string",
+                "enum": ["open", "closed", "all"],
+                "description": "Filter by state (default: open)",
+            },
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Filter by labels (e.g. ['bug'])",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max issues to return (default: 10, max: 100)",
+            },
+        },
+    },
+}
+
 CREATE_GITHUB_ISSUE_TOOL = {
     "name": "create_github_issue",
     "description": (
@@ -787,7 +825,7 @@ CREATE_GITHUB_ISSUE_TOOL = {
 }
 
 # Chat tools — MORNING_TOOLS + chat-only tools
-CHAT_TOOLS = [*MORNING_TOOLS, SAVE_MOOD_CHECKIN_TOOL, CREATE_GITHUB_ISSUE_TOOL]
+CHAT_TOOLS = [*MORNING_TOOLS, SAVE_MOOD_CHECKIN_TOOL, GET_GITHUB_ISSUES_TOOL, CREATE_GITHUB_ISSUE_TOOL]
 
 TOOL_HANDLERS = {
     "get_recovery": handle_get_recovery,
@@ -806,5 +844,6 @@ TOOL_HANDLERS = {
     "get_iqos_sticks": handle_get_iqos_sticks,
     # Phase 3 chat-only:
     "save_mood_checkin": handle_save_mood_checkin,
+    "get_github_issues": handle_get_github_issues,
     "create_github_issue": handle_create_github_issue,
 }

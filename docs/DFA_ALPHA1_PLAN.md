@@ -2,6 +2,10 @@
 
 > HRV-анализ во время тренировки. Post-activity pipeline: FIT → RR → DFA a1 → thresholds → Ra/Da.
 
+DFA alpha1 (α1) — это краткосрочный показатель фрактальной корреляции RR-интервалов. При нагрузке α1 монотонно снижается: α1 ≈ 0.75 соответствует аэробному порогу (HRVT1), α1 ≈ 0.50 — анаэробному (HRVT2). Ra (Readiness) сравнивает текущую мощность/темп на разминке с 14-дневным baseline; Da (Durability) — drift внутри длинной тренировки.
+
+> Full theory: [docs/knowledge/dfa-alpha1.md](knowledge/dfa-alpha1.md)
+
 ---
 
 ## Архитектура
@@ -581,10 +585,8 @@ DFA анализ:
 
 ---
 
-## Ссылки
+## Ссылки и теория
 
-- Gronwald et al. 2020 — DFA a1 как биомаркер интенсивности
-- Rogers et al. 2021 — DFA a1 для определения аэробного порога
-- Lipponen & Tarvainen 2019 — artifact correction для RR-интервалов
-- AIEndurance — Ra (Readiness), Da (Durability) определения
-- Intervals.icu API: `GET /activity/{id}/file`
+Полная теоретическая база (DFA алгоритм, физиологическое обоснование, Ra/Da формулы, литература) — в [docs/knowledge/dfa-alpha1.md](knowledge/dfa-alpha1.md).
+
+Intervals.icu API: `GET /activity/{id}/file`
