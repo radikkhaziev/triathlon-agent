@@ -192,6 +192,11 @@ TSB zones: >+10 under-training | -10..+10 optimal | -10..-25 productive overreac
 Categories: excellent >85, good 70-85, moderate 40-70, low <40.
 Recommendations: zone2_ok / zone1_long / zone1_short / skip.
 
+**Cardiac Drift (Decoupling)** — Pa:Hr from Intervals.icu, not recalculated.
+Filter: `is_valid_for_decoupling()` — VI <= 1.10, >70% Z1+Z2, bike >= 60min / run >= 45min, swim excluded.
+Traffic light: green (<5%) / yellow (5-10%) / red (>10%). Uses abs() for negative drift.
+Trend: last-5 median via `get_efficiency_trend(strict_filter=True)`. Theory: `docs/knowledge/decoupling.md`.
+
 **HR Zones (% LTHR):**
 Run: Z1 0-72%, Z2 72-82%, Z3 82-87%, Z4 87-92%, Z5 92-100%
 Bike: Z1 0-68%, Z2 68-83%, Z3 83-94%, Z4 94-105%, Z5 105-120%

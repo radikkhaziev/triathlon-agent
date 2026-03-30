@@ -242,6 +242,27 @@ MORNING_TOOLS = [
             },
         },
     },
+    {
+        "name": "get_efficiency_trend",
+        "description": (
+            "Get aerobic efficiency and cardiac drift (decoupling) trend. "
+            "Use strict_filter=true for decoupling analysis: applies stricter filtering "
+            "(VI <= 1.10, >70% Z1+Z2, bike >= 60min / run >= 45min, swim excluded). "
+            "Returns decoupling_trend with last-5 median and traffic light status (green/yellow/red). "
+            "If days_since > 14, data is stale — don't emphasize in report."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sport": {"type": "string", "description": "bike, run, or swim. Empty = all."},
+                "days_back": {"type": "integer", "description": "Lookback days. Default: 90"},
+                "strict_filter": {
+                    "type": "boolean",
+                    "description": "Apply strict decoupling filter (VI, zones, duration). Default: false",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -708,6 +729,21 @@ async def handle_get_iqos_sticks(target_date: str = "", days_back: int = 0) -> d
     }
 
 
+async def handle_get_efficiency_trend(
+    sport: str = "",
+    days_back: int = 90,
+    strict_filter: bool = False,
+) -> dict:
+    from mcp_server.tools.progress import get_efficiency_trend
+
+    return await get_efficiency_trend(
+        sport=sport,
+        days_back=days_back,
+        group_by="week",
+        strict_filter=strict_filter,
+    )
+
+
 async def handle_save_mood_checkin(
     energy: int | None = None,
     mood: int | None = None,
@@ -842,6 +878,7 @@ TOOL_HANDLERS = {
     "get_readiness_history": handle_get_readiness_history,
     "get_mood_checkins": handle_get_mood_checkins,
     "get_iqos_sticks": handle_get_iqos_sticks,
+    "get_efficiency_trend": handle_get_efficiency_trend,
     # Phase 3 chat-only:
     "save_mood_checkin": handle_save_mood_checkin,
     "get_github_issues": handle_get_github_issues,

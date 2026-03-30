@@ -309,6 +309,11 @@ get_activities за 3 дня, get_training_log для паттернов,
 get_mood_checkins для эмоционального контекста,
 get_iqos_sticks для корреляции с recovery.
 
+Для анализа аэробной базы можешь вызвать get_efficiency_trend с strict_filter=true —
+это вернёт cardiac drift (decoupling) trend с last-5 медианой и traffic light статусом.
+Если days_since > 14 — данные устарели, не акцентируй. Грейдинг: green (<5%), yellow (5-10%), red (>10%).
+Устойчивый красный дрейф (2 из 3) = рекомендация Base Building Protocol.
+
 ## Формат ответа
 
 Дай ответ в 4 секциях (Russian, max 250 words):
