@@ -1298,6 +1298,7 @@ class AiWorkoutRow(Base):
             row = result.scalar_one_or_none()
             if row:
                 row.status = "cancelled"
+                row.intervals_id = None
                 row.updated_at = datetime.now(timezone.utc)
                 await session.commit()
             return row

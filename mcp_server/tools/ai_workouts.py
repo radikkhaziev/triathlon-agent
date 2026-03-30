@@ -3,6 +3,8 @@
 import logging
 from datetime import date
 
+import httpx
+
 from config import settings
 from data.database import AiWorkoutRow
 from data.intervals_client import IntervalsClient
@@ -76,9 +78,19 @@ async def suggest_workout(
 
     try:
         if existing and existing.intervals_id:
-            result = await client.update_event(existing.intervals_id, event_data)
-            intervals_id = result.get("id", existing.intervals_id)
-            action = "updated"
+            try:
+                result = await client.update_event(existing.intervals_id, event_data)
+                intervals_id = result.get("id", existing.intervals_id)
+                action = "updated"
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    # Event was deleted externally (UI or remove_ai_workout) — create new
+                    logger.info("Event %s not found (404), creating new", existing.intervals_id)
+                    result = await client.create_event(event_data)
+                    intervals_id = result.get("id")
+                    action = "created"
+                else:
+                    raise
         else:
             result = await client.create_event(event_data)
             intervals_id = result.get("id")
