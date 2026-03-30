@@ -117,86 +117,57 @@ moving_time, distance, workout_doc (JSON), updated
 
 > Реализовано в `data/metrics.py`: `calculate_rmssd_status()`
 
-Оба алгоритма **всегда** рассчитываются и сохраняются в `hrv_analysis`. Настройка `HRV_ALGORITHM` выбирает основной для recovery score.
+Оба алгоритма **всегда** рассчитываются и сохраняются в `hrv_analysis`. Настройка `HRV_ALGORITHM` выбирает основной для recovery score. Flatt & Esco сравнивает сегодня vs 7d среднее (быстрый отклик, острые изменения); AIEndurance сравнивает 7d vs 60d (медленный, хроническая усталость). Статусы: `green` / `yellow` / `red` / `insufficient_data`.
 
-| | Flatt & Esco (по умолчанию) | AIEndurance |
-|---|---|---|
-| Сравнивает | сегодня vs 7d среднее | 7d среднее vs 60d среднее |
-| Bounds | асимметричные −1/+0.5 SD | симметричные ±0.5 SD |
-| Скорость реакции | быстрая (1-2 дня) | медленная (3-4 дня) |
-| Лучше для | острых изменений, болезнь | хроническое накопление усталости |
-| Минимум данных | 14 дней | 60 дней для надёжных bounds |
-
-**Статус:**
-- `green` (выше upper_bound) → тренировка на полной нагрузке
-- `yellow` (между bounds) → тренировка по плану, мониторинг
-- `red` (ниже lower_bound) → снизить интенсивность или отдых
-- `insufficient_data` (< 14 дней) → fallback на readiness
-
-**SWC:** 0.5 × SD_60d. CV: < 5% стабильно, 5-10% нормально, > 10% ненадёжно.
+> Full theory: [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 1.4 Resting HR Analysis ✅
 
 > Реализовано в `data/metrics.py`: `calculate_rhr_status()`
 
-Baselines по 3 окнам:
-- **7-day** — краткосрочное состояние + CV + тренд
-- **30-day** — основные bounds (±0.5 SD), статус
-- **60-day** — долгосрочный контекст
+Baselines по 3 окнам: 7d (краткосрочное), 30d (основные bounds ±0.5 SD), 60d (долгосрочный контекст). Инвертированная интерпретация: повышенный RHR = `red`, низкий = `green`.
 
-Инвертированная интерпретация: повышенный RHR = `red` (недовосстановление), низкий RHR = `green`.
+> Full theory: [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 1.5 External Stress Score (ESS) ✅
 
 > Реализовано в `data/metrics.py`: `calculate_ess()`, `calculate_daily_ess()`
 
-Banister TRIMP-based, нормализация: 1 час на LTHR ≈ 100. `calculate_daily_ess()` суммирует ESS по всем активностям за день. Активности без `average_hr` пропускаются (ESS = 0).
+Banister TRIMP-based. Нормализация: 1 час на LTHR ≈ ESS 100. `calculate_daily_ess()` суммирует ESS по всем активностям за день. Активности без `average_hr` пропускаются (ESS = 0).
+
+> Full theory: [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 1.6 Recovery Model (Banister) ✅
 
 > Реализовано в `data/metrics.py`: `calculate_banister_recovery()`, `calculate_banister_for_date()`
 
-```
-R(t+1) = R(t) + (100 - R(t)) * (1 - exp(-1/τ)) - k * ESS(t)
-Defaults: k=0.1, τ=2.0 (conservative)
-```
+Формула: `R(t+1) = R(t) + (100 - R(t)) * (1 - exp(-1/τ)) - k * ESS(t)`. Defaults: `k=0.1, τ=2.0` (conservative). Pipeline в `save_wellness()`: activities (90d) → group by date → daily ESS → Banister → persist `ess_today`, `banister_recovery`. Калибровка k/τ через scipy — будущее.
 
-Pipeline в `save_wellness()`: activities (90d) → group by date → daily ESS → Banister → persist `ess_today`, `banister_recovery`. Калибровка k/τ через scipy — будущее.
+> Full theory (смысл параметров k/τ): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 1.7 Combined Recovery Score ✅
 
 > Реализовано в `data/metrics.py`: `combined_recovery_score()`
 
-**Весовая модель:**
-- RMSSD status: 35% | Banister R(t): 25% | RHR status: 20% | Sleep: 20%
+Веса: RMSSD 35%, Banister 25%, RHR 20%, Sleep 20%. Статус→score: green=100, yellow=65, red=20, insufficient_data=50. Категории: excellent >85, good 70-85, moderate 40-70, low <40. Рекомендации: excellent/good → zone2_ok, moderate → zone1_long, low → zone1_short, red RMSSD → skip.
 
-При отсутствии компонентов (sleep_score=None, banister=None) веса перенормируются на доступные.
-
-**Статус → score:** green=100, yellow=65, red=20, insufficient_data=50
-
-**Модификаторы:** late sleep (>23:00) −10, CV>15% −5, RMSSD declining → flag
-
-**Категории:** excellent >85, good 70-85, moderate 40-70, low <40
-
-**Рекомендации:** excellent/good → zone2_ok, moderate → zone1_long, low → zone1_short, red RMSSD → skip
+> Full theory (обоснование весов, модификаторы): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 1.8 Per-sport CTL ✅
 
 > Реализовано в `data/metrics.py`: `calculate_sport_ctl()`
 
-Intervals.icu API не предоставляет per-sport CTL. Рассчитывается из истории активностей в БД:
-- EMA с τ=42d по каждой дисциплине (swim/bike/run)
-- Маппинг типов в `data/utils.py`: `SPORT_MAP` (16 типов → 3 дисциплины)
-- Cron `sync_activities_job` грузит активности из API → `activities` таблица
-- `daily_metrics_job` читает из БД, рассчитывает CTL, обогащает `wellness.sport_info`
+Intervals.icu API не предоставляет per-sport CTL. Рассчитывается локально: EMA с τ=42d по каждой дисциплине (swim/bike/run). Маппинг типов: `data/utils.py` `SPORT_MAP` (16 типов → 3 дисциплины). `daily_metrics_job` читает из БД, рассчитывает CTL, обогащает `wellness.sport_info`.
+
+> Full theory (обоснование τ=42d, специфичность адаптации): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 1.9 Trend Analysis ✅
 
 > Реализовано в `data/metrics.py`: `calculate_trend()`
 
-Линейная регрессия на скользящем окне. Пороги по метрике в `TREND_THRESHOLDS`.
-Направления: rising_fast / rising / stable / declining / declining_fast.
-Показывается только при r² ≥ 0.3.
+Линейная регрессия на скользящем окне. Пороги по метрике в `TREND_THRESHOLDS`. Направления: rising_fast / rising / stable / declining / declining_fast. Показывается только при r² ≥ 0.3 — порог значимости тренда.
+
+> Full theory: [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ---
 
@@ -215,36 +186,23 @@ def extract_rr_intervals(fit_path: str) -> list[float]:
 
 ### 2.2 Ограничения по датчику
 
-```
-┌─────────────────────┬──────────────┬───────────────────────────────┐
-│ Датчик              │ RR качество  │ Пригодность для DFA a1        │
-├─────────────────────┼──────────────┼───────────────────────────────┤
-│ Polar H10 (BLE)     │ Отличное     │ Золотой стандарт              │
-│ Garmin HRM-Dual     │ Хорошее      │ Пригоден (нагрудный strap)    │
-│  └─ ANT+ connection │ Отличное     │ **Предпочтительно** (0.04% артефактов) │
-│  └─ BLE connection  │ Плохое       │ НЕ пригоден — Garmin фрагментирует RR (25% артефактов) │
-│ Запястье (Garmin)   │ Плохое       │ НЕ пригоден для DFA a1        │
-│ Плавание (любой)    │ Нет данных   │ Нет RR в воде                 │
-└─────────────────────┴──────────────┴───────────────────────────────┘
-```
+Polar H10 (BLE) — золотой стандарт. Garmin HRM-Dual по ANT+ — предпочтительно (0.04% артефактов); по BLE — НЕ пригоден (25% артефактов, фрагментация RR). Запястный датчик — НЕ пригоден. Плавание — нет RR в воде.
+
+> Full theory (обоснование ограничений, разница ANT+/BLE): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 2.3 Artifact Correction
 
-Коррекция артефактов в RR-ряде (Lipponen & Tarvainen 2019). Если artifact_pct > 10% — результаты DFA a1 ненадёжны.
+Коррекция артефактов в RR-ряде по методу Lipponen & Tarvainen (2019). Если artifact_pct > 10% — результаты DFA a1 ненадёжны и не сохраняются.
 
 ### 2.4 DFA Alpha 1 Calculation
 
-Detrended Fluctuation Analysis — short-term scaling exponent (window: 4-16 beats).
+Detrended Fluctuation Analysis — short-term scaling exponent (window: 4-16 beats). Значения: a1 > 1.0 (покой) → a1 ≈ 0.75 (HRVT1, аэробный порог) → a1 ≈ 0.50 (HRVT2, анаэробный порог) → a1 < 0.50 (максимум).
 
-Интерпретация:
-- a1 > 1.0: низкая нагрузка, покой
-- a1 ≈ 0.75: аэробный порог (HRVT1)
-- a1 ≈ 0.50: анаэробный порог (HRVT2)
-- a1 < 0.50: максимальная нагрузка
+> Full theory (физиологическая основа DFA a1, преимущества перед ЧСС): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 2.5 Time-Varying DFA a1
 
-Скользящее окно (2 мин, шаг 5 сек) по ходу тренировки.
+Скользящее окно (2 мин, шаг 5 сек) по ходу тренировки — даёт временной ряд a1(t).
 
 ### 2.6 Threshold Detection (HRVT1 / HRVT2)
 
@@ -252,11 +210,15 @@ Detrended Fluctuation Analysis — short-term scaling exponent (window: 4-16 bea
 
 ### 2.7 Readiness to Train (Ra)
 
-Сравнение power/pace при фиксированном DFA a1 с baseline за 2 недели. Оценка готовности прямо во время разминки.
+Сравнение power/pace при фиксированном DFA a1 с 14-дневным baseline (Pa). Оценка готовности во время разминки.
+
+> Full theory (физиологический смысл Ra): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### 2.8 Durability (Da)
 
 Сравнение Pa между первой и второй половиной тренировки. Минимум 40 мин.
+
+> Full theory (интерпретация Da, порог значимости): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ### Level 2 — Схема данных ✅
 
@@ -268,23 +230,9 @@ Detrended Fluctuation Analysis — short-term scaling exponent (window: 4-16 bea
 
 ## Интеграция уровней: Decision Engine
 
-Ежедневная рекомендация на основе всех доступных данных.
+Ежедневная рекомендация строится на Combined Recovery Score (Level 1, утро) с учётом Ra из последней тренировки (Level 2). Level 1 даёт базовое решение; Level 2 служит контекстом для AI рекомендации.
 
-Приоритет сигналов:
-1. **Level 1 (утро)**: Combined Recovery Score → базовое решение ✅
-2. **Level 2 (разминка)**: Ra → корректировка перед тренировкой ✅ (данные в Telegram + утренний AI промпт)
-
-Decision matrix (упрощённая, только Level 1):
-
-| Recovery Score | TSB        | Рекомендация |
-|----------------|------------|--------------|
-| excellent + TSB > 0 | > 0   | Любая интенсивность, ключевая тренировка |
-| good           | −10..+10   | Z2 полный объём |
-| moderate или sleep < 50 | любой | Z1-Z2, 45-60 мин |
-| low или RMSSD = red | любой | Отдых или Z1 ≤ 30 мин |
-| —              | < −25      | Z1-Z2 cap, flag overreaching |
-| HRV delta < −15% | любой   | Z1-Z2 max |
-| Ramp rate > 7  | любой      | Flag risk, low-stress session |
+> Full decision matrix и логика объединения уровней: [docs/knowledge/hrv.md](knowledge/hrv.md)
 
 ---
 
@@ -381,9 +329,4 @@ Decision matrix (упрощённая, только Level 1):
 
 ## Ссылки
 
-- Banister et al. — оригинальная модель fitness-fatigue
-- Gronwald et al. 2020 — DFA a1 как биомаркер интенсивности
-- Rogers et al. 2021 — DFA a1 для определения аэробного порога
-- Lipponen & Tarvainen 2019 — artifact correction для RR-интервалов
-- AIEndurance blog — recovery model, Ra, Da определения
-- Intervals.icu API — https://intervals.icu (wellness, activities, events)
+Полный список ссылок с аннотациями: [docs/knowledge/hrv.md](knowledge/hrv.md)
