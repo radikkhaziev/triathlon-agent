@@ -1194,7 +1194,7 @@ class AiWorkoutRow(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
     sport: Mapped[str] = mapped_column(String(30), nullable=False)
-    slot: Mapped[str] = mapped_column(String(10), nullable=False, default="morning")
+    slot: Mapped[str] = mapped_column(String(30), nullable=False, default="morning")
     external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     intervals_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Intervals.icu event ID
     name: Mapped[str] = mapped_column(String(200), nullable=False)
