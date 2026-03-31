@@ -12,7 +12,7 @@ from api.auth import generate_code
 from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
-from data.database import IqosDailyRow, WellnessRow
+from data.database import IqosDailyRow, UserRow, WellnessRow
 from data.intervals_client import IntervalsClient
 from data.redis_client import close_redis, init_redis
 
@@ -25,7 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start command — welcome message with bot description."""
+    """Handle /start command — welcome message + ensure user exists in DB."""
+    tg_user = update.effective_user
+    chat_id = str(tg_user.id)
+
+    user = await UserRow.get_by_chat_id(chat_id)
+    if not user:
+        user = await UserRow.create(
+            chat_id=chat_id,
+            username=tg_user.username,
+            display_name=tg_user.full_name,
+        )
+        logger.info("New user registered: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
+
     webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup(
         [

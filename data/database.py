@@ -4,17 +4,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, delete, func, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    delete,
+    func,
+    select,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from config import settings
+from data.crypto import decrypt_field, encrypt_field
 from data.models import Activity, RecoveryScore, RhrStatus, RmssdStatus, ScheduledWorkout, Wellness
 
 logger = logging.getLogger(__name__)
@@ -75,6 +90,98 @@ class Base(DeclarativeBase):
 # ---------------------------------------------------------------------------
 # ORM Models + CRUD
 # ---------------------------------------------------------------------------
+
+
+class UserRow(Base):
+    """Multi-tenant user table. Tenant = individual athlete."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    username: Mapped[str | None] = mapped_column(String, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    role: Mapped[str] = mapped_column(String, nullable=False, default="viewer")  # owner / coach / athlete / viewer
+    athlete_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted
+    mcp_token: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)  # MCP Bearer token
+    language: Mapped[str] = mapped_column(String(5), nullable=False, default="ru")
+    preferred_model: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # --- Helpers ---
+
+    def set_api_key(self, plaintext: str) -> None:
+        self.api_key_encrypted = encrypt_field(plaintext)
+
+    def get_api_key(self) -> str | None:
+        if not self.api_key_encrypted:
+            return None
+        return decrypt_field(self.api_key_encrypted)
+
+    def generate_mcp_token(self) -> str:
+        """Generate a new MCP token, store it, return it."""
+        self.mcp_token = secrets.token_hex(32)
+        return self.mcp_token
+
+    # --- CRUD ---
+
+    @classmethod
+    async def get_by_mcp_token(cls, token: str) -> UserRow | None:
+        async with get_session() as session:
+            result = await session.execute(select(cls).where(cls.mcp_token == token))
+            return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_by_id(cls, user_id: int) -> UserRow | None:
+        async with get_session() as session:
+            result = await session.execute(select(cls).where(cls.id == user_id))
+            return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_by_chat_id(cls, chat_id: str) -> UserRow | None:
+        async with get_session() as session:
+            result = await session.execute(select(cls).where(cls.chat_id == chat_id))
+            return result.scalar_one_or_none()
+
+    @classmethod
+    async def get_active_users(cls) -> list[UserRow]:
+        async with get_session() as session:
+            result = await session.execute(select(cls).where(cls.is_active.is_(True)))
+            return list(result.scalars().all())
+
+    @classmethod
+    async def create(
+        cls,
+        chat_id: str,
+        role: str = "viewer",
+        username: str | None = None,
+        display_name: str | None = None,
+        athlete_id: str | None = None,
+        api_key: str | None = None,
+        language: str = "ru",
+    ) -> UserRow:
+        user = cls(
+            chat_id=chat_id,
+            role=role,
+            username=username,
+            display_name=display_name,
+            athlete_id=athlete_id,
+            language=language,
+        )
+        if api_key:
+            user.set_api_key(api_key)
+        async with get_session() as session:
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            return user
 
 
 class WellnessRow(Base):
