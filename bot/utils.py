@@ -346,7 +346,7 @@ async def fill_training_log_actual() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def generate_and_push_workout(wellness_row, dt: date) -> None:
+async def generate_and_push_workout(wellness_row, dt: date, bot=None) -> None:
     """Generate or adapt a workout and push it to Intervals.icu.
 
     Phase 1: if no planned workout → AI generates from scratch (suffix=generated)
@@ -394,7 +394,7 @@ async def generate_and_push_workout(wellness_row, dt: date) -> None:
                 lthr=settings.ATHLETE_LTHR_RUN,
             )
             if workout:
-                await push_workout(workout, dt)
+                await push_workout(workout, dt, bot=bot)
                 return
 
         logger.info("No adaptation needed for planned workouts on %s", dt)
@@ -413,10 +413,10 @@ async def generate_and_push_workout(wellness_row, dt: date) -> None:
         logger.info("AI recommended rest day for %s", dt)
         return
 
-    await push_workout(workout, dt)
+    await push_workout(workout, dt, bot=bot)
 
 
-async def push_workout(workout, dt: date) -> None:
+async def push_workout(workout, dt: date, bot=None) -> None:
     """Push a PlannedWorkout to Intervals.icu and save to local DB."""
     existing = await AiWorkoutRow.get_by_external_id(workout.external_id)
     if existing and existing.status == "active":
@@ -448,6 +448,25 @@ async def push_workout(workout, dt: date) -> None:
         workout.duration_minutes,
         dt,
     )
+
+    # Send Telegram notification
+    if bot is not None:
+        try:
+            from bot.formatter import build_workout_pushed_message
+
+            msg = build_workout_pushed_message(
+                sport=workout.sport,
+                name=workout.name,
+                duration_minutes=workout.duration_minutes,
+                target_tss=workout.target_tss,
+                suffix=workout.suffix,
+                intervals_id=intervals_id,
+                athlete_id=settings.INTERVALS_ATHLETE_ID,
+                target_date=dt,
+            )
+            await bot.send_message(chat_id=settings.TELEGRAM_CHAT_ID, text=msg)
+        except Exception:
+            logger.warning("Failed to send workout notification", exc_info=True)
 
 
 async def maybe_suggest_ramp(wellness_row, dt: date) -> None:

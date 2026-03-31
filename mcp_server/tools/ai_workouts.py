@@ -14,6 +14,37 @@ from mcp_server.app import mcp
 logger = logging.getLogger(__name__)
 
 
+async def _send_workout_notification(
+    sport: str,
+    name: str,
+    duration_minutes: int,
+    target_tss: int | None,
+    suffix: str,
+    intervals_id: int | None,
+    target_date: date,
+) -> None:
+    """Send Telegram notification about pushed workout via HTTP API."""
+    from bot.formatter import build_workout_pushed_message
+
+    msg = build_workout_pushed_message(
+        sport=sport,
+        name=name,
+        duration_minutes=duration_minutes,
+        target_tss=target_tss,
+        suffix=suffix,
+        intervals_id=intervals_id,
+        athlete_id=settings.INTERVALS_ATHLETE_ID,
+        target_date=target_date,
+    )
+    token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
+    if not token or not settings.TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": msg})
+        resp.raise_for_status()
+
+
 @mcp.tool()
 async def suggest_workout(
     sport: str,
@@ -112,6 +143,20 @@ async def suggest_workout(
         target_tss=target_tss,
         rationale=rationale,
     )
+
+    # Send Telegram notification
+    try:
+        await _send_workout_notification(
+            sport=sport,
+            name=name,
+            duration_minutes=duration_minutes,
+            target_tss=target_tss,
+            suffix=workout.suffix,
+            intervals_id=intervals_id,
+            target_date=dt,
+        )
+    except Exception:
+        logger.warning("Failed to send workout notification from MCP", exc_info=True)
 
     tss_part = f", ~{target_tss} TSS" if target_tss else ""
     return (
