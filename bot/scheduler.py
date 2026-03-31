@@ -246,7 +246,7 @@ async def daily_metrics_job(
     # Generate AI workout if enabled and auto-push is on
     if ai_is_new and settings.AI_WORKOUT_ENABLED and settings.AI_WORKOUT_AUTO_PUSH:
         try:
-            await generate_and_push_workout(row, dt)
+            await generate_and_push_workout(row, dt, bot=bot)
         except Exception:
             logger.warning("Failed to generate/push AI workout", exc_info=True)
 

@@ -250,6 +250,23 @@ class IntervalsClient:
         )
 
     # ------------------------------------------------------------------
+    # Sport Settings
+    # ------------------------------------------------------------------
+
+    async def update_sport_settings(self, sport: str, settings: dict) -> dict:
+        """Update sport-specific settings (LTHR, FTP, pace, zones).
+
+        PUT /athlete/{id}/sport-settings/{sport}?recalcHrZones=true
+        """
+        resp = await self._request(
+            "PUT",
+            f"/athlete/{self._athlete_id}/sport-settings/{sport}",
+            json=settings,
+            params={"recalcHrZones": "true"},
+        )
+        return resp.json()
+
+    # ------------------------------------------------------------------
     # Read Events
     # ------------------------------------------------------------------
 
@@ -282,3 +299,35 @@ class IntervalsClient:
             data = {_to_snake(k): v for k, v in raw.items()}
             events.append(ScheduledWorkout.model_validate(data))
         return events
+
+
+async def sync_athlete_settings() -> None:
+    """Push athlete thresholds from config to Intervals.icu sport settings.
+
+    Called on startup to keep Intervals.icu zones in sync with .env values.
+    Logs results, never raises — startup must not fail due to sync errors.
+    """
+    client = IntervalsClient()
+    sport_settings = {
+        "Ride": {
+            "ftp": int(settings.ATHLETE_FTP),
+            "lthr": settings.ATHLETE_LTHR_BIKE,
+            "max_hr": settings.ATHLETE_MAX_HR,
+        },
+        "Run": {
+            "lthr": settings.ATHLETE_LTHR_RUN,
+            "max_hr": settings.ATHLETE_MAX_HR,
+            "threshold_pace": round(1000.0 / settings.ATHLETE_THRESHOLD_PACE_RUN, 4),  # sec/km → m/s
+        },
+        "Swim": {
+            "threshold_pace": round(100.0 / settings.ATHLETE_CSS, 4),  # sec/100m → m/s (API expects speed)
+        },
+    }
+
+    for sport, payload in sport_settings.items():
+        try:
+            await client.update_sport_settings(sport, payload)
+            logger.info("Synced %s settings to Intervals.icu: %s", sport, payload)
+        except Exception as exc:
+            detail = getattr(getattr(exc, "response", None), "text", "")
+            logger.warning("Failed to sync %s settings: %s %s", sport, exc, detail)

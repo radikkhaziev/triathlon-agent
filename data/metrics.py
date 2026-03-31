@@ -760,3 +760,79 @@ def combined_recovery_score(
             "sleep": round(sleep_pct, 1) if sleep_score is not None else None,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Cardiac drift (decoupling) analysis
+# ---------------------------------------------------------------------------
+
+# Minimum duration (seconds) for valid decoupling analysis
+_DECOUPLING_MIN_DURATION = {"bike": 60 * 60, "run": 45 * 60}
+
+# Maximum variability index for steady-state filter
+_DECOUPLING_MAX_VI = 1.10
+
+# Minimum fraction of time in Z1+Z2
+_DECOUPLING_MIN_Z12_FRACTION = 0.70
+
+_DECOUPLING_BIKE_TYPES = {"Ride", "VirtualRide"}
+_DECOUPLING_RUN_TYPES = {"Run", "TrailRun"}
+
+
+def decoupling_sport_group(activity_type: str) -> str | None:
+    """Map activity type to sport group for decoupling analysis. Swim excluded."""
+    if activity_type in _DECOUPLING_BIKE_TYPES:
+        return "bike"
+    if activity_type in _DECOUPLING_RUN_TYPES:
+        return "run"
+    return None
+
+
+def is_valid_for_decoupling(
+    activity_type: str,
+    moving_time: int | None,
+    variability_index: float | None,
+    hr_zone_times: list | None,
+    decoupling: float | None,
+) -> bool:
+    """Check if an activity is suitable for decoupling analysis.
+
+    Criteria: sport is bike/run (swim excluded), sufficient duration,
+    low variability index (steady-state), >70% time in Z1+Z2, decoupling available.
+    """
+    sport = decoupling_sport_group(activity_type)
+    if not sport:
+        return False
+
+    if decoupling is None:
+        return False
+
+    min_dur = _DECOUPLING_MIN_DURATION.get(sport, 0)
+    if not moving_time or moving_time < min_dur:
+        return False
+
+    if variability_index is not None and variability_index > _DECOUPLING_MAX_VI:
+        return False
+
+    if hr_zone_times and len(hr_zone_times) >= 2:
+        total = sum(hr_zone_times)
+        if total > 0:
+            z12_fraction = (hr_zone_times[0] + hr_zone_times[1]) / total
+            if z12_fraction < _DECOUPLING_MIN_Z12_FRACTION:
+                return False
+
+    return True
+
+
+def decoupling_status(value: float) -> str:
+    """Traffic light grading for decoupling value.
+
+    Uses abs(value) — negative drift (pulse drops) is normal and graded same as positive.
+    Returns: "green" (<5%), "yellow" (5-10%), "red" (>10%).
+    """
+    av = abs(value)
+    if av < 5.0:
+        return "green"
+    if av <= 10.0:
+        return "yellow"
+    return "red"

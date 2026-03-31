@@ -3,9 +3,11 @@
 import logging
 from collections import defaultdict
 from datetime import date, timedelta
+from statistics import median
 
 from config import settings
 from data.database import ActivityDetailRow, ActivityRow
+from data.metrics import decoupling_status, is_valid_for_decoupling
 from mcp_server.app import mcp
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,7 @@ async def get_efficiency_trend(
     sport: str = "",
     days_back: int = 90,
     group_by: str = "week",
+    strict_filter: bool = False,
 ) -> dict:
     """Get aerobic efficiency trend over time.
 
@@ -92,16 +95,23 @@ async def get_efficiency_trend(
     Only includes Z2 steady-state sessions for meaningful comparison.
     Minimum duration: bike 30min, run 20min, swim 15min.
 
+    With strict_filter=True: applies stricter filtering for decoupling analysis
+    (VI <= 1.10, >70% Z1+Z2, bike >= 60min / run >= 45min, swim excluded).
+    Adds decoupling_trend with last-5 median and traffic light status.
+
     Args:
         sport: "bike", "run", or "swim". Empty string = all three sports.
         days_back: Lookback period in days (default: 90).
         group_by: "week" for weekly averages, "activity" for individual data points.
+        strict_filter: Apply strict decoupling-analysis filter (VI, zone adherence, duration).
     """
     since = date.today() - timedelta(days=days_back)
     activities, _ = await ActivityRow.get_range(since, date.today())
 
     # Filter by sport
     target_sports = {sport.lower()} if sport else {"bike", "run", "swim"}
+    if strict_filter:
+        target_sports -= {"swim"}
 
     # Pre-filter activities before bulk DB fetch
     filtered = []
@@ -129,6 +139,17 @@ async def get_efficiency_trend(
         if not detail:
             continue
 
+        # Strict decoupling filter: skip activities that don't meet criteria
+        if strict_filter and sg in ("bike", "run"):
+            if not is_valid_for_decoupling(
+                activity_type=act.type,
+                moving_time=act.moving_time,
+                variability_index=detail.variability_index,
+                hr_zone_times=detail.hr_zone_times,
+                decoupling=detail.decoupling,
+            ):
+                continue
+
         act_date = act.start_date_local.date() if hasattr(act.start_date_local, "date") else act.start_date_local
         entry = {
             "date": str(act_date),
@@ -145,6 +166,8 @@ async def get_efficiency_trend(
             entry["decoupling"] = round(detail.decoupling, 1) if detail.decoupling else None
             entry["np"] = detail.normalized_power if sg == "bike" else None
             entry["pace"] = round(detail.pace, 4) if detail.pace else None
+            if strict_filter and detail.decoupling is not None:
+                entry["decoupling_status"] = decoupling_status(detail.decoupling)
         elif sg == "swim":
             if not detail.pace or detail.pace <= 0:
                 continue
@@ -187,6 +210,26 @@ async def get_efficiency_trend(
                     "swolf": {"unit": "points", "trend": _trend_pct(swolf_values)},
                 }
 
+        # Decoupling trend summary (last-5 median) when strict filter is on
+        if strict_filter and sg in ("bike", "run"):
+            dec_entries = [(e["decoupling"], e["date"]) for e in entries if e.get("decoupling") is not None]
+            last_5 = [v for v, _ in dec_entries[-5:]]
+            if last_5:
+                med = round(median(last_5), 1)
+                last_val, last_date = dec_entries[-1]
+                sport_resp["decoupling_trend"] = {
+                    "last_n": len(last_5),
+                    "median": med,
+                    "status": decoupling_status(med),
+                    "values": last_5,
+                    "latest": {
+                        "value": last_val,
+                        "status": decoupling_status(last_val),
+                        "date": last_date,
+                        "days_since": (date.today() - date.fromisoformat(last_date)).days,
+                    },
+                }
+
         response[sg] = sport_resp
 
     if len(response) == 1:
@@ -211,6 +254,8 @@ def _group_weekly(entries: list[dict], sport: str) -> list[dict]:
             decs = [e["decoupling"] for e in items if e.get("decoupling") is not None]
             row["ef_mean"] = round(sum(efs) / len(efs), 4) if efs else None
             row["decoupling_mean"] = round(sum(decs) / len(decs), 1) if decs else None
+            if decs:
+                row["decoupling_median"] = round(median(decs), 1)
         elif sport == "swim":
             paces = [e["pace_100m"] for e in items if e.get("pace_100m")]
             swolfs = [e["swolf"] for e in items if e.get("swolf")]

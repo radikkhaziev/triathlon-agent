@@ -32,11 +32,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
 
     # Athlete thresholds (from HumanGo tests, Nov-Dec 2025 + Mar 2026)
-    ATHLETE_LTHR_RUN: int = 153
-    ATHLETE_LTHR_BIKE: int = 153
-    ATHLETE_MAX_HR: int = 179
-    ATHLETE_FTP: float = 233
+    ATHLETE_LTHR_RUN: int = 153  # bpm, from HumanGo ramp test
+    ATHLETE_LTHR_BIKE: int = 153  # bpm, from HumanGo ramp test
+    ATHLETE_MAX_HR: int = 179  # bpm
+    ATHLETE_FTP: float = 233  # watts, from HumanGo ramp test, Mar 2026
     ATHLETE_CSS: float = 141  # 2:21/100m from HumanGo, Mar 2026
+    ATHLETE_THRESHOLD_PACE_RUN: float = 295  # sec/km, 4:55/km
     ATHLETE_AGE: int = 43
 
     # Race goal
@@ -55,6 +56,9 @@ class Settings(BaseSettings):
     # Web Auth (desktop login via one-time code)
     JWT_SECRET: SecretStr = SecretStr("")  # If empty, falls back to TELEGRAM_BOT_TOKEN
     JWT_EXPIRY_DAYS: int = 7  # JWT token lifetime
+
+    # Redis
+    REDIS_URL: str = "redis://redis:6379/0"
 
     # MCP
     MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access

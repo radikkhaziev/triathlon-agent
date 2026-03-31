@@ -22,7 +22,7 @@ class TestToolDefinitions:
             assert tool["input_schema"]["type"] == "object"
 
     def test_tool_count(self):
-        assert len(MORNING_TOOLS) == 14
+        assert len(MORNING_TOOLS) == 15
 
     def test_all_tools_have_handlers(self):
         """Every tool in MORNING_TOOLS and CHAT_TOOLS has a handler."""

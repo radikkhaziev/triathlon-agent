@@ -327,6 +327,7 @@ export interface ProgressActivity {
   pace_100m?: number
   swolf?: number | null
   decoupling?: number | null
+  decoupling_status?: 'green' | 'yellow' | 'red'
   np?: number | null
   pace?: number | null
   distance?: number | null
@@ -340,6 +341,7 @@ export interface ProgressWeekly {
   pace_mean?: number | null
   swolf_mean?: number | null
   decoupling_mean?: number | null
+  decoupling_median?: number | null
 }
 
 export interface ProgressTrend {
@@ -352,6 +354,19 @@ export interface ProgressMetricInfo {
   trend: ProgressTrend
 }
 
+export interface DecouplingTrend {
+  last_n: number
+  median: number
+  status: 'green' | 'yellow' | 'red'
+  values: number[]
+  latest: {
+    value: number
+    status: 'green' | 'yellow' | 'red'
+    date: string
+    days_since: number
+  }
+}
+
 export interface ProgressResponse {
   sport: string
   period: string
@@ -362,4 +377,5 @@ export interface ProgressResponse {
   unit?: string
   trend?: ProgressTrend
   metrics?: Record<string, ProgressMetricInfo>
+  decoupling_trend?: DecouplingTrend
 }

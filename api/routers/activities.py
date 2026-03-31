@@ -100,6 +100,7 @@ async def activity_details(
 async def progress(
     sport: str = Query(default="", description="bike, run, or swim. Empty = all"),
     days: int = Query(default=90, ge=7, le=365),
+    strict_filter: bool = Query(default=False, description="Strict decoupling filter"),
     _: str = Depends(require_viewer),
 ) -> dict:
-    return await get_efficiency_trend(sport=sport, days_back=days)
+    return await get_efficiency_trend(sport=sport, days_back=days, strict_filter=strict_filter)

@@ -25,9 +25,11 @@ from data.database import (
     WellnessRow,
     get_session,
 )
+from data.github import create_issue, list_issues
 from data.ramp_tests import detect_threshold_drift, get_threshold_freshness_data
 from data.utils import extract_sport_ctl, format_duration
 from data.utils import tsb_zone as _tsb_zone
+from mcp_server.tools.progress import get_efficiency_trend
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +241,27 @@ MORNING_TOOLS = [
             "properties": {
                 "target_date": {"type": "string", "description": "Date YYYY-MM-DD. Default: today"},
                 "days_back": {"type": "integer", "description": "0 = single day, 7 = week. Default: 0"},
+            },
+        },
+    },
+    {
+        "name": "get_efficiency_trend",
+        "description": (
+            "Get aerobic efficiency and cardiac drift (decoupling) trend. "
+            "Use strict_filter=true for decoupling analysis: applies stricter filtering "
+            "(VI <= 1.10, >70% Z1+Z2, bike >= 60min / run >= 45min, swim excluded). "
+            "Returns decoupling_trend with last-5 median and traffic light status (green/yellow/red). "
+            "If days_since > 14, data is stale — don't emphasize in report."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sport": {"type": "string", "description": "bike, run, or swim. Empty = all."},
+                "days_back": {"type": "integer", "description": "Lookback days. Default: 90"},
+                "strict_filter": {
+                    "type": "boolean",
+                    "description": "Apply strict decoupling filter (VI, zones, duration). Default: false",
+                },
             },
         },
     },
@@ -708,6 +731,19 @@ async def handle_get_iqos_sticks(target_date: str = "", days_back: int = 0) -> d
     }
 
 
+async def handle_get_efficiency_trend(
+    sport: str = "",
+    days_back: int = 90,
+    strict_filter: bool = False,
+) -> dict:
+    return await get_efficiency_trend(
+        sport=sport,
+        days_back=days_back,
+        group_by="week",
+        strict_filter=strict_filter,
+    )
+
+
 async def handle_save_mood_checkin(
     energy: int | None = None,
     mood: int | None = None,
@@ -735,8 +771,6 @@ async def handle_get_github_issues(
     labels: list[str] | None = None,
     limit: int = 10,
 ) -> dict:
-    from data.github import list_issues
-
     return await list_issues(state=state, labels=labels, limit=limit)
 
 
@@ -744,9 +778,12 @@ async def handle_create_github_issue(
     title: str,
     body: str,
     labels: list[str] | None = None,
+    images: list[str] | None = None,
 ) -> dict:
-    from data.github import create_issue
-
+    if images:
+        body += "\n\n## Screenshots\n"
+        for url in images:
+            body += f"\n![screenshot]({url})\n"
     return await create_issue(title=title, body=body, labels=labels)
 
 
@@ -819,6 +856,11 @@ CREATE_GITHUB_ISSUE_TOOL = {
                 "items": {"type": "string"},
                 "description": "Labels to apply (e.g. ['bug'], ['enhancement', 'needs-implementation'])",
             },
+            "images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Public URLs of uploaded screenshots to embed in the issue. Always pass image URLs from the conversation.",  # noqa
+            },
         },
         "required": ["title", "body"],
     },
@@ -842,6 +884,7 @@ TOOL_HANDLERS = {
     "get_readiness_history": handle_get_readiness_history,
     "get_mood_checkins": handle_get_mood_checkins,
     "get_iqos_sticks": handle_get_iqos_sticks,
+    "get_efficiency_trend": handle_get_efficiency_trend,
     # Phase 3 chat-only:
     "save_mood_checkin": handle_save_mood_checkin,
     "get_github_issues": handle_get_github_issues,
