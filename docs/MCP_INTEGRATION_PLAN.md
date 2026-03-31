@@ -52,28 +52,28 @@ triathlon-agent/
 
 ### Tools — полный список (12)
 
-| Tool | Параметры | Возвращает | Источник данных |
-|---|---|---|---|
-| `get_wellness` | `date: str` | Все поля wellness за день | `data/database.py → get_wellness()` |
-| `get_wellness_range` | `from_date: str, to_date: str` | Список wellness за диапазон | DB query с фильтром |
-| `get_activities` | `target_date?: str, days_back?: int` | Активности с TSS, duration, has_hrv_analysis | `activities` + LEFT JOIN `activity_hrv` |
-| `get_hrv_analysis` | `date: str, algorithm?: str` | HRV статус, baseline, bounds, SWC, CV, trend | `hrv_analysis` таблица (оба алгоритма) |
-| `get_rhr_analysis` | `date: str` | RHR статус, 7d/30d/60d baseline, trend | `rhr_analysis` таблица |
-| `get_training_load` | `date: str` | CTL, ATL, TSB, ramp_rate + per-sport CTL | wellness row + `extract_sport_ctl()` из `data/utils.py` |
-| `get_recovery` | `date: str` | Recovery score, category, recommendation, flags | wellness row |
-| `get_goal_progress` | — | Event name, weeks remaining, overall + per-sport % | Calculated from settings + current CTL via `extract_sport_ctl()` |
-| `get_scheduled_workouts` | `target_date?: str, days_ahead?: int` | Planned workouts with full description | `scheduled_workouts` таблица |
-| `get_activity_hrv` | `activity_id: str` | DFA a1, quality, thresholds, Ra, Da | `activity_hrv` таблица |
-| `get_thresholds_history` | `sport?: str, days_back?: int` | HRVT1/HRVT2 trend over time | `activity_hrv` WHERE hrvt1_hr IS NOT NULL |
-| `get_readiness_history` | `sport?: str, days_back?: int` | Ra trend — warmup power/pace vs baseline | `activity_hrv` WHERE ra_pct IS NOT NULL |
+| Tool                     | Параметры                             | Возвращает                                         | Источник данных                                                  |
+| ------------------------ | ------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------- |
+| `get_wellness`           | `date: str`                           | Все поля wellness за день                          | `data/database.py → get_wellness()`                              |
+| `get_wellness_range`     | `from_date: str, to_date: str`        | Список wellness за диапазон                        | DB query с фильтром                                              |
+| `get_activities`         | `target_date?: str, days_back?: int`  | Активности с TSS, duration, has_hrv_analysis       | `activities` + LEFT JOIN `activity_hrv`                          |
+| `get_hrv_analysis`       | `date: str, algorithm?: str`          | HRV статус, baseline, bounds, SWC, CV, trend       | `hrv_analysis` таблица (оба алгоритма)                           |
+| `get_rhr_analysis`       | `date: str`                           | RHR статус, 7d/30d/60d baseline, trend             | `rhr_analysis` таблица                                           |
+| `get_training_load`      | `date: str`                           | CTL, ATL, TSB, ramp_rate + per-sport CTL           | wellness row + `extract_sport_ctl()` из `data/utils.py`          |
+| `get_recovery`           | `date: str`                           | Recovery score, category, recommendation, flags    | wellness row                                                     |
+| `get_goal_progress`      | —                                     | Event name, weeks remaining, overall + per-sport % | Calculated from settings + current CTL via `extract_sport_ctl()` |
+| `get_scheduled_workouts` | `target_date?: str, days_ahead?: int` | Planned workouts with full description             | `scheduled_workouts` таблица                                     |
+| `get_activity_hrv`       | `activity_id: str`                    | DFA a1, quality, thresholds, Ra, Da                | `activity_hrv` таблица                                           |
+| `get_thresholds_history` | `sport?: str, days_back?: int`        | HRVT1/HRVT2 trend over time                        | `activity_hrv` WHERE hrvt1_hr IS NOT NULL                        |
+| `get_readiness_history`  | `sport?: str, days_back?: int`        | Ra trend — warmup power/pace vs baseline           | `activity_hrv` WHERE ra_pct IS NOT NULL                          |
 
 ### Resources (3)
 
-| Resource | URI | Описание |
-|---|---|---|
-| `athlete_profile` | `athlete://profile` | Возраст, пороги (LTHR, FTP, CSS), зоны, max HR |
-| `race_goal` | `athlete://goal` | Целевая гонка, дата, CTL targets |
-| `thresholds` | `athlete://thresholds` | TSB bounds, ramp rate limits, HRV/RHR interpretation |
+| Resource          | URI                    | Описание                                             |
+| ----------------- | ---------------------- | ---------------------------------------------------- |
+| `athlete_profile` | `athlete://profile`    | Возраст, пороги (LTHR, FTP, CSS), зоны, max HR       |
+| `race_goal`       | `athlete://goal`       | Целевая гонка, дата, CTL targets                     |
+| `thresholds`      | `athlete://thresholds` | TSB bounds, ramp rate limits, HRV/RHR interpretation |
 
 ### Per-sport CTL в MCP tools
 
@@ -86,7 +86,7 @@ from data.utils import extract_sport_ctl
 sport_ctl = extract_sport_ctl(row.sport_info)
 ```
 
-`sport_info` обогащается в `daily_metrics_job` (bot/scheduler.py): рассчитанный per-sport CTL (EMA τ=42d из таблицы `activities`) мержится с оригинальными данными Intervals.icu (eftp, wPrime, pMax).
+`sport_info` обогащается в `sync_wellness_job` (bot/scheduler.py): рассчитанный per-sport CTL (EMA τ=42d из таблицы `activities`) мержится с оригинальными данными Intervals.icu (eftp, wPrime, pMax).
 
 ### Claude Desktop конфигурация
 
@@ -144,11 +144,11 @@ Claude: [4-секционный ответ с рекомендациями]
 
 ### Плюсы / Минусы
 
-| Плюсы | Минусы |
-|---|---|
-| Claude может запросить доп. данные (wellness_range за 7 дней для тренда) | 3-5 tool calls = ~2-3x дороже |
-| Не нужно обновлять промпт при новых метриках | Латентность 5-10 сек вместо 2-3 |
-| Единая точка правды: tools для ad-hoc и отчёта | Менее предсказуемо |
+| Плюсы                                                                    | Минусы                          |
+| ------------------------------------------------------------------------ | ------------------------------- |
+| Claude может запросить доп. данные (wellness_range за 7 дней для тренда) | 3-5 tool calls = ~2-3x дороже   |
+| Не нужно обновлять промпт при новых метриках                             | Латентность 5-10 сек вместо 2-3 |
+| Единая точка правды: tools для ad-hoc и отчёта                           | Менее предсказуемо              |
 
 ### Задачи фазы 2
 
@@ -198,31 +198,31 @@ Activities синхронизируются в таблицу `activities` (cron
 
 ### Реализованные tools
 
-| Tool | Описание | Статус |
-|---|---|---|
-| `get_activities` | Список тренировок за день/диапазон + has_hrv_analysis | ✅ |
-| `get_activity_hrv` | DFA a1, thresholds, Ra, Da для конкретной активности | ✅ |
-| `get_thresholds_history` | HRVT1/HRVT2 тренд за N дней | ✅ |
-| `get_readiness_history` | Ra тренд за N дней | ✅ |
+| Tool                     | Описание                                              | Статус |
+| ------------------------ | ----------------------------------------------------- | ------ |
+| `get_activities`         | Список тренировок за день/диапазон + has_hrv_analysis | ✅     |
+| `get_activity_hrv`       | DFA a1, thresholds, Ra, Da для конкретной активности  | ✅     |
+| `get_thresholds_history` | HRVT1/HRVT2 тренд за N дней                           | ✅     |
+| `get_readiness_history`  | Ra тренд за N дней                                    | ✅     |
 
 ### Возможные будущие tools
 
-| Tool | Описание |
-|---|---|
-| `get_activity_detail` | Детали одной тренировки (splits, HR, power) |
-| `get_weekly_summary` | Часы по видам, суммарный TSS, распределение зон |
-| `get_ess_history` | ESS по дням (вход для Banister) |
+| Tool                  | Описание                                        |
+| --------------------- | ----------------------------------------------- |
+| `get_activity_detail` | Детали одной тренировки (splits, HR, power)     |
+| `get_weekly_summary`  | Часы по видам, суммарный TSS, распределение зон |
+| `get_ess_history`     | ESS по дням (вход для Banister)                 |
 
 ---
 
 ## Риски и митигации
 
-| Риск | Вероятность | Митигация |
-|---|---|---|
-| Рост стоимости API | Высокая | Rate limiting, кэширование, haiku для простых вопросов |
-| Латентность tool calls | Средняя | Параллельные tool calls, кэш данных за сегодня |
-| Claude «забывает» метрику | Средняя | Чёткие docstrings, fallback на промпт |
-| MCP SDK breaking changes | Низкая | Зафиксировать версию в pyproject.toml |
+| Риск                      | Вероятность | Митигация                                              |
+| ------------------------- | ----------- | ------------------------------------------------------ |
+| Рост стоимости API        | Высокая     | Rate limiting, кэширование, haiku для простых вопросов |
+| Латентность tool calls    | Средняя     | Параллельные tool calls, кэш данных за сегодня         |
+| Claude «забывает» метрику | Средняя     | Чёткие docstrings, fallback на промпт                  |
+| MCP SDK breaking changes  | Низкая      | Зафиксировать версию в pyproject.toml                  |
 
 ---
 

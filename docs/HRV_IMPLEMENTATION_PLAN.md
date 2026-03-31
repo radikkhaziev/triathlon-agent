@@ -15,6 +15,7 @@
 ### Шаг 1. Схема БД ✅
 
 Три таблицы в PostgreSQL (Alembic migrations):
+
 - `wellness` — ежедневные метрики (RMSSD, RHR, sleep, CTL/ATL, recovery score, AI recommendation)
 - `hrv_analysis` — dual-algorithm HRV baseline (composite PK: date + algorithm)
 - `rhr_analysis` — RHR baseline (7d/30d/60d)
@@ -26,12 +27,14 @@
 ### Шаг 2. Data sync ✅
 
 `data/intervals_client.py` — IntervalsClient:
+
 - `get_wellness(date)` → Wellness model
 - `get_activities(oldest, newest)` → list[Activity]
 - `get_events(oldest, newest)` → list[ScheduledWorkout]
 
 `bot/scheduler.py` — три cron задачи:
-- `daily_metrics_job` — каждые 15 мин (5-23ч): wellness + HRV/RHR + recovery score + AI
+
+- `sync_wellness_job` — каждые 15 мин (5-23ч): wellness + HRV/RHR + recovery score + AI
 - `sync_activities_job` — каждый час :30 (4-23ч): activities из API → БД
 - `scheduled_workouts_job` — каждый час :00 (4-23ч): planned workouts → БД
 
@@ -71,6 +74,7 @@ Weights: RMSSD 35%, Banister 25%, RHR 20%, Sleep 20% (перенормировк
 ## Холодный старт
 
 Для 60-дневного baseline нужно ~2 месяца данных:
+
 - **< 14 дней** → `insufficient_data` (fallback на readiness)
 - **14–60 дней** → используем сколько есть
 - **Backfill** — `python -m bot.cli backfill` загружает историю из Intervals.icu (до 180 дней)

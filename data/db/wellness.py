@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import datetime as _dt
+import logging
+from datetime import datetime
+
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy.orm import Mapped, mapped_column
+
+from data.intervals.dto import WellnessDTO
+from tasks.dto import DateDTO
+
+from .common import Base, Session
+from .decorator import dual, with_sync_session
+
+logger = logging.getLogger(__name__)
+
+
+_CANONICAL_TO_TYPE = {"swim": "Swim", "bike": "Ride", "run": "Run"}
+
+
+# Backward-compatible re-export (moved to data.db.dto)
+from data.db.dto import WellnessPostDTO  # noqa: F401, E402
+
+
+class Wellness(Base):
+    __tablename__ = "wellness"
+
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_wellness_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
+
+    # --- Intervals.icu fields ---
+    ctl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    atl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ramp_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ctl_load: Mapped[float | None] = mapped_column(Float, nullable=True)
+    atl_load: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sport_info: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    weight: Mapped[float | None] = mapped_column(Float, nullable=True)
+    resting_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hrv: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sleep_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sleep_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sleep_quality: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    body_fat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vo2max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- ESS and Banister ---
+    ess_today: Mapped[float | None] = mapped_column(Float, nullable=True)
+    banister_recovery: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # --- Combined recovery (computed) ---
+    recovery_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recovery_category: Mapped[str | None] = mapped_column(String, nullable=True)
+    recovery_recommendation: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # --- Readiness (computed) ---
+    readiness_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    readiness_level: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # --- AI output ---
+    ai_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- CRUD ---
+
+    @classmethod
+    @with_sync_session
+    def get_hrv_history(
+        cls,
+        user_id: int,
+        *,
+        dt: DateDTO,
+        days: int = 60,
+        session: Session,
+    ) -> list[float]:
+        """Return last N HRV values (oldest first), skipping nulls and zeroes."""
+        values = (
+            session.execute(
+                select(cls.hrv)
+                .where(
+                    cls.user_id == user_id,
+                    cls.hrv.isnot(None),
+                    cls.hrv > 0,
+                    cls.date <= dt.isoformat(),
+                )
+                .order_by(cls.date.desc())
+                .limit(days)
+            )
+            .scalars()
+            .all()
+        )
+        return [float(v) for v in reversed(values)]
+
+    @classmethod
+    @with_sync_session
+    def get_rhr_history(
+        cls,
+        user_id: int,
+        *,
+        dt: DateDTO,
+        days: int = 60,
+        session: Session,
+    ) -> list[float]:
+        """Return last N resting_hr values (oldest first), skipping nulls and zeroes."""
+        values = (
+            session.execute(
+                select(cls.resting_hr)
+                .where(
+                    cls.user_id == user_id,
+                    cls.resting_hr.isnot(None),
+                    cls.resting_hr > 0,
+                    cls.date <= dt.isoformat(),
+                )
+                .order_by(cls.date.desc())
+                .limit(days)
+            )
+            .scalars()
+            .all()
+        )
+        return [float(v) for v in reversed(values)]
+
+    @classmethod
+    @dual
+    def get(
+        cls,
+        user_id: int,
+        dt: _dt.date | DateDTO | str,
+        *,
+        session: Session,
+    ) -> Wellness | None:
+        """Fetch a single wellness row by date and user."""
+        date_str = dt if isinstance(dt, str) else dt.isoformat()
+
+        result = session.execute(
+            select(cls).where(
+                cls.user_id == user_id,
+                cls.date == date_str,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @with_sync_session
+    def save(
+        cls,
+        user_id: int,
+        *,
+        wellness: WellnessDTO,
+        session: Session,
+    ) -> tuple[Wellness, bool]:
+
+        date_str = wellness.id
+
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
+        row = result.scalar_one_or_none()
+
+        is_created = bool(row is None)
+        if row is None:
+            row = cls(date=date_str, user_id=user_id)
+            session.add(row)
+
+        if row.updated == wellness.updated:
+            return row, is_created
+
+        for field, val in wellness.intervals_dict().items():
+            if val is None:
+                continue
+            setattr(row, field, val)
+
+        session.commit()
+        session.refresh(row)
+
+        return row, is_created
+
+    @classmethod
+    @with_sync_session
+    def update_sport_ctl(
+        cls,
+        user_id: int,
+        dt: DateDTO,
+        sport_ctl: dict[str, float],
+        *,
+        session: Session,
+    ) -> None:
+        date_str = dt.isoformat()
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
+        row = result.scalar_one_or_none()
+
+        existing_info = row.sport_info or [{}]
+        existing_types = {(e.get("type") or "").lower(): i for i, e in enumerate(existing_info)}
+        for canonical, ctl_val in sport_ctl.items():
+            if ctl_val < 0:
+                continue
+            iv_type = _CANONICAL_TO_TYPE[canonical]
+            iv_type_lower = iv_type.lower()
+            if iv_type_lower in existing_types:
+                existing_info[existing_types[iv_type_lower]]["ctl"] = ctl_val
+            else:
+                existing_info.append({"type": iv_type, "ctl": ctl_val})
+
+        row.sport_info = existing_info
+        session.commit()
+        session.commit()

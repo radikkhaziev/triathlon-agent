@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     # Anthropic
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
 
-    # Google AI (optional — enables Gemini second opinion in dashboard)
-    GOOGLE_AI_API_KEY: SecretStr = SecretStr("")  # empty = Gemini disabled
-
     # App
     API_BASE_URL: str = "https://your-api.railway.app"
     WEBAPP_URL: str = "https://your-app.vercel.app"
@@ -76,7 +73,6 @@ class Settings(BaseSettings):
 
     # AI Tool-Use (MCP Phase 2)
     AI_USE_TOOL_USE: bool = True  # Tool-use for morning analysis (vs fixed prompt V1)
-    AI_CHAT_ENABLED: bool = True  # Free-form Telegram chat (Phase 3)
 
 
 settings = Settings()

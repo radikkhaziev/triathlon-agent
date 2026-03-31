@@ -4,10 +4,10 @@ from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import exists, select
 
-from api.deps import require_viewer
+from api.deps import get_data_user_id, require_viewer
 from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
 from config import settings
-from data.database import HrvAnalysisRow, RhrAnalysisRow, WellnessRow, get_session
+from data.db import HrvAnalysis, RhrAnalysis, User, Wellness, get_session
 from data.utils import extract_sport_ctl
 
 router = APIRouter()
@@ -113,18 +113,18 @@ def _rhr_block(rhr_row) -> dict:
     }
 
 
-async def _build_wellness_response(row, target_date: date) -> dict:
+async def _build_wellness_response(row, target_date: date, user_id: int) -> dict:
     target_str = str(target_date)
 
     category = row.recovery_category or "moderate"
     emoji, title = CATEGORY_DISPLAY.get(category, ("⚪", "СТАТУС НЕИЗВЕСТЕН"))
     recommendation_text = RECOMMENDATION_TEXT.get(row.recovery_recommendation or "", row.recovery_recommendation or "")
 
-    hrv_flatt = await HrvAnalysisRow.get(target_str, "flatt_esco")
-    hrv_aie = await HrvAnalysisRow.get(target_str, "ai_endurance")
+    hrv_flatt = await HrvAnalysis.get(user_id=user_id, dt=target_str, algorithm="flatt_esco")
+    hrv_aie = await HrvAnalysis.get(user_id=user_id, dt=target_str, algorithm="ai_endurance")
     hrv_today = float(row.hrv) if row.hrv else None
 
-    rhr_row = await RhrAnalysisRow.get(target_str)
+    rhr_row = await RhrAnalysis.get(user_id=user_id, dt=target_str)
 
     tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
     sport_ctl = extract_sport_ctl(row.sport_info)
@@ -171,37 +171,37 @@ async def _build_wellness_response(row, target_date: date) -> dict:
             "banister_recovery": row.banister_recovery,
         },
         "ai_recommendation": row.ai_recommendation,
-        "ai_recommendation_gemini": row.ai_recommendation_gemini,
         "updated_at": row.updated.isoformat() if row.updated else None,
     }
 
 
-async def _wellness_has_prev(target_date: date) -> bool:
+async def _wellness_has_prev(target_date: date, user_id: int) -> bool:
     target_str = str(target_date)
     async with get_session() as session:
-        result = await session.execute(select(exists().where(WellnessRow.id < target_str)))
+        result = await session.execute(select(exists().where(Wellness.date < target_str, Wellness.user_id == user_id)))
         return result.scalar_one()
 
 
 @router.get("/api/report")
-async def morning_report(role: str = Depends(require_viewer)) -> dict:
+async def morning_report(user: User = Depends(require_viewer)) -> dict:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
     today_str = str(today)
-    row = await WellnessRow.get(today)
+    uid = get_data_user_id(user)
+    row = await Wellness.get(uid, today)
 
     if row is None:
-        return {"date": today_str, "has_data": False, "role": role}
+        return {"date": today_str, "has_data": False, "role": user.role}
 
-    result = await _build_wellness_response(row, today)
-    result["role"] = role
+    result = await _build_wellness_response(row, today, uid)
+    result["role"] = user.role
     return result
 
 
 @router.get("/api/wellness-day")
 async def wellness_day(
     dt: str = Query(default="", alias="date", description="Date YYYY-MM-DD, default=today"),
-    role: str = Depends(require_viewer),
+    user: User = Depends(require_viewer),
 ) -> dict:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
@@ -218,8 +218,9 @@ async def wellness_day(
         target = today
 
     target_str = str(target)
-    row = await WellnessRow.get(target)
-    has_prev = await _wellness_has_prev(target)
+    uid = get_data_user_id(user)
+    row = await Wellness.get(uid, target)
+    has_prev = await _wellness_has_prev(target, uid)
     has_next = target < today
 
     if row is None:
@@ -229,12 +230,12 @@ async def wellness_day(
             "is_today": target == today,
             "has_prev": has_prev,
             "has_next": has_next,
-            "role": role,
+            "role": user.role,
         }
 
-    result = await _build_wellness_response(row, target)
+    result = await _build_wellness_response(row, target, uid)
     result["is_today"] = target == today
     result["has_prev"] = has_prev
     result["has_next"] = has_next
-    result["role"] = role
+    result["role"] = user.role
     return result

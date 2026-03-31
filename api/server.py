@@ -14,7 +14,9 @@ from api.routes import router
 from api.telegram_webhook import router as telegram_webhook_router
 from bot.main import build_application
 from config import settings
+from data.db import User
 from data.redis_client import close_redis, init_redis
+from mcp_server.context import set_current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,9 @@ logging.basicConfig(
 class MCPAuthMiddleware:
     """Pure ASGI middleware for Bearer token auth on /mcp endpoints.
 
+    Resolves the user by mcp_token from the DB and sets the user_id
+    in contextvars for downstream MCP tools.
+
     Uses raw ASGI instead of BaseHTTPMiddleware to support streaming.
     """
 
@@ -35,15 +40,20 @@ class MCPAuthMiddleware:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket") and scope["path"].startswith("/mcp"):
-            token = settings.MCP_AUTH_TOKEN.get_secret_value()
-            if not token:
-                await self._reject(scope, receive, send, 503, b'{"detail":"MCP auth not configured"}')
-                return
             headers = dict(scope.get("headers", []))
             auth = headers.get(b"authorization", b"").decode()
-            if auth != f"Bearer {token}":
+            if not auth.startswith("Bearer "):
+                await self._reject(scope, receive, send, 401, b'{"detail":"Missing Bearer token"}')
+                return
+
+            token = auth[7:]  # strip "Bearer "
+            user = await User.get_by_mcp_token(token)
+            if not user:
                 await self._reject(scope, receive, send, 401, b'{"detail":"Invalid MCP token"}')
                 return
+
+            set_current_user_id(user.id)
+
         await self.app(scope, receive, send)
 
     @staticmethod
@@ -76,7 +86,6 @@ async def lifespan(app):
         await init_redis()
 
         # Start Telegram bot in webhook mode if configured
-        # Note: sync_athlete_settings() is called in bot's _post_init (covers both modes)
         if settings.TELEGRAM_WEBHOOK_URL:
             tg_app = build_application()
             await tg_app.initialize()

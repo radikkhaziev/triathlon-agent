@@ -7,7 +7,7 @@
 ## Текущая архитектура (до Phase 2)
 
 ```
-daily_metrics_job (scheduler)
+sync_wellness_job (scheduler)
     ↓
 save_wellness (DB)
     ↓  ai_is_new = True
@@ -24,6 +24,7 @@ Claude messages.create(system=SYSTEM_PROMPT, messages=[{user: prompt}])
 ```
 
 **Проблемы:**
+
 - `build_morning_prompt()` — 100 строк хардкоженного сбора данных
 - При добавлении нового tool (training_log, threshold_freshness, mood) — нужно менять код
 - Claude не может запросить доп. данные если что-то подозрительное
@@ -34,7 +35,7 @@ Claude messages.create(system=SYSTEM_PROMPT, messages=[{user: prompt}])
 ## Новая архитектура (Phase 2)
 
 ```
-daily_metrics_job (scheduler)
+sync_wellness_job (scheduler)
     ↓
 save_wellness (DB)
     ↓  ai_is_new = True
@@ -105,28 +106,28 @@ while response.stop_reason == "tool_use":
 
 ### Основные tools (всегда доступны)
 
-| Tool | Описание | Маппинг на существующий код |
-|---|---|---|
-| `get_wellness` | Wellness за день: recovery, sleep, HRV, CTL/ATL | `data/database.py → get_wellness()` |
-| `get_hrv_analysis` | HRV статус + baselines (оба алгоритма) | `data/database.py → get_hrv_analysis()` |
-| `get_rhr_analysis` | RHR статус + baselines | `data/database.py → get_rhr_analysis()` |
-| `get_recovery` | Recovery score + category + recommendation | `data/metrics.py → compute_recovery()` (вынести из `mcp_server/tools/recovery.py`) |
-| `get_training_load` | CTL/ATL/TSB/ramp_rate + per-sport CTL | `data/metrics.py → compute_training_load()` (вынести из `mcp_server/tools/training_load.py`) |
-| `get_scheduled_workouts` | Запланированные тренировки на день | `data/database.py → get_scheduled_workouts_for_date()` |
-| `get_goal_progress` | Race goal progress (overall + per-sport %) | `mcp_server/tools/goal.py` |
-| `get_activity_hrv` | DFA a1 за вчера (Ra, Da, thresholds) | `data/database.py → get_activity_hrv_for_date()` |
+| Tool                     | Описание                                        | Маппинг на существующий код                                                                  |
+| ------------------------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `get_wellness`           | Wellness за день: recovery, sleep, HRV, CTL/ATL | `data/database.py → get_wellness()`                                                          |
+| `get_hrv_analysis`       | HRV статус + baselines (оба алгоритма)          | `data/database.py → get_hrv_analysis()`                                                      |
+| `get_rhr_analysis`       | RHR статус + baselines                          | `data/database.py → get_rhr_analysis()`                                                      |
+| `get_recovery`           | Recovery score + category + recommendation      | `data/metrics.py → compute_recovery()` (вынести из `mcp_server/tools/recovery.py`)           |
+| `get_training_load`      | CTL/ATL/TSB/ramp_rate + per-sport CTL           | `data/metrics.py → compute_training_load()` (вынести из `mcp_server/tools/training_load.py`) |
+| `get_scheduled_workouts` | Запланированные тренировки на день              | `data/database.py → get_scheduled_workouts_for_date()`                                       |
+| `get_goal_progress`      | Race goal progress (overall + per-sport %)      | `mcp_server/tools/goal.py`                                                                   |
+| `get_activity_hrv`       | DFA a1 за вчера (Ra, Da, thresholds)            | `data/database.py → get_activity_hrv_for_date()`                                             |
 
 ### Опциональные tools (Claude вызывает если нужно)
 
-| Tool | Когда полезен |
-|---|---|
-| `get_wellness_range` | TSB подозрительный → Claude смотрит тренд за неделю |
-| `get_activities` | Хочет посмотреть что было за последние дни |
-| `get_training_log` | Есть данные в training_log → compliance, patterns |
-| `get_threshold_freshness` | Проверить нужен ли ramp test |
-| `get_readiness_history` | Ra тренд за N дней |
-| `get_mood_checkins` | Недавние mood check-ins → коррелировать настроение с recovery |
-| `get_iqos_sticks` | Стики за день/неделю → коррелировать с recovery и HRV |
+| Tool                      | Когда полезен                                                 |
+| ------------------------- | ------------------------------------------------------------- |
+| `get_wellness_range`      | TSB подозрительный → Claude смотрит тренд за неделю           |
+| `get_activities`          | Хочет посмотреть что было за последние дни                    |
+| `get_training_log`        | Есть данные в training_log → compliance, patterns             |
+| `get_threshold_freshness` | Проверить нужен ли ramp test                                  |
+| `get_readiness_history`   | Ra тренд за N дней                                            |
+| `get_mood_checkins`       | Недавние mood check-ins → коррелировать настроение с recovery |
+| `get_iqos_sticks`         | Стики за день/неделю → коррелировать с recovery и HRV         |
 
 ### Tool definitions формат
 
@@ -306,10 +307,12 @@ class ClaudeAgent:
 ### `ai/prompts.py`
 
 Добавляется:
+
 - `SYSTEM_PROMPT_V2` — новый system prompt без данных, с инструкциями по tools
 - `get_system_prompt_v2()` — форматирует с athlete settings
 
 Остаётся (не удаляется):
+
 - `SYSTEM_PROMPT` — для generate_workout и analyze_week (они остаются на фиксированном промпте)
 - `MORNING_REPORT_PROMPT` — как fallback
 - `WORKOUT_GENERATION_PROMPT` — без изменений
@@ -352,6 +355,7 @@ async def _claude():
 ## Fallback стратегия
 
 Старый метод `get_morning_recommendation()` **не удаляется**. Используется как fallback:
+
 - Если tool-use loop превышает max_iterations
 - Если Claude API возвращает ошибку при tool-use
 - Через конфиг `AI_USE_TOOL_USE=true/false` для A/B тестирования
@@ -368,13 +372,13 @@ Gemini **не переходит** на tool-use. Текущая роль Gemini
 
 ## Оценка стоимости
 
-| Метрика | V1 (фиксированный промпт) | V2 (tool-use) |
-|---|---|---|
-| API вызовы | 1 | 3-5 (initial + tool rounds) |
-| Input tokens | ~2K (промпт) | ~5-8K (system + tools defs + tool results) |
-| Output tokens | ~300-500 | ~500-800 (tool calls + final text) |
-| Latency | 2-3 sec | 5-10 sec |
-| Cost estimate | ~$0.01/day | ~$0.03-0.05/day |
+| Метрика       | V1 (фиксированный промпт) | V2 (tool-use)                              |
+| ------------- | ------------------------- | ------------------------------------------ |
+| API вызовы    | 1                         | 3-5 (initial + tool rounds)                |
+| Input tokens  | ~2K (промпт)              | ~5-8K (system + tools defs + tool results) |
+| Output tokens | ~300-500                  | ~500-800 (tool calls + final text)         |
+| Latency       | 2-3 sec                   | 5-10 sec                                   |
+| Cost estimate | ~$0.01/day                | ~$0.03-0.05/day                            |
 
 Рост стоимости ~3-5x, но в абсолюте — копейки ($1-1.5/месяц вместо $0.30).
 
@@ -396,15 +400,15 @@ AI_USE_TOOL_USE: bool = True   # Tool-use by default, fallback on errors
 
 ## План реализации
 
-| # | Задача | Файлы | Статус |
-|---|---|---|---|
-| 1 | Tool definitions + handlers | `ai/tool_definitions.py` (новый) | Done |
-| 2 | Tool handlers — обёртки над DB функциями | `ai/tool_definitions.py` | Done |
-| 3 | `get_morning_recommendation_v2()` с tool-use loop | `ai/claude_agent.py` | Done |
-| 4 | `SYSTEM_PROMPT_V2` + `get_system_prompt_v2()` | `ai/prompts.py` | Done |
-| 5 | Конфиг `AI_USE_TOOL_USE` + fallback логика | `config.py`, `data/database.py` | Done |
-| 6 | Тесты: tool execution, loop termination, fallback | `tests/test_tool_use.py` (18 тестов) | Done |
-| 7 | A/B сравнение: 1 неделя с логированием обоих вариантов | `bot/scheduler.py` | Отложено |
+| #   | Задача                                                 | Файлы                                | Статус   |
+| --- | ------------------------------------------------------ | ------------------------------------ | -------- |
+| 1   | Tool definitions + handlers                            | `ai/tool_definitions.py` (новый)     | Done     |
+| 2   | Tool handlers — обёртки над DB функциями               | `ai/tool_definitions.py`             | Done     |
+| 3   | `get_morning_recommendation_v2()` с tool-use loop      | `ai/claude_agent.py`                 | Done     |
+| 4   | `SYSTEM_PROMPT_V2` + `get_system_prompt_v2()`          | `ai/prompts.py`                      | Done     |
+| 5   | Конфиг `AI_USE_TOOL_USE` + fallback логика             | `config.py`, `data/database.py`      | Done     |
+| 6   | Тесты: tool execution, loop termination, fallback      | `tests/test_tool_use.py` (18 тестов) | Done     |
+| 7   | A/B сравнение: 1 неделя с логированием обоих вариантов | `bot/scheduler.py`                   | Отложено |
 
 ### Критерии готовности
 
@@ -420,6 +424,7 @@ AI_USE_TOOL_USE: bool = True   # Tool-use by default, fallback on errors
 ## Будущее: объединение с Phase 3
 
 Tool-use инфраструктура (tool definitions, handlers, loop) переиспользуется для MCP Phase 3 (free-form Telegram chat). Разница:
+
 - Утренний анализ: автоматический вызов, `SYSTEM_PROMPT_V2` с инструкциями по отчёту
 - Free-form chat: по запросу пользователя, system prompt без привязки к утреннему формату
 - Tools одни и те же, handlers одни и те же

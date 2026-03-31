@@ -1,8 +1,9 @@
 """MCP tool for detailed activity statistics (Phase 2)."""
 
-from data.database import ActivityDetailRow, ActivityHrvRow, ActivityRow, get_session
+from data.db import Activity, ActivityDetail, ActivityHrv, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -19,13 +20,14 @@ async def get_activity_details(activity_id: str) -> dict:
     Args:
         activity_id: Intervals.icu activity ID (e.g. "i12345")
     """
+    user_id = get_current_user_id()
     async with get_session() as session:
-        activity = await session.get(ActivityRow, activity_id)
-        if activity is None:
+        activity = await session.get(Activity, activity_id)
+        if activity is None or activity.user_id != user_id:
             return {"error": f"Activity {activity_id} not found."}
 
-        detail = await session.get(ActivityDetailRow, activity_id)
-        hrv = await session.get(ActivityHrvRow, activity_id)
+        detail = await session.get(ActivityDetail, activity_id)
+        hrv = await session.get(ActivityHrv, activity_id)
 
     return {
         "activity_id": activity.id,

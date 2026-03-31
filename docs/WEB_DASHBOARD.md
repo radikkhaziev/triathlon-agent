@@ -11,6 +11,7 @@ Telegram Mini App (через WebAppInfo) или standalone (прямой URL).
 ## Вкладки
 
 **Today** — утренний отчёт
+
 - Recovery gauge + score
 - HRV/RHR/Sleep метрики
 - CTL/ATL/TSB
@@ -18,18 +19,21 @@ Telegram Mini App (через WebAppInfo) или standalone (прямой URL).
 - Источник: `GET /api/report` (уже есть)
 
 **Calendar** — активности и план по дням
+
 - Календарь-сетка с иконками спорта
 - Клик по дню → список активностей + запланированные тренировки
 - Клик по активности → детальная статистика (HR, power, pace, laps) из `get_activity_details`
 - Источник: `GET /api/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD`
 
 **Load** — графики тренировочной нагрузки
+
 - CTL/ATL/TSB line chart (12 недель)
 - Daily TSS stacked bar chart по видам спорта
 - Ramp rate indicator
 - Источник: `GET /api/training-load?days=84`
 
 **Goal** — прогресс к Ironman 70.3
+
 - Countdown (weeks remaining)
 - Per-sport CTL progress bars vs targets
 - CTL trend chart per sport
@@ -39,12 +43,12 @@ Telegram Mini App (через WebAppInfo) или standalone (прямой URL).
 
 Кнопки в UI для ручного запуска джобов (без ожидания cron):
 
-| Кнопка | API endpoint | Что делает |
-|---|---|---|
-| 🔄 Синхронизировать план | `POST /api/jobs/sync-workouts` | `scheduled_workouts_job()` |
-| 🔄 Загрузить активности | `POST /api/jobs/sync-activities` | `sync_activities_job()` + `process_fit_job()` |
-| 📊 Утренний отчёт | `POST /api/jobs/morning-report` | `daily_metrics_job(run_ai=True)` |
-| 🔄 Обновить wellness | `POST /api/jobs/sync-wellness` | `daily_metrics_job()` |
+| Кнопка                   | API endpoint                     | Что делает                                    |
+| ------------------------ | -------------------------------- | --------------------------------------------- |
+| 🔄 Синхронизировать план | `POST /api/jobs/sync-workouts`   | `scheduled_workouts_job()`                    |
+| 🔄 Загрузить активности  | `POST /api/jobs/sync-activities` | `sync_activities_job()` + `process_fit_job()` |
+| 📊 Утренний отчёт        | `POST /api/jobs/morning-report`  | `sync_wellness_job(run_ai=True)`              |
+| 🔄 Обновить wellness     | `POST /api/jobs/sync-wellness`   | `sync_wellness_job()`                         |
 
 **Безопасность:** Job endpoints защищены Telegram initData (как `/api/report`) — только авторизованный пользователь.
 

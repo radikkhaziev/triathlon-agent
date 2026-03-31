@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - versions/intervals-version
-      - versions/multi-tenant
 
 jobs:
   deploy:

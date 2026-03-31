@@ -3,8 +3,9 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+import data.db  # noqa: F401 — register User model in shared metadata
 from config import settings
-from data.database import Base
+from data.db.common import Base
 
 config = context.config
 

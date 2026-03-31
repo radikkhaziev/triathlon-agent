@@ -1,9 +1,8 @@
 """Training metrics calculations for triathlon training load management.
 
-Implements TSS (Training Stress Score) calculations for swimming, cycling,
-and running, along with CTL/ATL/TSB (fitness/fatigue/form) tracking,
-a composite readiness score, HRV recovery analysis (dual-algorithm),
-RHR baseline, ESS (Banister TRIMP), and combined recovery scoring.
+HRV recovery analysis (dual-algorithm), RHR baseline, trend analysis,
+ESS (Banister TRIMP), per-sport CTL, combined recovery scoring,
+and cardiac drift (decoupling) analysis.
 """
 
 import math
@@ -14,181 +13,21 @@ from datetime import timedelta
 
 import numpy as np
 
-from config import settings
-from data.models import (
-    Activity,
-    HRVData,
-    ReadinessLevel,
-    RecoveryScore,
-    RecoveryState,
-    RhrStatus,
-    RmssdStatus,
-    TrendResult,
-    Wellness,
-)
+from data.db import Activity, HrvAnalysis, RhrAnalysis
+from data.intervals.dto import RecoveryScoreDTO, RecoveryStateDTO, RmssdStatusDTO, TrendResultDTO
 from data.utils import SPORT_MAP
-
-# Heart Rate Zones as percentage of LTHR (Lactate Threshold Heart Rate)
-HR_ZONES: dict[str, dict[int, tuple[float, float]]] = {
-    "run": {
-        1: (0.00, 0.72),  # Recovery
-        2: (0.72, 0.82),  # Aerobic base
-        3: (0.82, 0.87),  # Tempo
-        4: (0.87, 0.92),  # Sub-threshold
-        5: (0.92, 1.00),  # VO2max
-    },
-    "bike": {
-        1: (0.00, 0.68),
-        2: (0.68, 0.83),
-        3: (0.83, 0.94),
-        4: (0.94, 1.05),
-        5: (1.05, 1.20),
-    },
-}
-
-
-def calc_hr_tss(
-    duration_sec: float,
-    avg_hr: float,
-    resting_hr: float,
-    max_hr: float,
-    lthr: float,
-) -> float:
-    """Heart Rate TSS calculation.
-
-    Uses the ratio of average HR to lactate threshold HR
-    to estimate training stress similar to power-based TSS.
-    """
-    if lthr == resting_hr:
-        return 0.0
-    intensity_factor = (avg_hr - resting_hr) / (lthr - resting_hr)
-    tss = (duration_sec / 3600) * intensity_factor**2 * 100
-    return round(tss, 1)
-
-
-def calc_power_tss(
-    duration_sec: float,
-    normalized_power: float,
-    ftp: float,
-) -> float:
-    """Standard TSS formula used by TrainingPeaks."""
-    if ftp == 0:
-        return 0.0
-    intensity_factor = normalized_power / ftp
-    tss = (duration_sec * normalized_power * intensity_factor) / (ftp * 3600) * 100
-    return round(tss, 1)
-
-
-def calc_swim_tss(
-    distance_m: float,
-    duration_sec: float,
-    css_per_100m: float,
-) -> float:
-    """Swim-Specific TSS based on Critical Swim Speed (CSS)."""
-    if distance_m == 0 or duration_sec == 0 or css_per_100m == 0:
-        return 0.0
-    pace_per_100m = (duration_sec / distance_m) * 100
-    intensity_factor = css_per_100m / pace_per_100m
-    tss = (duration_sec / 3600) * intensity_factor**2 * 100
-    return round(tss, 1)
-
-
-def update_ctl_atl(
-    tss_history: list[float],
-    ctl_days: int = 42,
-    atl_days: int = 7,
-) -> tuple[float, float, float]:
-    """Fitness / Fatigue / Form model (Performance Manager Chart).
-
-    CTL (Chronic Training Load)   = 42-day EMA of TSS -> "fitness"
-    ATL (Acute Training Load)     = 7-day EMA of TSS  -> "fatigue"
-    TSB (Training Stress Balance) = CTL - ATL         -> "form"
-
-    TSB Interpretation:
-        TSB > +10     -> under-training, fitness declining
-        TSB -10..+10  -> optimal zone, good form
-        TSB -10..-25  -> productive overreach
-        TSB < -25     -> overtraining risk, injury/illness risk
-    """
-    ctl_k = 2 / (ctl_days + 1)
-    atl_k = 2 / (atl_days + 1)
-
-    ctl, atl = 0.0, 0.0
-    for tss in tss_history:
-        ctl = tss * ctl_k + ctl * (1 - ctl_k)
-        atl = tss * atl_k + atl * (1 - atl_k)
-
-    tsb = ctl - atl
-    return round(ctl, 1), round(atl, 1), round(tsb, 1)
-
-
-def calculate_readiness(
-    hrv: HRVData,
-    sleep: Wellness,
-    resting_hr: float,
-    resting_hr_baseline: float,
-) -> tuple[int, ReadinessLevel]:
-    """Calculate composite readiness score from physiological signals.
-
-    Weighted from 3 components:
-    - HRV delta from baseline (35%)
-    - Sleep score (40%)
-    - Resting HR deviation from baseline (25%)
-    """
-    score = 100
-
-    # HRV component (weight: 35%)
-    hrv_delta = (hrv.hrv_last_night - hrv.hrv_weekly_avg) / hrv.hrv_weekly_avg if hrv.hrv_weekly_avg != 0 else 0.0
-    if hrv_delta < -0.20:
-        score -= 35
-    elif hrv_delta < -0.10:
-        score -= 20
-    elif hrv_delta < -0.05:
-        score -= 10
-    elif hrv_delta > +0.10:
-        score += 5  # bonus for good recovery
-
-    # Sleep component (weight: 40%)
-    sleep_score = sleep.sleep_score or 0
-    if sleep_score < 50:
-        score -= 40
-    elif sleep_score < 65:
-        score -= 20
-    elif sleep_score < 75:
-        score -= 10
-
-    # Resting HR component (weight: 25%)
-    hr_delta = resting_hr - resting_hr_baseline
-    if hr_delta > 7:
-        score -= 25
-    elif hr_delta > 4:
-        score -= 13
-    elif hr_delta > 2:
-        score -= 5
-
-    score = max(0, min(100, score))
-
-    if score >= 80:
-        level = ReadinessLevel.GREEN
-    elif score >= 60:
-        level = ReadinessLevel.YELLOW
-    else:
-        level = ReadinessLevel.RED
-
-    return score, level
-
 
 # ---------------------------------------------------------------------------
 # Trend Analysis
 # ---------------------------------------------------------------------------
 
 
-def _calculate_trend(
+def calculate_trend(
     values: list[float],
     window: int = 7,
     threshold_weak: float = 0.5,
     threshold_strong: float = 2.0,
-) -> TrendResult:
+) -> TrendResultDTO:
     """Calculate trend direction using linear regression (least squares).
 
     Fits a straight line through the last `window` data points.
@@ -197,7 +36,7 @@ def _calculate_trend(
     data = values[-window:]
 
     if len(data) < 3:
-        return TrendResult(direction="stable", slope=0.0, r_squared=0.0, emoji="→")
+        return TrendResultDTO(direction="stable", slope=0.0, r_squared=0.0, emoji="→")
 
     x = np.arange(len(data), dtype=float)
     y = np.array(data, dtype=float)
@@ -220,7 +59,7 @@ def _calculate_trend(
     else:
         direction, emoji = "declining_fast", "↓↓"
 
-    return TrendResult(
+    return TrendResultDTO(
         direction=direction,
         slope=round(slope, 3),
         r_squared=round(r_squared, 3),
@@ -265,7 +104,7 @@ def _classify_recovery(
         return "green"
 
 
-def _rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatus:
+def rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatusDTO:
     """Flatt & Esco (2016) — today's RMSSD vs 7-day baseline, asymmetric bounds.
 
     Fast response — detects acute changes within 1-2 days.
@@ -289,9 +128,9 @@ def _rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatus:
     swc = 0.5 * rmssd_sd_60d if rmssd_sd_60d is not None else None
 
     cv_7d = (std_7 / mean_7 * 100) if mean_7 > 0 else None
-    trend = _calculate_trend(last_7, window=7, **TREND_THRESHOLDS["hrv"])
+    trend = calculate_trend(last_7, window=7, **TREND_THRESHOLDS["hrv"])
 
-    return RmssdStatus(
+    return RmssdStatusDTO(
         status=status,
         days_available=n,
         days_needed=0,
@@ -307,7 +146,7 @@ def _rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatus:
     )
 
 
-def _rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatus:
+def rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatusDTO:
     """AIEndurance / Kiviniemi — 7d mean vs 60d baseline, symmetric bounds.
 
     Slower response — takes ~3-4 days of low HRV to trigger "red".
@@ -330,9 +169,9 @@ def _rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatus:
     swc = 0.5 * sd_60
     std_7 = statistics.stdev(last_7) if len(last_7) >= 2 else 1.0
     cv_7d = (std_7 / mean_7 * 100) if mean_7 > 0 else None
-    trend = _calculate_trend(last_7, window=7, **TREND_THRESHOLDS["hrv"])
+    trend = calculate_trend(last_7, window=7, **TREND_THRESHOLDS["hrv"])
 
-    return RmssdStatus(
+    return RmssdStatusDTO(
         status=status,
         days_available=n,
         days_needed=0,
@@ -348,109 +187,6 @@ def _rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatus:
     )
 
 
-async def calculate_rmssd_status(algorithm: str | None = None, *, session=None) -> RmssdStatus:
-    """Dispatcher: loads HRV history from DB, delegates to selected algorithm.
-
-    Args:
-        algorithm: "flatt_esco" or "ai_endurance". Defaults to settings.HRV_ALGORITHM.
-        session: optional AsyncSession to reuse an existing transaction.
-    """
-    from data.database import WellnessRow
-
-    algo = algorithm or settings.HRV_ALGORITHM
-    hrv_history = await WellnessRow.get_hrv_history(days=60, session=session)
-    n = len(hrv_history)
-    MIN_DAYS = 14
-
-    if n < MIN_DAYS:
-        return RmssdStatus(
-            status="insufficient_data",
-            days_available=n,
-            days_needed=MIN_DAYS - n,
-        )
-
-    if algo == "ai_endurance":
-        return _rmssd_ai_endurance(hrv_history)
-
-    return _rmssd_flatt_esco(hrv_history)
-
-
-# ---------------------------------------------------------------------------
-# Resting HR Analysis
-# ---------------------------------------------------------------------------
-
-
-async def calculate_rhr_status(*, session=None) -> RhrStatus:
-    """Resting HR baseline analysis.
-
-    Compares today's RHR vs 30-day rolling baseline.
-    Inverted vs RMSSD: elevated RHR = under-recovered.
-    Computes 7d, 30d, and 60d baselines.
-
-    Args:
-        session: optional AsyncSession to reuse an existing transaction.
-    """
-    from data.database import WellnessRow
-
-    rhr_history = await WellnessRow.get_rhr_history(days=60, session=session)
-    n = len(rhr_history)
-    MIN_DAYS = 7
-
-    if n < MIN_DAYS:
-        return RhrStatus(
-            status="insufficient_data",
-            days_available=n,
-            days_needed=MIN_DAYS - n,
-        )
-
-    today_rhr = rhr_history[-1]
-
-    # 7-day baseline
-    last_7 = rhr_history[-7:]
-    mean_7 = statistics.mean(last_7)
-    sd_7 = statistics.stdev(last_7) if len(last_7) >= 2 else 1.0
-
-    # 30-day baseline (used for status bounds)
-    last_30 = rhr_history[-30:] if n >= 30 else rhr_history
-    mean_30 = statistics.mean(last_30)
-    sd_30 = statistics.stdev(last_30) if len(last_30) >= 2 else 1.0
-
-    lower_bound = mean_30 - 0.5 * sd_30
-    upper_bound = mean_30 + 0.5 * sd_30
-
-    # 60-day baseline (context only)
-    rhr_60d = statistics.mean(rhr_history[-60:]) if n >= 60 else None
-    rhr_sd_60d = statistics.stdev(rhr_history[-60:]) if n >= 60 else None
-
-    # Inverted: high RHR = red, low RHR = green
-    if today_rhr > upper_bound:
-        status = "red"
-    elif today_rhr < lower_bound:
-        status = "green"
-    else:
-        status = "yellow"
-
-    cv_7d = (sd_7 / mean_7 * 100) if mean_7 > 0 else None
-    trend = _calculate_trend(last_7, window=7, **TREND_THRESHOLDS["resting_hr"])
-
-    return RhrStatus(
-        status=status,
-        days_available=n,
-        days_needed=0,
-        rhr_today=round(today_rhr, 1),
-        rhr_7d=round(mean_7, 1),
-        rhr_sd_7d=round(sd_7, 2),
-        rhr_30d=round(mean_30, 1),
-        rhr_sd_30d=round(sd_30, 2),
-        rhr_60d=round(rhr_60d, 1) if rhr_60d else None,
-        rhr_sd_60d=round(rhr_sd_60d, 2) if rhr_sd_60d else None,
-        lower_bound=round(lower_bound, 1),
-        upper_bound=round(upper_bound, 1),
-        cv_7d=round(cv_7d, 1) if cv_7d is not None else None,
-        trend=trend,
-    )
-
-
 # ---------------------------------------------------------------------------
 # ESS (External Stress Score) — Banister TRIMP
 # ---------------------------------------------------------------------------
@@ -461,6 +197,7 @@ def calculate_ess(
     avg_hr: float,
     hr_rest: float,
     hr_max: float,
+    lthr: int = 153,
 ) -> float:
     """Banister TRIMP-based External Stress Score.
 
@@ -471,6 +208,7 @@ def calculate_ess(
         avg_hr: Average heart rate during activity.
         hr_rest: Athlete's resting heart rate.
         hr_max: Athlete's maximum heart rate.
+        lthr: Lactate threshold heart rate for TRIMP normalisation.
     """
     if hr_max <= hr_rest or avg_hr <= hr_rest or duration_min <= 0:
         return 0.0
@@ -479,7 +217,7 @@ def calculate_ess(
     trimp = duration_min * hr_ratio * 0.64 * math.exp(1.92 * hr_ratio)
 
     # Normalise: TRIMP for 60 min at LTHR = ESS 100
-    lthr_ratio = (settings.ATHLETE_LTHR_RUN - hr_rest) / (hr_max - hr_rest)
+    lthr_ratio = (lthr - hr_rest) / (hr_max - hr_rest)
     trimp_threshold = 60 * lthr_ratio * 0.64 * math.exp(1.92 * lthr_ratio)
 
     if trimp_threshold == 0:
@@ -493,27 +231,24 @@ def calculate_ess(
 # ---------------------------------------------------------------------------
 
 
-def calculate_daily_ess(activities: list, hr_rest: float, hr_max: float) -> float:
+def calculate_daily_ess(activities: list, hr_rest: float, hr_max: float, lthr: int = 153) -> float:
     """Sum ESS for all activities on a given day.
 
     Args:
-        activities: List of Activity/ActivityRow for one day.
+        activities: List of Activity/Activity for one day.
             Each must have `moving_time` (int, seconds) and `average_hr` (float|None).
         hr_rest: Athlete resting HR.
         hr_max: Athlete max HR.
+        lthr: Lactate threshold HR for TRIMP normalisation.
 
     Returns:
         Total ESS for the day. 0.0 if no activities or no HR data.
-
-    Note:
-        Delegates to calculate_ess() which reads settings.ATHLETE_LTHR_RUN
-        for TRIMP normalisation.
     """
     total = 0.0
     for act in activities:
         if act.moving_time and act.average_hr and act.average_hr > 0:
             duration_min = act.moving_time / 60.0
-            total += calculate_ess(duration_min, act.average_hr, hr_rest, hr_max)
+            total += calculate_ess(duration_min, act.average_hr, hr_rest, hr_max, lthr)
     return round(total, 1)
 
 
@@ -527,7 +262,7 @@ def calculate_banister_recovery(
     k: float = 0.1,
     tau: float = 2.0,
     initial_recovery: float = 100.0,
-) -> list[RecoveryState]:
+) -> list[RecoveryStateDTO]:
     """Banister recovery model with exponential return to baseline.
 
     R(t+1) = R(t) + (100 - R(t)) * (1 - exp(-1/τ)) - k * ESS(t)
@@ -543,7 +278,7 @@ def calculate_banister_recovery(
     """
     recovery_rate = 1.0 - math.exp(-1.0 / tau)
     r = initial_recovery
-    results: list[RecoveryState] = []
+    results: list[RecoveryStateDTO] = []
 
     for entry in training_log:
         ess = entry.get("ess", 0)
@@ -555,7 +290,7 @@ def calculate_banister_recovery(
             dt = date_type.fromisoformat(dt)
 
         results.append(
-            RecoveryState(
+            RecoveryStateDTO(
                 date=dt,
                 recovery_pct=round(r, 1),
                 ess=round(ess, 1),
@@ -567,9 +302,11 @@ def calculate_banister_recovery(
 
 def calculate_banister_for_date(
     activities_by_date: dict[str, list],
-    target_date: date_type,
+    *,
     hr_rest: float,
     hr_max: float,
+    lthr: int = 153,
+    dt: date_type,
     lookback_days: int = 90,
     k: float = 0.1,
     tau: float = 2.0,
@@ -578,7 +315,7 @@ def calculate_banister_for_date(
 
     Args:
         activities_by_date: Mapping "YYYY-MM-DD" → list of activity objects.
-        target_date: The date to calculate recovery for.
+        dt: The date to calculate recovery for.
         hr_rest: Athlete resting HR.
         hr_max: Athlete max HR.
         lookback_days: How many days of history to use.
@@ -588,14 +325,15 @@ def calculate_banister_for_date(
     Returns:
         (banister_recovery_pct, ess_today)
     """
-    start = target_date - timedelta(days=lookback_days)
+    start = dt - timedelta(days=lookback_days)
 
     training_log = []
     current = start
-    while current <= target_date:
+    while current <= dt:
         date_str = current.isoformat()
         day_acts = activities_by_date.get(date_str, [])
-        ess = calculate_daily_ess(day_acts, hr_rest, hr_max)
+
+        ess = calculate_daily_ess(day_acts, hr_rest, hr_max, lthr)
         training_log.append({"date": date_str, "ess": ess})
         current += timedelta(days=1)
 
@@ -624,7 +362,7 @@ def calculate_sport_ctl(
 
     Args:
         activities: Objects with attrs: type (str|None), icu_training_load (float|None),
-                    start_date_local (str|date). Accepts Activity model or ActivityRow ORM.
+                    start_date_local (str|date). Accepts Activity model or Activity ORM.
         tau: Time constant in days (default 42, matching Intervals.icu CTL).
 
     Returns:
@@ -685,12 +423,11 @@ _STATUS_TO_SCORE = {"green": 100, "yellow": 65, "red": 20, "insufficient_data": 
 
 
 def combined_recovery_score(
-    rmssd_status: RmssdStatus,
-    rhr_status: RhrStatus,
+    rmssd: HrvAnalysis,
+    rhr: RhrAnalysis,
     banister_recovery: float,
     sleep_score: int | None,
-    sleep_start_hour: float | None = None,
-) -> RecoveryScore:
+) -> RecoveryScoreDTO:
     """Weighted integration of 4 recovery signals into a single 0-100 score.
 
     Weights (when all signals available):
@@ -706,8 +443,8 @@ def combined_recovery_score(
         sleep_start > 23:00  →  -10 pts
         CV 7d > 15%          →  -5 pts
     """
-    rmssd_score = _STATUS_TO_SCORE.get(rmssd_status.status, 50)
-    rhr_score = _STATUS_TO_SCORE.get(rhr_status.status, 50)
+    rmssd_score = _STATUS_TO_SCORE.get(rmssd.status, 50)
+    rhr_score = _STATUS_TO_SCORE.get(rhr.status, 50)
     banister_pct = max(0.0, min(100.0, banister_recovery))
 
     if sleep_score is not None:
@@ -718,13 +455,10 @@ def combined_recovery_score(
         score = (rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.20) / 0.80
 
     flags: list[str] = []
-    if sleep_start_hour is not None and sleep_start_hour > 23.0:
-        score -= 10
-        flags.append("late_sleep")
-    if rmssd_status.cv_7d and rmssd_status.cv_7d > 15:
+    if rmssd.cv_7d and rmssd.cv_7d > 15:
         score -= 5
         flags.append("hrv_unstable")
-    if rmssd_status.trend and rmssd_status.trend.direction in ("declining", "declining_fast"):
+    if rmssd.trend and rmssd.trend.direction in ("declining", "declining_fast"):
         flags.append("rmssd_declining")  # warning only, no score penalty
 
     score = max(0.0, min(100.0, score))
@@ -739,7 +473,7 @@ def combined_recovery_score(
         category = "low"
 
     # Red RMSSD always overrides recommendation
-    if rmssd_status.status == "red":
+    if rmssd.status == "red":
         recommendation = "skip"
     elif category in ("excellent", "good"):
         recommendation = "zone2_ok"
@@ -748,7 +482,7 @@ def combined_recovery_score(
     else:
         recommendation = "zone1_short"
 
-    return RecoveryScore(
+    return RecoveryScoreDTO(
         score=round(score, 1),
         category=category,
         recommendation=recommendation,

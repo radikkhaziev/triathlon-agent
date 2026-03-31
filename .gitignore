@@ -26,3 +26,5 @@ webapp/dist/
 webapp_old/
 
 backups/
+
+.DS_Store

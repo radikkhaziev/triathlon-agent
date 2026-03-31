@@ -4,8 +4,9 @@ from datetime import date, timedelta
 
 from sqlalchemy import select
 
-from data.database import ActivityHrvRow, ActivityRow, get_session
+from data.db import Activity, ActivityHrv, get_session
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -26,25 +27,24 @@ async def get_activities(target_date: str = "", days_back: int = 7) -> dict:
     end = date.fromisoformat(target_date) if target_date else date.today()
     start = end - timedelta(days=days_back)
 
+    user_id = get_current_user_id()
     async with get_session() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(ActivityRow)
-                    .where(ActivityRow.start_date_local >= str(start))
-                    .where(ActivityRow.start_date_local <= str(end))
-                    .order_by(ActivityRow.start_date_local.desc())
-                )
+        query = (
+            select(Activity)
+            .where(
+                Activity.user_id == user_id,
+                Activity.start_date_local >= str(start),
+                Activity.start_date_local <= str(end),
             )
-            .scalars()
-            .all()
+            .order_by(Activity.start_date_local.desc())
         )
+        rows = (await session.execute(query)).scalars().all()
 
         # Fetch HRV analysis for these activities
         if rows:
             activity_ids = [r.id for r in rows]
             hrv_rows = (
-                (await session.execute(select(ActivityHrvRow).where(ActivityHrvRow.activity_id.in_(activity_ids))))
+                (await session.execute(select(ActivityHrv).where(ActivityHrv.activity_id.in_(activity_ids))))
                 .scalars()
                 .all()
             )

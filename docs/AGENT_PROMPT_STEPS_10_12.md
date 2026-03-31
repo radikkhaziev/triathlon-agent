@@ -25,12 +25,14 @@ Read `CLAUDE.md` fully before starting. It contains the complete project spec, d
 ### `bot/scheduler.py` — modify `process_fit_job` wrapper
 
 Current code (lines 16-30) wraps `data.hrv_activity.process_fit_job`. The wrapper needs to:
+
 1. Accept `bot: Bot | None = None` parameter
 2. After processing, query newly created `activity_hrv` rows with `processing_status == "processed"`
 3. For each, send a notification via `bot.send_message`
-4. The cron job registration already passes no kwargs — add `kwargs={"bot": bot}` (same pattern as `daily_metrics_job`)
+4. The cron job registration already passes no kwargs — add `kwargs={"bot": bot}` (same pattern as `sync_wellness_job`)
 
 **Important:** The inner `data.hrv_activity.process_fit_job` returns a count but doesn't return which activities were processed. You need to either:
+
 - Track which activities were processed (query `activity_hrv` before and after)
 - Or modify the inner function to return a list of `(activity_id, status)` tuples instead of just a count
 
@@ -52,6 +54,7 @@ HRVT1: 142 bpm / 180W
 ```
 
 Rules:
+
 - Sport emoji: 🚴 for bike types, 🏃 for run types
 - Duration from `activity.moving_time` (format as Xh Ym or Ym)
 - TSS from `activity.icu_training_load`
@@ -88,6 +91,7 @@ async def evening_report_job(bot: Bot | None = None) -> None:
 ```
 
 Logic:
+
 1. Get today's date (in `settings.TIMEZONE`)
 2. Get `WellnessRow` for today
 3. Get activities for today from `activities` table
@@ -97,6 +101,7 @@ Logic:
 7. If no activities and no wellness data — skip (don't send "no data")
 
 Register in scheduler:
+
 ```python
 scheduler.add_job(
     evening_report_job,
@@ -134,11 +139,13 @@ RHR: 🟢 42 уд/мин
 ```
 
 If DFA data available for any activity, add:
+
 ```
 DFA: Ra +3.2% (ride) | Ra -1.5% (run)
 ```
 
 Rules:
+
 - Date in Russian format: "24 марта"
 - If no activities: "День отдыха" instead of activity lines
 - Recovery emoji and title from `CATEGORY_DISPLAY` (already exists in formatter.py)
@@ -150,6 +157,7 @@ Rules:
 ### Database queries needed
 
 Add to `data/database.py`:
+
 ```python
 async def get_activities_for_date(dt: date) -> list[ActivityRow]:
     """Get all activities for a specific date."""
@@ -174,24 +182,28 @@ Add a new section after "ЗАПЛАНИРОВАННЫЕ ТРЕНИРОВКИ Н�
 ```
 
 Where `yesterday_dfa_summary` is either:
+
 - Formatted DFA data per activity (Ra, Da, HRVT1, quality)
 - Or "Нет данных DFA за вчера" if no processed activities
 
 ### `ai/claude_agent.py` — pass DFA data to prompt
 
 In `get_morning_recommendation()` (or wherever the prompt is assembled):
+
 1. Query yesterday's activities from `activities` table
 2. Query their `activity_hrv` rows
 3. Format into text block
 4. Pass as `yesterday_dfa_summary` to `MORNING_REPORT_PROMPT.format(...)`
 
 Format per activity:
+
 ```
 - 🚴 Ride 1h20m: Ra +3.2%, Da -2.1%, HRVT1 142bpm/180W, quality: good
 - 🏃 Run 40m: Ra -1.5%, HRVT1 155bpm, quality: good
 ```
 
 If `processing_status` is not `processed`, show:
+
 ```
 - 🚴 VirtualRide 30m: нет RR данных (Rouvy)
 ```
