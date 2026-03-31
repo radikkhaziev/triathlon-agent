@@ -142,7 +142,9 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _post_init(application: Application) -> None:
     from data.intervals_client import sync_athlete_settings
+    from data.redis_client import init_redis
 
+    await init_redis()
     await sync_athlete_settings()
 
     scheduler = await create_scheduler(bot=application.bot)
@@ -152,10 +154,14 @@ async def _post_init(application: Application) -> None:
 
 
 async def _post_shutdown(application: Application) -> None:
+    from data.redis_client import close_redis
+
     scheduler = application.bot_data.get("scheduler")
     if scheduler and scheduler.running:
         scheduler.shutdown()
         logger.info("Scheduler stopped")
+
+    await close_redis()
 
     if IntervalsClient._instance is not None and IntervalsClient._instance.is_active:
         await IntervalsClient._instance.close()

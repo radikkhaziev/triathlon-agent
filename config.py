@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     JWT_SECRET: SecretStr = SecretStr("")  # If empty, falls back to TELEGRAM_BOT_TOKEN
     JWT_EXPIRY_DAYS: int = 7  # JWT token lifetime
 
+    # Redis
+    REDIS_URL: str = "redis://redis:6379/0"
+
     # MCP
     MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access
 

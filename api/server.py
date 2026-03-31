@@ -69,6 +69,11 @@ _mcp_app = mcp_server.streamable_http_app()
 async def lifespan(app):
     """Manage MCP sub-app and Telegram webhook lifecycles."""
     async with _mcp_app.router.lifespan_context(_mcp_app):
+        # Init Redis (idempotent — safe if bot's _post_init already called it)
+        from data.redis_client import init_redis
+
+        await init_redis()
+
         # Start Telegram bot in webhook mode if configured
         # Note: sync_athlete_settings() is called in bot's _post_init (covers both modes)
         if settings.TELEGRAM_WEBHOOK_URL:
@@ -90,6 +95,8 @@ async def lifespan(app):
         try:
             yield
         finally:
+            from data.redis_client import close_redis
+
             tg_app = getattr(app.state, "tg_app", None)
             if tg_app is not None:
                 await tg_app.bot.delete_webhook()
@@ -97,6 +104,7 @@ async def lifespan(app):
                 await tg_app.shutdown()
                 await tg_app.post_shutdown(tg_app)
                 logger.info("Telegram webhook removed")
+            await close_redis()
 
 
 app = FastAPI(title="Triathlon Agent API", version="0.1.0", lifespan=lifespan)

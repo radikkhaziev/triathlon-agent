@@ -16,12 +16,30 @@ services:
       retries: 10
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
   migrate:
     build: .
     command: alembic upgrade head
     env_file: .env
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   bot:
@@ -50,4 +68,5 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
   static_data:
