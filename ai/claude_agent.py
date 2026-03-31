@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import zoneinfo
@@ -215,10 +216,40 @@ class ClaudeAgent:
         result = await self._run_tool_use_loop(system, messages, MORNING_TOOLS, max_tokens=4096)
         return result or "Не удалось сгенерировать отчёт"
 
-    async def chat(self, user_message: str) -> str:
+    async def chat(
+        self,
+        user_message: str,
+        image_data: bytes | None = None,
+        image_media_type: str = "image/jpeg",
+        image_url: str | None = None,
+    ) -> str:
         """Handle a free-form chat message. Stateless: no conversation history."""
         system = get_system_prompt_chat()
-        messages: list[dict] = [{"role": "user", "content": user_message}]
+
+        if image_data:
+            content_blocks: list[dict] = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image_media_type,
+                        "data": base64.standard_b64encode(image_data).decode("ascii"),
+                    },
+                },
+            ]
+            text_part = user_message or ""
+            if image_url:
+                text_part += f"\n\n[Uploaded screenshot]({image_url})"
+            if text_part.strip():
+                content_blocks.append({"type": "text", "text": text_part})
+            else:
+                content_blocks.append(
+                    {"type": "text", "text": "Пользователь отправил скриншот. Опиши что видишь и спроси чем помочь."}
+                )
+            messages: list[dict] = [{"role": "user", "content": content_blocks}]
+        else:
+            messages = [{"role": "user", "content": user_message}]
+
         result = await self._run_tool_use_loop(system, messages, CHAT_TOOLS, max_tokens=2048)
         return result or "Не удалось обработать запрос."
 

@@ -5,9 +5,12 @@ import logging
 import re
 from datetime import date, timedelta
 
+from sqlalchemy import select as sa_select
+
 from bot.scheduler import daily_metrics_job, sync_activities_job
+from bot.utils import compute_max_zone
 from config import settings
-from data.database import ActivityDetailRow, ActivityRow, ScheduledWorkoutRow, WellnessRow, get_session
+from data.database import ActivityDetailRow, ActivityRow, ScheduledWorkoutRow, TrainingLogRow, WellnessRow, get_session
 from data.intervals_client import IntervalsClient
 
 
@@ -255,8 +258,6 @@ async def _refetch_details(days: int = 180) -> None:
     cutoff = str(date.today() - timedelta(days=days))
 
     async with get_session() as session:
-        from sqlalchemy import select as sa_select
-
         result = await session.execute(
             sa_select(ActivityRow)
             .where(ActivityRow.start_date_local >= cutoff)
@@ -298,9 +299,6 @@ async def _refetch_details(days: int = 180) -> None:
 
 async def _backfill_max_zone() -> None:
     """Backfill actual_max_zone_time for training_log entries with activity but no zone."""
-    from bot.utils import compute_max_zone
-    from data.database import TrainingLogRow
-
     rows = await TrainingLogRow.get_range(days_back=365)
     count = 0
     for row in rows:

@@ -5,6 +5,7 @@ from datetime import date
 
 import httpx
 
+from bot.formatter import build_workout_pushed_message
 from config import settings
 from data.database import AiWorkoutRow
 from data.intervals_client import IntervalsClient
@@ -24,8 +25,6 @@ async def _send_workout_notification(
     target_date: date,
 ) -> None:
     """Send Telegram notification about pushed workout via HTTP API."""
-    from bot.formatter import build_workout_pushed_message
-
     msg = build_workout_pushed_message(
         sport=sport,
         name=name,

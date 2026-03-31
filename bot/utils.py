@@ -5,6 +5,7 @@ import logging
 from datetime import date, timedelta
 
 from ai.claude_agent import ClaudeAgent
+from bot.formatter import build_workout_pushed_message
 from config import settings
 from data.database import (
     ActivityDetailRow,
@@ -452,8 +453,6 @@ async def push_workout(workout, dt: date, bot=None) -> None:
     # Send Telegram notification
     if bot is not None:
         try:
-            from bot.formatter import build_workout_pushed_message
-
             msg = build_workout_pushed_message(
                 sport=workout.sport,
                 name=workout.name,

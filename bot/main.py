@@ -1,16 +1,20 @@
 import logging
+import os
+import uuid
 import zoneinfo
 from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
+from ai.claude_agent import ClaudeAgent
 from api.auth import generate_code
 from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
 from data.database import IqosDailyRow, WellnessRow
-from data.intervals_client import IntervalsClient
+from data.intervals_client import IntervalsClient, sync_athlete_settings
+from data.redis_client import close_redis, init_redis
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +110,6 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        from ai.claude_agent import ClaudeAgent
-
         agent = ClaudeAgent()
         response = await agent.chat(user_text)
 
@@ -119,6 +121,53 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error("Chat error: %s", e, exc_info=True)
         await update.message.reply_text("Ошибка при обработке. Попробуй ещё раз.")
+
+
+async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle photo messages — download, save locally, pass to AI chat with vision."""
+    if not settings.AI_CHAT_ENABLED:
+        return
+
+    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+        return
+
+    photo = update.message.photo[-1]  # highest resolution
+    caption = update.message.caption or ""
+
+    await update.message.chat.send_action("typing")
+
+    try:
+        # Download photo from Telegram
+        file = await photo.get_file()
+        if file.file_size and file.file_size > 5 * 1024 * 1024:  # 5 MB limit
+            await update.message.reply_text("Фото слишком большое (макс 5 МБ).")
+            return
+        photo_bytes = await file.download_as_bytearray()
+
+        # Save to static/uploads/
+        uploads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+        filename = f"{uuid.uuid4().hex}.jpg"
+        filepath = os.path.join(uploads_dir, filename)
+        with open(filepath, "wb") as f:
+            f.write(photo_bytes)
+
+        image_url = f"{settings.API_BASE_URL}/static/uploads/{filename}"
+
+        agent = ClaudeAgent()
+        response = await agent.chat(
+            user_message=caption,
+            image_data=bytes(photo_bytes),
+            image_url=image_url,
+        )
+
+        try:
+            await update.message.reply_text(response, parse_mode="Markdown")
+        except Exception:
+            await update.message.reply_text(response)
+    except Exception as e:
+        logger.error("Photo chat error: %s", e, exc_info=True)
+        await update.message.reply_text("Ошибка при обработке фото. Попробуй ещё раз.")
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -141,9 +190,6 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _post_init(application: Application) -> None:
-    from data.intervals_client import sync_athlete_settings
-    from data.redis_client import init_redis
-
     await init_redis()
     await sync_athlete_settings()
 
@@ -154,8 +200,6 @@ async def _post_init(application: Application) -> None:
 
 
 async def _post_shutdown(application: Application) -> None:
-    from data.redis_client import close_redis
-
     scheduler = application.bot_data.get("scheduler")
     if scheduler and scheduler.running:
         scheduler.shutdown()
@@ -188,6 +232,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
+    # Photo handler — download, save, pass to AI chat with vision
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
     # Phase 3: free-form chat — last handler, catches all remaining text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_chat_message))
     return app

@@ -7,11 +7,14 @@ import uvicorn
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.dashboard_routes import router as dashboard_router
 from api.routes import router
 from api.telegram_webhook import router as telegram_webhook_router
+from bot.main import build_application
 from config import settings
+from data.redis_client import close_redis, init_redis
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +73,11 @@ async def lifespan(app):
     """Manage MCP sub-app and Telegram webhook lifecycles."""
     async with _mcp_app.router.lifespan_context(_mcp_app):
         # Init Redis (idempotent — safe if bot's _post_init already called it)
-        from data.redis_client import init_redis
-
         await init_redis()
 
         # Start Telegram bot in webhook mode if configured
         # Note: sync_athlete_settings() is called in bot's _post_init (covers both modes)
         if settings.TELEGRAM_WEBHOOK_URL:
-            from bot.main import build_application
-
             tg_app = build_application()
             await tg_app.initialize()
             await tg_app.post_init(tg_app)
@@ -95,8 +94,6 @@ async def lifespan(app):
         try:
             yield
         finally:
-            from data.redis_client import close_redis
-
             tg_app = getattr(app.state, "tg_app", None)
             if tg_app is not None:
                 await tg_app.bot.delete_webhook()
@@ -130,6 +127,7 @@ app.mount("/mcp", _mcp_app)
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _static_dir = os.path.join(_project_root, "static")
 os.makedirs(_static_dir, exist_ok=True)
+os.makedirs(os.path.join(_static_dir, "uploads"), exist_ok=True)
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 # Serve React SPA — check for dist/ (production build), fallback to webapp/ root
@@ -142,8 +140,6 @@ class SPAStaticFiles(StaticFiles):
     """Serves static files with SPA fallback to index.html for client-side routing."""
 
     async def get_response(self, path: str, scope) -> Response:
-        from starlette.exceptions import HTTPException as StarletteHTTPException
-
         try:
             resp = await super().get_response(path, scope)
         except StarletteHTTPException as exc:

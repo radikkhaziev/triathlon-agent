@@ -25,9 +25,11 @@ from data.database import (
     WellnessRow,
     get_session,
 )
+from data.github import create_issue, list_issues
 from data.ramp_tests import detect_threshold_drift, get_threshold_freshness_data
 from data.utils import extract_sport_ctl, format_duration
 from data.utils import tsb_zone as _tsb_zone
+from mcp_server.tools.progress import get_efficiency_trend
 
 logger = logging.getLogger(__name__)
 
@@ -734,8 +736,6 @@ async def handle_get_efficiency_trend(
     days_back: int = 90,
     strict_filter: bool = False,
 ) -> dict:
-    from mcp_server.tools.progress import get_efficiency_trend
-
     return await get_efficiency_trend(
         sport=sport,
         days_back=days_back,
@@ -771,8 +771,6 @@ async def handle_get_github_issues(
     labels: list[str] | None = None,
     limit: int = 10,
 ) -> dict:
-    from data.github import list_issues
-
     return await list_issues(state=state, labels=labels, limit=limit)
 
 
@@ -781,8 +779,6 @@ async def handle_create_github_issue(
     body: str,
     labels: list[str] | None = None,
 ) -> dict:
-    from data.github import create_issue
-
     return await create_issue(title=title, body=body, labels=labels)
 
 

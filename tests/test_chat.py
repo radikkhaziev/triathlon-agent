@@ -145,7 +145,7 @@ class TestHandleChatMessage:
 
         with (
             patch("bot.main.settings") as mock_settings,
-            patch("ai.claude_agent.ClaudeAgent") as MockAgent,
+            patch("bot.main.ClaudeAgent") as MockAgent,
         ):
             mock_settings.TELEGRAM_CHAT_ID = "12345"
             mock_settings.AI_CHAT_ENABLED = True
@@ -196,7 +196,7 @@ class TestHandleChatMessage:
 
         with (
             patch("bot.main.settings") as mock_settings,
-            patch("ai.claude_agent.ClaudeAgent") as MockAgent,
+            patch("bot.main.ClaudeAgent") as MockAgent,
         ):
             mock_settings.TELEGRAM_CHAT_ID = "12345"
             mock_settings.AI_CHAT_ENABLED = True
@@ -219,7 +219,7 @@ class TestHandleChatMessage:
 
         with (
             patch("bot.main.settings") as mock_settings,
-            patch("ai.claude_agent.ClaudeAgent") as MockAgent,
+            patch("bot.main.ClaudeAgent") as MockAgent,
         ):
             mock_settings.TELEGRAM_CHAT_ID = "12345"
             mock_settings.AI_CHAT_ENABLED = True
