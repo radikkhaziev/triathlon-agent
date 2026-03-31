@@ -60,10 +60,10 @@ class TestSaveScheduledWorkoutsLastSyncedAt:
     async def test_sets_last_synced_at_on_insert(self):
         workout_id = _uid(1)
         before = datetime.now(timezone.utc)
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id)])
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id)], user_id=1)
         after = datetime.now(timezone.utc)
 
-        rows = await ScheduledWorkoutRow.get_for_date(date(2026, 3, 25))
+        rows = await ScheduledWorkoutRow.get_for_date(date(2026, 3, 25), user_id=1)
         target = next((r for r in rows if r.id == workout_id), None)
         assert target is not None
         assert target.last_synced_at is not None
@@ -74,13 +74,13 @@ class TestSaveScheduledWorkoutsLastSyncedAt:
 
     async def test_updates_last_synced_at_on_upsert(self):
         workout_id = _uid(2)
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, name="Old name")])
-        rows = await ScheduledWorkoutRow.get_for_date(date(2026, 3, 25))
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, name="Old name")], user_id=1)
+        rows = await ScheduledWorkoutRow.get_for_date(date(2026, 3, 25), user_id=1)
         first_sync = rows[0].last_synced_at
 
         # Upsert same ID with new name
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, name="New name")])
-        rows = await ScheduledWorkoutRow.get_for_date(date(2026, 3, 25))
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, name="New name")], user_id=1)
+        rows = await ScheduledWorkoutRow.get_for_date(date(2026, 3, 25), user_id=1)
         target = next((r for r in rows if r.id == workout_id), None)
         assert target is not None
         assert target.name == "New name"
@@ -93,11 +93,11 @@ class TestSaveScheduledWorkoutsLastSyncedAt:
             _make_workout(id=base + 1, dt=date(2026, 3, 26)),
             _make_workout(id=base + 2, dt=date(2026, 3, 27)),
         ]
-        await ScheduledWorkoutRow.save_bulk(workouts)
+        await ScheduledWorkoutRow.save_bulk(workouts, user_id=1)
 
         for dt_offset in range(3):
             dt = date(2026, 3, 25) + timedelta(days=dt_offset)
-            rows = await ScheduledWorkoutRow.get_for_date(dt)
+            rows = await ScheduledWorkoutRow.get_for_date(dt, user_id=1)
             for row in rows:
                 assert row.last_synced_at is not None
 
@@ -108,12 +108,13 @@ class TestSaveScheduledWorkoutsLastSyncedAt:
             [
                 _make_workout(id=base_id, dt=date(2026, 3, 25)),
                 _make_workout(id=base_id + 1, dt=date(2026, 3, 26)),
-            ]
+            ],
+            user_id=1,
         )
 
-        await ScheduledWorkoutRow.save_bulk([], oldest=date(2026, 3, 25), newest=date(2026, 3, 26))
+        await ScheduledWorkoutRow.save_bulk([], user_id=1, oldest=date(2026, 3, 25), newest=date(2026, 3, 26))
 
-        rows, _ = await ScheduledWorkoutRow.get_range(date(2026, 3, 25), date(2026, 3, 26))
+        rows, _ = await ScheduledWorkoutRow.get_range(date(2026, 3, 25), date(2026, 3, 26), user_id=1)
         assert rows == []
 
 
@@ -131,21 +132,21 @@ class TestGetScheduledWorkoutsRange:
             _make_workout(id=base + 2, dt=date(2026, 3, 29)),
             _make_workout(id=base + 3, dt=date(2026, 3, 30)),  # outside range
         ]
-        await ScheduledWorkoutRow.save_bulk(workouts)
+        await ScheduledWorkoutRow.save_bulk(workouts, user_id=1)
 
-        rows, _ = await ScheduledWorkoutRow.get_range(date(2026, 3, 23), date(2026, 3, 29))
+        rows, _ = await ScheduledWorkoutRow.get_range(date(2026, 3, 23), date(2026, 3, 29), user_id=1)
         ids = {r.id for r in rows}
         assert {base, base + 1, base + 2}.issubset(ids)
         assert (base + 3) not in ids
 
     async def test_returns_last_synced_at(self):
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=_uid(30))])
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=_uid(30))], user_id=1)
 
-        _, last_synced = await ScheduledWorkoutRow.get_range(date(2026, 3, 20), date(2026, 3, 30))
+        _, last_synced = await ScheduledWorkoutRow.get_range(date(2026, 3, 20), date(2026, 3, 30), user_id=1)
         assert last_synced is not None
 
     async def test_empty_range_returns_none_sync(self):
-        rows, last_synced = await ScheduledWorkoutRow.get_range(date(2099, 1, 1), date(2099, 1, 7))
+        rows, last_synced = await ScheduledWorkoutRow.get_range(date(2099, 1, 1), date(2099, 1, 7), user_id=1)
         assert rows == []
         assert last_synced is None
 
@@ -156,9 +157,9 @@ class TestGetScheduledWorkoutsRange:
             _make_workout(id=base + 1, dt=date(2026, 3, 23)),
             _make_workout(id=base + 2, dt=date(2026, 3, 25)),
         ]
-        await ScheduledWorkoutRow.save_bulk(workouts)
+        await ScheduledWorkoutRow.save_bulk(workouts, user_id=1)
 
-        rows, _ = await ScheduledWorkoutRow.get_range(date(2026, 3, 23), date(2026, 3, 29))
+        rows, _ = await ScheduledWorkoutRow.get_range(date(2026, 3, 23), date(2026, 3, 29), user_id=1)
         dates = [r.start_date_local for r in rows]
         assert dates == sorted(dates)
 
@@ -210,7 +211,7 @@ class TestScheduledWorkoutsEndpoint:
     async def test_workouts_appear_on_correct_day(self, client):
         workout_id = _uid(50)
         # Wednesday 2026-03-25
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, dt=date(2026, 3, 25))])
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, dt=date(2026, 3, 25))], user_id=1)
 
         async with client as c:
             resp = await c.get("/api/scheduled-workouts?week_offset=0")
@@ -234,7 +235,7 @@ class TestScheduledWorkoutsEndpoint:
 
     async def test_duration_formatted(self, client):
         workout_id = _uid(60)
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, moving_time=5400)])
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, moving_time=5400)], user_id=1)
 
         async with client as c:
             resp = await c.get("/api/scheduled-workouts?week_offset=0")
@@ -247,7 +248,7 @@ class TestScheduledWorkoutsEndpoint:
         assert w["duration_secs"] == 5400
 
     async def test_last_synced_at_in_response(self, client):
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=_uid(70))])
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=_uid(70))], user_id=1)
 
         async with client as c:
             resp = await c.get("/api/scheduled-workouts?week_offset=0")
@@ -265,7 +266,7 @@ class TestScheduledWorkoutsEndpoint:
     async def test_includes_description(self, client):
         desc = "Warmup 10min\n3x10min @FTP\nCooldown"
         workout_id = _uid(80)
-        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, description=desc)])
+        await ScheduledWorkoutRow.save_bulk([_make_workout(id=workout_id, description=desc)], user_id=1)
 
         async with client as c:
             resp = await c.get("/api/scheduled-workouts?week_offset=0")
@@ -311,7 +312,7 @@ class TestSyncWorkoutsEndpoint:
         """POST with valid auth should run the job and return result."""
         with (patch("api.routers.jobs.scheduled_workouts_job", new_callable=AsyncMock) as mock_job,):
             # Pre-populate a workout so last_synced_at exists
-            await ScheduledWorkoutRow.save_bulk([_make_workout(id=_uid(90))])
+            await ScheduledWorkoutRow.save_bulk([_make_workout(id=_uid(90))], user_id=1)
 
             async with client as c:
                 resp = await c.post("/api/jobs/sync-workouts")

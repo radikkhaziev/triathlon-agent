@@ -60,6 +60,7 @@ async def create_ramp_test_tool(
     intervals_id = result.get("id")
 
     await AiWorkoutRow.save(
+        user_id=1,  # TODO: per-user
         date_str=str(dt),
         sport=sport,
         slot=workout.slot,

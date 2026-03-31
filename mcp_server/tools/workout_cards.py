@@ -441,6 +441,7 @@ async def compose_workout(
     # Register in ai_workouts so list_ai_workouts / remove_ai_workout can find it
     if intervals_id and push_to_intervals:
         await AiWorkoutRow.save(
+            user_id=1,  # TODO: per-user
             date_str=date_str,
             sport=sport,
             slot="workout-card",
@@ -455,6 +456,7 @@ async def compose_workout(
 
     # Save to DB
     await WorkoutCardRow.save(
+        user_id=1,  # TODO: per-user
         date_str=date_str,
         name=name,
         sport=sport,
@@ -480,7 +482,7 @@ async def remove_workout_card(card_id: int) -> str:
     Args:
         card_id: Workout card ID (from list_workout_cards).
     """
-    row = await WorkoutCardRow.get_by_id(card_id)
+    row = await WorkoutCardRow.get_by_id(card_id, user_id=1)  # TODO: per-user
     if not row:
         return f"Workout card #{card_id} not found."
 
@@ -501,11 +503,11 @@ async def remove_workout_card(card_id: int) -> str:
         slug = _slugify(name) or row.date
         ai_ext_id = f"tricoach:workout-card:{row.date}:{slug}"
         try:
-            await AiWorkoutRow.cancel(ai_ext_id)
+            await AiWorkoutRow.cancel(ai_ext_id, user_id=1)  # TODO: per-user
         except Exception:
             logger.debug("No ai_workouts record for %s", ai_ext_id)
 
-    await WorkoutCardRow.delete(card_id)
+    await WorkoutCardRow.delete(card_id, user_id=1)  # TODO: per-user
     return f"Removed workout card #{card_id}: {name}{intervals_warning}"
 
 
@@ -518,7 +520,7 @@ async def list_workout_cards(days_back: int = 30) -> dict:
     Args:
         days_back: Number of days to look back (default: 30).
     """
-    rows = await WorkoutCardRow.get_list(days_back=days_back)
+    rows = await WorkoutCardRow.get_list(user_id=1, days_back=days_back)  # TODO: per-user
     return {
         "count": len(rows),
         "workouts": [

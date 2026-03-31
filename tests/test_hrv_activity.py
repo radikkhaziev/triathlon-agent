@@ -304,6 +304,7 @@ class TestActivityHrvCRUD:
         async with get_session() as session:
             activity = ActivityRow(
                 id="i99999",
+                user_id=1,
                 start_date_local="2026-03-24",
                 type="Ride",
                 moving_time=3600,
@@ -314,7 +315,6 @@ class TestActivityHrvCRUD:
         # Save HRV analysis
         hrv_row = ActivityHrvRow(
             activity_id="i99999",
-            date="2026-03-24",
             activity_type="Ride",
             hrv_quality="good",
             artifact_pct=2.5,
@@ -343,6 +343,7 @@ class TestActivityHrvCRUD:
                 session.add(
                     ActivityRow(
                         id=f"i1000{i}",
+                        user_id=1,
                         start_date_local="2026-03-24",
                         type="Ride",
                         moving_time=3600,
@@ -350,7 +351,7 @@ class TestActivityHrvCRUD:
                 )
             await session.commit()
 
-        unprocessed = await ActivityRow.get_unprocessed(batch_size=10)
+        unprocessed = await ActivityRow.get_unprocessed(user_id=1, batch_size=10)
         assert len(unprocessed) == 3
 
     @pytest.mark.asyncio
@@ -361,13 +362,14 @@ class TestActivityHrvCRUD:
         # Need at least 3 data points
         for i in range(5):
             await PaBaselineRow.save(
+                user_id=1,
                 activity_type="Ride",
                 dt=f"2026-03-{20 + i:02d}",
                 pa_value=200.0 + i,
                 quality="good",
             )
 
-        baseline = await PaBaselineRow.get_average("Ride", days=14)
+        baseline = await PaBaselineRow.get_average(user_id=1, activity_type="Ride", days=14)
         assert baseline is not None
         assert 200 < baseline < 210
 
@@ -376,13 +378,13 @@ class TestActivityHrvCRUD:
         """Average should include only rows up to as_of date."""
         from data.database import PaBaselineRow
 
-        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-20", pa_value=200.0, quality="good")
-        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-21", pa_value=210.0, quality="good")
-        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-22", pa_value=220.0, quality="good")
+        await PaBaselineRow.save(user_id=1, activity_type="Ride", dt="2026-03-20", pa_value=200.0, quality="good")
+        await PaBaselineRow.save(user_id=1, activity_type="Ride", dt="2026-03-21", pa_value=210.0, quality="good")
+        await PaBaselineRow.save(user_id=1, activity_type="Ride", dt="2026-03-22", pa_value=220.0, quality="good")
         # Future row relative to as_of=2026-03-22; should not affect average.
-        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-25", pa_value=1000.0, quality="good")
+        await PaBaselineRow.save(user_id=1, activity_type="Ride", dt="2026-03-25", pa_value=1000.0, quality="good")
 
-        baseline = await PaBaselineRow.get_average("Ride", days=14, as_of=date(2026, 3, 22))
+        baseline = await PaBaselineRow.get_average(user_id=1, activity_type="Ride", days=14, as_of=date(2026, 3, 22))
         assert baseline is not None
         assert abs(baseline - 210.0) < 1e-9
 
@@ -391,10 +393,10 @@ class TestActivityHrvCRUD:
         """Rows with NULL quality are valid and should be included."""
         from data.database import PaBaselineRow
 
-        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-20", pa_value=200.0, quality="good")
-        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-21", pa_value=210.0, quality=None)
-        await PaBaselineRow.save(activity_type="Ride", dt="2026-03-22", pa_value=220.0, quality="good")
+        await PaBaselineRow.save(user_id=1, activity_type="Ride", dt="2026-03-20", pa_value=200.0, quality="good")
+        await PaBaselineRow.save(user_id=1, activity_type="Ride", dt="2026-03-21", pa_value=210.0, quality=None)
+        await PaBaselineRow.save(user_id=1, activity_type="Ride", dt="2026-03-22", pa_value=220.0, quality="good")
 
-        baseline = await PaBaselineRow.get_average("Ride", days=14, as_of=date(2026, 3, 22))
+        baseline = await PaBaselineRow.get_average(user_id=1, activity_type="Ride", days=14, as_of=date(2026, 3, 22))
         assert baseline is not None
         assert abs(baseline - 210.0) < 1e-9

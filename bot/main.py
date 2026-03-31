@@ -31,12 +31,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user = await UserRow.get_by_chat_id(chat_id)
     if not user:
-        user = await UserRow.create(
-            chat_id=chat_id,
-            username=tg_user.username,
-            display_name=tg_user.full_name,
-        )
-        logger.info("New user registered: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
+        try:
+            user = await UserRow.create(
+                chat_id=chat_id,
+                username=tg_user.username,
+                display_name=tg_user.full_name,
+            )
+            logger.info("New user registered: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
+        except Exception:
+            # Race condition: another /start created the user between check and insert
+            user = await UserRow.get_by_chat_id(chat_id)
 
     webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup(
@@ -69,7 +73,7 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
-    row = await WellnessRow.get(dt)
+    row = await WellnessRow.get(dt, user_id=1)  # TODO: get user_id from auth
 
     if not row:
         await update.message.reply_text("Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут.")
@@ -102,7 +106,7 @@ async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
-    row = await IqosDailyRow.increment(dt)
+    row = await IqosDailyRow.increment(user_id=1, target_date=dt)  # TODO: per-user
     await update.message.reply_text(f"🚬 Стик #{row.count} за {dt.strftime('%d.%m')}")
 
 

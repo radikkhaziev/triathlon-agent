@@ -8,8 +8,8 @@
 |---|---|---|---|
 | #41 | Design security agent before multi-tenant | open, needs-spec | This spec |
 | #15 | Design and implement multi-tenant architecture | open | All phases |
-| #34 | Add multi-user table to store bot users | open | Phase 1 |
-| #49 | Add unique indexes for multi-tenant data isolation | open, security | Phase 1 |
+| #34 | Add multi-user table to store bot users | **done** | Phase 1 |
+| #49 | Add unique indexes for multi-tenant data isolation | **done** | Phase 1 |
 | #48 | Add created_by field to GitHub issues in multi-tenant context | open, security | Phase 2 |
 | #47 | Define manual onboarding process for new athlete | open, needs-spec | Phase 5 |
 | #37 | Integrate Redis for caching and session storage | open | Phase 3 (rate limiting) |
@@ -34,12 +34,13 @@
 | Rate limiting | Verify-code: 5 attempts / 5 min per IP | `api/auth.py` |
 | Bot access | `/morning` — owner only, остальное — все | `bot/main.py` |
 | Secrets | `pydantic SecretStr` + `.env` | `config.py` |
-| DB | Нет tenant isolation, все данные глобальные | `data/database.py` |
+| DB | **Phase 1 done:** `users` table + `user_id` FK на 13 таблицах, callers hardcoded `user_id=1` | `data/database.py` |
+| Crypto | Fernet encryption для per-user secrets | `data/crypto.py` |
 
-### Ключевые уязвимости для multi-tenant
+### Ключевые уязвимости для multi-tenant (оставшиеся)
 
-1. **Нет `user_id` / `tenant_id`** — все 14 таблиц без привязки к пользователю
-2. **Один набор credentials** — `INTERVALS_API_KEY`, `ANTHROPIC_API_KEY` и т.д. хардкодятся в `.env`
+1. ~~**Нет `user_id` / `tenant_id`**~~ — **РЕШЕНО:** user_id на всех таблицах, CRUD обновлены. Callers пока hardcoded `user_id=1`
+2. **Один набор credentials** — `INTERVALS_API_KEY`, `ANTHROPIC_API_KEY` и т.д. хардкодятся в `.env`. Per-user `api_key_encrypted` готов в users table, но не подключен
 3. **Кастомный JWT** — самописный HS256 без стандартных claims (iss, aud), без ротации ключей
 4. **In-memory state** — `_pending_codes`, `_verify_attempts` теряются при рестарте (частично решено Redis #37)
 5. **MCP auth** — один статический токен на всех, не привязан к пользователю
@@ -153,51 +154,39 @@ users (новая таблица, #34) — реализовано в data/databa
 
 **Tenant = User.** Не организация, не команда — один пользователь = один набор данных. Простая модель для начала. Coach/team модель — позже.
 
-**Регистрация:** Telegram bot `/start` автоматически создаёт `UserRow` с `role=viewer`. Owner создаётся через CLI `create-owner` из текущих `.env` значений.
+**Регистрация:** Telegram bot `/start` автоматически создаёт `UserRow` с `role=viewer`.
 
-### 3.2. Migration — добавить `user_id` во все таблицы
+### 3.2. Migration — user_id на все таблицы (РЕАЛИЗОВАНО)
 
-Все 14 существующих таблиц получают `user_id INTEGER NOT NULL REFERENCES users(id)`:
+> Миграция: `268670b22cd7` (users table) + `f0d2f435b802` (user_id на все таблицы)
+> Все существующие данные backfill с `user_id=1` (owner placeholder).
 
-| Таблица | Текущий PK | Новый PK / Constraint |
-|---|---|---|
-| `wellness` | date | (user_id, date) — composite |
-| `hrv_analysis` | (date, algorithm) | (user_id, date, algorithm) |
-| `rhr_analysis` | date | (user_id, date) |
-| `scheduled_workouts` | event_id | event_id + user_id FK |
-| `activities` | activity_id | activity_id + user_id FK |
-| `activity_details` | activity_id FK | activity_id FK (cascades from activities) |
-| `activity_hrv` | activity_id FK | activity_id FK (cascades from activities) |
-| `pa_baseline` | autoincrement | + user_id FK |
-| `ai_workouts` | autoincrement | + user_id FK |
-| `training_log` | autoincrement | + user_id FK |
-| `mood_checkins` | autoincrement | + user_id FK. **Owner-only таблица** — mood tracking доступен только owner, не реплицируется для других атлетов |
-| `iqos_daily` | date | (user_id, date). **Owner-only таблица** — IQOS tracking специфичен для owner, не нужен другим атлетам |
-| `exercise_cards` | id | + user_id FK (shared library = user_id NULL) |
-| `workout_cards` | autoincrement | + user_id FK |
+13 таблиц получили `user_id INTEGER NOT NULL REFERENCES users(id)`. `exercise_cards` — общая библиотека, без user_id.
 
-### 3.2a. Unique Indexes (#49)
+| Таблица | Было | Стало | Индекс |
+|---|---|---|---|
+| `wellness` | PK `id` (date string) | PK `id` (autoincrement), `date` VARCHAR, `UNIQUE(user_id, date)` | `ix_wellness_user_id` |
+| `hrv_analysis` | PK `(date, algorithm)`, FK → wellness | PK `(user_id, date, algorithm)`, FK dropped | implicit (leading PK column) |
+| `rhr_analysis` | PK `date`, FK → wellness | PK `(user_id, date)`, FK dropped | implicit (leading PK column) |
+| `scheduled_workouts` | PK `event_id` | PK `event_id` + `user_id` FK | `ix_scheduled_workouts_user_id` |
+| `activities` | PK `activity_id` | PK `activity_id` + `user_id` FK | `ix_activities_user_id` |
+| `activity_details` | PK `activity_id` FK → activities | Без изменений — tenant scope через JOIN с activities | — |
+| `activity_hrv` | PK `activity_id` FK → activities, `date` column | PK без изменений, **`date` column удалена** (JOIN через activities.start_date_local) | — |
+| `pa_baseline` | PK autoincrement, `UNIQUE(activity_type, date)` | + `user_id` FK, `UNIQUE(user_id, activity_type, date)` | `ix_pa_baseline_user_id` |
+| `ai_workouts` | PK autoincrement | + `user_id` FK | `ix_ai_workouts_user_id` |
+| `training_log` | PK autoincrement | + `user_id` FK | `ix_training_log_user_id` |
+| `mood_checkins` | PK autoincrement | + `user_id` FK. **Owner-only** | `ix_mood_checkins_user_id` |
+| `iqos_daily` | PK `date` | PK `id` (autoincrement), `UNIQUE(user_id, date)`. **Owner-only** | `ix_iqos_daily_user_id` |
+| `exercise_cards` | PK `id` | **Без изменений** — общая библиотека, user_id не нужен | — |
+| `workout_cards` | PK autoincrement | + `user_id` FK | `ix_workout_cards_user_id` |
 
-При добавлении `user_id` нужно обновить unique constraints чтобы данные разных пользователей не конфликтовали:
-
-| Таблица | Текущий unique | Новый unique constraint |
-|---|---|---|
-| `wellness` | `date` (PK) | `UNIQUE(user_id, date)` |
-| `hrv_analysis` | `(date, algorithm)` | `UNIQUE(user_id, date, algorithm)` |
-| `rhr_analysis` | `date` (PK) | `UNIQUE(user_id, date)` |
-| `iqos_daily` | `date` (PK) | `UNIQUE(user_id, date)` |
-| `scheduled_workouts` | `event_id` (PK) | `event_id` остаётся PK (unique globally в Intervals.icu) + `user_id` FK |
-| `activities` | `activity_id` (PK) | `activity_id` остаётся PK (unique globally) + `user_id` FK |
-| `exercise_cards` | `id` (PK) | `id` + `user_id` FK (shared library: `user_id IS NULL`) |
-
-**Особый случай — `pa_baseline`:**
-Текущий unique constraint: `UNIQUE(activity_type, date)` + index `ix_pa_baseline_type_date ON (activity_type, date)`.
-В multi-tenant у разных атлетов разные Pa значения для одного спорта и даты. Миграция:
-- Drop `uq_pa_baseline_activity_type_date`
-- Drop `ix_pa_baseline_type_date`
-- Создать `UNIQUE(user_id, activity_type, date)` + index `ix_pa_baseline_user_type_date ON (user_id, activity_type, date)`
-
-Индексы на `user_id` для всех таблиц — обязательны для performance tenant-scoped queries.
+**Ключевые решения:**
+- `activity_details` и `activity_hrv` — user_id не добавлен, tenant scope через JOIN с `activities` (FK → activities.id, а activities уже имеет user_id)
+- `activity_hrv.date` удалена — дублировала `activities.start_date_local`, теперь все date-запросы через JOIN
+- `wellness` и `iqos_daily` — PK изменён с date-string на autoincrement (multi-tenant: два пользователя, одна дата)
+- `hrv_analysis` / `rhr_analysis` — FK к wellness удалены (не использовались в коде, связь логическая по user_id + date)
+- `exercise_cards` — общая библиотека, user_id не нужен
+- Все CRUD методы обновлены с `user_id` параметром, callers пока hardcoded `user_id=1` с `# TODO` комментариями
 
 ### 3.3. Query Isolation Pattern
 
@@ -238,16 +227,16 @@ class TenantSession:
 
 **Правило:** Ни один запрос к данным не должен работать без `user_id`. Глобальные CRUD (типа `WellnessRow.get(date)`) — удалить или пометить `@deprecated`.
 
-### 3.4. Migration Strategy
+### 3.4. Migration Strategy (РЕАЛИЗОВАНО)
 
-Поэтапно:
+Выполнено в одной миграции `f0d2f435b802`:
 
-1. **Phase 0:** Создать таблицу `users`, вставить текущего owner как первого user
-2. **Phase 1:** Добавить `user_id` column (nullable) во все таблицы, Alembic migration
-3. **Phase 2:** Backfill — заполнить `user_id` = owner_uuid для всех существующих строк
-4. **Phase 3:** `ALTER COLUMN user_id SET NOT NULL` + FK constraints
-5. **Phase 4:** Обновить все CRUD на `TenantSession` pattern
-6. **Phase 5:** Тесты — проверить что cross-tenant queries невозможны
+1. [x] Insert owner placeholder (id=1) в users table
+2. [x] Добавить `user_id` column (nullable) → backfill=1 → SET NOT NULL → FK + index
+3. [x] Обновить unique constraints для multi-tenant
+4. [x] Обновить все CRUD методы с `user_id` параметром
+5. [x] Обновить все callers с `user_id=1 # TODO`
+6. [x] Тесты обновлены и проходят (144/148, 4 pre-existing failures)
 
 ---
 
@@ -367,40 +356,14 @@ Request → Authorization header
 | `DATABASE_URL` | `.env` / Vault | Единая БД |
 | `GITHUB_TOKEN` | `.env` / Vault | CI/CD, не per-tenant |
 
-### 5.2. Encryption at Rest
+### 5.2. Encryption at Rest (РЕАЛИЗОВАНО)
 
-```python
-# data/crypto.py — новый файл
-
-from cryptography.fernet import Fernet
-
-# KEY из env var, не хранится в DB
-ENCRYPTION_KEY = settings.FIELD_ENCRYPTION_KEY  # 32-byte base64
-
-def encrypt_field(value: str) -> str:
-    """Encrypt a sensitive field for DB storage."""
-    f = Fernet(ENCRYPTION_KEY)
-    return f.encrypt(value.encode()).decode()
-
-def decrypt_field(encrypted: str) -> str:
-    """Decrypt a sensitive field from DB."""
-    f = Fernet(ENCRYPTION_KEY)
-    return f.decrypt(encrypted.encode()).decode()
-
-def re_encrypt_all(old_key: str, new_key: str) -> None:
-    """Re-encrypt all sensitive fields with a new key.
-
-    Use when FIELD_ENCRYPTION_KEY is compromised.
-    Run as: python -m data.crypto rotate-key <old_key> <new_key>
-    """
-    old_fernet = Fernet(old_key)
-    new_fernet = Fernet(new_key)
-    # 1. Decrypt all intervals_api_key with old_key
-    # 2. Re-encrypt with new_key
-    # 3. Update rows in transaction
-    # 4. Verify decryption works with new_key
-    # 5. Update FIELD_ENCRYPTION_KEY in .env / vault
-```
+Реализовано в `data/crypto.py`:
+- `encrypt_field(value)` / `decrypt_field(encrypted)` — Fernet encryption
+- `generate_key()` — генерация нового ключа
+- `FIELD_ENCRYPTION_KEY` в `config.py` как `SecretStr`
+- `UserRow.set_api_key()` / `get_api_key()` — хелперы для прозрачного шифрования
+- Key rotation (`re_encrypt_all`) — TODO, не реализовано
 
 ### 5.3. New Env Vars
 
@@ -490,7 +453,9 @@ async def sync_wellness_job():
 
 | Категория | Tools | Tenant Filter |
 |---|---|---|
-| **Read own data** | get_wellness, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_activities, get_activity_details, get_activity_hrv, get_scheduled_workouts, get_wellness_range, get_thresholds_history, get_readiness_history, get_efficiency_trend, get_training_log, get_personal_patterns, get_threshold_freshness, list_ai_workouts, list_exercise_cards, list_workout_cards | `WHERE user_id = ?` обязателен |
+| **Read own data (direct)** | get_wellness, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_activities, get_scheduled_workouts, get_wellness_range, get_efficiency_trend, get_training_log, get_personal_patterns, get_threshold_freshness, list_ai_workouts, list_workout_cards | `WHERE user_id = ?` обязателен |
+| **Read own data (via JOIN)** | get_activity_details, get_activity_hrv, get_thresholds_history, get_readiness_history | Tenant scope через JOIN с activities (user_id на parent table) |
+| **Shared library** | list_exercise_cards | Без user_id — общая библиотека |
 | **Owner-only read** | get_mood_checkins_tool, get_iqos_sticks | Owner-only. `mood_checkins` и `iqos_daily` — personal tracking, не реплицируется для других атлетов |
 | **Write own data** | suggest_workout, remove_ai_workout, create_ramp_test_tool, create_exercise_card, update_exercise_card, compose_workout, remove_workout_card | `user_id` inject при создании |
 | **Owner-only write** | save_mood_checkin_tool | Owner-only. Mood check-in только для owner |
@@ -637,56 +602,50 @@ ai_usage (новая таблица)
 > Цель: создать таблицу users, crypto module. Остальное продолжает работать как single-tenant.
 
 1. [x] `data/crypto.py` — Fernet encrypt/decrypt + `generate_key()`, `FIELD_ENCRYPTION_KEY` в config.py
-2. [x] Создать таблицу `users` (**#34**) — `UserRow` ORM + Alembic migration (`268670b22cd7`), `api_key_encrypted` Fernet, `mcp_token` plaintext
+2. [x] Создать таблицу `users` (**#34**) — `UserRow` ORM + Alembic migration (`268670b22cd7`)
 3. [x] Bot `/start` — автоматически создаёт `UserRow` с `role=viewer` при первом вызове
 4. [ ] ~~`sync_athlete_settings()`~~ убрать из startup (done — thresholds managed in Intervals.icu)
 
-### Phase 1.1 — Постепенная миграция таблиц (по одной)
+### Phase 1.1 — user_id на все таблицы (РЕАЛИЗОВАНО)
 
-> Цель: добавлять `user_id` в каждую таблицу отдельным PR. Каждый шаг — самодостаточный, деплоится независимо.
+> Одна миграция `f0d2f435b802`. Все 13 таблиц (кроме exercise_cards) получили user_id.
 
-**Порядок миграции таблиц** (от самых важных к менее критичным):
+5. [x] **wellness** — autoincrement PK, `user_id` FK + index, `UNIQUE(user_id, date)`, `id` renamed to `date`
+6. [x] **hrv_analysis** — composite PK `(user_id, date, algorithm)`, FK к wellness удалён
+7. [x] **rhr_analysis** — composite PK `(user_id, date)`, FK к wellness удалён
+8. [x] **scheduled_workouts** — `user_id` FK + index
+9. [x] **activities** — `user_id` FK + index
+10. [x] **activity_details** — без изменений (tenant scope через JOIN с activities)
+11. [x] **activity_hrv** — `date` column удалена (JOIN через activities.start_date_local)
+12. [x] **pa_baseline** — `user_id` FK + index, `UNIQUE(user_id, activity_type, date)`
+13. [x] **ai_workouts** — `user_id` FK + index
+14. [x] **training_log** — `user_id` FK + index
+15. [x] **mood_checkins** — `user_id` FK + index (owner-only)
+16. [x] **iqos_daily** — autoincrement PK, `user_id` FK + index, `UNIQUE(user_id, date)`
+17. [x] **exercise_cards** — без изменений (общая библиотека, user_id не нужен)
+18. [x] **workout_cards** — `user_id` FK + index
+19. [x] Все CRUD методы обновлены с `user_id` параметром
+20. [x] Все callers обновлены с `user_id=1 # TODO`
+21. [x] Тесты обновлены (conftest создаёт test user, 144/148 pass)
 
-5. [ ] **wellness** — добавить `user_id` (nullable) → backfill → NOT NULL → обновить CRUD + API endpoint → `UNIQUE(user_id, date)` (**#49**)
-6. [ ] **hrv_analysis** — `user_id` → backfill → NOT NULL → CRUD → `UNIQUE(user_id, date, algorithm)`
-7. [ ] **rhr_analysis** — `user_id` → backfill → NOT NULL → CRUD → `UNIQUE(user_id, date)`
-8. [ ] **scheduled_workouts** — `user_id` → backfill → NOT NULL → CRUD + API
-9. [ ] **activities** — `user_id` → backfill → NOT NULL → CRUD + API
-10. [ ] **activity_details** — cascades from activities (user_id через JOIN)
-11. [ ] **activity_hrv** — cascades from activities
-12. [ ] **pa_baseline** — `user_id` → backfill → NOT NULL → drop `uq_pa_baseline_activity_type_date` + `ix_pa_baseline_type_date` → create `UNIQUE(user_id, activity_type, date)` + new index
-13. [ ] **ai_workouts** — `user_id` → backfill → NOT NULL → CRUD
-14. [ ] **training_log** — `user_id` → backfill → NOT NULL → CRUD
-15. [ ] **mood_checkins** — `user_id` → backfill → NOT NULL → CRUD (owner-only)
-16. [ ] **iqos_daily** — `user_id` → backfill → NOT NULL → `UNIQUE(user_id, date)` (owner-only)
-17. [ ] **exercise_cards** — `user_id` nullable (shared library: NULL = общие). **Важно:** отдельные методы `get_shared_cards()` vs `get_user_cards(user_id)` — не использовать `WHERE user_id = ? OR user_id IS NULL` (logic bug / SQL injection risk)
-18. [ ] **workout_cards** — `user_id` → backfill → NOT NULL
+### Phase 1.2 — Дополнительные улучшения (РЕАЛИЗОВАНО)
 
-**Для каждой мигрированной таблицы — сразу обновить job и tool handler:**
-19. [ ] Background jobs — per-tenant execution с error isolation (6.4) — внедрять по мере миграции таблиц, не откладывать
-20. [ ] AI tool handlers — tenant_id injection from auth, never from user input (8.1a) — внедрять вместе с CRUD обновлением
+22. [x] CLI `onboard <user_id> [--days 180]` — полный онбоардинг: wellness → activities → details → workouts
+23. [x] `IntervalsClient.for_user(api_key, athlete_id)` — non-singleton factory для per-user API доступа
+24. [x] `fill_training_log_actual` — SPORT_MAP matching (Ride↔VirtualRide, Run↔VirtualRun, etc.)
+25. [x] CLI `fix-training-log-actual` — одноразовый пересчёт actual data после фикса матчинга
+26. [x] Code review фиксы: race condition в /start, is_active проверка в lookups, Fernet caching, session.get→select, missing user_id filters
 
-**Шаблон для каждой таблицы (один PR):**
-```
-1. Alembic: ADD COLUMN user_id UUID REFERENCES users(id) — nullable
-2. Backfill: UPDATE table SET user_id = '<owner_uuid>' WHERE user_id IS NULL
-3. Alembic: ALTER COLUMN user_id SET NOT NULL
-4. Alembic: обновить unique constraints / indexes (#49)
-5. Обновить ORM model — добавить user_id field
-6. Обновить CRUD — все запросы фильтруют по user_id
-7. Обновить API endpoint / MCP tool — передавать user_id из auth
-8. Обновить scheduler job — per-tenant execution с error isolation
-9. Обновить AI tool handler — tenant_id из auth, не из params
-10. Тест: query без user_id возвращает пустой результат
-```
+### Phase 1.3 — Per-User Scheduler (следующий шаг)
 
-### Phase 1.2 — TenantSession
+> Заменить hardcoded `user_id=1` на реальный user_id. Без этого user 2+ не получают автоматических обновлений.
 
-> После миграции всех таблиц (или достаточного количества).
+27. [ ] Scheduler jobs — per-user loop: get_active_users → для каждого IntervalsClient.for_user → execute job
+28. [ ] Перевести API/MCP callers с `user_id=1 # TODO` на реальный user_id из auth
+29. [ ] `TenantSession` wrapper — единый интерфейс для tenant-scoped queries
+30. [ ] AI tool handlers — tenant_id injection from auth, never from user input (8.1a)
 
-21. [ ] `TenantSession` wrapper — единый интерфейс для tenant-scoped queries
-22. [ ] Пометить глобальные CRUD (`WellnessRow.get(date)` и т.д.) как `@deprecated`
-23. [ ] Перевести все endpoints и MCP tools на `TenantSession`
+**Ограничение текущего состояния:** scheduler, утренний/вечерний отчёт, sync jobs работают только для user_id=1. User 2+ получает данные только через `python -m bot.cli onboard`.
 
 ### Phase 2 — Auth Upgrade
 
@@ -777,22 +736,41 @@ async def test_ai_prompt_contains_only_own_data():
 
 ## 12. Onboarding Flow (#47)
 
-Manual onboarding для нового атлета (до автоматической регистрации):
+### 12.1. Текущий процесс (полу-автоматический)
 
-1. Owner добавляет user в таблицу `users` через CLI или admin MCP tool
-2. User отправляет `/start` боту → бот находит user по `telegram_chat_id` → приветствие
-3. User вводит Intervals.icu credentials (API key + athlete ID) через бота или webapp Settings
-4. Credentials шифруются (`data/crypto.py`) и сохраняются в `users`
-5. Первый sync — backfill wellness/activities/workouts за последние N дней
-6. User готов — утренние отчёты, AI chat, MCP tools
+Новый атлет подключается вручную owner-ом:
 
-**Критические проверки при onboarding:**
+1. User отправляет `/start` боту → `UserRow` создаётся автоматически с `role=viewer`
+2. Owner через shell/SQL:
+   - Меняет `role` на `athlete` (или `owner` для себя)
+   - Прописывает `athlete_id` (Intervals.icu athlete ID)
+   - Прописывает `api_key_encrypted` через `user.set_api_key(plaintext)`
+   - Генерирует MCP токен через `user.generate_mcp_token()`
+3. Owner запускает CLI для заполнения БД нового пользователя:
+   ```bash
+   # Порядок важен:
+   python -m bot.cli backfill [period]        # 1. wellness + recovery pipeline (зависимости для activities)
+   python -m bot.cli sync-activities [days]    # 2. completed activities
+   python -m bot.cli backfill-details [days]   # 3. extended stats для activities
+   python -m bot.cli sync-workouts [days]      # 4. planned workouts
+   ```
+4. User готов — утренние отчёты, AI chat, MCP tools
+
+> **TODO:** CLI команды пока используют hardcoded `user_id=1`. Для онбоардинга второго пользователя нужна `--user-id` опция или отдельная CLI команда `onboard-user <chat_id>` которая выполнит все шаги автоматически.
+
+### 12.2. Будущий процесс (автоматический, Phase 5)
+
+1. User отправляет `/start` → UserRow создаётся
+2. Бот запрашивает Intervals.icu credentials (API key + athlete ID)
+3. Credentials валидируются (тестовый API-запрос) и шифруются
+4. Автоматический backfill в фоне
+5. User готов
+
+**Критические проверки:**
 - Валидация Intervals.icu API key — тестовый запрос перед сохранением
-- `telegram_chat_id` уникален в таблице `users`
+- `chat_id` уникален в таблице `users`
 - Лимит `MAX_USERS` не превышен
 - Если `REGISTRATION_CODE` задан — проверить invite code
-
-**Security review skill** должен проверять: onboarding не позволяет перезаписать чужие credentials, rate limit на попытки регистрации, invite code не brute-forceable.
 
 **Registration code security:**
 - Формат: alphanumeric, минимум 12 символов (36^12 = ~4.7×10^18 комбинаций)

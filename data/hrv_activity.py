@@ -702,7 +702,6 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
         if not fit_bytes:
             row = ActivityHrvRow(
                 activity_id=activity_id,
-                date=activity_date,
                 activity_type=activity_type,
                 processing_status="no_rr_data",
             )
@@ -710,7 +709,9 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
             return "no_rr_data"
 
         # 2-8. CPU-bound computation in executor
-        baseline_pa = await PaBaselineRow.get_average(activity_type, as_of=date_cls.fromisoformat(activity_date))
+        baseline_pa = await PaBaselineRow.get_average(
+            user_id=1, activity_type=activity_type, as_of=date_cls.fromisoformat(activity_date)
+        )  # TODO: per-user
         result = await loop.run_in_executor(
             None,
             _compute_hrv,
@@ -725,7 +726,6 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
         if status != "processed":
             row = ActivityHrvRow(
                 activity_id=activity_id,
-                date=activity_date,
                 activity_type=activity_type,
                 hrv_quality=result.get("hrv_quality"),
                 artifact_pct=result.get("artifact_pct"),
@@ -739,6 +739,7 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
         if result["pa_baseline_data"]:
             pb = result["pa_baseline_data"]
             await PaBaselineRow.save(
+                user_id=1,  # TODO: per-user
                 activity_type=activity_type,
                 dt=activity_date,
                 pa_value=pb["pa_value"],
@@ -749,7 +750,6 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
         # 9. Build and save result row
         row = ActivityHrvRow(
             activity_id=activity_id,
-            date=activity_date,
             activity_type=activity_type,
             hrv_quality=result["hrv_quality"],
             artifact_pct=result["artifact_pct"],
@@ -794,7 +794,6 @@ async def process_activity_hrv(activity: ActivityRow) -> str:
         try:
             row = ActivityHrvRow(
                 activity_id=activity_id,
-                date=activity_date,
                 activity_type=activity_type,
                 processing_status="error",
             )
@@ -817,7 +816,7 @@ async def process_fit_job(batch_size: int = 2) -> list[tuple[str, str]]:
 
     Returns list of (activity_id, processing_status) tuples.
     """
-    activities = await ActivityRow.get_unprocessed(batch_size=batch_size)
+    activities = await ActivityRow.get_unprocessed(user_id=1, batch_size=batch_size)  # TODO: per-user
     if not activities:
         logger.debug("No unprocessed activities for DFA analysis")
         return []

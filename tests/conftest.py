@@ -78,6 +78,13 @@ async def test_session(_test_db, monkeypatch):
     monkeypatch.setattr(db_module, "_SessionLocal", factory)
     monkeypatch.setattr(db_module, "_engine", None)
 
+    # Ensure a test user with id=1 exists (needed for FK constraints on user_id)
+    async with factory() as session:
+        existing = await session.get(db_module.UserRow, 1)
+        if not existing:
+            session.add(db_module.UserRow(id=1, chat_id="test_user", role="owner"))
+            await session.commit()
+
     yield
 
     # Clean up data between tests (only tables that exist in the DB)

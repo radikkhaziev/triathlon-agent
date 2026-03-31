@@ -71,17 +71,17 @@ async def evening_report_job(bot: Bot | None = None) -> None:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
 
-    row = await WellnessRow.get(today)
-    activities = await ActivityRow.get_for_date(today)
+    row = await WellnessRow.get(today, user_id=1)  # TODO: get user_id from context
+    activities = await ActivityRow.get_for_date(today, user_id=1)  # TODO: per-user
 
     # Skip if no data at all
     if not activities and row is None:
         logger.debug("Evening report skipped — no data for %s", today)
         return
 
-    hrv_analyses = await ActivityHrvRow.get_for_date(today)
+    hrv_analyses = await ActivityHrvRow.get_for_date(today, user_id=1)  # TODO: per-user
     tomorrow = today + timedelta(days=1)
-    tomorrow_workouts = await ScheduledWorkoutRow.get_for_date(tomorrow)
+    tomorrow_workouts = await ScheduledWorkoutRow.get_for_date(tomorrow, user_id=1)  # TODO: per-user
 
     msg = build_evening_message(row, activities, hrv_analyses, tomorrow_workouts)
 
@@ -182,7 +182,7 @@ async def sync_activities_job(days: int = 90) -> int:
     newest = today
 
     activities = await intervals.get_activities(oldest=oldest, newest=newest)
-    count = await ActivityRow.save_bulk(activities)
+    count = await ActivityRow.save_bulk(activities, user_id=1)  # TODO: per-user
     logger.info("Synced %d activities (%s → %s)", count, oldest, newest)
 
     # Fetch details for activities that don't have them yet
@@ -213,7 +213,7 @@ async def daily_metrics_job(
 
     # Enrich sport_info with per-sport CTL from DB (not API)
     try:
-        activity_rows = await ActivityRow.get_for_ctl(days=90, as_of=dt)
+        activity_rows = await ActivityRow.get_for_ctl(user_id=1, days=90, as_of=dt)  # TODO: per-user
         activities = [
             Activity(
                 id=r.id,
@@ -234,7 +234,7 @@ async def daily_metrics_job(
     past_deadline = datetime.now(tz).hour >= 11
     run_ai = is_today and (has_sleep or past_deadline)
 
-    row, ai_is_new = await WellnessRow.save(dt, wellness=wellness, run_ai=run_ai)
+    row, ai_is_new = await WellnessRow.save(dt, user_id=1, wellness=wellness, run_ai=run_ai)  # TODO: per-user
 
     # Send morning report once — only when AI recommendation first appears
     if ai_is_new and bot is not None:
@@ -278,5 +278,5 @@ async def scheduled_workouts_job() -> None:
     newest = today + timedelta(days=14)
 
     workouts = await intervals.get_events(oldest=today, newest=newest)
-    count = await ScheduledWorkoutRow.save_bulk(workouts, oldest=today, newest=newest)
+    count = await ScheduledWorkoutRow.save_bulk(workouts, user_id=1, oldest=today, newest=newest)  # TODO: per-user
     logger.info("Synced %d scheduled workouts (%s → %s)", count, today, newest)

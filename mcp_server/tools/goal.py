@@ -30,7 +30,11 @@ async def get_goal_progress() -> dict:
     # Get latest wellness row
     async with get_session() as session:
         result = await session.execute(
-            select(WellnessRow).where(WellnessRow.ctl.isnot(None)).order_by(WellnessRow.id.desc()).limit(1)
+            select(WellnessRow)
+            .where(WellnessRow.user_id == 1)  # TODO: per-user
+            .where(WellnessRow.ctl.isnot(None))
+            .order_by(WellnessRow.date.desc())
+            .limit(1)
         )
         row = result.scalar_one_or_none()
 

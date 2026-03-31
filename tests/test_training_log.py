@@ -8,6 +8,7 @@ from data.database import TrainingLogRow
 class TestTrainingLogCRUD:
     async def test_create_and_get(self, _test_db):
         row = await TrainingLogRow.create(
+            user_id=1,
             date="2026-04-01",
             sport="Ride",
             source="humango",
@@ -22,19 +23,20 @@ class TestTrainingLogCRUD:
         assert row.source == "humango"
         assert row.pre_recovery_score == 78.0
 
-        fetched = await TrainingLogRow.get_for_date("2026-04-01")
+        fetched = await TrainingLogRow.get_for_date("2026-04-01", user_id=1)
         assert len(fetched) >= 1
         assert any(r.original_name == "Z2 Endurance" for r in fetched)
 
     async def test_get_range(self, _test_db):
         await TrainingLogRow.create(
+            user_id=1,
             date=str(date.today()),
             source="none",
             pre_recovery_score=60.0,
             pre_recovery_category="moderate",
         )
 
-        rows = await TrainingLogRow.get_range(days_back=7)
+        rows = await TrainingLogRow.get_range(user_id=1, days_back=7)
         assert len(rows) >= 1
 
     async def test_get_range_days_back_is_inclusive(self, _test_db):
@@ -43,25 +45,28 @@ class TestTrainingLogCRUD:
         out_of_range_date = today - timedelta(days=7)
 
         await TrainingLogRow.create(
+            user_id=1,
             date=str(today),
             source="none",
             pre_recovery_score=60.0,
             pre_recovery_category="moderate",
         )
         await TrainingLogRow.create(
+            user_id=1,
             date=str(in_range_date),
             source="none",
             pre_recovery_score=61.0,
             pre_recovery_category="moderate",
         )
         await TrainingLogRow.create(
+            user_id=1,
             date=str(out_of_range_date),
             source="none",
             pre_recovery_score=62.0,
             pre_recovery_category="moderate",
         )
 
-        rows = await TrainingLogRow.get_range(days_back=7)
+        rows = await TrainingLogRow.get_range(user_id=1, days_back=7)
         dates = {r.date for r in rows}
         assert str(today) in dates
         assert str(in_range_date) in dates
@@ -69,6 +74,7 @@ class TestTrainingLogCRUD:
 
     async def test_unfilled_actual(self, _test_db):
         row = await TrainingLogRow.create(
+            user_id=1,
             date="2026-03-20",
             sport="Run",
             source="ai",
@@ -77,11 +83,12 @@ class TestTrainingLogCRUD:
             pre_recovery_category="moderate",
         )
 
-        unfilled = await TrainingLogRow.get_unfilled_actual()
+        unfilled = await TrainingLogRow.get_unfilled_actual(user_id=1)
         assert any(r.id == row.id for r in unfilled)
 
     async def test_update_actual(self, _test_db):
         row = await TrainingLogRow.create(
+            user_id=1,
             date="2026-03-21",
             sport="Ride",
             source="humango",
@@ -91,6 +98,7 @@ class TestTrainingLogCRUD:
 
         updated = await TrainingLogRow.update(
             row.id,
+            user_id=1,
             actual_activity_id="i12345",
             actual_sport="Ride",
             actual_duration_sec=3600,
@@ -104,29 +112,32 @@ class TestTrainingLogCRUD:
     async def test_unfilled_post(self, _test_db):
         past_date = str(date.today() - timedelta(days=2))
         row = await TrainingLogRow.create(
+            user_id=1,
             date=past_date,
             sport="Run",
             source="adapted",
             pre_recovery_score=55.0,
             pre_recovery_category="moderate",
         )
-        await TrainingLogRow.update(row.id, compliance="followed_adapted")
+        await TrainingLogRow.update(row.id, user_id=1, compliance="followed_adapted")
 
-        unfilled = await TrainingLogRow.get_unfilled_post()
+        unfilled = await TrainingLogRow.get_unfilled_post(user_id=1)
         assert any(r.id == row.id for r in unfilled)
 
     async def test_update_post(self, _test_db):
         row = await TrainingLogRow.create(
+            user_id=1,
             date="2026-03-23",
             sport="Swim",
             source="humango",
             pre_recovery_score=70.0,
             pre_recovery_category="good",
         )
-        await TrainingLogRow.update(row.id, compliance="followed_original")
+        await TrainingLogRow.update(row.id, user_id=1, compliance="followed_original")
 
         updated = await TrainingLogRow.update(
             row.id,
+            user_id=1,
             post_recovery_score=75.0,
             post_hrv_delta_pct=3.2,
             post_sleep_score=82.0,

@@ -64,10 +64,25 @@ class IntervalsClient:
         )
         self._athlete_id = settings.INTERVALS_ATHLETE_ID
 
+    @classmethod
+    def for_user(cls, api_key: str, athlete_id: str) -> "IntervalsClient":
+        """Create a non-singleton client with per-user credentials."""
+        inst = object.__new__(cls)
+        inst._initialized = True
+        inst._client = httpx.AsyncClient(
+            base_url=_BASE_URL,
+            auth=("API_KEY", api_key),
+            headers={"Accept": "application/json"},
+            timeout=30.0,
+        )
+        inst._athlete_id = athlete_id
+        return inst
+
     async def close(self) -> None:
         """Close the underlying httpx session."""
         await self._client.aclose()
-        IntervalsClient._instance = None
+        if IntervalsClient._instance is self:
+            IntervalsClient._instance = None
         self._initialized = False
 
     # ------------------------------------------------------------------

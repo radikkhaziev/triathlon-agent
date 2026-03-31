@@ -31,7 +31,9 @@ async def save_mood_checkin_tool(
         note: Optional text note
     """
     try:
-        row = await MoodCheckinRow.save(energy=energy, mood=mood, anxiety=anxiety, social=social, note=note)
+        row = await MoodCheckinRow.save(
+            user_id=1, energy=energy, mood=mood, anxiety=anxiety, social=social, note=note
+        )  # TODO: per-user
         return {
             "id": row.id,
             "timestamp": row.timestamp.isoformat(),
@@ -55,7 +57,7 @@ async def get_mood_checkins_tool(date_str: str | None = None, days_back: int = 7
         date_str: Reference date in YYYY-MM-DD format. Defaults to today.
         days_back: Number of days to look back (inclusive). Default is 7.
     """
-    checkins = await MoodCheckinRow.get_range(target_date=date_str, days_back=days_back)
+    checkins = await MoodCheckinRow.get_range(user_id=1, target_date=date_str, days_back=days_back)  # TODO: per-user
 
     ref = date.fromisoformat(date_str) if date_str else date.today()
     from_date = ref - timedelta(days=days_back - 1)

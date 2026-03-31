@@ -279,10 +279,11 @@ class TestGetActivitiesForDate:
                 Activity(
                     id="i703", start_date_local=date(2026, 3, 23), type="Swim", icu_training_load=30, moving_time=1800
                 ),
-            ]
+            ],
+            user_id=1,
         )
 
-        result = await ActivityRow.get_for_date(dt)
+        result = await ActivityRow.get_for_date(dt, user_id=1)
         assert len(result) == 2
         ids = {r.id for r in result}
         assert "i701" in ids
@@ -293,7 +294,7 @@ class TestGetActivitiesForDate:
     async def test_empty_date(self):
         from data.database import ActivityRow
 
-        result = await ActivityRow.get_for_date(date(2099, 1, 1))
+        result = await ActivityRow.get_for_date(date(2099, 1, 1), user_id=1)
         assert result == []
 
 
@@ -311,6 +312,7 @@ class TestGetActivityHrvForDate:
             session.add(
                 ActivityRow(
                     id=aid1,
+                    user_id=1,
                     start_date_local=str(dt),
                     type="Ride",
                     icu_training_load=80,
@@ -320,6 +322,7 @@ class TestGetActivityHrvForDate:
             session.add(
                 ActivityRow(
                     id=aid2,
+                    user_id=1,
                     start_date_local=str(dt),
                     type="Run",
                     icu_training_load=40,
@@ -331,7 +334,6 @@ class TestGetActivityHrvForDate:
         await ActivityHrvRow.save(
             ActivityHrvRow(
                 activity_id=aid1,
-                date="2026-03-24",
                 activity_type="Ride",
                 processing_status="processed",
             )
@@ -339,13 +341,12 @@ class TestGetActivityHrvForDate:
         await ActivityHrvRow.save(
             ActivityHrvRow(
                 activity_id=aid2,
-                date="2026-03-24",
                 activity_type="Run",
                 processing_status="no_rr_data",
             )
         )
 
-        result = await ActivityHrvRow.get_for_date(dt)
+        result = await ActivityHrvRow.get_for_date(dt, user_id=1)
         by_id = {r.activity_id: r for r in result}
         assert aid1 in by_id
         assert aid2 in by_id
@@ -356,5 +357,5 @@ class TestGetActivityHrvForDate:
     async def test_empty_date(self):
         from data.database import ActivityHrvRow
 
-        result = await ActivityHrvRow.get_for_date(date(2099, 1, 1))
+        result = await ActivityHrvRow.get_for_date(date(2099, 1, 1), user_id=1)
         assert result == []

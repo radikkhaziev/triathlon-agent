@@ -31,6 +31,7 @@ async def get_activities(target_date: str = "", days_back: int = 7) -> dict:
             (
                 await session.execute(
                     select(ActivityRow)
+                    .where(ActivityRow.user_id == 1)  # TODO: per-user
                     .where(ActivityRow.start_date_local >= str(start))
                     .where(ActivityRow.start_date_local <= str(end))
                     .order_by(ActivityRow.start_date_local.desc())

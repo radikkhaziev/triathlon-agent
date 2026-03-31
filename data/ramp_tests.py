@@ -96,6 +96,7 @@ async def get_threshold_freshness_data(sport: str = "") -> dict:
                 ActivityHrvRow.hrvt2_hr,
             )
             .join(ActivityHrvRow, ActivityRow.id == ActivityHrvRow.activity_id)
+            .where(ActivityRow.user_id == 1)  # TODO: per-user
             .where(ActivityHrvRow.processing_status == "processed")
             .where(ActivityHrvRow.hrvt1_hr.isnot(None))
         )
@@ -156,6 +157,7 @@ async def detect_threshold_drift() -> dict | None:
         result_ride = await session.execute(
             select(ActivityHrvRow.hrvt1_hr, ActivityHrvRow.hrvt1_power)
             .join(ActivityRow, ActivityRow.id == ActivityHrvRow.activity_id)
+            .where(ActivityRow.user_id == 1)  # TODO: per-user
             .where(ActivityHrvRow.processing_status == "processed")
             .where(ActivityHrvRow.hrvt1_hr.isnot(None))
             .where(ActivityRow.type.in_(["Ride", "VirtualRide"]))
@@ -167,6 +169,7 @@ async def detect_threshold_drift() -> dict | None:
         result_run = await session.execute(
             select(ActivityHrvRow.hrvt1_hr)
             .join(ActivityRow, ActivityRow.id == ActivityHrvRow.activity_id)
+            .where(ActivityRow.user_id == 1)  # TODO: per-user
             .where(ActivityHrvRow.processing_status == "processed")
             .where(ActivityHrvRow.hrvt1_hr.isnot(None))
             .where(ActivityRow.type.in_(["Run", "VirtualRun", "TrailRun"]))

@@ -8,9 +8,17 @@ from datetime import date, timedelta
 from sqlalchemy import select as sa_select
 
 from bot.scheduler import daily_metrics_job, sync_activities_job
-from bot.utils import compute_max_zone
+from bot.utils import compute_max_zone, fill_training_log_actual
 from config import settings
-from data.database import ActivityDetailRow, ActivityRow, ScheduledWorkoutRow, TrainingLogRow, WellnessRow, get_session
+from data.database import (
+    ActivityDetailRow,
+    ActivityRow,
+    ScheduledWorkoutRow,
+    TrainingLogRow,
+    UserRow,
+    WellnessRow,
+    get_session,
+)
 from data.intervals_client import IntervalsClient
 
 
@@ -89,6 +97,27 @@ def main() -> None:
 
     sub.add_parser("backfill-max-zone", help="Backfill actual_max_zone_time for training_log entries")
 
+    onboard_parser = sub.add_parser(
+        "onboard",
+        help="Full onboarding: backfill wellness + sync activities + details + workouts",
+    )
+    onboard_parser.add_argument(
+        "user_id",
+        type=int,
+        help="User ID to onboard (from users table)",
+    )
+    onboard_parser.add_argument(
+        "--days",
+        type=int,
+        default=180,
+        help="Number of days to backfill (default: 180)",
+    )
+
+    # Temporary: one-time fix for training_log actual data after SPORT_MAP matching fix.
+    # Delete after running on server.
+    fix_parser = sub.add_parser("fix-training-log-actual", help="[TEMP] Re-fill actual data for training_log entries")
+    fix_parser.add_argument("user_id", type=int, help="User ID to fix")
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -105,6 +134,10 @@ def main() -> None:
         asyncio.run(_refetch_details(args.days))
     elif args.command == "backfill-max-zone":
         asyncio.run(_backfill_max_zone())
+    elif args.command == "onboard":
+        asyncio.run(_onboard(args.user_id, args.days))
+    elif args.command == "fix-training-log-actual":
+        asyncio.run(_fix_training_log_actual(args.user_id))
 
 
 def _parse_period(period: str | None) -> tuple[date, date]:
@@ -192,14 +225,14 @@ async def _sync_workouts(days: int = 14) -> None:
 
     client = IntervalsClient()
     workouts = await client.get_events(oldest=today, newest=newest)
-    count = await ScheduledWorkoutRow.save_bulk(workouts, oldest=today, newest=newest)
+    count = await ScheduledWorkoutRow.save_bulk(workouts, user_id=1, oldest=today, newest=newest)  # TODO: per-user
     print(f"Synced {count} workouts.")
 
 
 async def _backfill_details(days: int = 0) -> None:
     client = IntervalsClient()
     cutoff = str(date.today() - timedelta(days=days)) if days > 0 else None
-    activities = await ActivityRow.get_without_details(since_date=cutoff)
+    activities = await ActivityRow.get_without_details(user_id=1, since_date=cutoff)  # TODO: per-user
 
     total = len(activities)
     print(f"Backfill details: {total} activities without details")
@@ -260,6 +293,7 @@ async def _refetch_details(days: int = 180) -> None:
     async with get_session() as session:
         result = await session.execute(
             sa_select(ActivityRow)
+            .where(ActivityRow.user_id == 1)  # TODO: per-user
             .where(ActivityRow.start_date_local >= cutoff)
             .order_by(ActivityRow.start_date_local.desc())
         )
@@ -297,17 +331,127 @@ async def _refetch_details(days: int = 180) -> None:
     print("Now run: python -m bot.cli backfill-max-zone")
 
 
+async def _fix_training_log_actual(user_id: int) -> None:
+    """[TEMP] Re-fill actual data for all training_log entries.
+
+    One-time fix after SPORT_MAP matching was added (Ride now matches VirtualRide, etc.).
+    Resets compliance and actual fields, then re-runs fill_training_log_actual().
+    Delete this function after running on server.
+    """
+    rows = await TrainingLogRow.get_range(user_id=user_id, days_back=365)
+    reset = 0
+    for row in rows:
+        if row.actual_activity_id:
+            await TrainingLogRow.update(
+                row.id,
+                user_id=user_id,
+                actual_activity_id=None,
+                actual_sport=None,
+                actual_duration_sec=None,
+                actual_avg_hr=None,
+                actual_tss=None,
+                actual_max_zone_time=None,
+                compliance=None,
+            )
+            reset += 1
+    print(f"Reset {reset} entries with actual data")
+
+    if user_id == 1:
+        await fill_training_log_actual()
+        print("Re-fill complete")
+    else:
+        print(f"WARNING: fill_training_log_actual() is hardcoded to user_id=1, skipping for user {user_id}")
+        print("Run manually after scheduler is updated to per-user")
+
+
 async def _backfill_max_zone() -> None:
     """Backfill actual_max_zone_time for training_log entries with activity but no zone."""
-    rows = await TrainingLogRow.get_range(days_back=365)
+    rows = await TrainingLogRow.get_range(user_id=1, days_back=365)  # TODO: per-user
     count = 0
     for row in rows:
         if row.actual_activity_id and not row.actual_max_zone_time:
             zone = await compute_max_zone(row.actual_activity_id, sport=row.actual_sport)
             if zone:
-                await TrainingLogRow.update(row.id, actual_max_zone_time=zone)
+                await TrainingLogRow.update(row.id, user_id=1, actual_max_zone_time=zone)  # TODO: per-user
                 count += 1
     print(f"Backfilled {count} entries")
+
+
+async def _onboard(user_id: int, days: int = 180) -> None:
+    """Full onboarding pipeline: backfill wellness, sync activities + details, sync workouts."""
+    user = await UserRow.get_by_id(user_id)
+    if not user:
+        print(f"Error: user_id={user_id} not found")
+        return
+    if not user.athlete_id or not user.get_api_key():
+        print(f"Error: user {user_id} missing athlete_id or api_key. Set them first.")
+        return
+
+    print(f"=== Onboarding user {user_id} ({user.display_name or user.username or user.chat_id}) ===")
+    print(f"  athlete_id: {user.athlete_id}")
+    print(f"  days: {days}\n")
+
+    client = IntervalsClient.for_user(api_key=user.get_api_key(), athlete_id=user.athlete_id)
+
+    # 1. Wellness + recovery pipeline
+    print("--- Step 1/4: Backfill wellness ---")
+    today = date.today()
+    start = today - timedelta(days=days)
+    total_days = days + 1
+    dt = start
+    processed = 0
+    while dt <= today:
+        processed += 1
+        print(f"[{processed}/{total_days}] Processing {dt} ...")
+        try:
+            wellness = await client.get_wellness(dt)
+            await WellnessRow.save(dt, user_id=user_id, wellness=wellness, run_ai=False)
+        except Exception as exc:
+            print(f"  Error: {exc}")
+        dt += timedelta(days=1)
+        if dt <= today:
+            await asyncio.sleep(3)
+    print(f"Wellness done: {processed} days\n")
+
+    # 2. Sync activities
+    print("--- Step 2/4: Sync activities ---")
+    oldest = today - timedelta(days=days)
+    activities = await client.get_activities(oldest=oldest, newest=today)
+    count = await ActivityRow.save_bulk(activities, user_id=user_id)
+    print(f"Activities synced: {count}\n")
+
+    # 3. Backfill activity details
+    print("--- Step 3/4: Backfill activity details ---")
+    without_details = await ActivityRow.get_without_details(user_id=user_id)
+    total = len(without_details)
+    print(f"Activities without details: {total}")
+    for i, act in enumerate(without_details, 1):
+        print(f"[{i}/{total}] {act.id} ({act.start_date_local}, {act.type}) ...")
+        try:
+            detail = await client.get_activity_detail(act.id)
+            if detail is None:
+                print("  Not found (404), skipping")
+                continue
+            try:
+                intervals_data = await client.get_activity_intervals(act.id)
+            except Exception:
+                intervals_data = None
+            await ActivityDetailRow.save(act.id, detail, intervals_data)
+        except Exception as exc:
+            print(f"  Error: {exc}")
+        if i < total:
+            await asyncio.sleep(2)
+    print(f"Details done: {total}\n")
+
+    # 4. Sync workouts
+    print("--- Step 4/4: Sync workouts ---")
+    newest = today + timedelta(days=14)
+    workouts = await client.get_events(oldest=today, newest=newest)
+    wcount = await ScheduledWorkoutRow.save_bulk(workouts, user_id=user_id, oldest=today, newest=newest)
+    print(f"Workouts synced: {wcount}\n")
+
+    await client.close()
+    print("=== Onboarding complete ===")
 
 
 if __name__ == "__main__":

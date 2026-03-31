@@ -142,7 +142,9 @@ class TestHandleGetRecovery:
         row = _fake_wellness()
         with patch("ai.tool_definitions.get_session") as mock_session:
             session_mock = AsyncMock()
-            session_mock.get = AsyncMock(return_value=row)
+            execute_result = MagicMock()
+            execute_result.scalar_one_or_none.return_value = row
+            session_mock.execute = AsyncMock(return_value=execute_result)
             mock_session.return_value.__aenter__ = AsyncMock(return_value=session_mock)
             mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -157,7 +159,9 @@ class TestHandleGetRecovery:
     async def test_no_data(self):
         with patch("ai.tool_definitions.get_session") as mock_session:
             session_mock = AsyncMock()
-            session_mock.get = AsyncMock(return_value=None)
+            execute_result = MagicMock()
+            execute_result.scalar_one_or_none.return_value = None
+            session_mock.execute = AsyncMock(return_value=execute_result)
             mock_session.return_value.__aenter__ = AsyncMock(return_value=session_mock)
             mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -190,9 +194,9 @@ class TestHandleGetHrvAnalysis:
             session_mock = AsyncMock()
 
             async def mock_get(model, key):
-                if key == ("2026-03-28", "flatt_esco"):
+                if key == (1, "2026-03-28", "flatt_esco"):
                     return flatt
-                if key == ("2026-03-28", "ai_endurance"):
+                if key == (1, "2026-03-28", "ai_endurance"):
                     return aie
                 return None
 
@@ -214,7 +218,9 @@ class TestHandleGetTrainingLoad:
         row = _fake_wellness(ctl=45.0, atl=50.0)
         with patch("ai.tool_definitions.get_session") as mock_session:
             session_mock = AsyncMock()
-            session_mock.get = AsyncMock(return_value=row)
+            execute_result = MagicMock()
+            execute_result.scalar_one_or_none.return_value = row
+            session_mock.execute = AsyncMock(return_value=execute_result)
             mock_session.return_value.__aenter__ = AsyncMock(return_value=session_mock)
             mock_session.return_value.__aexit__ = AsyncMock(return_value=False)
 

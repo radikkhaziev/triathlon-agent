@@ -20,13 +20,13 @@ async def get_iqos_sticks(target_date: str = "", days_back: int = 0) -> dict:
     ref = date.fromisoformat(target_date) if target_date else date.today()
 
     if days_back == 0:
-        row = await IqosDailyRow.get(ref)
+        row = await IqosDailyRow.get(user_id=1, target_date=ref)  # TODO: per-user
         return {
             "date": str(ref),
             "count": row.count if row else 0,
         }
 
-    rows = await IqosDailyRow.get_range(target_date=str(ref), days_back=days_back)
+    rows = await IqosDailyRow.get_range(user_id=1, target_date=str(ref), days_back=days_back)  # TODO: per-user
     from_date = ref - timedelta(days=days_back - 1)
 
     rows_by_date = {r.date: r.count for r in rows}

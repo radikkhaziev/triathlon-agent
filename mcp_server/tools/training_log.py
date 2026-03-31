@@ -15,7 +15,7 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
         target_date: Not used yet (reserved). Default: today.
         days_back: Number of days to look back (default: 14).
     """
-    rows = await TrainingLogRow.get_range(days_back=days_back)
+    rows = await TrainingLogRow.get_range(user_id=1, days_back=days_back)  # TODO: per-user
 
     entries = []
     for r in rows:
@@ -79,7 +79,7 @@ async def get_personal_patterns(days_back: int = 90) -> dict:
     Args:
         days_back: Days of history to analyze (default: 90).
     """
-    rows = await TrainingLogRow.get_range(days_back=days_back)
+    rows = await TrainingLogRow.get_range(user_id=1, days_back=days_back)  # TODO: per-user
 
     # Filter to entries with complete data (pre + actual + post)
     complete = [

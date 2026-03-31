@@ -1,5 +1,7 @@
 """MCP tools for training load data (CTL/ATL/TSB)."""
 
+from sqlalchemy import select
+
 from data.database import WellnessRow, get_session
 from data.utils import extract_sport_ctl
 from data.utils import tsb_zone as _tsb_zone
@@ -18,7 +20,10 @@ async def get_training_load(date: str) -> dict:
         date: Date in YYYY-MM-DD format
     """
     async with get_session() as session:
-        row = await session.get(WellnessRow, date)
+        result = await session.execute(
+            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
+        )
+        row = result.scalar_one_or_none()
 
     if not row:
         return {"error": f"No data for {date}"}

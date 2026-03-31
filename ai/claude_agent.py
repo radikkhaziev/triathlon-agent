@@ -16,6 +16,7 @@ from ai.prompts import (
 from ai.tool_definitions import CHAT_TOOLS, MORNING_TOOLS, TOOL_HANDLERS
 from bot.formatter import format_duration, sport_emoji
 from config import settings
+from data.database import ActivityHrvRow, ActivityRow
 from data.models import PlannedWorkout, WorkoutStep
 from data.utils import extract_sport_ctl_tuple
 
@@ -396,15 +397,13 @@ class ClaudeAgent:
 
 async def _format_yesterday_dfa() -> str:
     """Format yesterday's DFA data for the morning AI prompt."""
-    from data.database import ActivityHrvRow, ActivityRow
-
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     yesterday = datetime.now(tz).date() - timedelta(days=1)
-    activities = await ActivityRow.get_for_date(yesterday)
+    activities = await ActivityRow.get_for_date(yesterday, user_id=1)  # TODO: per-user
     if not activities:
         return "Нет данных DFA за вчера"
 
-    hrv_analyses = await ActivityHrvRow.get_for_date(yesterday)
+    hrv_analyses = await ActivityHrvRow.get_for_date(yesterday, user_id=1)  # TODO: per-user
     hrv_map = {h.activity_id: h for h in hrv_analyses}
 
     lines = []

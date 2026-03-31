@@ -25,7 +25,7 @@ async def scheduled_workouts(
     monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
     sunday = monday + timedelta(days=6)
 
-    workouts, last_synced_at = await ScheduledWorkoutRow.get_range(monday, sunday)
+    workouts, last_synced_at = await ScheduledWorkoutRow.get_range(monday, sunday, user_id=1)  # TODO: user_id from auth
 
     by_date: dict[str, list] = {}
     for w in workouts:
@@ -58,15 +58,15 @@ async def scheduled_workouts(
         has_next_result = await session.execute(
             select(func.count())
             .select_from(ScheduledWorkoutRow)
-            .where(ScheduledWorkoutRow.start_date_local >= str(next_monday))
-        )
+            .where(ScheduledWorkoutRow.user_id == 1, ScheduledWorkoutRow.start_date_local >= str(next_monday))
+        )  # TODO: user_id from auth
         has_next = has_next_result.scalar_one() > 0
 
         has_prev_result = await session.execute(
             select(func.count())
             .select_from(ScheduledWorkoutRow)
-            .where(ScheduledWorkoutRow.start_date_local <= str(prev_sunday))
-        )
+            .where(ScheduledWorkoutRow.user_id == 1, ScheduledWorkoutRow.start_date_local <= str(prev_sunday))
+        )  # TODO: user_id from auth
         has_prev = has_prev_result.scalar_one() > 0
 
     return {

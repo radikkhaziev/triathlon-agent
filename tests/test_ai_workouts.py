@@ -375,6 +375,7 @@ class TestAiWorkoutsCRUD:
         from data.database import AiWorkoutRow
 
         row = await AiWorkoutRow.save(
+            user_id=1,
             date_str="2026-03-29",
             sport="Ride",
             slot="morning",
@@ -389,7 +390,7 @@ class TestAiWorkoutsCRUD:
         assert row.external_id == "tricoach:2026-03-29:ride:morning"
         assert row.status == "active"
 
-        fetched = await AiWorkoutRow.get_by_external_id("tricoach:2026-03-29:ride:morning")
+        fetched = await AiWorkoutRow.get_by_external_id("tricoach:2026-03-29:ride:morning", user_id=1)
         assert fetched is not None
         assert fetched.name == "Z2 Endurance"
         assert fetched.intervals_id == 12345
@@ -398,6 +399,7 @@ class TestAiWorkoutsCRUD:
         from data.database import AiWorkoutRow
 
         await AiWorkoutRow.save(
+            user_id=1,
             date_str="2026-03-30",
             sport="Run",
             slot="morning",
@@ -411,6 +413,7 @@ class TestAiWorkoutsCRUD:
         )
 
         await AiWorkoutRow.save(
+            user_id=1,
             date_str="2026-03-30",
             sport="Run",
             slot="morning",
@@ -423,7 +426,7 @@ class TestAiWorkoutsCRUD:
             rationale="v2",
         )
 
-        fetched = await AiWorkoutRow.get_by_external_id("tricoach:2026-03-30:run:morning")
+        fetched = await AiWorkoutRow.get_by_external_id("tricoach:2026-03-30:run:morning", user_id=1)
         assert fetched.name == "Easy Run v2"
         assert fetched.intervals_id == 222
 
@@ -431,6 +434,7 @@ class TestAiWorkoutsCRUD:
         from data.database import AiWorkoutRow
 
         await AiWorkoutRow.save(
+            user_id=1,
             date_str="2026-03-31",
             sport="Swim",
             slot="morning",
@@ -443,7 +447,7 @@ class TestAiWorkoutsCRUD:
             rationale="test",
         )
 
-        row = await AiWorkoutRow.cancel("tricoach:2026-03-31:swim:morning")
+        row = await AiWorkoutRow.cancel("tricoach:2026-03-31:swim:morning", user_id=1)
         assert row is not None
         assert row.status == "cancelled"
 
@@ -452,6 +456,7 @@ class TestAiWorkoutsCRUD:
 
         today = str(date.today())
         await AiWorkoutRow.save(
+            user_id=1,
             date_str=today,
             sport="Ride",
             slot="morning",
@@ -464,7 +469,7 @@ class TestAiWorkoutsCRUD:
             rationale="test",
         )
 
-        rows = await AiWorkoutRow.get_upcoming(days_ahead=1)
+        rows = await AiWorkoutRow.get_upcoming(user_id=1, days_ahead=1)
         names = [r.name for r in rows]
         assert "Today Ride" in names
 
@@ -472,6 +477,7 @@ class TestAiWorkoutsCRUD:
         from data.database import AiWorkoutRow
 
         await AiWorkoutRow.save(
+            user_id=1,
             date_str="2026-04-01",
             sport="Run",
             slot="morning",
@@ -484,6 +490,6 @@ class TestAiWorkoutsCRUD:
             rationale="test",
         )
 
-        rows = await AiWorkoutRow.get_for_date(date(2026, 4, 1))
+        rows = await AiWorkoutRow.get_for_date(date(2026, 4, 1), user_id=1)
         assert len(rows) >= 1
         assert any(r.name == "April Run" for r in rows)

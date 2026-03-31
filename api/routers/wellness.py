@@ -120,11 +120,11 @@ async def _build_wellness_response(row, target_date: date) -> dict:
     emoji, title = CATEGORY_DISPLAY.get(category, ("⚪", "СТАТУС НЕИЗВЕСТЕН"))
     recommendation_text = RECOMMENDATION_TEXT.get(row.recovery_recommendation or "", row.recovery_recommendation or "")
 
-    hrv_flatt = await HrvAnalysisRow.get(target_str, "flatt_esco")
-    hrv_aie = await HrvAnalysisRow.get(target_str, "ai_endurance")
+    hrv_flatt = await HrvAnalysisRow.get(user_id=1, dt=target_str, algorithm="flatt_esco")  # TODO: user_id from auth
+    hrv_aie = await HrvAnalysisRow.get(user_id=1, dt=target_str, algorithm="ai_endurance")  # TODO: user_id from auth
     hrv_today = float(row.hrv) if row.hrv else None
 
-    rhr_row = await RhrAnalysisRow.get(target_str)
+    rhr_row = await RhrAnalysisRow.get(user_id=1, dt=target_str)  # TODO: user_id from auth
 
     tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
     sport_ctl = extract_sport_ctl(row.sport_info)
@@ -179,7 +179,9 @@ async def _build_wellness_response(row, target_date: date) -> dict:
 async def _wellness_has_prev(target_date: date) -> bool:
     target_str = str(target_date)
     async with get_session() as session:
-        result = await session.execute(select(exists().where(WellnessRow.id < target_str)))
+        result = await session.execute(
+            select(exists().where(WellnessRow.date < target_str, WellnessRow.user_id == 1))
+        )  # TODO: user_id from auth
         return result.scalar_one()
 
 
@@ -188,7 +190,7 @@ async def morning_report(role: str = Depends(require_viewer)) -> dict:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
     today_str = str(today)
-    row = await WellnessRow.get(today)
+    row = await WellnessRow.get(today, user_id=1)  # TODO: get user_id from auth
 
     if row is None:
         return {"date": today_str, "has_data": False, "role": role}
@@ -218,7 +220,7 @@ async def wellness_day(
         target = today
 
     target_str = str(target)
-    row = await WellnessRow.get(target)
+    row = await WellnessRow.get(target, user_id=1)  # TODO: get user_id from auth
     has_prev = await _wellness_has_prev(target)
     has_next = target < today
 

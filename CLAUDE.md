@@ -115,7 +115,8 @@ Fourteen tables. Full column specs in `data/database.py`.
 
 | Module | Status | Notes |
 |---|---|---|
-| `data/*` | Done | Models, Intervals.icu client (read + write), metrics pipeline, DFA a1, database ORM |
+| `data/*` | Done | Models, Intervals.icu client (read + write + per-user factory), metrics pipeline, DFA a1, database ORM, crypto (Fernet) |
+| Multi-tenant | Phase 1 done | `users` table, `user_id` FK on 13 tables, per-user onboarding CLI. Scheduler still single-user. See `docs/MULTI_TENANT_SECURITY.md` |
 | `ai/*` | Done | Claude tool-use morning analysis (V2) + free-form chat + V1 fallback, Gemini, workout generation, prompts, tool definitions |
 | `bot/*` | Done | /start, /morning, /web, /stick, /whoami, free-form chat, scheduler (5 jobs + AI workout auto-push), CLI, formatter |
 | `api/*` | Done | REST endpoints, dashboard routes, auth (Telegram initData + JWT), SPA fallback with cache headers |
@@ -323,7 +324,19 @@ python -m bot.cli sync-activities [days_back]           # default: 90
 python -m bot.cli backfill-details [days_back]          # default: all without details
 python -m bot.cli refetch-details [days_back]           # default: 180 — re-fetch existing details (updates zone_times etc)
 python -m bot.cli backfill-max-zone                     # fill actual_max_zone_time in training_log
+python -m bot.cli onboard <user_id> [--days 180]        # full onboarding for a new user (multi-tenant)
 ```
+
+### Onboarding нового пользователя
+
+```bash
+# 1. User отправляет /start боту → UserRow создаётся с role=viewer
+# 2. Owner через shell: меняет role, прописывает athlete_id, api_key, mcp_token
+# 3. Запуск onboard:
+python -m bot.cli onboard <user_id> --days 180
+```
+
+Команда `onboard` выполняет последовательно: backfill wellness → sync activities → backfill details → sync workouts. Использует per-user Intervals.icu credentials из таблицы `users`.
 
 ---
 
@@ -451,6 +464,8 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
 22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + CSS stick figure animations, Jinja templates, 5 MCP tools, static file serving)
 23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя). Связано с #21 Gemini — делать вместе
+24. ~~Multi-Tenant Phase 1~~ — Done (users table, user_id on 13 tables, crypto, onboarding CLI, SPORT_MAP matching fix)
+25. **Multi-Tenant Phase 1.3** — Per-user scheduler (без этого user 2+ не получают автоматических обновлений). See `docs/MULTI_TENANT_SECURITY.md`
 
 ---
 

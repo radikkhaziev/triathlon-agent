@@ -135,7 +135,7 @@ class UserRow(Base):
     @classmethod
     async def get_by_mcp_token(cls, token: str) -> UserRow | None:
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.mcp_token == token))
+            result = await session.execute(select(cls).where(cls.mcp_token == token, cls.is_active.is_(True)))
             return result.scalar_one_or_none()
 
     @classmethod
@@ -147,7 +147,7 @@ class UserRow(Base):
     @classmethod
     async def get_by_chat_id(cls, chat_id: str) -> UserRow | None:
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.chat_id == chat_id))
+            result = await session.execute(select(cls).where(cls.chat_id == chat_id, cls.is_active.is_(True)))
             return result.scalar_one_or_none()
 
     @classmethod
@@ -187,8 +187,13 @@ class UserRow(Base):
 class WellnessRow(Base):
     __tablename__ = "wellness"
 
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_wellness_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
+
     # --- Intervals.icu fields ---
-    id: Mapped[str] = mapped_column(String, primary_key=True)  # "YYYY-MM-DD"
     ctl: Mapped[float | None] = mapped_column(Float, nullable=True)
     atl: Mapped[float | None] = mapped_column(Float, nullable=True)
     ramp_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -226,30 +231,14 @@ class WellnessRow(Base):
     # --- CRUD ---
 
     @classmethod
-    async def get_hrv_history(cls, days: int = 60, *, session: AsyncSession | None = None) -> list[float]:
+    async def get_hrv_history(cls, user_id: int, days: int = 60, *, session: AsyncSession | None = None) -> list[float]:
         """Return last N HRV values (oldest first), skipping nulls and zeroes."""
 
         async def _query(s: AsyncSession) -> list[float]:
             result = await s.execute(
-                select(cls.hrv).where(cls.hrv.isnot(None)).where(cls.hrv > 0).order_by(cls.id.desc()).limit(days)
-            )
-            return [float(row[0]) for row in reversed(result.all())]
-
-        if session:
-            return await _query(session)
-        async with get_session() as s:
-            return await _query(s)
-
-    @classmethod
-    async def get_rhr_history(cls, days: int = 60, *, session: AsyncSession | None = None) -> list[float]:
-        """Return last N resting_hr values (oldest first), skipping nulls and zeroes."""
-
-        async def _query(s: AsyncSession) -> list[float]:
-            result = await s.execute(
-                select(cls.resting_hr)
-                .where(cls.resting_hr.isnot(None))
-                .where(cls.resting_hr > 0)
-                .order_by(cls.id.desc())
+                select(cls.hrv)
+                .where(cls.user_id == user_id, cls.hrv.isnot(None), cls.hrv > 0)
+                .order_by(cls.date.desc())
                 .limit(days)
             )
             return [float(row[0]) for row in reversed(result.all())]
@@ -260,15 +249,35 @@ class WellnessRow(Base):
             return await _query(s)
 
     @classmethod
-    async def get(cls, dt: date) -> WellnessRow | None:
-        """Fetch a single wellness row by date."""
+    async def get_rhr_history(cls, user_id: int, days: int = 60, *, session: AsyncSession | None = None) -> list[float]:
+        """Return last N resting_hr values (oldest first), skipping nulls and zeroes."""
+
+        async def _query(s: AsyncSession) -> list[float]:
+            result = await s.execute(
+                select(cls.resting_hr)
+                .where(cls.user_id == user_id, cls.resting_hr.isnot(None), cls.resting_hr > 0)
+                .order_by(cls.date.desc())
+                .limit(days)
+            )
+            return [float(row[0]) for row in reversed(result.all())]
+
+        if session:
+            return await _query(session)
+        async with get_session() as s:
+            return await _query(s)
+
+    @classmethod
+    async def get(cls, dt: date, user_id: int) -> WellnessRow | None:
+        """Fetch a single wellness row by date and user."""
         async with get_session() as session:
-            return await session.get(cls, str(dt))
+            result = await session.execute(select(cls).where(cls.user_id == user_id, cls.date == str(dt)))
+            return result.scalar_one_or_none()
 
     @classmethod
     async def save(
         cls,
         dt: date,
+        user_id: int,
         *,
         wellness: Wellness,
         run_ai: bool = False,
@@ -289,10 +298,12 @@ class WellnessRow(Base):
             combined_recovery_score,
         )
 
+        date_str = wellness.id or str(dt)
         async with get_session() as session:
-            row = await session.get(cls, wellness.id or str(dt))
+            result = await session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
+            row = result.scalar_one_or_none()
             if row is None:
-                row = cls(id=wellness.id or str(dt))
+                row = cls(date=date_str, user_id=user_id)
                 session.add(row)
 
             # --- Skip if data hasn't changed AND all computed fields are populated ---
@@ -305,7 +316,7 @@ class WellnessRow(Base):
                 and pipeline_complete
                 and not ai_pending
             ):
-                logger.debug("Wellness %s unchanged (updated=%s), skipping pipeline", row.id, row.updated)
+                logger.debug("Wellness %s unchanged (updated=%s), skipping pipeline", row.date, row.updated)
                 return row, False
 
             # --- Map Intervals.icu fields (whitelist, skip computed columns) ---
@@ -343,12 +354,12 @@ class WellnessRow(Base):
             algorithms = ["flatt_esco", "ai_endurance"]
             rmssd_results: dict[str, RmssdStatus] = {}
             for algo in algorithms:
-                rmssd = await calculate_rmssd_status(algorithm=algo, session=session)
+                rmssd = await calculate_rmssd_status(user_id=user_id, algorithm=algo, session=session)
                 rmssd_results[algo] = rmssd
                 if rmssd.status != "insufficient_data":
-                    hrv_row = await session.get(HrvAnalysisRow, (row.id, algo))
+                    hrv_row = await session.get(HrvAnalysisRow, (user_id, row.date, algo))
                     if hrv_row is None:
-                        hrv_row = HrvAnalysisRow(date=row.id, algorithm=algo)
+                        hrv_row = HrvAnalysisRow(user_id=user_id, date=row.date, algorithm=algo)
                         session.add(hrv_row)
                     hrv_row.status = rmssd.status
                     hrv_row.rmssd_7d = rmssd.rmssd_7d
@@ -369,11 +380,11 @@ class WellnessRow(Base):
             rmssd = rmssd_results.get(settings.HRV_ALGORITHM, rmssd_results.get("flatt_esco"))
 
             # 2. RHR baseline → rhr_analysis table
-            rhr: RhrStatus = await calculate_rhr_status(session=session)
+            rhr: RhrStatus = await calculate_rhr_status(user_id=user_id, session=session)
             if rhr.status != "insufficient_data":
-                rhr_row = await session.get(RhrAnalysisRow, row.id)
+                rhr_row = await session.get(RhrAnalysisRow, (user_id, row.date))
                 if rhr_row is None:
-                    rhr_row = RhrAnalysisRow(date=row.id)
+                    rhr_row = RhrAnalysisRow(user_id=user_id, date=row.date)
                     session.add(rhr_row)
                 rhr_row.status = rhr.status
                 rhr_row.rhr_today = rhr.rhr_today
@@ -397,8 +408,9 @@ class WellnessRow(Base):
             row.ess_today = None
             row.banister_recovery = None
             try:
-                dt_date = date.fromisoformat(row.id)
+                dt_date = date.fromisoformat(row.date)
                 banister_rows = await ActivityRow.get_for_banister(
+                    user_id=user_id,
                     days=90,
                     as_of=dt_date,
                     session=session,
@@ -417,7 +429,7 @@ class WellnessRow(Base):
                 row.ess_today = ess_today
                 row.banister_recovery = banister_r
             except Exception:
-                logger.warning("ESS/Banister calculation failed for %s", row.id, exc_info=True)
+                logger.warning("ESS/Banister calculation failed for %s", row.date, exc_info=True)
 
             # 4. Combined recovery score (sleep=None → excluded, weights renormalised)
             recovery: RecoveryScore = combined_recovery_score(
@@ -445,15 +457,18 @@ class WellnessRow(Base):
                     # Inline import: claude_agent imports from data.database (circular)
                     from ai.claude_agent import ClaudeAgent, build_morning_prompt
 
-                    hrv_flatt = await session.get(HrvAnalysisRow, (row.id, "flatt_esco"))
-                    hrv_aie = await session.get(HrvAnalysisRow, (row.id, "ai_endurance"))
-                    rhr_row = await session.get(RhrAnalysisRow, row.id)
+                    hrv_flatt = await session.get(HrvAnalysisRow, (user_id, row.date, "flatt_esco"))
+                    hrv_aie = await session.get(HrvAnalysisRow, (user_id, row.date, "ai_endurance"))
+                    rhr_row = await session.get(RhrAnalysisRow, (user_id, row.date))
 
                     # Fetch today's scheduled workouts
                     today_workouts = (
                         (
                             await session.execute(
-                                select(ScheduledWorkoutRow).where(ScheduledWorkoutRow.start_date_local == row.id)
+                                select(ScheduledWorkoutRow).where(
+                                    ScheduledWorkoutRow.user_id == user_id,  # TODO: per-user
+                                    ScheduledWorkoutRow.start_date_local == row.date,
+                                )
                             )
                         )
                         .scalars()
@@ -479,7 +494,7 @@ class WellnessRow(Base):
 
                             if _settings.AI_USE_TOOL_USE:
                                 try:
-                                    return await agent.get_morning_recommendation_v2(date.fromisoformat(row.id))
+                                    return await agent.get_morning_recommendation_v2(date.fromisoformat(row.date))
                                 except Exception:
                                     logger.warning("Tool-use V2 failed, falling back to V1", exc_info=True)
                             # V1 fallback
@@ -538,7 +553,8 @@ class WellnessRow(Base):
 class HrvAnalysisRow(Base):
     __tablename__ = "hrv_analysis"
 
-    date: Mapped[str] = mapped_column(String, ForeignKey("wellness.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), primary_key=True)
+    date: Mapped[str] = mapped_column(String, primary_key=True)
     algorithm: Mapped[str] = mapped_column(String, primary_key=True)  # "flatt_esco" | "ai_endurance"
 
     status: Mapped[str] = mapped_column(String)  # green | yellow | red | insufficient_data
@@ -559,16 +575,17 @@ class HrvAnalysisRow(Base):
     # --- CRUD ---
 
     @classmethod
-    async def get(cls, dt: str, algorithm: str) -> HrvAnalysisRow | None:
-        """Fetch HRV analysis for a date and algorithm."""
+    async def get(cls, user_id: int, dt: str, algorithm: str) -> HrvAnalysisRow | None:
+        """Fetch HRV analysis for a user, date and algorithm."""
         async with get_session() as session:
-            return await session.get(cls, (dt, algorithm))
+            return await session.get(cls, (user_id, dt, algorithm))
 
 
 class RhrAnalysisRow(Base):
     __tablename__ = "rhr_analysis"
 
-    date: Mapped[str] = mapped_column(String, ForeignKey("wellness.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), primary_key=True)
+    date: Mapped[str] = mapped_column(String, primary_key=True)
 
     status: Mapped[str] = mapped_column(String)  # green | yellow | red | insufficient_data
     rhr_today: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -590,10 +607,10 @@ class RhrAnalysisRow(Base):
     # --- CRUD ---
 
     @classmethod
-    async def get(cls, dt: str) -> RhrAnalysisRow | None:
-        """Fetch RHR analysis for a date."""
+    async def get(cls, user_id: int, dt: str) -> RhrAnalysisRow | None:
+        """Fetch RHR analysis for a user and date."""
         async with get_session() as session:
-            return await session.get(cls, dt)
+            return await session.get(cls, (user_id, dt))
 
 
 class ActivityRow(Base):
@@ -602,6 +619,7 @@ class ActivityRow(Base):
     __tablename__ = "activities"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)  # Intervals.icu activity ID (e.g. "i12345")
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     start_date_local: Mapped[str] = mapped_column(String)  # "YYYY-MM-DD"
     type: Mapped[str | None] = mapped_column(String, nullable=True)  # Ride, Run, Swim, ...
     icu_training_load: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -612,7 +630,7 @@ class ActivityRow(Base):
     # --- CRUD ---
 
     @classmethod
-    async def save_bulk(cls, activities: list[Activity]) -> int:
+    async def save_bulk(cls, activities: list[Activity], user_id: int) -> int:
         """Upsert completed activities from Intervals.icu. Returns count of upserted rows."""
         if not activities:
             return 0
@@ -622,6 +640,7 @@ class ActivityRow(Base):
             values = [
                 {
                     "id": a.id,
+                    "user_id": user_id,
                     "start_date_local": str(a.start_date_local)[:10],
                     "type": a.type,
                     "icu_training_load": a.icu_training_load,
@@ -648,7 +667,7 @@ class ActivityRow(Base):
         return len(values)
 
     @classmethod
-    async def get_for_ctl(cls, days: int = 90, as_of: date | None = None) -> list[ActivityRow]:
+    async def get_for_ctl(cls, user_id: int, days: int = 90, as_of: date | None = None) -> list[ActivityRow]:
         """Return activities for CTL calculation, ordered by date (oldest first).
 
         Args:
@@ -665,6 +684,7 @@ class ActivityRow(Base):
         async with get_session() as session:
             result = await session.execute(
                 select(cls)
+                .where(cls.user_id == user_id)
                 .where(cls.start_date_local >= cutoff)
                 .where(cls.start_date_local <= newest)
                 .where(cls.icu_training_load.isnot(None))
@@ -675,6 +695,7 @@ class ActivityRow(Base):
     @classmethod
     async def get_for_banister(
         cls,
+        user_id: int,
         days: int = 90,
         as_of: date | None = None,
         *,
@@ -694,6 +715,7 @@ class ActivityRow(Base):
         async def _query(s: AsyncSession) -> list[ActivityRow]:
             result = await s.execute(
                 select(cls)
+                .where(cls.user_id == user_id)
                 .where(cls.start_date_local >= cutoff)
                 .where(cls.start_date_local <= newest)
                 .where(cls.average_hr.isnot(None))
@@ -708,33 +730,34 @@ class ActivityRow(Base):
             return await _query(s)
 
     @classmethod
-    async def get_for_date(cls, dt: date) -> list[ActivityRow]:
+    async def get_for_date(cls, dt: date, user_id: int) -> list[ActivityRow]:
         """Get all activities for a specific date."""
         dt_str = str(dt)
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.start_date_local == dt_str).order_by(cls.id))
+            result = await session.execute(
+                select(cls).where(cls.user_id == user_id, cls.start_date_local == dt_str).order_by(cls.id)
+            )
             return list(result.scalars().all())
 
     @classmethod
-    async def get_range(cls, start: date, end: date) -> tuple[list[ActivityRow], datetime | None]:
+    async def get_range(cls, start: date, end: date, user_id: int) -> tuple[list[ActivityRow], datetime | None]:
         """Return activities in date range and MAX(last_synced_at)."""
         start_str, end_str = str(start), str(end)
         async with get_session() as session:
             result = await session.execute(
                 select(cls)
-                .where(cls.start_date_local >= start_str)
-                .where(cls.start_date_local <= end_str)
+                .where(cls.user_id == user_id, cls.start_date_local >= start_str, cls.start_date_local <= end_str)
                 .order_by(cls.start_date_local, cls.id)
             )
             activities = list(result.scalars().all())
 
-            sync_result = await session.execute(select(func.max(cls.last_synced_at)))
+            sync_result = await session.execute(select(func.max(cls.last_synced_at)).where(cls.user_id == user_id))
             last_synced_at = sync_result.scalar_one_or_none()
 
         return activities, last_synced_at
 
     @classmethod
-    async def get_unprocessed(cls, batch_size: int = 5) -> list[ActivityRow]:
+    async def get_unprocessed(cls, user_id: int, batch_size: int = 5) -> list[ActivityRow]:
         """Return bike/run activities not yet in activity_hrv, ≥15 min, newest first."""
         _ELIGIBLE_TYPES = (
             "Ride",
@@ -749,6 +772,7 @@ class ActivityRow(Base):
             subq = select(ActivityHrvRow.activity_id)
             result = await session.execute(
                 select(cls)
+                .where(cls.user_id == user_id)
                 .where(cls.type.in_(_ELIGIBLE_TYPES))
                 .where(cls.id.notin_(subq))
                 .where(cls.moving_time >= 900)  # ≥15 min
@@ -760,6 +784,7 @@ class ActivityRow(Base):
     @classmethod
     async def get_without_details(
         cls,
+        user_id: int,
         limit: int = 0,
         since_date: str | None = None,
     ) -> list[ActivityRow]:
@@ -771,7 +796,7 @@ class ActivityRow(Base):
         """
         async with get_session() as session:
             subq = select(ActivityDetailRow.activity_id)
-            stmt = select(cls).where(cls.id.notin_(subq)).order_by(cls.start_date_local.desc())
+            stmt = select(cls).where(cls.user_id == user_id, cls.id.notin_(subq)).order_by(cls.start_date_local.desc())
             if since_date:
                 stmt = stmt.where(cls.start_date_local >= since_date)
             if limit > 0:
@@ -786,7 +811,6 @@ class ActivityHrvRow(Base):
     __tablename__ = "activity_hrv"
 
     activity_id: Mapped[str] = mapped_column(String, ForeignKey("activities.id"), primary_key=True)
-    date: Mapped[str] = mapped_column(String)  # "YYYY-MM-DD"
     activity_type: Mapped[str] = mapped_column(String)  # "Ride" | "Run"
 
     # Quality
@@ -835,11 +859,16 @@ class ActivityHrvRow(Base):
             await session.commit()
 
     @classmethod
-    async def get_for_date(cls, dt: date) -> list[ActivityHrvRow]:
-        """Get all activity_hrv rows for activities on a specific date."""
+    async def get_for_date(cls, dt: date, user_id: int) -> list[ActivityHrvRow]:
+        """Get all activity_hrv rows for activities on a specific date (via JOIN)."""
         dt_str = str(dt)
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.date == dt_str).order_by(cls.activity_id))
+            result = await session.execute(
+                select(cls)
+                .join(ActivityRow, ActivityRow.id == cls.activity_id)
+                .where(ActivityRow.start_date_local == dt_str, ActivityRow.user_id == user_id)
+                .order_by(cls.activity_id)
+            )
             return list(result.scalars().all())
 
 
@@ -847,9 +876,10 @@ class PaBaselineRow(Base):
     """Pa (power/pace at fixed DFA a1) baseline for Ra calculation."""
 
     __tablename__ = "pa_baseline"
-    __table_args__ = (UniqueConstraint("activity_type", "date", name="uq_pa_baseline_activity_type_date"),)
+    __table_args__ = (UniqueConstraint("user_id", "activity_type", "date", name="uq_pa_baseline_user_type_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     activity_type: Mapped[str] = mapped_column(String)  # "Ride" | "Run"
     date: Mapped[str] = mapped_column(String)  # "YYYY-MM-DD"
     pa_value: Mapped[float] = mapped_column(Float)  # Power/pace at fixed a1 (warmup)
@@ -860,13 +890,20 @@ class PaBaselineRow(Base):
 
     @classmethod
     async def save(
-        cls, activity_type: str, dt: str, pa_value: float, dfa_a1_ref: float | None = None, quality: str | None = None
+        cls,
+        user_id: int,
+        activity_type: str,
+        dt: str,
+        pa_value: float,
+        dfa_a1_ref: float | None = None,
+        quality: str | None = None,
     ) -> None:
-        """Save or update a Pa baseline data point (dedup on activity_type + date)."""
+        """Save or update a Pa baseline data point (dedup on user_id + activity_type + date)."""
         async with get_session() as session:
             stmt = (
                 insert(cls)
                 .values(
+                    user_id=user_id,
                     activity_type=activity_type,
                     date=dt,
                     pa_value=pa_value,
@@ -874,7 +911,7 @@ class PaBaselineRow(Base):
                     quality=quality,
                 )
                 .on_conflict_do_update(
-                    index_elements=["activity_type", "date"],
+                    constraint="uq_pa_baseline_user_type_date",
                     set_={
                         "pa_value": pa_value,
                         "dfa_a1_ref": dfa_a1_ref,
@@ -886,13 +923,16 @@ class PaBaselineRow(Base):
             await session.commit()
 
     @classmethod
-    async def get_average(cls, activity_type: str, days: int = 14, as_of: date | None = None) -> float | None:
+    async def get_average(
+        cls, user_id: int, activity_type: str, days: int = 14, as_of: date | None = None
+    ) -> float | None:
         """Return average Pa over last N days for a sport, or None if <3 data points."""
         ref = as_of or date.today()
         cutoff = str(ref - timedelta(days=days))
         async with get_session() as session:
             result = await session.execute(
                 select(cls.pa_value)
+                .where(cls.user_id == user_id)
                 .where(cls.activity_type == activity_type)
                 .where(cls.date >= cutoff)
                 .where(cls.date <= str(ref))
@@ -1025,6 +1065,7 @@ class ScheduledWorkoutRow(Base):
     __tablename__ = "scheduled_workouts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)  # Intervals.icu event ID
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     start_date_local: Mapped[str] = mapped_column(String)  # "YYYY-MM-DD"
     end_date_local: Mapped[str | None] = mapped_column(String, nullable=True)
     name: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1043,6 +1084,7 @@ class ScheduledWorkoutRow(Base):
     async def save_bulk(
         cls,
         workouts: list[ScheduledWorkout],
+        user_id: int,
         oldest: date | None = None,
         newest: date | None = None,
     ) -> int:
@@ -1063,7 +1105,7 @@ class ScheduledWorkoutRow(Base):
 
                 row = await session.get(cls, w.id)
                 if row is None:
-                    row = cls(id=w.id)
+                    row = cls(id=w.id, user_id=user_id)
                     session.add(row)
 
                 row.start_date_local = str(w.start_date_local)
@@ -1087,6 +1129,7 @@ class ScheduledWorkoutRow(Base):
                 newest_str = newest.strftime("%Y-%m-%d")
 
                 stale_q = delete(cls).where(
+                    cls.user_id == user_id,
                     cls.start_date_local >= oldest_str,
                     cls.start_date_local <= newest_str,
                 )
@@ -1103,27 +1146,26 @@ class ScheduledWorkoutRow(Base):
         return count
 
     @classmethod
-    async def get_for_date(cls, dt: date) -> list[ScheduledWorkoutRow]:
+    async def get_for_date(cls, dt: date, user_id: int) -> list[ScheduledWorkoutRow]:
         """Return all scheduled workouts for a given date."""
         dt_str = str(dt)
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.start_date_local == dt_str))
+            result = await session.execute(select(cls).where(cls.user_id == user_id, cls.start_date_local == dt_str))
             return list(result.scalars().all())
 
     @classmethod
-    async def get_range(cls, start: date, end: date) -> tuple[list[ScheduledWorkoutRow], datetime | None]:
+    async def get_range(cls, start: date, end: date, user_id: int) -> tuple[list[ScheduledWorkoutRow], datetime | None]:
         """Return scheduled workouts in date range and MAX(last_synced_at)."""
         start_str, end_str = str(start), str(end)
         async with get_session() as session:
             result = await session.execute(
                 select(cls)
-                .where(cls.start_date_local >= start_str)
-                .where(cls.start_date_local <= end_str)
+                .where(cls.user_id == user_id, cls.start_date_local >= start_str, cls.start_date_local <= end_str)
                 .order_by(cls.start_date_local)
             )
             workouts = list(result.scalars().all())
 
-            sync_result = await session.execute(select(func.max(cls.last_synced_at)))
+            sync_result = await session.execute(select(func.max(cls.last_synced_at)).where(cls.user_id == user_id))
             last_synced_at = sync_result.scalar_one_or_none()
 
         return workouts, last_synced_at
@@ -1135,6 +1177,7 @@ class MoodCheckinRow(Base):
     __tablename__ = "mood_checkins"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     energy: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5
     mood: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5
@@ -1147,6 +1190,7 @@ class MoodCheckinRow(Base):
     @classmethod
     async def save(
         cls,
+        user_id: int,
         energy: int | None = None,
         mood: int | None = None,
         anxiety: int | None = None,
@@ -1175,6 +1219,7 @@ class MoodCheckinRow(Base):
 
         async with get_session() as session:
             row = cls(
+                user_id=user_id,
                 timestamp=datetime.now(timezone.utc),
                 energy=energy,
                 mood=mood,
@@ -1190,6 +1235,7 @@ class MoodCheckinRow(Base):
     @classmethod
     async def get_range(
         cls,
+        user_id: int,
         target_date: str | None = None,
         days_back: int = 7,
     ) -> list[MoodCheckinRow]:
@@ -1214,8 +1260,7 @@ class MoodCheckinRow(Base):
         async with get_session() as session:
             result = await session.execute(
                 select(cls)
-                .where(cls.timestamp >= cutoff_dt)
-                .where(cls.timestamp <= end_dt)
+                .where(cls.user_id == user_id, cls.timestamp >= cutoff_dt, cls.timestamp <= end_dt)
                 .order_by(cls.timestamp.asc())
             )
             return list(result.scalars().all())
@@ -1225,8 +1270,11 @@ class IqosDailyRow(Base):
     """Daily IQOS stick counter. One row per date."""
 
     __tablename__ = "iqos_daily"
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_iqos_daily_user_date"),)
 
-    date: Mapped[str] = mapped_column(String, primary_key=True)  # "YYYY-MM-DD"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
     count: Mapped[int] = mapped_column(Integer, default=0)
     updated: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
@@ -1235,7 +1283,7 @@ class IqosDailyRow(Base):
     # --- CRUD ---
 
     @classmethod
-    async def increment(cls, target_date: date | None = None) -> IqosDailyRow:
+    async def increment(cls, user_id: int, target_date: date | None = None) -> IqosDailyRow:
         """Increment IQOS stick count for the given date (default: today).
 
         Creates a new row if none exists for the date, otherwise increments count by 1.
@@ -1247,9 +1295,9 @@ class IqosDailyRow(Base):
         async with get_session() as session:
             stmt = (
                 insert(cls)
-                .values(date=date_str, count=1, updated=datetime.now(timezone.utc))
+                .values(user_id=user_id, date=date_str, count=1, updated=datetime.now(timezone.utc))
                 .on_conflict_do_update(
-                    index_elements=["date"],
+                    constraint="uq_iqos_daily_user_date",
                     set_={"count": cls.count + 1, "updated": datetime.now(timezone.utc)},
                 )
                 .returning(cls)
@@ -1259,18 +1307,19 @@ class IqosDailyRow(Base):
             return result.scalars().one()
 
     @classmethod
-    async def get(cls, target_date: date | None = None) -> IqosDailyRow | None:
+    async def get(cls, user_id: int, target_date: date | None = None) -> IqosDailyRow | None:
         """Get IQOS stick count for a single date (default: today)."""
         dt = target_date or date.today()
         date_str = str(dt)
 
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.date == date_str))
+            result = await session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
             return result.scalar_one_or_none()
 
     @classmethod
     async def get_range(
         cls,
+        user_id: int,
         target_date: str | None = None,
         days_back: int = 7,
     ) -> list[IqosDailyRow]:
@@ -1288,7 +1337,9 @@ class IqosDailyRow(Base):
 
         async with get_session() as session:
             result = await session.execute(
-                select(cls).where(cls.date >= str(from_date)).where(cls.date <= str(ref)).order_by(cls.date.asc())
+                select(cls)
+                .where(cls.user_id == user_id, cls.date >= str(from_date), cls.date <= str(ref))
+                .order_by(cls.date.asc())
             )
             return list(result.scalars().all())
 
@@ -1299,6 +1350,7 @@ class AiWorkoutRow(Base):
     __tablename__ = "ai_workouts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
     sport: Mapped[str] = mapped_column(String(30), nullable=False)
     slot: Mapped[str] = mapped_column(String(30), nullable=False, default="morning")
@@ -1321,6 +1373,7 @@ class AiWorkoutRow(Base):
     async def save(
         cls,
         *,
+        user_id: int,
         date_str: str,
         sport: str,
         slot: str,
@@ -1337,6 +1390,7 @@ class AiWorkoutRow(Base):
             stmt = (
                 insert(cls)
                 .values(
+                    user_id=user_id,
                     date=date_str,
                     sport=sport,
                     slot=slot,
@@ -1369,39 +1423,39 @@ class AiWorkoutRow(Base):
             return result.scalar_one()
 
     @classmethod
-    async def get_by_external_id(cls, external_id: str) -> AiWorkoutRow | None:
+    async def get_by_external_id(cls, external_id: str, user_id: int) -> AiWorkoutRow | None:
         """Fetch an AI workout by its external_id."""
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.external_id == external_id))
+            result = await session.execute(select(cls).where(cls.external_id == external_id, cls.user_id == user_id))
             return result.scalar_one_or_none()
 
     @classmethod
-    async def get_upcoming(cls, days_ahead: int = 7) -> list[AiWorkoutRow]:
+    async def get_upcoming(cls, user_id: int, days_ahead: int = 7) -> list[AiWorkoutRow]:
         """Fetch active AI workouts for the upcoming days."""
         today_str = str(date.today())
         end_str = str(date.today() + timedelta(days=days_ahead))
         async with get_session() as session:
             result = await session.execute(
                 select(cls)
-                .where(cls.date >= today_str)
-                .where(cls.date <= end_str)
-                .where(cls.status == "active")
+                .where(cls.user_id == user_id, cls.date >= today_str, cls.date <= end_str, cls.status == "active")
                 .order_by(cls.date.asc())
             )
             return list(result.scalars().all())
 
     @classmethod
-    async def get_for_date(cls, dt: date) -> list[AiWorkoutRow]:
+    async def get_for_date(cls, dt: date, user_id: int) -> list[AiWorkoutRow]:
         """Fetch active AI workouts for a specific date."""
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.date == str(dt)).where(cls.status == "active"))
+            result = await session.execute(
+                select(cls).where(cls.user_id == user_id, cls.date == str(dt), cls.status == "active")
+            )
             return list(result.scalars().all())
 
     @classmethod
-    async def cancel(cls, external_id: str) -> AiWorkoutRow | None:
+    async def cancel(cls, external_id: str, user_id: int) -> AiWorkoutRow | None:
         """Mark an AI workout as cancelled."""
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.external_id == external_id))
+            result = await session.execute(select(cls).where(cls.external_id == external_id, cls.user_id == user_id))
             row = result.scalar_one_or_none()
             if row:
                 row.status = "cancelled"
@@ -1417,6 +1471,7 @@ class TrainingLogRow(Base):
     __tablename__ = "training_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
     sport: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
@@ -1472,33 +1527,37 @@ class TrainingLogRow(Base):
     # --- CRUD ---
 
     @classmethod
-    async def create(cls, **kwargs) -> TrainingLogRow:
+    async def create(cls, *, user_id: int, **kwargs) -> TrainingLogRow:
         """Create a training log entry with pre-context."""
         async with get_session() as session:
-            row = cls(**kwargs)
+            row = cls(user_id=user_id, **kwargs)
             session.add(row)
             await session.commit()
             await session.refresh(row)
             return row
 
     @classmethod
-    async def get_for_date(cls, dt: date | str) -> list[TrainingLogRow]:
+    async def get_for_date(cls, dt: date | str, user_id: int) -> list[TrainingLogRow]:
         """Fetch training log entries for a specific date."""
         date_str = str(dt)
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.date == date_str).order_by(cls.id.asc()))
+            result = await session.execute(
+                select(cls).where(cls.user_id == user_id, cls.date == date_str).order_by(cls.id.asc())
+            )
             return list(result.scalars().all())
 
     @classmethod
-    async def get_range(cls, days_back: int = 14) -> list[TrainingLogRow]:
+    async def get_range(cls, user_id: int, days_back: int = 14) -> list[TrainingLogRow]:
         """Fetch training log entries for the last N days."""
         from_date = str(date.today() - timedelta(days=days_back - 1))
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.date >= from_date).order_by(cls.date.desc()))
+            result = await session.execute(
+                select(cls).where(cls.user_id == user_id, cls.date >= from_date).order_by(cls.date.desc())
+            )
             return list(result.scalars().all())
 
     @classmethod
-    async def get_unfilled_actual(cls) -> list[TrainingLogRow]:
+    async def get_unfilled_actual(cls, user_id: int) -> list[TrainingLogRow]:
         """Fetch log entries with no actual data yet (compliance is NULL).
 
         Uses 1-day buffer to avoid marking 'skipped' prematurely
@@ -1507,28 +1566,33 @@ class TrainingLogRow(Base):
         cutoff = str(date.today())
         async with get_session() as session:
             result = await session.execute(
-                select(cls).where(cls.compliance.is_(None)).where(cls.date < cutoff).order_by(cls.date.asc())
-            )
-            return list(result.scalars().all())
-
-    @classmethod
-    async def get_unfilled_post(cls) -> list[TrainingLogRow]:
-        """Fetch log entries with actual data but no post-outcome yet."""
-        async with get_session() as session:
-            result = await session.execute(
                 select(cls)
-                .where(cls.compliance.isnot(None))
-                .where(cls.post_recovery_score.is_(None))
-                .where(cls.date < str(date.today()))
+                .where(cls.user_id == user_id, cls.compliance.is_(None), cls.date < cutoff)
                 .order_by(cls.date.asc())
             )
             return list(result.scalars().all())
 
     @classmethod
-    async def update(cls, log_id: int, **kwargs) -> TrainingLogRow | None:
+    async def get_unfilled_post(cls, user_id: int) -> list[TrainingLogRow]:
+        """Fetch log entries with actual data but no post-outcome yet."""
+        async with get_session() as session:
+            result = await session.execute(
+                select(cls)
+                .where(
+                    cls.user_id == user_id,
+                    cls.compliance.isnot(None),
+                    cls.post_recovery_score.is_(None),
+                    cls.date < str(date.today()),
+                )
+                .order_by(cls.date.asc())
+            )
+            return list(result.scalars().all())
+
+    @classmethod
+    async def update(cls, log_id: int, *, user_id: int, **kwargs) -> TrainingLogRow | None:
         """Update a training log entry with actual or post data."""
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.id == log_id))
+            result = await session.execute(select(cls).where(cls.id == log_id, cls.user_id == user_id))
             row = result.scalar_one_or_none()
             if row:
                 for k, v in kwargs.items():
@@ -1670,6 +1734,7 @@ class WorkoutCardRow(Base):
     __tablename__ = "workout_cards"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     date: Mapped[str] = mapped_column(String(10), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     sport: Mapped[str] = mapped_column(String(30), nullable=False, default="Other", server_default="Other")
@@ -1685,6 +1750,7 @@ class WorkoutCardRow(Base):
     async def save(
         cls,
         *,
+        user_id: int,
         date_str: str,
         name: str,
         sport: str = "Other",
@@ -1696,6 +1762,7 @@ class WorkoutCardRow(Base):
         """Create a workout card entry."""
         async with get_session() as session:
             row = cls(
+                user_id=user_id,
                 date=date_str,
                 name=name,
                 sport=sport,
@@ -1710,17 +1777,17 @@ class WorkoutCardRow(Base):
             return row
 
     @classmethod
-    async def get_by_id(cls, card_id: int) -> WorkoutCardRow | None:
+    async def get_by_id(cls, card_id: int, user_id: int) -> WorkoutCardRow | None:
         """Fetch a single workout card by ID."""
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.id == card_id))
+            result = await session.execute(select(cls).where(cls.id == card_id, cls.user_id == user_id))
             return result.scalar_one_or_none()
 
     @classmethod
-    async def delete(cls, card_id: int) -> bool:
+    async def delete(cls, card_id: int, user_id: int) -> bool:
         """Delete a workout card by ID. Returns True if deleted."""
         async with get_session() as session:
-            result = await session.execute(select(cls).where(cls.id == card_id))
+            result = await session.execute(select(cls).where(cls.id == card_id, cls.user_id == user_id))
             row = result.scalar_one_or_none()
             if not row:
                 return False
@@ -1729,11 +1796,11 @@ class WorkoutCardRow(Base):
             return True
 
     @classmethod
-    async def get_list(cls, days_back: int = 30) -> list[WorkoutCardRow]:
+    async def get_list(cls, user_id: int, days_back: int = 30) -> list[WorkoutCardRow]:
         """Fetch workout cards for the last N days, newest first."""
         cutoff = str(date.today() - timedelta(days=days_back - 1))
         async with get_session() as session:
             result = await session.execute(
-                select(cls).where(cls.date >= cutoff).order_by(cls.date.desc(), cls.id.desc())
+                select(cls).where(cls.user_id == user_id, cls.date >= cutoff).order_by(cls.date.desc(), cls.id.desc())
             )
             return list(result.scalars().all())

@@ -106,7 +106,7 @@ async def get_efficiency_trend(
         strict_filter: Apply strict decoupling-analysis filter (VI, zone adherence, duration).
     """
     since = date.today() - timedelta(days=days_back)
-    activities, _ = await ActivityRow.get_range(since, date.today())
+    activities, _ = await ActivityRow.get_range(since, date.today(), user_id=1)  # TODO: user_id from auth
 
     # Filter by sport
     target_sports = {sport.lower()} if sport else {"bike", "run", "swim"}

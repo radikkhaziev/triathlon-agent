@@ -50,34 +50,34 @@ def _make_activity(
 class TestSaveWellness:
     async def test_insert_new_row(self):
         w = _make_wellness()
-        row, _ = await WellnessRow.save(date(2026, 3, 15), wellness=w)
+        row, _ = await WellnessRow.save(date(2026, 3, 15), user_id=1, wellness=w)
 
-        assert row.id == "2026-03-15"
+        assert row.date == "2026-03-15"
         assert row.sleep_score == 85
         assert row.sleep_secs == 28800
 
     async def test_upsert_updates_existing(self):
         dt = date(2026, 3, 15)
-        await WellnessRow.save(dt, wellness=_make_wellness(sleep_score=70))
-        row, _ = await WellnessRow.save(dt, wellness=_make_wellness(sleep_score=90))
+        await WellnessRow.save(dt, user_id=1, wellness=_make_wellness(sleep_score=70))
+        row, _ = await WellnessRow.save(dt, user_id=1, wellness=_make_wellness(sleep_score=90))
 
         assert row.sleep_score == 90
 
-        fetched = await WellnessRow.get(dt)
+        fetched = await WellnessRow.get(dt, user_id=1)
         assert fetched is not None
         assert fetched.sleep_score == 90
 
 
 class TestGetWellness:
     async def test_returns_row(self):
-        await WellnessRow.save(date(2026, 3, 15), wellness=_make_wellness())
-        result = await WellnessRow.get(date(2026, 3, 15))
+        await WellnessRow.save(date(2026, 3, 15), user_id=1, wellness=_make_wellness())
+        result = await WellnessRow.get(date(2026, 3, 15), user_id=1)
 
         assert result is not None
         assert result.sleep_score == 85
 
     async def test_returns_none_when_not_found(self):
-        result = await WellnessRow.get(date(2099, 1, 1))
+        result = await WellnessRow.get(date(2099, 1, 1), user_id=1)
         assert result is None
 
 
@@ -89,34 +89,34 @@ class TestGetWellness:
 class TestSaveActivities:
     async def test_insert_with_average_hr(self):
         act = _make_activity(average_hr=145.0)
-        count = await ActivityRow.save_bulk([act])
+        count = await ActivityRow.save_bulk([act], user_id=1)
         assert count == 1
 
-        rows = await ActivityRow.get_for_banister(days=90, as_of=date(2026, 3, 15))
+        rows = await ActivityRow.get_for_banister(user_id=1, days=90, as_of=date(2026, 3, 15))
         assert len(rows) == 1
         assert rows[0].average_hr == 145.0
 
     async def test_upsert_updates_average_hr(self):
         dt = date(2026, 3, 15)
-        await ActivityRow.save_bulk([_make_activity(id="i200", dt=dt, average_hr=130.0)])
-        await ActivityRow.save_bulk([_make_activity(id="i200", dt=dt, average_hr=142.0)])
+        await ActivityRow.save_bulk([_make_activity(id="i200", dt=dt, average_hr=130.0)], user_id=1)
+        await ActivityRow.save_bulk([_make_activity(id="i200", dt=dt, average_hr=142.0)], user_id=1)
 
-        rows = await ActivityRow.get_for_banister(days=90, as_of=dt)
+        rows = await ActivityRow.get_for_banister(user_id=1, days=90, as_of=dt)
         assert len(rows) == 1
         assert rows[0].average_hr == 142.0
 
     async def test_none_average_hr_stored(self):
         """Activities without HR (e.g. pool swim) should still be saved."""
         act = _make_activity(id="i300", average_hr=None)
-        count = await ActivityRow.save_bulk([act])
+        count = await ActivityRow.save_bulk([act], user_id=1)
         assert count == 1
 
         # Should NOT appear in banister query (filters average_hr IS NOT NULL)
-        rows = await ActivityRow.get_for_banister(days=90, as_of=date(2026, 3, 15))
+        rows = await ActivityRow.get_for_banister(user_id=1, days=90, as_of=date(2026, 3, 15))
         assert all(r.id != "i300" for r in rows)
 
         # But should appear in CTL query (filters icu_training_load IS NOT NULL)
-        ctl_rows = await ActivityRow.get_for_ctl(days=90, as_of=date(2026, 3, 15))
+        ctl_rows = await ActivityRow.get_for_ctl(user_id=1, days=90, as_of=date(2026, 3, 15))
         assert any(r.id == "i300" for r in ctl_rows)
 
 
@@ -127,10 +127,11 @@ class TestGetActivitiesForBanister:
             [
                 _make_activity(id="i401", dt=ref, average_hr=140.0),
                 _make_activity(id="i402", dt=ref - timedelta(days=100), average_hr=140.0),
-            ]
+            ],
+            user_id=1,
         )
 
-        rows = await ActivityRow.get_for_banister(days=90, as_of=ref)
+        rows = await ActivityRow.get_for_banister(user_id=1, days=90, as_of=ref)
         ids = {r.id for r in rows}
         assert "i401" in ids
         assert "i402" not in ids  # outside 90-day window
@@ -141,10 +142,11 @@ class TestGetActivitiesForBanister:
             [
                 _make_activity(id="i501", dt=dt, average_hr=0.0),
                 _make_activity(id="i502", dt=dt, average_hr=140.0),
-            ]
+            ],
+            user_id=1,
         )
 
-        rows = await ActivityRow.get_for_banister(days=90, as_of=dt)
+        rows = await ActivityRow.get_for_banister(user_id=1, days=90, as_of=dt)
         ids = {r.id for r in rows}
         assert "i501" not in ids
         assert "i502" in ids
@@ -156,9 +158,10 @@ class TestGetActivitiesForBanister:
                 _make_activity(id="i601", dt=ref, average_hr=140.0),
                 _make_activity(id="i602", dt=ref - timedelta(days=5), average_hr=140.0),
                 _make_activity(id="i603", dt=ref - timedelta(days=10), average_hr=140.0),
-            ]
+            ],
+            user_id=1,
         )
 
-        rows = await ActivityRow.get_for_banister(days=90, as_of=ref)
+        rows = await ActivityRow.get_for_banister(user_id=1, days=90, as_of=ref)
         dates = [r.start_date_local for r in rows]
         assert dates == sorted(dates)

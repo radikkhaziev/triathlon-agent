@@ -99,7 +99,7 @@ async def suggest_workout(
     )
 
     # Check for existing AI workout on this date+sport
-    existing = await AiWorkoutRow.get_by_external_id(workout.external_id)
+    existing = await AiWorkoutRow.get_by_external_id(workout.external_id, user_id=1)  # TODO: per-user
 
     # Push to Intervals.icu
     client = IntervalsClient()
@@ -131,6 +131,7 @@ async def suggest_workout(
 
     # Save to local DB
     await AiWorkoutRow.save(
+        user_id=1,  # TODO: per-user
         date_str=str(dt),
         sport=sport,
         slot=workout.slot,
@@ -183,7 +184,7 @@ async def remove_ai_workout(
         return "AI workout generation is disabled (AI_WORKOUT_ENABLED=false)"
 
     dt = date.fromisoformat(target_date)
-    targets = await AiWorkoutRow.get_for_date(dt)
+    targets = await AiWorkoutRow.get_for_date(dt, user_id=1)  # TODO: per-user
     if sport:
         targets = [w for w in targets if w.sport.lower() == sport.lower()]
 
@@ -198,7 +199,7 @@ async def remove_ai_workout(
                 await client.delete_event(w.intervals_id)
             except Exception:
                 logger.warning("Failed to delete event %s from Intervals.icu", w.intervals_id)
-        await AiWorkoutRow.cancel(w.external_id)
+        await AiWorkoutRow.cancel(w.external_id, user_id=1)  # TODO: per-user
         removed.append(f"AI: {w.name} ({w.sport})")
 
     return f"Removed {len(removed)} workout(s): " + ", ".join(removed)
@@ -214,7 +215,7 @@ async def list_ai_workouts(days_ahead: int = 7) -> dict:
     Args:
         days_ahead: Number of days to look ahead (default: 7).
     """
-    rows = await AiWorkoutRow.get_upcoming(days_ahead=days_ahead)
+    rows = await AiWorkoutRow.get_upcoming(user_id=1, days_ahead=days_ahead)  # TODO: per-user
     return {
         "count": len(rows),
         "workouts": [

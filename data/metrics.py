@@ -348,17 +348,18 @@ def _rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatus:
     )
 
 
-async def calculate_rmssd_status(algorithm: str | None = None, *, session=None) -> RmssdStatus:
+async def calculate_rmssd_status(*, user_id: int, algorithm: str | None = None, session=None) -> RmssdStatus:
     """Dispatcher: loads HRV history from DB, delegates to selected algorithm.
 
     Args:
+        user_id: tenant ID for data isolation.
         algorithm: "flatt_esco" or "ai_endurance". Defaults to settings.HRV_ALGORITHM.
         session: optional AsyncSession to reuse an existing transaction.
     """
     from data.database import WellnessRow
 
     algo = algorithm or settings.HRV_ALGORITHM
-    hrv_history = await WellnessRow.get_hrv_history(days=60, session=session)
+    hrv_history = await WellnessRow.get_hrv_history(user_id, days=60, session=session)
     n = len(hrv_history)
     MIN_DAYS = 14
 
@@ -380,7 +381,7 @@ async def calculate_rmssd_status(algorithm: str | None = None, *, session=None) 
 # ---------------------------------------------------------------------------
 
 
-async def calculate_rhr_status(*, session=None) -> RhrStatus:
+async def calculate_rhr_status(*, user_id: int, session=None) -> RhrStatus:
     """Resting HR baseline analysis.
 
     Compares today's RHR vs 30-day rolling baseline.
@@ -388,11 +389,12 @@ async def calculate_rhr_status(*, session=None) -> RhrStatus:
     Computes 7d, 30d, and 60d baselines.
 
     Args:
+        user_id: tenant ID for data isolation.
         session: optional AsyncSession to reuse an existing transaction.
     """
     from data.database import WellnessRow
 
-    rhr_history = await WellnessRow.get_rhr_history(days=60, session=session)
+    rhr_history = await WellnessRow.get_rhr_history(user_id, days=60, session=session)
     n = len(rhr_history)
     MIN_DAYS = 7
 

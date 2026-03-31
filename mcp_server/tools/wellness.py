@@ -9,7 +9,7 @@ from mcp_server.app import mcp
 def _row_to_dict(row: WellnessRow) -> dict:
     """Convert WellnessRow to a flat dict for MCP response."""
     return {
-        "date": row.id,
+        "date": row.date,
         "ctl": row.ctl,
         "atl": row.atl,
         "ramp_rate": row.ramp_rate,
@@ -46,7 +46,10 @@ async def get_wellness(date: str) -> dict:
         date: Date in YYYY-MM-DD format
     """
     async with get_session() as session:
-        row = await session.get(WellnessRow, date)
+        result = await session.execute(
+            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
+        )
+        row = result.scalar_one_or_none()
     if not row:
         return {"error": f"No data for {date}"}
     return _row_to_dict(row)
@@ -64,7 +67,10 @@ async def get_wellness_range(from_date: str, to_date: str) -> dict:
     """
     async with get_session() as session:
         result = await session.execute(
-            select(WellnessRow).where(WellnessRow.id >= from_date, WellnessRow.id <= to_date).order_by(WellnessRow.id)
+            select(WellnessRow)
+            .where(WellnessRow.user_id == 1)  # TODO: per-user
+            .where(WellnessRow.date >= from_date, WellnessRow.date <= to_date)
+            .order_by(WellnessRow.date)
         )
         rows = result.scalars().all()
 

@@ -275,7 +275,7 @@ MORNING_TOOLS = [
 
 def _wellness_to_dict(row: WellnessRow) -> dict:
     return {
-        "date": row.id,
+        "date": row.date,
         "ctl": row.ctl,
         "atl": row.atl,
         "ramp_rate": row.ramp_rate,
@@ -326,7 +326,10 @@ def _pct(current: float | None, target: float) -> float | None:
 
 async def handle_get_recovery(date: str) -> dict:
     async with get_session() as session:
-        row = await session.get(WellnessRow, date)
+        result = await session.execute(
+            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
+        )
+        row = result.scalar_one_or_none()
     if not row:
         return {"error": f"No data for {date}"}
 
@@ -352,13 +355,13 @@ async def handle_get_recovery(date: str) -> dict:
 async def handle_get_hrv_analysis(date: str, algorithm: str = "") -> dict:
     async with get_session() as session:
         if algorithm:
-            row = await session.get(HrvAnalysisRow, (date, algorithm))
+            row = await session.get(HrvAnalysisRow, (1, date, algorithm))  # TODO: user_id from auth
             if not row:
                 return {"error": f"No HRV data for {date} ({algorithm})"}
             return {"date": date, **_hrv_row_to_dict(row)}
         else:
-            flatt = await session.get(HrvAnalysisRow, (date, "flatt_esco"))
-            aie = await session.get(HrvAnalysisRow, (date, "ai_endurance"))
+            flatt = await session.get(HrvAnalysisRow, (1, date, "flatt_esco"))  # TODO: user_id from auth
+            aie = await session.get(HrvAnalysisRow, (1, date, "ai_endurance"))  # TODO: user_id from auth
             result: dict = {"date": date}
             if flatt:
                 result["flatt_esco"] = _hrv_row_to_dict(flatt)
@@ -371,7 +374,7 @@ async def handle_get_hrv_analysis(date: str, algorithm: str = "") -> dict:
 
 async def handle_get_rhr_analysis(date: str) -> dict:
     async with get_session() as session:
-        row = await session.get(RhrAnalysisRow, date)
+        row = await session.get(RhrAnalysisRow, (1, date))  # TODO: user_id from auth
     if not row:
         return {"error": f"No RHR data for {date}"}
     return {
@@ -391,7 +394,10 @@ async def handle_get_rhr_analysis(date: str) -> dict:
 
 async def handle_get_training_load(date: str) -> dict:
     async with get_session() as session:
-        row = await session.get(WellnessRow, date)
+        result = await session.execute(
+            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
+        )
+        row = result.scalar_one_or_none()
     if not row:
         return {"error": f"No data for {date}"}
 
@@ -421,6 +427,7 @@ async def handle_get_scheduled_workouts(date: str, days_ahead: int = 0) -> dict:
             (
                 await session.execute(
                     select(ScheduledWorkoutRow)
+                    .where(ScheduledWorkoutRow.user_id == 1)  # TODO: per-user
                     .where(ScheduledWorkoutRow.start_date_local >= str(start))
                     .where(ScheduledWorkoutRow.start_date_local <= str(end))
                     .order_by(ScheduledWorkoutRow.start_date_local)
@@ -454,7 +461,11 @@ async def handle_get_goal_progress() -> dict:
 
     async with get_session() as session:
         result = await session.execute(
-            select(WellnessRow).where(WellnessRow.ctl.isnot(None)).order_by(WellnessRow.id.desc()).limit(1)
+            select(WellnessRow)
+            .where(WellnessRow.user_id == 1)  # TODO: per-user
+            .where(WellnessRow.ctl.isnot(None))
+            .order_by(WellnessRow.date.desc())
+            .limit(1)
         )
         row = result.scalar_one_or_none()
 
@@ -496,7 +507,9 @@ async def handle_get_activity_hrv(date: str) -> dict:
             (
                 await session.execute(
                     select(ActivityHrvRow)
-                    .where(ActivityHrvRow.date == str(dt))
+                    .join(ActivityRow, ActivityRow.id == ActivityHrvRow.activity_id)
+                    .where(ActivityRow.user_id == 1)  # TODO: per-user
+                    .where(ActivityRow.start_date_local == str(dt))
                     .where(ActivityHrvRow.processing_status == "processed")
                 )
             )
@@ -531,7 +544,10 @@ async def handle_get_activity_hrv(date: str) -> dict:
 async def handle_get_wellness_range(from_date: str, to_date: str) -> dict:
     async with get_session() as session:
         result = await session.execute(
-            select(WellnessRow).where(WellnessRow.id >= from_date, WellnessRow.id <= to_date).order_by(WellnessRow.id)
+            select(WellnessRow)
+            .where(WellnessRow.user_id == 1)  # TODO: per-user
+            .where(WellnessRow.date >= from_date, WellnessRow.date <= to_date)
+            .order_by(WellnessRow.date)
         )
         rows = result.scalars().all()
 
@@ -555,6 +571,7 @@ async def handle_get_activities(target_date: str = "", days_back: int = 7) -> di
             (
                 await session.execute(
                     select(ActivityRow)
+                    .where(ActivityRow.user_id == 1)  # TODO: per-user
                     .where(ActivityRow.start_date_local >= str(start))
                     .where(ActivityRow.start_date_local <= str(end))
                     .order_by(ActivityRow.start_date_local.desc())
@@ -604,7 +621,7 @@ async def handle_get_activities(target_date: str = "", days_back: int = 7) -> di
 
 
 async def handle_get_training_log(days_back: int = 14) -> dict:
-    rows = await TrainingLogRow.get_range(days_back=days_back)
+    rows = await TrainingLogRow.get_range(user_id=1, days_back=days_back)  # TODO: per-user
 
     entries = []
     for r in rows:
@@ -661,22 +678,25 @@ async def handle_get_readiness_history(sport: str = "", days_back: int = 30) -> 
 
     async with get_session() as session:
         query = (
-            select(ActivityHrvRow)
-            .where(ActivityHrvRow.date >= cutoff)
+            select(ActivityHrvRow, ActivityRow.start_date_local)
+            .join(ActivityRow, ActivityRow.id == ActivityHrvRow.activity_id)
+            .where(ActivityRow.user_id == 1)  # TODO: per-user
+            .where(ActivityRow.start_date_local >= cutoff)
             .where(ActivityHrvRow.ra_pct.isnot(None))
-            .order_by(ActivityHrvRow.date.asc())
+            .order_by(ActivityRow.start_date_local.asc())
         )
         if sport.lower() in _SPORT_TYPES:
             query = query.where(ActivityHrvRow.activity_type.in_(_SPORT_TYPES[sport.lower()]))
 
-        rows = (await session.execute(query)).scalars().all()
+        result = await session.execute(query)
+        rows = result.all()
 
     readiness = []
-    for r in rows:
+    for r, activity_date in rows:
         status = "excellent" if r.ra_pct > 5 else "normal" if r.ra_pct > -5 else "under_recovered"
         readiness.append(
             {
-                "date": r.date,
+                "date": activity_date,
                 "activity_type": r.activity_type,
                 "ra_pct": r.ra_pct,
                 "status": status,
@@ -687,7 +707,7 @@ async def handle_get_readiness_history(sport: str = "", days_back: int = 30) -> 
 
 
 async def handle_get_mood_checkins(date_str: str | None = None, days_back: int = 7) -> dict:
-    checkins = await MoodCheckinRow.get_range(target_date=date_str, days_back=days_back)
+    checkins = await MoodCheckinRow.get_range(user_id=1, target_date=date_str, days_back=days_back)  # TODO: per-user
 
     ref = date_module.fromisoformat(date_str) if date_str else date_module.today()
     from_date = ref - timedelta(days=days_back - 1)
@@ -714,10 +734,10 @@ async def handle_get_iqos_sticks(target_date: str = "", days_back: int = 0) -> d
     ref = date_module.fromisoformat(target_date) if target_date else date_module.today()
 
     if days_back == 0:
-        row = await IqosDailyRow.get(ref)
+        row = await IqosDailyRow.get(user_id=1, target_date=ref)  # TODO: per-user
         return {"date": str(ref), "count": row.count if row else 0}
 
-    rows = await IqosDailyRow.get_range(target_date=str(ref), days_back=days_back)
+    rows = await IqosDailyRow.get_range(user_id=1, target_date=str(ref), days_back=days_back)  # TODO: per-user
     from_date = ref - timedelta(days=days_back - 1)
     rows_by_date = {r.date: r.count for r in rows}
     total = sum(rows_by_date.values())
@@ -752,7 +772,9 @@ async def handle_save_mood_checkin(
     note: str | None = None,
 ) -> dict:
     try:
-        row = await MoodCheckinRow.save(energy=energy, mood=mood, anxiety=anxiety, social=social, note=note)
+        row = await MoodCheckinRow.save(
+            user_id=1, energy=energy, mood=mood, anxiety=anxiety, social=social, note=note
+        )  # TODO: per-user
         return {
             "id": row.id,
             "timestamp": row.timestamp.isoformat(),

@@ -26,7 +26,7 @@ async def activities_week(
     monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
     sunday = monday + timedelta(days=6)
 
-    activities, last_synced_at = await ActivityRow.get_range(monday, sunday)
+    activities, last_synced_at = await ActivityRow.get_range(monday, sunday, user_id=1)  # TODO: user_id from auth
 
     by_date: dict[str, list] = {}
     for a in activities:
@@ -52,7 +52,9 @@ async def activities_week(
 
     prev_sunday = monday - timedelta(days=1)
     async with get_session() as session:
-        prev_result = await session.execute(select(exists().where(ActivityRow.start_date_local <= str(prev_sunday))))
+        prev_result = await session.execute(
+            select(exists().where(ActivityRow.user_id == 1, ActivityRow.start_date_local <= str(prev_sunday)))
+        )  # TODO: user_id from auth
         has_prev = prev_result.scalar_one()
 
     return {
@@ -77,7 +79,7 @@ async def activity_details(
 
     async with get_session() as session:
         activity = await session.get(ActivityRow, activity_id)
-        if activity is None:
+        if activity is None or activity.user_id != 1:  # TODO: user_id from auth
             raise HTTPException(status_code=404, detail="Activity not found")
 
         detail = await session.get(ActivityDetailRow, activity_id)

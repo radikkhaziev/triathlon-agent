@@ -21,7 +21,7 @@ async def get_activity_details(activity_id: str) -> dict:
     """
     async with get_session() as session:
         activity = await session.get(ActivityRow, activity_id)
-        if activity is None:
+        if activity is None or activity.user_id != 1:  # TODO: user_id from auth
             return {"error": f"Activity {activity_id} not found."}
 
         detail = await session.get(ActivityDetailRow, activity_id)

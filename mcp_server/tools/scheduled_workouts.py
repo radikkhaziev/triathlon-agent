@@ -28,6 +28,7 @@ async def get_scheduled_workouts(target_date: str = "", days_ahead: int = 0) -> 
             (
                 await session.execute(
                     select(ScheduledWorkoutRow)
+                    .where(ScheduledWorkoutRow.user_id == 1)  # TODO: per-user
                     .where(ScheduledWorkoutRow.start_date_local >= str(start))
                     .where(ScheduledWorkoutRow.start_date_local <= str(end))
                     .order_by(ScheduledWorkoutRow.start_date_local)

@@ -1,5 +1,7 @@
 """MCP tools for HRV analysis data."""
 
+from sqlalchemy import select
+
 from data.database import HrvAnalysisRow, WellnessRow, get_session
 from mcp_server.app import mcp
 
@@ -40,14 +42,17 @@ async def get_hrv_analysis(date: str, algorithm: str = "") -> dict:
         algorithm: Optional — "flatt_esco" or "ai_endurance". If empty, returns both.
     """
     async with get_session() as session:
-        row = await session.get(WellnessRow, date)
+        result = await session.execute(
+            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
+        )
+        row = result.scalar_one_or_none()
         hrv_today = float(row.hrv) if row and row.hrv else None
 
         algorithms = [algorithm] if algorithm else ["flatt_esco", "ai_endurance"]
         result = {"date": date, "hrv_today": hrv_today}
 
         for algo in algorithms:
-            hrv_row = await session.get(HrvAnalysisRow, (date, algo))
+            hrv_row = await session.get(HrvAnalysisRow, (1, date, algo))  # TODO: user_id from auth
             if not hrv_row:
                 result[algo] = {"status": "insufficient_data"}
                 continue

@@ -16,7 +16,7 @@ async def get_rhr_analysis(date: str) -> dict:
         date: Date in YYYY-MM-DD format
     """
     async with get_session() as session:
-        row = await session.get(RhrAnalysisRow, date)
+        row = await session.get(RhrAnalysisRow, (1, date))  # TODO: user_id from auth
 
     if not row:
         return {"date": date, "status": "insufficient_data"}

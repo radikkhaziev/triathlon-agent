@@ -1,10 +1,13 @@
 """Field-level encryption for per-user secrets (Intervals.icu API keys, etc.)."""
 
+import functools
+
 from cryptography.fernet import Fernet, InvalidToken
 
 from config import settings
 
 
+@functools.lru_cache(maxsize=1)
 def _get_fernet() -> Fernet:
     key = settings.FIELD_ENCRYPTION_KEY.get_secret_value()
     if not key:
