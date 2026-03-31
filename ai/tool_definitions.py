@@ -778,7 +778,12 @@ async def handle_create_github_issue(
     title: str,
     body: str,
     labels: list[str] | None = None,
+    images: list[str] | None = None,
 ) -> dict:
+    if images:
+        body += "\n\n## Screenshots\n"
+        for url in images:
+            body += f"\n![screenshot]({url})\n"
     return await create_issue(title=title, body=body, labels=labels)
 
 
@@ -850,6 +855,11 @@ CREATE_GITHUB_ISSUE_TOOL = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Labels to apply (e.g. ['bug'], ['enhancement', 'needs-implementation'])",
+            },
+            "images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Public URLs of uploaded screenshots to embed in the issue. Always pass image URLs from the conversation.",  # noqa
             },
         },
         "required": ["title", "body"],
