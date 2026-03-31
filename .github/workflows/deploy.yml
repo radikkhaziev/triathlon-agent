@@ -2,7 +2,10 @@ name: Deploy
 
 on:
   push:
-    branches: [main, versions/intervals-version]
+    branches:
+      - main
+      - versions/intervals-version
+      - versions/multi-tenant
 
 jobs:
   deploy:

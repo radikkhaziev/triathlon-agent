@@ -3146,4 +3146,4 @@ gemini = ["google-genai"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12"
-content-hash = "0f6559ec5f11fe38309794d5d1aa6a820a266149ab371ff794d6c34217c71bfd"
+content-hash = "2459e986501d20e24dfd435b66d093356fb8ed6eb450128075fc9070e8988371"

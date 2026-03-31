@@ -13,7 +13,7 @@ from bot.formatter import build_morning_message
 from bot.scheduler import create_scheduler
 from config import settings
 from data.database import IqosDailyRow, WellnessRow
-from data.intervals_client import IntervalsClient, sync_athlete_settings
+from data.intervals_client import IntervalsClient
 from data.redis_client import close_redis, init_redis
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,8 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _post_init(application: Application) -> None:
     await init_redis()
-    await sync_athlete_settings()
+    # sync_athlete_settings() disabled — thresholds managed in Intervals.icu directly
+    # See docs/MULTI_TENANT_SECURITY.md §5.1: per-tenant credentials in multi-tenant
 
     scheduler = await create_scheduler(bot=application.bot)
     scheduler.start()

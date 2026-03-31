@@ -302,6 +302,8 @@ class IntervalsClient:
 
 
 async def sync_athlete_settings() -> None:
+    # оставить на будущее, если захотим синхронизировать не только пороги
+    # , но и другие настройки (например, зоны мощности/пульса)
     """Push athlete thresholds from config to Intervals.icu sport settings.
 
     Called on startup to keep Intervals.icu zones in sync with .env values.

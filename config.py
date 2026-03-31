@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: SecretStr = SecretStr("")  # PAT for issue creation
     GITHUB_REPO: str = "radikkhaziev/triathlon-agent"
 
+    # Multi-tenant security
+    FIELD_ENCRYPTION_KEY: SecretStr = SecretStr("")  # Fernet key for encrypting per-user secrets in DB
+
     # AI Workout Generation (Phase 1: Adaptive Training Plan)
     AI_WORKOUT_ENABLED: bool = True  # Enable AI workout generation and MCP tools
     AI_WORKOUT_AUTO_PUSH: bool = True  # Auto-push generated workouts to Intervals.icu in morning cron
