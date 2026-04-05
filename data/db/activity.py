@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .user import UserDTO
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, func, select, text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -68,6 +68,9 @@ class Activity(Base):
             for a in activities
         ]
 
+        incoming_ids = [v["id"] for v in values]
+        existing_ids = set(row[0] for row in session.execute(select(cls.id).where(cls.id.in_(incoming_ids))))
+
         stmt = insert(cls).values(values)
         stmt = stmt.on_conflict_do_update(
             index_elements=["id"],
@@ -80,9 +83,9 @@ class Activity(Base):
                 "last_synced_at": stmt.excluded.last_synced_at,
             },
         )
-        result = session.execute(stmt.returning(cls.id, text("xmax")))
+        session.execute(stmt)
         session.commit()
-        return [row[0] for row in result if row[1] == 0]
+        return [aid for aid in incoming_ids if aid not in existing_ids]
 
     @classmethod
     @with_sync_session

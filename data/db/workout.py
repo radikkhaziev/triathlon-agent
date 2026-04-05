@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, delete, func, select
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -139,13 +139,14 @@ class AiWorkout(Base):
     """AI-generated workout pushed to Intervals.icu (Phase 1: Adaptive Training Plan)."""
 
     __tablename__ = "ai_workouts"
+    __table_args__ = (UniqueConstraint("user_id", "external_id", name="uq_ai_workouts_user_external"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
     sport: Mapped[str] = mapped_column(String(30), nullable=False)
     slot: Mapped[str] = mapped_column(String(30), nullable=False, default="morning")
-    external_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False)
     intervals_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Intervals.icu event ID
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -196,7 +197,7 @@ class AiWorkout(Base):
                 status="active",
             )
             .on_conflict_do_update(
-                index_elements=["external_id"],
+                index_elements=["user_id", "external_id"],
                 set_={
                     "intervals_id": intervals_id,
                     "name": name,

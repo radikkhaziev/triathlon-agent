@@ -8,7 +8,7 @@ from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text,
 from sqlalchemy.orm import Mapped, mapped_column
 
 from data.intervals.dto import WellnessDTO
-from tasks.dto import DateDTO
+from tasks.dto import ORMDTO, DateDTO
 
 from .common import Base, Session
 from .decorator import dual, with_sync_session
@@ -152,20 +152,19 @@ class Wellness(Base):
         *,
         wellness: WellnessDTO,
         session: Session,
-    ) -> tuple[Wellness, bool]:
+    ) -> ORMDTO:
 
         date_str = wellness.id
 
         result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
         row = result.scalar_one_or_none()
 
-        is_created = bool(row is None)
-        if row is None:
+        is_new = row is None
+        if is_new:
             row = cls(date=date_str, user_id=user_id)
             session.add(row)
-
-        if row.updated == wellness.updated:
-            return row, is_created
+        elif row.updated == wellness.updated:
+            return ORMDTO(is_new=False, is_changed=False, row=row)
 
         for field, val in wellness.intervals_dict().items():
             if val is None:
@@ -175,7 +174,7 @@ class Wellness(Base):
         session.commit()
         session.refresh(row)
 
-        return row, is_created
+        return ORMDTO(is_new=is_new, is_changed=True, row=row)
 
     @classmethod
     @with_sync_session
@@ -204,5 +203,4 @@ class Wellness(Base):
                 existing_info.append({"type": iv_type, "ctl": ctl_val})
 
         row.sport_info = existing_info
-        session.commit()
         session.commit()

@@ -261,13 +261,7 @@ def _actor_update_recovery_score(
         _hrv_row = session.get(HrvAnalysis, (user.id, _dt, "flatt_esco"))
         _rhr_row = session.get(RhrAnalysis, (user.id, _dt))
 
-        if (
-            not _wellness_row
-            or not _hrv_row
-            or not _rhr_row
-            or not _wellness_row.banister_recovery
-            or not _wellness_row.sleep_score
-        ):
+        if not _wellness_row or not _hrv_row or not _rhr_row:
             return
 
         recovery: RecoveryScoreDTO = combined_recovery_score(
@@ -489,11 +483,13 @@ def actor_user_wellness(
         logger.info("No wellness data found for user %s on %s", user.id, dt)
         return
 
-    #  TODO: если нечего обновлять т е по сути Wellness не изменился
-    # внедрить ORMDTO и проверять is_changed, чтобы не запускать лишние задачи downstream
-    Wellness.save(user_id=user.id, wellness=_wellnessDTO)
+    result = Wellness.save(user_id=user.id, wellness=_wellnessDTO)
 
     _dt = _wellnessDTO.id
+
+    if not result.is_changed:
+        logger.debug("Wellness unchanged for user %s on %s, skipping pipelines", user.id, _dt)
+        return
 
     # all independent tasks run in parallel
     g = group(

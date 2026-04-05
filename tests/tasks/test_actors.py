@@ -9,6 +9,7 @@ import pytest
 
 from data.db.user import UserDTO
 from data.intervals.dto import RhrStatusDTO, RmssdStatusDTO, ScheduledWorkoutDTO, TrendResultDTO, WellnessDTO
+from tasks.dto import ORMDTO
 
 
 class TestEchoActor:
@@ -735,7 +736,10 @@ class TestActorUserWellnessMocked:
 
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
-            patch("tasks.actors.wellness.Wellness.save", return_value=(mock_wellness_row, True)) as mock_save,
+            patch(
+                "tasks.actors.wellness.Wellness.save",
+                return_value=ORMDTO(is_new=False, is_changed=True, row=mock_wellness_row),
+            ) as mock_save,
             patch("tasks.actors.wellness._actor_enrich_wellness_sport_info"),
             patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
             patch("tasks.actors.wellness.pipeline", return_value=mock_pipeline),
@@ -755,7 +759,7 @@ class TestActorUserWellnessMocked:
 
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
-            patch("tasks.actors.wellness.Wellness.save", return_value=(MagicMock(), True)),
+            patch("tasks.actors.wellness.Wellness.save", return_value=ORMDTO(is_changed=True, row=MagicMock())),
             patch("tasks.actors.wellness._actor_enrich_wellness_sport_info") as mock_enrich,
             patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
             patch("tasks.actors.wellness.pipeline"),
@@ -777,7 +781,7 @@ class TestActorUserWellnessMocked:
 
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
-            patch("tasks.actors.wellness.Wellness.save", return_value=(MagicMock(), True)),
+            patch("tasks.actors.wellness.Wellness.save", return_value=ORMDTO(is_changed=True, row=MagicMock())),
             patch("tasks.actors.wellness._actor_enrich_wellness_sport_info"),
             patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
             patch("tasks.actors.wellness.pipeline"),
@@ -798,7 +802,7 @@ class TestActorUserWellnessMocked:
 
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
-            patch("tasks.actors.wellness.Wellness.save", return_value=(MagicMock(), True)),
+            patch("tasks.actors.wellness.Wellness.save", return_value=ORMDTO(is_changed=True, row=MagicMock())),
             patch("tasks.actors.wellness._actor_enrich_wellness_sport_info"),
             patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
             patch("tasks.actors.wellness.pipeline", return_value=mock_pipeline),

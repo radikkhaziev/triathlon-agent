@@ -33,20 +33,23 @@ def _make_wellness(
 class TestSaveWellness:
     async def test_insert_new_row(self):
         w = _make_wellness()
-        row, _ = Wellness.save(1, wellness=w)
+        result = Wellness.save(1, wellness=w)
 
-        assert row.date == "2026-03-15"
-        assert row.sleep_score == 85
-        assert row.sleep_secs == 28800
+        assert result.is_new is True
+        assert result.is_changed is True
+        assert result.row.date == "2026-03-15"
+        assert result.row.sleep_score == 85
+        assert result.row.sleep_secs == 28800
 
     async def test_upsert_updates_existing(self):
         dt = date(2026, 3, 15)
         ts1 = datetime(2026, 3, 15, 6, 0, tzinfo=timezone.utc)
         ts2 = datetime(2026, 3, 15, 7, 0, tzinfo=timezone.utc)
         Wellness.save(1, wellness=_make_wellness(sleep_score=70, updated=ts1))
-        row, _ = Wellness.save(1, wellness=_make_wellness(sleep_score=90, updated=ts2))
+        result = Wellness.save(1, wellness=_make_wellness(sleep_score=90, updated=ts2))
 
-        assert row.sleep_score == 90
+        assert result.is_changed is True
+        assert result.row.sleep_score == 90
 
         fetched = await Wellness.get(1, dt)
         assert fetched is not None

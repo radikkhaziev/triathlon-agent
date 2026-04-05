@@ -365,13 +365,20 @@ class TelegramTool:
         if reply_markup:
             payload["reply_markup"] = json.dumps(reply_markup)
 
-        resp = httpx.post(
-            f"{self.base_url}/sendMessage",
-            json=payload,
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/sendMessage",
+                    json=payload,
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_exc = e
+                logger.warning("Telegram send attempt %d/3 failed: %s", attempt + 1, e)
+        raise last_exc  # type: ignore[misc]
 
 
 @dataclass
@@ -430,8 +437,18 @@ class MCPTool:
 
         logger.info("MCPTool session initialized: %s", self._session_id)
 
+    def _invalidate_session(self) -> None:
+        """Reset session so next call re-initializes."""
+        self._session_id = None
+
     def _call_mcp(self, name: str, arguments: dict) -> dict:
-        """Call an MCP tool via HTTP POST to /mcp (JSON-RPC)."""
+        """Call an MCP tool via HTTP POST to /mcp (JSON-RPC).
+
+        On 401/408/404 — invalidates session and retries once (server restart / stale session).
+        """
+        return self._call_mcp_inner(name, arguments, retry=True)
+
+    def _call_mcp_inner(self, name: str, arguments: dict, *, retry: bool) -> dict:
         self._ensure_session()
 
         payload = {
@@ -454,6 +471,12 @@ class MCPTool:
             headers=headers,
             timeout=30.0,
         )
+
+        if resp.status_code in (401, 404, 408) and retry:
+            logger.warning("MCP session stale (%d), re-initializing", resp.status_code)
+            self._invalidate_session()
+            return self._call_mcp_inner(name, arguments, retry=False)
+
         resp.raise_for_status()
         data = self._parse_response(resp)
 

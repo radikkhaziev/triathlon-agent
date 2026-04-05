@@ -92,7 +92,11 @@ def _actor_process_fit_file(prev: str | None):
 
     if prev is None:
         return
-    fit = FitFile(prev)
+    try:
+        fit = FitFile(prev)
+    except Exception:
+        logger.exception("Failed to parse FIT file: %s", prev)
+        return
     rr_ms: list[float] = []
     records: list[dict] = []
     start_ts = None

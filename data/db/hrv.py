@@ -125,10 +125,6 @@ class PaBaseline(Base):
         """Return average Pa over last N days for a sport, or None if <3 data points."""
         user_id = user if isinstance(user, int) else user.id
 
-        ref = as_of or _dt.date.today()
-        cutoff = (ref - timedelta(days=days)).isoformat()
-        newest = ref.isoformat()
-
         if as_of is None:
             ref = _dt.date.today()
         elif isinstance(as_of, str):
@@ -143,7 +139,7 @@ class PaBaseline(Base):
                 cls.user_id == user_id,
                 cls.activity_type == activity_type,
                 cls.date >= cutoff,
-                cls.date <= newest,
+                cls.date <= ref.isoformat(),
                 (cls.quality != "poor") | (cls.quality.is_(None)),
             )
             .order_by(cls.date.desc())

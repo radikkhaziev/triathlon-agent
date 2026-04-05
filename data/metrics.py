@@ -425,7 +425,7 @@ _STATUS_TO_SCORE = {"green": 100, "yellow": 65, "red": 20, "insufficient_data": 
 def combined_recovery_score(
     rmssd: HrvAnalysis,
     rhr: RhrAnalysis,
-    banister_recovery: float,
+    banister_recovery: float | None,
     sleep_score: int | None,
 ) -> RecoveryScoreDTO:
     """Weighted integration of 4 recovery signals into a single 0-100 score.
@@ -436,8 +436,7 @@ def combined_recovery_score(
         Resting HR status 20%
         Sleep score       20%
 
-    When sleep_score is None, sleep is excluded and remaining weights are
-    renormalised (RMSSD 43.75%, Banister 31.25%, RHR 25%).
+    Missing signals are excluded and remaining weights renormalised.
 
     Modifiers:
         sleep_start > 23:00  →  -10 pts
@@ -445,14 +444,18 @@ def combined_recovery_score(
     """
     rmssd_score = _STATUS_TO_SCORE.get(rmssd.status, 50)
     rhr_score = _STATUS_TO_SCORE.get(rhr.status, 50)
-    banister_pct = max(0.0, min(100.0, banister_recovery))
 
+    components: list[tuple[float, float]] = [
+        (rmssd_score, 0.35),
+        (rhr_score, 0.20),
+    ]
+    if banister_recovery is not None:
+        components.append((max(0.0, min(100.0, banister_recovery)), 0.25))
     if sleep_score is not None:
-        sleep_pct = max(0.0, min(100.0, float(sleep_score)))
-        score = rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.20 + sleep_pct * 0.20
-    else:
-        # No sleep data — renormalise weights (0.35 + 0.25 + 0.20 = 0.80)
-        score = (rmssd_score * 0.35 + banister_pct * 0.25 + rhr_score * 0.20) / 0.80
+        components.append((max(0.0, min(100.0, float(sleep_score))), 0.20))
+
+    total_weight = sum(w for _, w in components)
+    score = sum(v * w for v, w in components) / total_weight
 
     flags: list[str] = []
     if rmssd.cv_7d and rmssd.cv_7d > 15:
@@ -489,9 +492,9 @@ def combined_recovery_score(
         flags=flags,
         components={
             "rmssd": rmssd_score,
-            "banister": round(banister_pct, 1),
+            "banister": round(banister_recovery, 1) if banister_recovery is not None else None,
             "rhr": rhr_score,
-            "sleep": round(sleep_pct, 1) if sleep_score is not None else None,
+            "sleep": round(float(sleep_score), 1) if sleep_score is not None else None,
         },
     )
 

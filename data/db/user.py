@@ -142,6 +142,7 @@ class User(Base):
                     Activity.user_id == user_id,
                     ActivityHrv.processing_status == "processed",
                     ActivityHrv.hrvt1_hr.isnot(None),
+                    ActivityHrv.hrv_quality.in_(["good", "moderate"]),
                     Activity.type.in_(sport_types),
                 )
                 .order_by(Activity.start_date_local.desc())
