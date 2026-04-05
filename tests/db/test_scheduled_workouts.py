@@ -325,8 +325,10 @@ class TestSyncWorkoutsEndpoint:
         mock_user.username = "test"
         mock_user.athlete_id = "i001"
         mock_user.api_key = "key1"
+        mock_user.mcp_token = "test_token"
         mock_user.role = "owner"
         mock_user.is_active = True
+        mock_user.is_silent = False
         test_app.dependency_overrides[require_athlete] = lambda: mock_user
         return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
 

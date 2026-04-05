@@ -14,7 +14,6 @@ from typing import Any, Callable
 import httpx
 from pydantic import BaseModel
 
-from config import settings
 from data.db import User, UserDTO
 from data.db.common import get_session, get_sync_session
 from data.intervals.dto import ActivityDTO, EventExDTO, ScheduledWorkoutDTO, SportSettingsDTO, WellnessDTO
@@ -332,13 +331,6 @@ class IntervalsSyncClient(IntervalsClientBase):
     def __init__(self, api_key: str, athlete_id: str) -> None:
         super().__init__(api_key, athlete_id)
         self._client = httpx.Client(**self._http_client_kwargs())
-
-    @classmethod
-    def from_settings(cls) -> "IntervalsSyncClient":
-        return cls(
-            api_key=settings.INTERVALS_API_KEY.get_secret_value(),
-            athlete_id=settings.INTERVALS_ATHLETE_ID,
-        )
 
     @classmethod
     @contextmanager

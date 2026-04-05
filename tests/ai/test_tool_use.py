@@ -43,22 +43,3 @@ class TestToolDefinitions:
             "get_iqos_sticks",
         }
         assert optional.issubset(names)
-
-
-# ---------------------------------------------------------------------------
-# Config toggle
-# ---------------------------------------------------------------------------
-
-
-class TestConfigToggle:
-    def test_config_default(self):
-        from config import Settings
-
-        s = Settings(
-            INTERVALS_API_KEY="x",
-            INTERVALS_ATHLETE_ID="i1",
-            TELEGRAM_BOT_TOKEN="x",
-            TELEGRAM_CHAT_ID="1",
-            ANTHROPIC_API_KEY="x",
-        )
-        assert s.AI_USE_TOOL_USE is True

@@ -193,11 +193,11 @@ class AthleteConfig:
 
     Usage::
 
-        t = AthleteConfig.get_thresholds(user_id=1)
+        t = AthleteConfig.get_thresholds(user_id=user.id)
         t.lthr_run   # 153
         t.ftp        # 233
 
-        g = AthleteConfig.get_goal(user_id=1)
+        g = AthleteConfig.get_goal(user_id=user.id)
         g.event_name  # "Ironman 70.3"
     """
 

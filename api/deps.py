@@ -73,8 +73,8 @@ def _verify_and_parse_init_data(init_data: str, bot_token: str) -> dict | None:
 async def require_viewer(user: User | None = Depends(get_current_user)) -> User:
     """Require authenticated user. Returns User object.
 
-    Active athletes see their own data (user.id).
-    Viewers without athlete_id see owner data (user_id=1, read-only).
+    Active athletes see their own data.
+    Viewers without athlete_id see owner data (read-only).
     """
     if not user:
         raise HTTPException(status_code=401, detail="Telegram authorization required")
@@ -85,7 +85,7 @@ def get_data_user_id(user: User) -> int:
     """Resolve which user_id to query data for.
 
     Active athletes with athlete_id → own data.
-    Everyone else (viewers) → owner data (user_id=1).
+    Everyone else (viewers) → owner data.
     """
     if user.is_active and user.athlete_id:
         return user.id

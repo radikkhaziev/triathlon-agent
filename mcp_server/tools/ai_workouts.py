@@ -91,8 +91,6 @@ async def suggest_workout(
         target_date: Date in YYYY-MM-DD format. Default: today.
         dry_run: If True, only preview the workout without pushing to Intervals.icu.
     """
-    if not settings.AI_WORKOUT_ENABLED:
-        return "AI workout generation is disabled (AI_WORKOUT_ENABLED=false)"
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
 
@@ -199,8 +197,6 @@ async def remove_ai_workout(
         target_date: Date in YYYY-MM-DD format.
         sport: Sport type to remove (e.g. "Ride"). If empty, removes all AI workouts for the date.
     """
-    if not settings.AI_WORKOUT_ENABLED:
-        return "AI workout generation is disabled (AI_WORKOUT_ENABLED=false)"
 
     user_id = get_current_user_id()
     dt = date.fromisoformat(target_date)
