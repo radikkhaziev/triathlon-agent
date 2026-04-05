@@ -7,7 +7,7 @@ and produces modified PlannedWorkout for Intervals.icu.
 import logging
 import re
 
-from data.models import PlannedWorkout, RecoveryScore, ScheduledWorkout, WorkoutStep
+from data.intervals.dto import PlannedWorkoutDTO, RecoveryScoreDTO, ScheduledWorkoutDTO, WorkoutStepDTO
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ _PACE_HIGH = re.compile(r"high:\s*(\d+):(\d+)\s*per\s*100\s*meters", re.IGNORECA
 STEP_TYPES = {"warmup", "interval", "recovery", "cooldown", "rest"}
 
 
-def parse_humango_description(description: str) -> list[WorkoutStep]:
+def parse_humango_description(description: str) -> list[WorkoutStepDTO]:
     """Parse HumanGo workout description into structured WorkoutStep list.
 
     HumanGo format uses ====== separators between steps, with:
@@ -80,7 +80,7 @@ def parse_humango_description(description: str) -> list[WorkoutStep]:
     blocks = _split_into_blocks(description)
 
     # Parse blocks into steps, handling repeat groups
-    steps: list[WorkoutStep] = []
+    steps: list[WorkoutStepDTO] = []
     i = 0
     while i < len(blocks):
         block = blocks[i]
@@ -90,7 +90,7 @@ def parse_humango_description(description: str) -> list[WorkoutStep]:
         if repeat_match:
             reps = int(repeat_match.group(1))
             # Collect interval + recovery steps (not warmup/cooldown)
-            sub_steps: list[WorkoutStep] = []
+            sub_steps: list[WorkoutStepDTO] = []
             i += 1
             while i < len(blocks):
                 if _REPEAT.search(blocks[i]):
@@ -106,7 +106,7 @@ def parse_humango_description(description: str) -> list[WorkoutStep]:
             if sub_steps:
                 first_type = sub_steps[0].text if sub_steps else "Intervals"
                 steps.append(
-                    WorkoutStep(
+                    WorkoutStepDTO(
                         text=f"{reps}x {first_type}",
                         reps=reps,
                         steps=sub_steps,
@@ -134,7 +134,7 @@ def _split_into_blocks(description: str) -> list[str]:
     return blocks
 
 
-def _parse_block(block: str) -> WorkoutStep | None:
+def _parse_block(block: str) -> WorkoutStepDTO | None:
     """Parse a single block into a WorkoutStep."""
     lines = [line.strip() for line in block.split("\n") if line.strip()]
     if not lines:
@@ -182,7 +182,7 @@ def _parse_block(block: str) -> WorkoutStep | None:
         "rest": "Rest",
     }
 
-    step = WorkoutStep(
+    step = WorkoutStepDTO(
         text=display_names.get(step_type, step_type.capitalize()),
         duration=duration if duration > 0 else (distance // 2 if distance else 0),
         hr=hr,
@@ -240,7 +240,7 @@ def _parse_pace_target(text: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def estimate_step_zone(step: WorkoutStep, ftp: float = 233, lthr: int = 153) -> int:
+def estimate_step_zone(step: WorkoutStepDTO, ftp: float = 233, lthr: int = 153) -> int:
     """Estimate the training zone of a step based on its targets."""
     if step.power and "low" in step.power and "high" in step.power:
         return _power_to_zone(step.power["low"], step.power["high"], ftp)
@@ -250,7 +250,7 @@ def estimate_step_zone(step: WorkoutStep, ftp: float = 233, lthr: int = 153) -> 
     return 2
 
 
-def estimate_workout_max_zone(steps: list[WorkoutStep], ftp: float = 233, lthr: int = 153) -> int:
+def estimate_workout_max_zone(steps: list[WorkoutStepDTO], ftp: float = 233, lthr: int = 153) -> int:
     """Estimate the maximum zone reached in a workout."""
     max_zone = 1
     for step in steps:
@@ -270,7 +270,7 @@ def estimate_workout_max_zone(steps: list[WorkoutStep], ftp: float = 233, lthr: 
 
 
 def compute_constraints(
-    recovery: RecoveryScore,
+    recovery: RecoveryScoreDTO,
     hrv_status: str,
     tsb: float,
     ra: float | None = None,
@@ -326,19 +326,19 @@ def compute_constraints(
 
 
 def clamp_step(
-    step: WorkoutStep,
+    step: WorkoutStepDTO,
     max_zone: int,
     duration_factor: float,
     ftp: float = 233,
     lthr: int = 153,
-) -> WorkoutStep:
+) -> WorkoutStepDTO:
     """Clamp a workout step to respect zone and duration constraints."""
     new_duration = int(step.duration * duration_factor)
 
     # Handle repeat groups
     if step.steps:
         clamped_subs = [clamp_step(s, max_zone, duration_factor, ftp, lthr) for s in step.steps]
-        return WorkoutStep(
+        return WorkoutStepDTO(
             text=step.text,
             reps=step.reps,
             steps=clamped_subs,
@@ -348,7 +348,7 @@ def clamp_step(
     new_power = _clamp_power(step.power, max_zone, ftp) if step.power else None
     new_hr = _clamp_hr(step.hr, max_zone, lthr) if step.hr else None
 
-    return WorkoutStep(
+    return WorkoutStepDTO(
         text=step.text,
         duration=new_duration,
         hr=new_hr,
@@ -388,7 +388,7 @@ def _clamp_hr(hr: dict, max_zone: int, lthr: int) -> dict:
 
 
 def needs_adaptation(
-    steps: list[WorkoutStep],
+    steps: list[WorkoutStepDTO],
     max_zone: int,
     ftp: float = 233,
     lthr: int = 153,
@@ -399,14 +399,14 @@ def needs_adaptation(
 
 
 def adapt_workout(
-    original: ScheduledWorkout,
-    recovery: RecoveryScore,
+    original: ScheduledWorkoutDTO,
+    recovery: RecoveryScoreDTO,
     hrv_status: str,
     tsb: float,
     ra: float | None = None,
     ftp: float = 233,
     lthr: int = 153,
-) -> PlannedWorkout | None:
+) -> PlannedWorkoutDTO | None:
     """Create an adapted workout or None if adaptation is not needed.
 
     Returns a PlannedWorkout with suffix="adapted" if the original workout
@@ -433,7 +433,7 @@ def adapt_workout(
     if ":" in clean_name:
         clean_name = clean_name.split(":", 1)[1].strip()
 
-    return PlannedWorkout(
+    return PlannedWorkoutDTO(
         sport=original.type or "Ride",
         name=f"Adapted: {clean_name}",
         steps=adapted_steps,
@@ -448,7 +448,7 @@ def adapt_workout(
     )
 
 
-def _total_duration(steps: list[WorkoutStep]) -> int:
+def _total_duration(steps: list[WorkoutStepDTO]) -> int:
     """Calculate total duration of steps in seconds."""
     total = 0
     for s in steps:

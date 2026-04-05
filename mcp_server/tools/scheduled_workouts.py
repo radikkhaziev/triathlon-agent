@@ -4,8 +4,9 @@ from datetime import date, timedelta
 
 from sqlalchemy import select
 
-from data.database import ScheduledWorkoutRow, get_session
+from data.db import ScheduledWorkout, get_session
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -23,20 +24,18 @@ async def get_scheduled_workouts(target_date: str = "", days_ahead: int = 0) -> 
     start = date.fromisoformat(target_date) if target_date else date.today()
     end = start + timedelta(days=days_ahead)
 
+    user_id = get_current_user_id()
     async with get_session() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(ScheduledWorkoutRow)
-                    .where(ScheduledWorkoutRow.user_id == 1)  # TODO: per-user
-                    .where(ScheduledWorkoutRow.start_date_local >= str(start))
-                    .where(ScheduledWorkoutRow.start_date_local <= str(end))
-                    .order_by(ScheduledWorkoutRow.start_date_local)
-                )
+        query = (
+            select(ScheduledWorkout)
+            .where(
+                ScheduledWorkout.user_id == user_id,
+                ScheduledWorkout.start_date_local >= str(start),
+                ScheduledWorkout.start_date_local <= str(end),
             )
-            .scalars()
-            .all()
+            .order_by(ScheduledWorkout.start_date_local)
         )
+        rows = (await session.execute(query)).scalars().all()
 
     if not rows:
         return {"count": 0, "from": str(start), "to": str(end), "workouts": []}

@@ -64,7 +64,8 @@ intervals.get_events(oldest, newest)   # Запланированные трен
 ```
 
 Sync pipeline (bot/scheduler.py):
-- **Wellness**: каждые 15 мин (5:00-23:00) → `daily_metrics_job`
+
+- **Wellness**: каждые 15 мин (5:00-23:00) → `sync_wellness_job`
 - **Activities**: каждый час в :30 (4:00-23:00) → `sync_activities_job`
 - **Scheduled workouts**: каждый час в :00 (4:00-23:00) → `scheduled_workouts_job`
 
@@ -73,6 +74,7 @@ Sync pipeline (bot/scheduler.py):
 Пять таблиц в PostgreSQL через SQLAlchemy async ORM:
 
 **`wellness`** — ежедневные данные (из Intervals.icu + рассчитанные метрики):
+
 ```
 id (String PK, "YYYY-MM-DD"), ctl, atl, ramp_rate, ctl_load, atl_load,
 sport_info (JSON — per-sport CTL, eftp, wPrime, pMax),
@@ -83,6 +85,7 @@ ai_recommendation (Text — Claude AI output)
 ```
 
 **`hrv_analysis`** — двойной алгоритм HRV baseline:
+
 ```
 date (String PK, FK→wellness), algorithm (String PK: "flatt_esco"|"ai_endurance"),
 status, rmssd_7d, rmssd_sd_7d, rmssd_60d, rmssd_sd_60d,
@@ -91,6 +94,7 @@ trend_direction, trend_slope, trend_r_squared
 ```
 
 **`rhr_analysis`** — baseline пульса покоя:
+
 ```
 date (String PK, FK→wellness), status,
 rhr_today, rhr_7d, rhr_sd_7d, rhr_30d, rhr_sd_30d, rhr_60d, rhr_sd_60d,
@@ -99,6 +103,7 @@ trend_direction, trend_slope, trend_r_squared
 ```
 
 **`activities`** — завершённые активности из Intervals.icu:
+
 ```
 id (String PK, e.g. "i12345"), start_date_local (String),
 type (String — Ride, Run, Swim, VirtualRide, etc.),
@@ -107,6 +112,7 @@ moving_time (Integer — seconds)
 ```
 
 **`scheduled_workouts`** — запланированные тренировки:
+
 ```
 id (Integer PK, Intervals.icu event ID), start_date_local, end_date_local,
 name, category (WORKOUT/RACE_A/B/C/NOTE), type, description,
@@ -157,7 +163,7 @@ Banister TRIMP-based. Нормализация: 1 час на LTHR ≈ ESS 100. 
 
 > Реализовано в `data/metrics.py`: `calculate_sport_ctl()`
 
-Intervals.icu API не предоставляет per-sport CTL. Рассчитывается локально: EMA с τ=42d по каждой дисциплине (swim/bike/run). Маппинг типов: `data/utils.py` `SPORT_MAP` (16 типов → 3 дисциплины). `daily_metrics_job` читает из БД, рассчитывает CTL, обогащает `wellness.sport_info`.
+Intervals.icu API не предоставляет per-sport CTL. Рассчитывается локально: EMA с τ=42d по каждой дисциплине (swim/bike/run). Маппинг типов: `data/utils.py` `SPORT_MAP` (16 типов → 3 дисциплины). `sync_wellness_job` читает из БД, рассчитывает CTL, обогащает `wellness.sport_info`.
 
 > Full theory (обоснование τ=42d, специфичность адаптации): [docs/knowledge/hrv.md](knowledge/hrv.md)
 
@@ -223,6 +229,7 @@ Detrended Fluctuation Analysis — short-term scaling exponent (window: 4-16 bea
 ### Level 2 — Схема данных ✅
 
 Две таблицы реализованы (см. CLAUDE.md для полной схемы):
+
 - `activity_hrv` — DFA a1 summary, thresholds, Ra, Da, raw timeseries, processing_status
 - `pa_baseline` — baseline Pa по типу активности для расчёта Ra
 
@@ -301,6 +308,7 @@ Detrended Fluctuation Analysis — short-term scaling exponent (window: 4-16 bea
 - [x] FastAPI: /api/report с grouped JSON
 
 **Не реализовано (Phase 1):**
+
 - [x] Telegram: /start, /status, /week, /goal, /zones
 - [x] Webapp: обновить под новую структуру API
 

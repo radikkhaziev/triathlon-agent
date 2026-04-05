@@ -2,8 +2,9 @@
 
 from sqlalchemy import select
 
-from data.database import WellnessRow, get_session
+from data.db import Wellness, get_session
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -17,10 +18,9 @@ async def get_recovery(date: str) -> dict:
     Args:
         date: Date in YYYY-MM-DD format
     """
+    user_id = get_current_user_id()
     async with get_session() as session:
-        result = await session.execute(
-            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
-        )
+        result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))
         row = result.scalar_one_or_none()
 
     if not row:
@@ -43,5 +43,4 @@ async def get_recovery(date: str) -> dict:
         "ess_today": row.ess_today,
         "banister_recovery": row.banister_recovery,
         "ai_recommendation": row.ai_recommendation,
-        "ai_recommendation_gemini": row.ai_recommendation_gemini,
     }

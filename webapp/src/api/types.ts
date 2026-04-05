@@ -124,7 +124,6 @@ export interface WellnessResponse {
   body: BodyData
   stress: StressData
   ai_recommendation: string | null
-  ai_recommendation_gemini: string | null
   updated_at?: string | null
 }
 

@@ -4,9 +4,9 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 
-from api.deps import require_viewer
+from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.database import ScheduledWorkoutRow, get_session
+from data.db import ScheduledWorkout, User, get_session
 from data.utils import format_duration
 
 router = APIRouter()
@@ -17,7 +17,7 @@ _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 @router.get("/api/scheduled-workouts")
 async def scheduled_workouts(
     week_offset: int = Query(default=0, ge=-52, le=52),
-    role: str = Depends(require_viewer),
+    user: User = Depends(require_viewer),
 ) -> dict:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
@@ -25,7 +25,8 @@ async def scheduled_workouts(
     monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
     sunday = monday + timedelta(days=6)
 
-    workouts, last_synced_at = await ScheduledWorkoutRow.get_range(monday, sunday, user_id=1)  # TODO: user_id from auth
+    uid = get_data_user_id(user)
+    workouts, last_synced_at = await ScheduledWorkout.get_range(uid, monday, sunday)
 
     by_date: dict[str, list] = {}
     for w in workouts:
@@ -57,16 +58,16 @@ async def scheduled_workouts(
     async with get_session() as session:
         has_next_result = await session.execute(
             select(func.count())
-            .select_from(ScheduledWorkoutRow)
-            .where(ScheduledWorkoutRow.user_id == 1, ScheduledWorkoutRow.start_date_local >= str(next_monday))
-        )  # TODO: user_id from auth
+            .select_from(ScheduledWorkout)
+            .where(ScheduledWorkout.user_id == uid, ScheduledWorkout.start_date_local >= str(next_monday))
+        )
         has_next = has_next_result.scalar_one() > 0
 
         has_prev_result = await session.execute(
             select(func.count())
-            .select_from(ScheduledWorkoutRow)
-            .where(ScheduledWorkoutRow.user_id == 1, ScheduledWorkoutRow.start_date_local <= str(prev_sunday))
-        )  # TODO: user_id from auth
+            .select_from(ScheduledWorkout)
+            .where(ScheduledWorkout.user_id == uid, ScheduledWorkout.start_date_local <= str(prev_sunday))
+        )
         has_prev = has_prev_result.scalar_one() > 0
 
     return {
@@ -77,6 +78,6 @@ async def scheduled_workouts(
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
         "has_prev": has_prev,
         "has_next": has_next,
-        "role": role,
+        "role": user.role,
         "days": days,
     }

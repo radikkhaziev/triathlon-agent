@@ -2,12 +2,13 @@
 
 from sqlalchemy import select
 
-from data.database import WellnessRow, get_session
+from data.db import Wellness, get_session
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
-def _row_to_dict(row: WellnessRow) -> dict:
-    """Convert WellnessRow to a flat dict for MCP response."""
+def _row_to_dict(row: Wellness) -> dict:
+    """Convert Wellness to a flat dict for MCP response."""
     return {
         "date": row.date,
         "ctl": row.ctl,
@@ -45,10 +46,9 @@ async def get_wellness(date: str) -> dict:
     Args:
         date: Date in YYYY-MM-DD format
     """
+    user_id = get_current_user_id()
     async with get_session() as session:
-        result = await session.execute(
-            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
-        )
+        result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))
         row = result.scalar_one_or_none()
     if not row:
         return {"error": f"No data for {date}"}
@@ -65,12 +65,12 @@ async def get_wellness_range(from_date: str, to_date: str) -> dict:
         from_date: Start date in YYYY-MM-DD format
         to_date: End date in YYYY-MM-DD format
     """
+    user_id = get_current_user_id()
     async with get_session() as session:
         result = await session.execute(
-            select(WellnessRow)
-            .where(WellnessRow.user_id == 1)  # TODO: per-user
-            .where(WellnessRow.date >= from_date, WellnessRow.date <= to_date)
-            .order_by(WellnessRow.date)
+            select(Wellness)
+            .where(Wellness.user_id == user_id, Wellness.date >= from_date, Wellness.date <= to_date)
+            .order_by(Wellness.date)
         )
         rows = result.scalars().all()
 

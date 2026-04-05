@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from data.database import ActivityDetailRow, ActivityHrvRow
+    from data.db import ActivityDetail, ActivityHrv
 
 # Canonical mapping: Intervals.icu activity/sport type → swim/bike/run
 SPORT_MAP: dict[str, str] = {
@@ -105,8 +105,8 @@ def format_duration(secs: int | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def serialize_activity_details(detail: ActivityDetailRow) -> dict:
-    """Convert ActivityDetailRow to a plain dict for JSON response."""
+def serialize_activity_details(detail: ActivityDetail) -> dict:
+    """Convert ActivityDetail to a plain dict for JSON response."""
     return {
         "max_hr": detail.max_hr,
         "avg_power": detail.avg_power,
@@ -136,8 +136,8 @@ def serialize_activity_details(detail: ActivityDetailRow) -> dict:
     }
 
 
-def serialize_activity_hrv(hrv: ActivityHrvRow) -> dict:
-    """Convert ActivityHrvRow to a plain dict for JSON response."""
+def serialize_activity_hrv(hrv: ActivityHrv) -> dict:
+    """Convert ActivityHrv to a plain dict for JSON response."""
     return {
         "dfa_a1_mean": hrv.dfa_a1_mean,
         "dfa_a1_warmup": hrv.dfa_a1_warmup,

@@ -5,10 +5,10 @@ from collections import defaultdict
 from datetime import date, timedelta
 from statistics import median
 
-from config import settings
-from data.database import ActivityDetailRow, ActivityRow
+from data.db import Activity, ActivityDetail, AthleteConfig
 from data.metrics import decoupling_status, is_valid_for_decoupling
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +36,21 @@ def _sport_group(activity_type: str) -> str | None:
     return None
 
 
-def _is_z2(avg_hr: float | None, sport: str) -> bool:
+def _is_z2(avg_hr: float | None, sport: str, user_id: int) -> bool:
     """Check if average HR is in Z2 range for the sport."""
     if not avg_hr:
         return False
     if sport == "bike":
-        lthr = settings.ATHLETE_LTHR_BIKE
+        t = AthleteConfig.get_thresholds(user_id)
+        lthr = t.lthr_bike
+        if not lthr:
+            return False
         lo, hi = _Z2_BIKE
     elif sport == "run":
-        lthr = settings.ATHLETE_LTHR_RUN
+        t = AthleteConfig.get_thresholds(user_id)
+        lthr = t.lthr_run
+        if not lthr:
+            return False
         lo, hi = _Z2_RUN
     else:
         return True  # Swim: no HR filter
@@ -105,8 +111,26 @@ async def get_efficiency_trend(
         group_by: "week" for weekly averages, "activity" for individual data points.
         strict_filter: Apply strict decoupling-analysis filter (VI, zone adherence, duration).
     """
+    user_id = get_current_user_id()
+    return await compute_efficiency_trend(
+        user_id=user_id,
+        sport=sport,
+        days_back=days_back,
+        group_by=group_by,
+        strict_filter=strict_filter,
+    )
+
+
+async def compute_efficiency_trend(
+    user_id: int,
+    sport: str = "",
+    days_back: int = 90,
+    group_by: str = "week",
+    strict_filter: bool = False,
+) -> dict:
+    """Core efficiency trend logic — usable from API and MCP."""
     since = date.today() - timedelta(days=days_back)
-    activities, _ = await ActivityRow.get_range(since, date.today(), user_id=1)  # TODO: user_id from auth
+    activities, _ = await Activity.get_range(user_id, since, date.today())
 
     # Filter by sport
     target_sports = {sport.lower()} if sport else {"bike", "run", "swim"}
@@ -121,7 +145,7 @@ async def get_efficiency_trend(
             continue
         if (act.moving_time or 0) < _MIN_DURATION.get(sg, 0):
             continue
-        if sg in ("bike", "run") and not _is_z2(act.average_hr, sg):
+        if sg in ("bike", "run") and not _is_z2(act.average_hr, sg, user_id):
             continue
         filtered.append((act, sg))
 
@@ -129,7 +153,7 @@ async def get_efficiency_trend(
         return {"data_points": 0, "activities": []}
 
     # Bulk fetch details (single query)
-    detail_map = await ActivityDetailRow.get_bulk([act.id for act, _ in filtered])
+    detail_map = await ActivityDetail.get_bulk([act.id for act, _ in filtered])
 
     # Collect matching activities with details
     results: dict[str, list[dict]] = defaultdict(list)

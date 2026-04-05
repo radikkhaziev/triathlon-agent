@@ -2,10 +2,11 @@
 
 from sqlalchemy import select
 
-from data.database import WellnessRow, get_session
+from data.db import Wellness, get_session
 from data.utils import extract_sport_ctl
 from data.utils import tsb_zone as _tsb_zone
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -19,10 +20,9 @@ async def get_training_load(date: str) -> dict:
     Args:
         date: Date in YYYY-MM-DD format
     """
+    user_id = get_current_user_id()
     async with get_session() as session:
-        result = await session.execute(
-            select(WellnessRow).where(WellnessRow.user_id == 1, WellnessRow.date == date)  # TODO: per-user
-        )
+        result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))
         row = result.scalar_one_or_none()
 
     if not row:

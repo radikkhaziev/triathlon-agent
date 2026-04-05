@@ -2,8 +2,9 @@
 
 from datetime import date, timedelta
 
-from data.database import MoodCheckinRow
+from data.db import MoodCheckin
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -30,10 +31,11 @@ async def save_mood_checkin_tool(
         social: Social desire (1-5)
         note: Optional text note
     """
+    user_id = get_current_user_id()
     try:
-        row = await MoodCheckinRow.save(
-            user_id=1, energy=energy, mood=mood, anxiety=anxiety, social=social, note=note
-        )  # TODO: per-user
+        row = await MoodCheckin.save(
+            user_id=user_id, energy=energy, mood=mood, anxiety=anxiety, social=social, note=note
+        )
         return {
             "id": row.id,
             "timestamp": row.timestamp.isoformat(),
@@ -57,7 +59,8 @@ async def get_mood_checkins_tool(date_str: str | None = None, days_back: int = 7
         date_str: Reference date in YYYY-MM-DD format. Defaults to today.
         days_back: Number of days to look back (inclusive). Default is 7.
     """
-    checkins = await MoodCheckinRow.get_range(user_id=1, target_date=date_str, days_back=days_back)  # TODO: per-user
+    user_id = get_current_user_id()
+    checkins = await MoodCheckin.get_range(user_id=user_id, target_date=date_str, days_back=days_back)
 
     ref = date.fromisoformat(date_str) if date_str else date.today()
     from_date = ref - timedelta(days=days_back - 1)

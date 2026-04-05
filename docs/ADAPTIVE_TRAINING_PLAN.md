@@ -573,13 +573,13 @@ CREATE INDEX idx_training_log_source ON training_log(source);
 ### Жизненный цикл записи
 
 ```
-06:00  daily_metrics_job → создаёт запись: pre_* контекст, source, original, adapted
+06:00  sync_wellness_job → создаёт запись: pre_* контекст, source, original, adapted
        (compliance, actual, post = NULL)
 
 18:00  sync_activities_job → находит activity за дату+спорт
        → заполняет actual_*, определяет compliance
 
-06:00+1  daily_metrics_job следующего дня
+06:00+1  sync_wellness_job следующего дня
        → заполняет post_* (recovery, HRV, RHR, sleep, Ra следующего дня)
        → вычисляет recovery_delta
 ```

@@ -1,7 +1,8 @@
 """MCP tools for resting heart rate analysis."""
 
-from data.database import RhrAnalysisRow, get_session
+from data.db import RhrAnalysis, get_session
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -15,8 +16,9 @@ async def get_rhr_analysis(date: str) -> dict:
     Args:
         date: Date in YYYY-MM-DD format
     """
+    user_id = get_current_user_id()
     async with get_session() as session:
-        row = await session.get(RhrAnalysisRow, (1, date))  # TODO: user_id from auth
+        row = await session.get(RhrAnalysis, (user_id, date))
 
     if not row:
         return {"date": date, "status": "insufficient_data"}

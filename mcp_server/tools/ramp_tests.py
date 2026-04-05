@@ -1,11 +1,14 @@
 """MCP tools for ramp tests and threshold management (ATP Phase 4)."""
 
+import asyncio
 from datetime import date
 
-from data.database import AiWorkoutRow
-from data.intervals_client import IntervalsClient
-from data.ramp_tests import create_ramp_test, detect_threshold_drift, get_threshold_freshness_data
+from data.db import AiWorkout, ThresholdFreshnessDTO, User
+from data.intervals.client import IntervalsAsyncClient
+from data.intervals.dto import PlannedWorkoutDTO
+from data.ramp_tests import create_ramp_test
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -18,12 +21,16 @@ async def get_threshold_freshness(sport: str = "") -> dict:
     Args:
         sport: Filter by sport ("Ride" or "Run"). Empty = all sports.
     """
-    data = await get_threshold_freshness_data(sport)
-    drift = await detect_threshold_drift()
+    user_id = get_current_user_id()
 
-    result = {**data}
-    if drift and drift["alerts"]:
-        result["drift_alerts"] = drift["alerts"]
+    freshness, drift = await asyncio.gather(
+        User.get_threshold_freshness(user_id, sport=sport),
+        User.detect_threshold_drift(user_id),
+    )
+
+    result = freshness.model_dump()
+    if drift and drift.alerts:
+        result["drift_alerts"] = [a.model_dump() for a in drift.alerts]
 
     return result
 
@@ -44,23 +51,28 @@ async def create_ramp_test_tool(
         sport: "Ride" or "Run"
         target_date: Date in YYYY-MM-DD format. Default: today.
     """
+    user_id = get_current_user_id()
+
     if sport not in ("Ride", "Run"):
         return f"Ramp test not supported for {sport}. Only Ride and Run."
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
 
-    freshness = await get_threshold_freshness_data(sport)
-    days_since = freshness.get("days_since") or 0
+    freshness: ThresholdFreshnessDTO = await User.get_threshold_freshness(
+        user_id, sport=sport
+    )  # Get full DTO for days_since
+    days_since = freshness.days_since or 0
 
-    workout = create_ramp_test(sport, dt, days_since)
+    workout: PlannedWorkoutDTO = create_ramp_test(sport, dt, days_since)
 
-    client = IntervalsClient()
     event_data = workout.to_intervals_event()
-    result = await client.create_event(event_data)
-    intervals_id = result.get("id")
 
-    await AiWorkoutRow.save(
-        user_id=1,  # TODO: per-user
+    async with IntervalsAsyncClient.for_user(user_id) as client:
+        result = await client.create_event(event_data)
+
+    intervals_id = result.id
+    await AiWorkout.save(
+        user_id=user_id,
         date_str=str(dt),
         sport=sport,
         slot=workout.slot,

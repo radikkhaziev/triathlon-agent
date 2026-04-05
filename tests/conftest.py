@@ -1,18 +1,18 @@
 """Shared test fixtures: create a dedicated test database if it doesn't exist."""
 
-from __future__ import annotations
-
 import asyncio
 from urllib.parse import urlparse, urlunparse
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
-import data.database as db_module
+import data.db.common as db_common
 from config import settings
+from data.db.user import User
 
 
 def _make_test_db_url(original_url: str) -> tuple[str, str]:
@@ -68,22 +68,43 @@ async def _test_db():
 
 
 @pytest.fixture(autouse=True)
-async def test_session(_test_db, monkeypatch):
-    """Patch db_module to use the test database; truncate tables after each test."""
+async def test_session(_test_db, monkeypatch, request):
+    """Patch db_module to use the test database; truncate tables after each test.
+
+    Tests marked with @pytest.mark.real_db skip the patch and use the real database.
+    """
+    if request.node.get_closest_marker("real_db"):
+        yield
+        return
+
     test_url, _ = _test_db
 
     engine = create_async_engine(test_url, echo=False)
     factory = async_sessionmaker(bind=engine, expire_on_commit=False)
 
-    monkeypatch.setattr(db_module, "_SessionLocal", factory)
-    monkeypatch.setattr(db_module, "_engine", None)
+    monkeypatch.setattr(db_common, "_AsyncSessionLocal", factory)
+    monkeypatch.setattr(db_common, "_async_engine", engine)
+
+    # Patch sync engine/session for Dramatiq actors
+    sync_url = _make_sync_url(test_url)
+    sync_engine = create_engine(sync_url, echo=False)
+    sync_factory = sessionmaker(bind=sync_engine, expire_on_commit=False)
+    monkeypatch.setattr(db_common, "_SyncSessionLocal", sync_factory)
+    monkeypatch.setattr(db_common, "_sync_engine", sync_engine)
 
     # Ensure a test user with id=1 exists (needed for FK constraints on user_id)
+    # Create via both async and sync sessions (some ORM methods use sync sessions)
     async with factory() as session:
-        existing = await session.get(db_module.UserRow, 1)
+        existing = await session.get(User, 1)
         if not existing:
-            session.add(db_module.UserRow(id=1, chat_id="test_user", role="owner"))
+            session.add(User(id=1, chat_id="test_user", role="owner"))
             await session.commit()
+
+    with sync_factory() as session:
+        existing = session.get(User, 1)
+        if not existing:
+            session.add(User(id=1, chat_id="test_user", role="owner"))
+            session.commit()
 
     yield
 
@@ -91,8 +112,9 @@ async def test_session(_test_db, monkeypatch):
     async with engine.begin() as conn:
         result = await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
         existing = {row[0] for row in result}
-        for table in reversed(db_module.Base.metadata.sorted_tables):
+        for table in reversed(db_common.Base.metadata.sorted_tables):
             if table.name in existing:
                 await conn.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
 
     await engine.dispose()
+    sync_engine.dispose()

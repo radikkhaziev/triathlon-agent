@@ -100,9 +100,6 @@ export default function Landing() {
           <div className="flex flex-col items-center gap-2 text-text-dim text-[13px]">
             <span className="text-[28px]">🧠</span> Claude AI
           </div>
-          <div className="flex flex-col items-center gap-2 text-text-dim text-[13px]">
-            <span className="text-[28px]">💎</span> Gemini AI
-          </div>
         </div>
       </section>
 

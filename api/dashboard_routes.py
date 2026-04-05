@@ -298,10 +298,14 @@ async def scheduled_workouts(days: int = Query(default=7, le=30)) -> dict:
 @router.post("/api/jobs/morning-report", status_code=202)
 async def job_morning_report() -> dict:
     """Trigger morning report generation (stub)."""
-    return {"status": "accepted", "job": "morning-report", "message": "Mock: would run daily_metrics_job(run_ai=True)"}
+    return {
+        "status": "accepted",
+        "job": "morning-report",
+        "message": "Mock: would run scheduler_wellness_job(run_ai=True)",
+    }
 
 
 @router.post("/api/jobs/sync-wellness", status_code=202)
 async def job_sync_wellness() -> dict:
     """Trigger wellness sync (stub)."""
-    return {"status": "accepted", "job": "sync-wellness", "message": "Mock: would run daily_metrics_job()"}
+    return {"status": "accepted", "job": "sync-wellness", "message": "Mock: would run scheduler_wellness_job()"}

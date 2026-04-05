@@ -66,6 +66,17 @@ services:
       - static_data:/app/static
     restart: unless-stopped
 
+  worker:
+    build: .
+    command: dramatiq tasks.actors
+    env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:

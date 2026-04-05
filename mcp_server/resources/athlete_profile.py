@@ -1,6 +1,8 @@
 """MCP resources — read-only athlete profile, goal, and thresholds."""
 
 from config import settings
+from data.db import AthleteConfig
+from mcp_server.context import get_current_user_id
 
 
 def register_resources(mcp):
@@ -8,44 +10,63 @@ def register_resources(mcp):
 
     @mcp.resource("athlete://profile")
     def athlete_profile() -> str:
-        """Static athlete profile: age, heart rate thresholds, power, swim speed."""
-        lthr_run = settings.ATHLETE_LTHR_RUN
-        lthr_bike = settings.ATHLETE_LTHR_BIKE
-        return (
-            f"Age: {settings.ATHLETE_AGE}\n"
-            f"LTHR Run: {lthr_run} bpm\n"
-            f"LTHR Bike: {lthr_bike} bpm\n"
-            f"Max HR: {settings.ATHLETE_MAX_HR} bpm\n"
-            f"Resting HR: dynamic (from daily wellness sync)\n"
-            f"FTP: {settings.ATHLETE_FTP} W\n"
-            f"CSS: {settings.ATHLETE_CSS} s/100m\n"
-            f"\n"
-            f"HR Zones (Run, % of LTHR {lthr_run}):\n"
-            f"  Z1: 0-{int(lthr_run * 0.72)} ({0}-72%)\n"
-            f"  Z2: {int(lthr_run * 0.72)}-{int(lthr_run * 0.82)} (72-82%)\n"
-            f"  Z3: {int(lthr_run * 0.82)}-{int(lthr_run * 0.87)} (82-87%)\n"
-            f"  Z4: {int(lthr_run * 0.87)}-{int(lthr_run * 0.92)} (87-92%)\n"
-            f"  Z5: {int(lthr_run * 0.92)}-{lthr_run} (92-100%)\n"
-            f"\n"
-            f"HR Zones (Bike, % of LTHR {lthr_bike}):\n"
-            f"  Z1: 0-{int(lthr_bike * 0.68)} (0-68%)\n"
-            f"  Z2: {int(lthr_bike * 0.68)}-{int(lthr_bike * 0.83)} (68-83%)\n"
-            f"  Z3: {int(lthr_bike * 0.83)}-{int(lthr_bike * 0.94)} (83-94%)\n"
-            f"  Z4: {int(lthr_bike * 0.94)}-{int(lthr_bike * 1.05)} (94-105%)\n"
-            f"  Z5: {int(lthr_bike * 1.05)}-{int(lthr_bike * 1.20)} (105-120%)\n"
-        )
+        """Athlete profile: age, heart rate thresholds, power, swim speed, HR zones."""
+        user_id = get_current_user_id()
+        t = AthleteConfig.get_thresholds(user_id)
+
+        lines = [f"Age: {t.age or '—'}"]
+
+        if t.lthr_run:
+            lines.append(f"LTHR Run: {t.lthr_run} bpm")
+        if t.lthr_bike:
+            lines.append(f"LTHR Bike: {t.lthr_bike} bpm")
+        if t.max_hr:
+            lines.append(f"Max HR: {t.max_hr} bpm")
+        lines.append("Resting HR: dynamic (from daily wellness sync)")
+        if t.ftp:
+            lines.append(f"FTP: {t.ftp} W")
+        if t.css:
+            lines.append(f"CSS: {t.css} s/100m")
+
+        if t.lthr_run:
+            lr = t.lthr_run
+            lines.append(f"\nHR Zones (Run, % of LTHR {lr}):")
+            lines.append(f"  Z1: 0-{int(lr * 0.72)} (0-72%)")
+            lines.append(f"  Z2: {int(lr * 0.72)}-{int(lr * 0.82)} (72-82%)")
+            lines.append(f"  Z3: {int(lr * 0.82)}-{int(lr * 0.87)} (82-87%)")
+            lines.append(f"  Z4: {int(lr * 0.87)}-{int(lr * 0.92)} (87-92%)")
+            lines.append(f"  Z5: {int(lr * 0.92)}-{lr} (92-100%)")
+
+        if t.lthr_bike:
+            lb = t.lthr_bike
+            lines.append(f"\nHR Zones (Bike, % of LTHR {lb}):")
+            lines.append(f"  Z1: 0-{int(lb * 0.68)} (0-68%)")
+            lines.append(f"  Z2: {int(lb * 0.68)}-{int(lb * 0.83)} (68-83%)")
+            lines.append(f"  Z3: {int(lb * 0.83)}-{int(lb * 0.94)} (83-94%)")
+            lines.append(f"  Z4: {int(lb * 0.94)}-{int(lb * 1.05)} (94-105%)")
+            lines.append(f"  Z5: {int(lb * 1.05)}-{int(lb * 1.20)} (105-120%)")
+
+        return "\n".join(lines)
 
     @mcp.resource("athlete://goal")
     def race_goal() -> str:
         """Current race goal: event name, date, CTL targets (total + per-sport)."""
-        return (
-            f"Event: {settings.GOAL_EVENT_NAME}\n"
-            f"Date: {settings.GOAL_EVENT_DATE}\n"
-            f"CTL Target (total): {settings.GOAL_CTL_TARGET}\n"
-            f"CTL Target (swim): {settings.GOAL_SWIM_CTL_TARGET}\n"
-            f"CTL Target (bike): {settings.GOAL_BIKE_CTL_TARGET}\n"
-            f"CTL Target (run): {settings.GOAL_RUN_CTL_TARGET}\n"
-        )
+        user_id = get_current_user_id()
+        g = AthleteConfig.get_goal(user_id)
+        if not g:
+            return "No active goal set."
+
+        lines = [
+            f"Event: {g.event_name}",
+            f"Date: {g.event_date}",
+            f"Sport: {g.sport_type}",
+        ]
+        if g.ctl_target:
+            lines.append(f"CTL Target (total): {g.ctl_target}")
+        if g.per_sport_targets:
+            for sport, target in g.per_sport_targets.items():
+                lines.append(f"CTL Target ({sport}): {target}")
+        return "\n".join(lines)
 
     @mcp.resource("athlete://thresholds")
     def thresholds() -> str:

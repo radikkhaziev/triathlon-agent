@@ -9,10 +9,11 @@ from datetime import date
 from jinja2 import Environment, FileSystemLoader
 
 from config import settings
-from data.database import AiWorkoutRow, ExerciseCardRow, WorkoutCardRow
-from data.intervals_client import IntervalsClient
-from data.models import PlannedWorkout, WorkoutStep
+from data.db import AiWorkout, ExerciseCard, WorkoutCard
+from data.intervals.client import IntervalsAsyncClient
+from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def _ensure_dirs():
 def _build_card_context(
     card, *, sets: int | None = None, reps: int | None = None, duration_sec: int | None = None
 ) -> dict:
-    """Build Jinja template context from an ExerciseCardRow with optional overrides."""
+    """Build Jinja template context from an ExerciseCard with optional overrides."""
     actual_sets = sets or card.default_sets or 2
     actual_reps = reps or card.default_reps or 15
     actual_duration = duration_sec or card.default_duration_sec
@@ -133,7 +134,7 @@ async def create_exercise_card(
 
     _ensure_dirs()
 
-    card = await ExerciseCardRow.save(
+    card = await ExerciseCard.save(
         exercise_id=exercise_id,
         name_ru=name_ru,
         name_en=name_en,
@@ -189,7 +190,7 @@ async def update_exercise_card(
     if err:
         return err
 
-    existing = await ExerciseCardRow.get(exercise_id)
+    existing = await ExerciseCard.get(exercise_id)
     if not existing:
         return f"Exercise card '{exercise_id}' not found in library."
 
@@ -216,7 +217,7 @@ async def update_exercise_card(
     if not kwargs:
         return "No fields to update."
 
-    card = await ExerciseCardRow.update_fields(exercise_id, **kwargs)
+    card = await ExerciseCard.update_fields(exercise_id, **kwargs)
 
     _ensure_dirs()
     ctx = _build_card_context(card)
@@ -243,7 +244,7 @@ async def list_exercise_cards(
 
     Optional filters: equipment ("Мини-петля"), group_tag ("День А"), muscles ("ягодичная").
     """
-    cards = await ExerciseCardRow.get_list(equipment=equipment, group_tag=group_tag, muscles=muscles)
+    cards = await ExerciseCard.get_list(equipment=equipment, group_tag=group_tag, muscles=muscles)
     return {
         "count": len(cards),
         "exercises": [
@@ -290,6 +291,8 @@ async def compose_workout(
         push_to_intervals: Create event in Intervals.icu calendar.
         sport: Sport type for Intervals.icu — "Swim", "Ride", "Run", "Other". Default: "Other".
     """
+    user_id = get_current_user_id()
+
     if sport not in VALID_SPORTS:
         return f"Invalid sport '{sport}'. Must be one of: {', '.join(sorted(VALID_SPORTS))}"
 
@@ -303,7 +306,7 @@ async def compose_workout(
 
     # Validate all exercise IDs
     requested_ids = [e["id"] for e in exercises]
-    found_cards = await ExerciseCardRow.get_by_ids(requested_ids)
+    found_cards = await ExerciseCard.get_by_ids(requested_ids)
     found_ids = {c.id for c in found_cards}
     missing = [eid for eid in requested_ids if eid not in found_ids]
     if missing:
@@ -410,10 +413,9 @@ async def compose_workout(
             )
 
         try:
-            client = IntervalsClient()
             # Use PlannedWorkout to build workout_doc for Intervals.icu
-            parsed_steps = WorkoutStep.from_raw_list(workout_steps)
-            pw = PlannedWorkout(
+            parsed_steps = WorkoutStepDTO.from_raw_list(workout_steps)
+            pw = PlannedWorkoutDTO(
                 sport=sport,
                 name=name,
                 steps=parsed_steps,
@@ -422,17 +424,20 @@ async def compose_workout(
             )
             event = pw.to_intervals_event()
             # Override with compose_workout specifics
-            event["start_date_local"] = f"{date_str}T06:00:00"
-            event["name"] = name  # no "AI:" prefix for workout cards
             ext_id = f"tricoach:workout-card:{date_str}:{slug}"
-            event["external_id"] = ext_id
             desc_prefix = f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}"
-            if "description" in event:
-                event["description"] = f"{desc_prefix}\n\n{event['description']}"
-            else:
-                event["description"] = desc_prefix
-            result = await client.create_event(event)
-            intervals_id = result.get("id")
+            desc = f"{desc_prefix}\n\n{event.description}" if event.description else desc_prefix
+            event = event.model_copy(
+                update={
+                    "start_date_local": f"{date_str}T06:00:00",
+                    "name": name,  # no "AI:" prefix for workout cards
+                    "external_id": ext_id,
+                    "description": desc,
+                }
+            )
+            async with IntervalsAsyncClient.for_user(user_id) as client:
+                result = await client.create_event(event)
+            intervals_id = result.id
         except Exception as e:
             resp_body = getattr(getattr(e, "response", None), "text", "")
             logger.error("Failed to push workout to Intervals.icu: %s | body: %s", e, resp_body)
@@ -440,8 +445,8 @@ async def compose_workout(
 
     # Register in ai_workouts so list_ai_workouts / remove_ai_workout can find it
     if intervals_id and push_to_intervals:
-        await AiWorkoutRow.save(
-            user_id=1,  # TODO: per-user
+        await AiWorkout.save(
+            user_id=user_id,
             date_str=date_str,
             sport=sport,
             slot="workout-card",
@@ -455,8 +460,8 @@ async def compose_workout(
         )
 
     # Save to DB
-    await WorkoutCardRow.save(
-        user_id=1,  # TODO: per-user
+    await WorkoutCard.save(
+        user_id=user_id,
         date_str=date_str,
         name=name,
         sport=sport,
@@ -482,7 +487,8 @@ async def remove_workout_card(card_id: int) -> str:
     Args:
         card_id: Workout card ID (from list_workout_cards).
     """
-    row = await WorkoutCardRow.get_by_id(card_id, user_id=1)  # TODO: per-user
+    user_id = get_current_user_id()
+    row = await WorkoutCard.get_by_id(card_id, user_id=user_id)
     if not row:
         return f"Workout card #{card_id} not found."
 
@@ -490,8 +496,8 @@ async def remove_workout_card(card_id: int) -> str:
     intervals_warning = ""
     if row.intervals_id:
         try:
-            client = IntervalsClient()
-            await client.delete_event(row.intervals_id)
+            async with IntervalsAsyncClient.for_user(user_id) as client:
+                await client.delete_event(row.intervals_id)
         except Exception as e:
             logger.warning("Failed to delete event %s from Intervals.icu: %s", row.intervals_id, e)
             intervals_warning = f" (warning: failed to remove from Intervals.icu, event ID {row.intervals_id})"
@@ -503,11 +509,11 @@ async def remove_workout_card(card_id: int) -> str:
         slug = _slugify(name) or row.date
         ai_ext_id = f"tricoach:workout-card:{row.date}:{slug}"
         try:
-            await AiWorkoutRow.cancel(ai_ext_id, user_id=1)  # TODO: per-user
+            await AiWorkout.cancel(user_id, ai_ext_id)
         except Exception:
             logger.debug("No ai_workouts record for %s", ai_ext_id)
 
-    await WorkoutCardRow.delete(card_id, user_id=1)  # TODO: per-user
+    await WorkoutCard.delete(card_id, user_id=user_id)
     return f"Removed workout card #{card_id}: {name}{intervals_warning}"
 
 
@@ -520,7 +526,8 @@ async def list_workout_cards(days_back: int = 30) -> dict:
     Args:
         days_back: Number of days to look back (default: 30).
     """
-    rows = await WorkoutCardRow.get_list(user_id=1, days_back=days_back)  # TODO: per-user
+    user_id = get_current_user_id()
+    rows = await WorkoutCard.get_list(user_id=user_id, days_back=days_back)
     return {
         "count": len(rows),
         "workouts": [

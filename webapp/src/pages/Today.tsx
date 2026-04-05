@@ -147,7 +147,7 @@ export default function Today() {
       </div>
 
       {/* AI Recommendation — collapsed by default */}
-      <AiCollapsible claude={report.ai_recommendation} gemini={report.ai_recommendation_gemini} />
+      <AiCollapsible claude={report.ai_recommendation} />
     </Layout>
   )
 }
@@ -161,7 +161,7 @@ function QuickStat({ label, value, valueClass }: { label: string; value: string;
   )
 }
 
-function AiCollapsible({ claude, gemini }: { claude: string | null; gemini: string | null }) {
+function AiCollapsible({ claude }: { claude: string | null }) {
   const [expanded, setExpanded] = useState(false)
 
   if (!claude) return null
@@ -178,7 +178,7 @@ function AiCollapsible({ claude, gemini }: { claude: string | null; gemini: stri
       </button>
       {expanded && (
         <div className="mt-3">
-          <AiRecommendation claude={claude} gemini={gemini} />
+          <AiRecommendation claude={claude} />
         </div>
       )}
     </div>
