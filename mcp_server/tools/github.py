@@ -2,6 +2,7 @@
 
 from data.github import create_issue, list_issues
 from mcp_server.app import mcp
+from mcp_server.context import require_owner
 
 
 @mcp.tool()
@@ -21,6 +22,11 @@ async def create_github_issue(
         body: Markdown body with structured sections.
         labels: Labels to apply (e.g. ["bug"], ["enhancement", "needs-implementation"]).
     """
+    try:
+        await require_owner()
+    except PermissionError:
+        return {"error": "Only owner can create GitHub issues"}
+
     return await create_issue(title=title, body=body, labels=labels)
 
 

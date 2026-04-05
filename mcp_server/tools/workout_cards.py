@@ -13,7 +13,7 @@ from data.db import AiWorkout, ExerciseCard, WorkoutCard
 from data.intervals.client import IntervalsAsyncClient
 from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
 from mcp_server.app import mcp
-from mcp_server.context import get_current_user_id
+from mcp_server.context import get_current_user_id, require_owner
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +128,11 @@ async def create_exercise_card(
 
     See the clamshell example in docs/WORKOUT_CARDS.md for reference.
     """
+    try:
+        await require_owner()
+    except PermissionError:
+        return "Error: only owner can create exercise cards"
+
     err = _validate_exercise_id(exercise_id)
     if err:
         return err
@@ -186,6 +191,11 @@ async def update_exercise_card(
     Only provided fields are updated. HTML file is re-rendered after update.
     distance_m: meters per rep — for swim drills (e.g. 25, 50, 100).
     """
+    try:
+        await require_owner()
+    except PermissionError:
+        return "Error: only owner can update exercise cards"
+
     err = _validate_exercise_id(exercise_id)
     if err:
         return err

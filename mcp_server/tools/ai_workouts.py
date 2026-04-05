@@ -7,7 +7,7 @@ import httpx
 
 from bot.formatter import build_workout_pushed_message
 from config import settings
-from data.db import AiWorkout
+from data.db import AiWorkout, User
 from data.intervals.client import IntervalsAsyncClient
 from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
 from mcp_server.app import mcp
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _send_workout_notification(
+    user_id: int,
     sport: str,
     name: str,
     duration_minutes: int,
@@ -25,7 +26,11 @@ async def _send_workout_notification(
     intervals_id: int | None,
     target_date: date,
 ) -> None:
-    """Send Telegram notification about pushed workout via HTTP API."""
+    """Send Telegram notification about pushed workout to the requesting user."""
+    user = await User.get_by_id(user_id)
+    if not user or not user.chat_id:
+        return
+
     msg = build_workout_pushed_message(
         sport=sport,
         name=name,
@@ -33,15 +38,15 @@ async def _send_workout_notification(
         target_tss=target_tss,
         suffix=suffix,
         intervals_id=intervals_id,
-        athlete_id=settings.INTERVALS_ATHLETE_ID,
+        athlete_id=user.athlete_id or "",
         target_date=target_date,
     )
     token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
-    if not token or not settings.TELEGRAM_CHAT_ID:
+    if not token:
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": msg})
+        resp = await client.post(url, json={"chat_id": user.chat_id, "text": msg})
         resp.raise_for_status()
 
 
@@ -161,6 +166,7 @@ async def suggest_workout(
     # Send Telegram notification
     try:
         await _send_workout_notification(
+            user_id=user_id,
             sport=sport,
             name=name,
             duration_minutes=duration_minutes,

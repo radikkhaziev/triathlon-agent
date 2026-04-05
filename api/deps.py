@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import time
 from urllib.parse import parse_qs
 
 from fastapi import Depends, Header, HTTPException
@@ -45,7 +46,7 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
 
 
 def _verify_and_parse_init_data(init_data: str, bot_token: str) -> dict | None:
-    """Verify Telegram initData HMAC and return parsed fields, or None if invalid."""
+    """Verify Telegram initData HMAC + auth_date freshness, return parsed fields or None."""
     parsed = parse_qs(init_data)
     received_hash = parsed.pop("hash", [None])[0]
     if not received_hash:
@@ -56,6 +57,16 @@ def _verify_and_parse_init_data(init_data: str, bot_token: str) -> dict | None:
     computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(computed_hash, received_hash):
         return None
+
+    # Reject stale initData (>15 min) to prevent replay attacks
+    auth_date_str = parsed.get("auth_date", [None])[0]
+    if auth_date_str:
+        try:
+            if time.time() - int(auth_date_str) > 900:
+                return None
+        except (ValueError, TypeError):
+            return None
+
     return parsed
 
 

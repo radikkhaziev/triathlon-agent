@@ -29,6 +29,7 @@ def _make_user(*, id: int = 1, chat_id: str = "111", athlete_id: str = "i001", a
     user.username = "tester"
     user.athlete_id = athlete_id
     user.api_key = api_key
+    user.mcp_token = f"token-{id}"
     user.role = "athlete"
     user.is_active = True
     return user

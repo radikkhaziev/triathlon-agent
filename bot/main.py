@@ -129,7 +129,7 @@ async def silent(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
 @athlete_required
 async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle /stick command — increment IQOS stick counter for today. Owner only."""
-    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+    if user.role != "owner":
         await update.message.reply_text("Нет доступа.")
         return
 
@@ -153,7 +153,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        response = await agent.chat(user_text, mcp_token=user.mcp_token)
+        response = await agent.chat(user_text, mcp_token=user.mcp_token, user_id=user.id)
 
         # Telegram Markdown is fragile — fallback to plain text on parse error
         try:
@@ -195,6 +195,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         response = await agent.chat(
             user_message=caption,
             mcp_token=user.mcp_token,
+            user_id=user.id,
             image_data=bytes(photo_bytes),
             image_url=image_url,
         )
@@ -260,7 +261,7 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token)
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
         context.user_data["workout_messages"].append({"role": "assistant", "content": response})
     except Exception:
         logger.exception("Workout generation failed")
@@ -293,7 +294,7 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token)
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
         context.user_data["workout_messages"].append({"role": "assistant", "content": response})
     except Exception:
         logger.exception("Workout dialog error")
@@ -330,7 +331,7 @@ async def workout_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user:
     )
 
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token)
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
     except Exception:
         logger.exception("Workout push failed")
         response = "Ошибка при отправке."
@@ -384,7 +385,7 @@ async def handle_adapt_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token)
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
     except Exception:
         logger.exception("Adapt workout failed")
         response = "Ошибка при адаптации. Попробуй через /workout."

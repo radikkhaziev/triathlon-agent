@@ -7,7 +7,10 @@ Replace with real DB queries when ready.
 import random
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from api.deps import require_viewer
+from data.db import User
 
 router = APIRouter()
 
@@ -155,7 +158,7 @@ _RECOVERY_21 = _generate_recovery_series(21)
 
 
 @router.get("/api/dashboard")
-async def dashboard() -> dict:
+async def dashboard(user: User = Depends(require_viewer)) -> dict:
     """Today tab — readiness, metrics, training load, AI recommendation."""
     return {
         "has_data": True,
@@ -183,7 +186,7 @@ async def dashboard() -> dict:
 
 
 @router.get("/api/training-load")
-async def training_load(days: int = Query(default=84, le=365)) -> dict:
+async def training_load(days: int = Query(default=84, le=365), user: User = Depends(require_viewer)) -> dict:
     """CTL/ATL/TSB + per-sport CTL time series."""
     if days >= 84:
         return _LOAD_84
@@ -192,13 +195,13 @@ async def training_load(days: int = Query(default=84, le=365)) -> dict:
 
 
 @router.get("/api/activities")
-async def activities(days: int = Query(default=28, le=180)) -> dict:
+async def activities(days: int = Query(default=28, le=180), user: User = Depends(require_viewer)) -> dict:
     """Completed activities with sport and TSS."""
     return {"activities": _generate_activities(days)}
 
 
 @router.get("/api/recovery-trend")
-async def recovery_trend(days: int = Query(default=21, ge=1, le=90)) -> dict:
+async def recovery_trend(days: int = Query(default=21, ge=1, le=90), user: User = Depends(require_viewer)) -> dict:
     """Recovery score + RMSSD trend over N days."""
     if days >= 21:
         return _RECOVERY_21
@@ -206,7 +209,7 @@ async def recovery_trend(days: int = Query(default=21, ge=1, le=90)) -> dict:
 
 
 @router.get("/api/goal")
-async def goal() -> dict:
+async def goal(user: User = Depends(require_viewer)) -> dict:
     """Race goal progress."""
     return {
         "event_name": "Ironman 70.3",
@@ -226,7 +229,7 @@ async def goal() -> dict:
 
 
 @router.get("/api/weekly-summary")
-async def weekly_summary() -> dict:
+async def weekly_summary(user: User = Depends(require_viewer)) -> dict:
     """This week's completed training summary by sport."""
     return {
         "week_start": "2026-03-23",
@@ -240,7 +243,7 @@ async def weekly_summary() -> dict:
 
 
 @router.get("/api/scheduled")
-async def scheduled_workouts(days: int = Query(default=7, le=30)) -> dict:
+async def scheduled_workouts(days: int = Query(default=7, le=30), user: User = Depends(require_viewer)) -> dict:
     """Planned workouts for the next N days."""
     today = date(2026, 3, 25)
     workouts = [
@@ -296,7 +299,7 @@ async def scheduled_workouts(days: int = Query(default=7, le=30)) -> dict:
 
 
 @router.post("/api/jobs/morning-report", status_code=202)
-async def job_morning_report() -> dict:
+async def job_morning_report(user: User = Depends(require_viewer)) -> dict:
     """Trigger morning report generation (stub)."""
     return {
         "status": "accepted",
@@ -306,6 +309,6 @@ async def job_morning_report() -> dict:
 
 
 @router.post("/api/jobs/sync-wellness", status_code=202)
-async def job_sync_wellness() -> dict:
+async def job_sync_wellness(user: User = Depends(require_viewer)) -> dict:
     """Trigger wellness sync (stub)."""
     return {"status": "accepted", "job": "sync-wellness", "message": "Mock: would run scheduler_wellness_job()"}

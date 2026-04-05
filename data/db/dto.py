@@ -16,6 +16,7 @@ class UserDTO(BaseModel):
     username: str | None = None
     athlete_id: str | None = None
     api_key: str | None = None
+    mcp_token: str | None = None
     is_silent: bool = False
 
 

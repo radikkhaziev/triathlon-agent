@@ -204,8 +204,8 @@ def actor_compose_user_morning_report(
         if not _hrv_flat_row or not _hrv_flat_aie_row or not _rhr_row:
             return
 
-        # Generate morning report: sync Claude API + MCP tools
-        mcp = MCPTool()
+        # Generate morning report: sync Claude API + MCP tools (per-user token)
+        mcp = MCPTool(token=user.mcp_token, user_id=user.id)
         text = mcp.generate_morning_report_via_mcp(_dt)
         if not text:
             return
