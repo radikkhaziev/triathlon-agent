@@ -4,8 +4,6 @@ import re
 from calendar import monthrange
 from datetime import date, timedelta
 
-import dramatiq  # noqa: F401 — broker must be initialized before actors
-
 from config import settings
 from data.db import User, Wellness, get_session
 from data.db.dto import UserDTO
