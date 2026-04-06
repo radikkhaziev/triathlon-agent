@@ -96,8 +96,8 @@ async def create_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         scheduler_evening_report_job,
         trigger="cron",
-        hour=19,
-        minute=0,
+        hour=20,
+        minute=30,
         id="scheduler_evening_report_job",
     )
 

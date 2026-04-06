@@ -15,7 +15,8 @@ from data.db import (
     Activity,
     ActivityHrv,
     AiWorkout,
-    AthleteConfig,
+    AthleteSettings,
+    AthleteThresholdsDTO,
     HrvAnalysis,
     RhrAnalysis,
     ScheduledWorkout,
@@ -450,7 +451,7 @@ def _actor_update_banister_ess(
             )
             return
 
-        thresholds = AthleteConfig.get_thresholds(user.id)
+        thresholds: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user.id)
         banister_r, ess_today = calculate_banister_for_date(
             activities_by_date=activities_by_date,
             dt=dt,

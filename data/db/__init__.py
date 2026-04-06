@@ -1,5 +1,5 @@
 from .activity import Activity, ActivityDetail, ActivityHrv  # noqa
-from .athlete import AthleteConfig, AthleteGoal, AthleteSettings  # noqa
+from .athlete import AthleteGoal, AthleteSettings  # noqa
 from .common import get_session, get_sync_session  # noqa
 from .dto import (  # noqa
     AthleteGoalDTO,

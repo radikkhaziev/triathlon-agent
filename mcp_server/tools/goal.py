@@ -4,7 +4,8 @@ from datetime import date
 
 from sqlalchemy import select
 
-from data.db import AthleteConfig, Wellness, get_session
+from data.db import AthleteGoal, Wellness, get_session
+from data.db.dto import AthleteGoalDTO
 from data.utils import extract_sport_ctl
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
@@ -24,7 +25,7 @@ async def get_goal_progress() -> dict:
     for total, swim, bike, and run. CTL values come from Intervals.icu.
     """
     user_id = get_current_user_id()
-    g = AthleteConfig.get_goal(user_id)
+    g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
 
     if not g:
         return {"error": "No active goal set for this user."}

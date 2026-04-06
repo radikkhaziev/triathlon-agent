@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from data.db.common import Base, Session
 from data.db.decorator import dual
+from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,35 @@ class AthleteSettings(Base):
         result = session.execute(select(cls).where(cls.user_id == user_id).order_by(cls.sport))
         return list(result.scalars().all())
 
+    @classmethod
+    @dual
+    def get_thresholds(cls, user_id: int, *, session: Session) -> AthleteThresholdsDTO:
+        from .user import User
+
+        user = session.get(User, user_id)
+        result = session.execute(select(cls).where(cls.user_id == user_id))
+        all_settings = list(result.scalars().all())
+
+        dto = AthleteThresholdsDTO(
+            age=user.age if user else None,
+            primary_sport=user.primary_sport if user else None,
+        )
+
+        for s in all_settings:
+            if s.sport == "Run":
+                dto.lthr_run = s.lthr
+                dto.max_hr = dto.max_hr or s.max_hr
+                dto.threshold_pace_run = s.threshold_pace
+            elif s.sport == "Ride":
+                dto.lthr_bike = s.lthr
+                dto.max_hr = dto.max_hr or s.max_hr
+                dto.ftp = s.ftp
+            elif s.sport == "Swim":
+                dto.css = s.threshold_pace
+                dto.max_hr = dto.max_hr or s.max_hr
+
+        return dto
+
 
 class AthleteGoal(Base):
     """Race goals with CTL targets, synced from Intervals.icu events (RACE_A/B/C)."""
@@ -131,6 +161,27 @@ class AthleteGoal(Base):
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    def get_goal_dto(cls, user_id: int, *, session: Session) -> AthleteGoalDTO | None:
+        result = session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.is_active.is_(True))
+            .order_by(cls.category.asc(), cls.event_date.asc())
+            .limit(1)
+        )
+        goal = result.scalar_one_or_none()
+        if not goal:
+            return None
+        return AthleteGoalDTO(
+            event_name=goal.event_name,
+            event_date=goal.event_date,
+            sport_type=goal.sport_type,
+            disciplines=goal.disciplines,
+            ctl_target=goal.ctl_target,
+            per_sport_targets=goal.per_sport_targets,
+        )
 
     @classmethod
     @dual
@@ -177,67 +228,3 @@ class AthleteGoal(Base):
         session.add(goal)
         session.commit()
         return goal
-
-
-# ---------------------------------------------------------------------------
-# AthleteConfig — helper to read athlete settings from DB
-# ---------------------------------------------------------------------------
-
-
-# Backward-compatible re-exports (moved to data.db.dto)
-from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO  # noqa: F401, E402
-
-
-class AthleteConfig:
-    """Per-user athlete configuration from DB (replaces config.py hardcoded values).
-
-    Usage::
-
-        t = AthleteConfig.get_thresholds(user_id=user.id)
-        t.lthr_run   # 153
-        t.ftp        # 233
-
-        g = AthleteConfig.get_goal(user_id=user.id)
-        g.event_name  # "Ironman 70.3"
-    """
-
-    @staticmethod
-    def get_thresholds(user_id: int) -> AthleteThresholdsDTO:
-        from .user import User
-
-        user = User.get_by_id(user_id)
-        all_settings = AthleteSettings.get_all(user_id)
-
-        result = AthleteThresholdsDTO(
-            age=user.age if user else None,
-            primary_sport=user.primary_sport if user else None,
-        )
-
-        for s in all_settings:
-            if s.sport == "Run":
-                result.lthr_run = s.lthr
-                result.max_hr = result.max_hr or s.max_hr
-                result.threshold_pace_run = s.threshold_pace
-            elif s.sport == "Ride":
-                result.lthr_bike = s.lthr
-                result.max_hr = result.max_hr or s.max_hr
-                result.ftp = s.ftp
-            elif s.sport == "Swim":
-                result.css = s.threshold_pace
-                result.max_hr = result.max_hr or s.max_hr
-
-        return result
-
-    @staticmethod
-    def get_goal(user_id: int) -> AthleteGoalDTO | None:
-        goal = AthleteGoal.get_active(user_id)
-        if not goal:
-            return None
-        return AthleteGoalDTO(
-            event_name=goal.event_name,
-            event_date=goal.event_date,
-            sport_type=goal.sport_type,
-            disciplines=goal.disciplines,
-            ctl_target=goal.ctl_target,
-            per_sport_targets=goal.per_sport_targets,
-        )

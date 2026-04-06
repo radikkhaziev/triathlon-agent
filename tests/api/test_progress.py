@@ -2,7 +2,6 @@
 
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from mcp_server.tools.progress import _calc_swolf, _is_z2, _trend_pct, _week_key
 
@@ -11,12 +10,8 @@ _MOCK_THRESHOLDS = SimpleNamespace(lthr_run=153, lthr_bike=153)
 
 
 def _patched_is_z2(avg_hr, sport):
-    """Call _is_z2 with user_id=1 and mocked AthleteConfig.get_thresholds."""
-    with patch(
-        "mcp_server.tools.progress.AthleteConfig.get_thresholds",
-        return_value=_MOCK_THRESHOLDS,
-    ):
-        return _is_z2(avg_hr, sport, user_id=1)
+    """Call _is_z2 with mock thresholds."""
+    return _is_z2(avg_hr, sport, _MOCK_THRESHOLDS)
 
 
 class TestCalcSwolf:
