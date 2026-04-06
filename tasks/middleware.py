@@ -1,6 +1,7 @@
 """Custom Dramatiq helpers — auto-serialize Pydantic models in actor kwargs and results."""
 
 import json
+from datetime import date, datetime
 
 import dramatiq
 from dramatiq.encoder import JSONEncoder
@@ -28,6 +29,8 @@ class _PydanticJSONEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, BaseModel):
             return o.model_dump()
+        if isinstance(o, (date, datetime)):
+            return o.isoformat()
         return super().default(o)
 
 
