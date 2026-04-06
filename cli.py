@@ -4,7 +4,7 @@ import re
 from calendar import monthrange
 from datetime import date, timedelta
 
-from dramatiq import pipeline
+import dramatiq  # noqa: F401 — broker must be initialized before actors
 
 from config import settings
 from data.db import User, Wellness, get_session
@@ -102,22 +102,21 @@ def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
     mode = " (FORCE)" if force else ""
     print(f"Backfill user {user_id}: {start} → {end} ({len(days)} days){mode}")
 
-    # Each day: activities first → then wellness (sport_ctl needs activities in DB)
+    # Activities first (delay N), then wellness (delay N + 30s) so sport_ctl has activities in DB
     delay_per_day_ms = 60_000  # 1 min between days
+    activity_offset_ms = 0
+    wellness_offset_ms = 30_000  # 30s after activities
     for i, day in enumerate(days):
         dt = day.isoformat()
-        delay = i * delay_per_day_ms
-        pipeline(
-            [
-                actor_fetch_user_activities.message_with_options(
-                    kwargs={"user": user, "oldest": dt, "newest": dt, "force": force},
-                    delay=delay,
-                ),
-                actor_user_wellness.message_with_options(
-                    kwargs={"user": user, "dt": dt, "force": force},
-                ),
-            ]
-        ).run()
+        base_delay = i * delay_per_day_ms
+        actor_fetch_user_activities.send_with_options(
+            kwargs={"user": user, "oldest": dt, "newest": dt, "force": force},
+            delay=base_delay + activity_offset_ms,
+        )
+        actor_user_wellness.send_with_options(
+            kwargs={"user": user, "dt": dt, "force": force},
+            delay=base_delay + wellness_offset_ms,
+        )
 
     print(f"Queued: {len(days)} days (wellness + activities per day, 60s apart)")
 
