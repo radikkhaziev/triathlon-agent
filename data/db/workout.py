@@ -211,9 +211,9 @@ class AiWorkout(Base):
             )
             .returning(cls)
         )
-        result = session.execute(stmt)
+        row = session.execute(stmt).scalar_one()
         session.commit()
-        return result.scalar_one()
+        return row
 
     @classmethod
     @dual
@@ -357,6 +357,15 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
+    def delete_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> int:
+        """Delete all training log entries for a given date. Returns deleted count."""
+        date_str = dt if isinstance(dt, str) else dt.isoformat()
+        result = session.execute(delete(cls).where(cls.user_id == user_id, cls.date == date_str))
+        session.commit()
+        return result.rowcount
+
+    @classmethod
+    @dual
     def get_range(cls, user_id: int, days_back: int = 14, *, session: Session) -> list[TrainingLog]:
         """Fetch training log entries for the last N days."""
         from_date = str(date.today() - timedelta(days=days_back - 1))
@@ -480,9 +489,9 @@ class ExerciseCard(Base):
         stmt = (
             insert(cls).values(**values).on_conflict_do_update(index_elements=["id"], set_=update_values).returning(cls)
         )
-        result = await session.execute(stmt)
+        row = (await session.execute(stmt)).scalar_one()
         await session.commit()
-        return result.scalar_one()
+        return row
 
     @classmethod
     @with_session

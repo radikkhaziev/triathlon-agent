@@ -1,18 +1,21 @@
 """MCP resources — read-only athlete profile, goal, and thresholds."""
 
+from mcp.server.fastmcp import FastMCP
+
 from config import settings
-from data.db import AthleteConfig
+from data.db import AthleteGoal, AthleteSettings
+from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
 from mcp_server.context import get_current_user_id
 
 
-def register_resources(mcp):
+def register_resources(mcp: FastMCP) -> None:
     """Register all static resources on the MCP server."""
 
     @mcp.resource("athlete://profile")
-    def athlete_profile() -> str:
+    async def athlete_profile() -> str:
         """Athlete profile: age, heart rate thresholds, power, swim speed, HR zones."""
         user_id = get_current_user_id()
-        t = AthleteConfig.get_thresholds(user_id)
+        t: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
 
         lines = [f"Age: {t.age or '—'}"]
 
@@ -49,10 +52,10 @@ def register_resources(mcp):
         return "\n".join(lines)
 
     @mcp.resource("athlete://goal")
-    def race_goal() -> str:
+    async def race_goal() -> str:
         """Current race goal: event name, date, CTL targets (total + per-sport)."""
         user_id = get_current_user_id()
-        g = AthleteConfig.get_goal(user_id)
+        g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
         if not g:
             return "No active goal set."
 

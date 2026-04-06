@@ -48,10 +48,13 @@ _ELIGIBLE_TYPES = (
 def _actor_download_fit_file(
     user: UserDTO,
     activity_id: str,
+    force: bool = False,
 ):
     with get_sync_session() as session:
         activity = session.get(Activity, activity_id)
-        if not activity or activity.fit_file_path:
+        if not activity:
+            return
+        if activity.fit_file_path and not force:
             return
 
         if activity.type not in _ELIGIBLE_TYPES:
@@ -79,7 +82,7 @@ def _actor_download_fit_file(
     return activity.fit_file_path
 
 
-@dramatiq.actor(queue_name="default")
+@dramatiq.actor(queue_name="default", time_limit=30 * 60 * 1000)
 @validate_call
 def _actor_process_fit_file(prev: str | None):
     """Parse FIT file once, extracting both RR intervals and Record messages.
@@ -129,7 +132,7 @@ def _actor_process_fit_file(prev: str | None):
     return rr_ms, records
 
 
-@dramatiq.actor(queue_name="default")
+@dramatiq.actor(queue_name="default", time_limit=30 * 60 * 1000)
 @validate_call
 def _actor_post_process_fit_file(
     parsed_fit_data: tuple[list[float], list[dict]] | None,
@@ -344,7 +347,7 @@ def _actor_update_activity_details(
 
     pipeline(
         [
-            _actor_download_fit_file.message(user=user, activity_id=activity_id),
+            _actor_download_fit_file.message(user=user, activity_id=activity_id, force=force),
             _actor_process_fit_file.message(),
             _actor_post_process_fit_file.message(user=user, activity_id=activity_id),
             _actor_update_analityc_tables.message(user=user, activity_id=activity_id),
@@ -359,6 +362,7 @@ def actor_fetch_user_activities(
     user: UserDTO,
     oldest: DateDTO | None = None,
     newest: DateDTO | None = None,
+    force: bool = False,
 ):
     today = datetime.now(TZ).date()
     _newest = newest or today
@@ -372,10 +376,13 @@ def actor_fetch_user_activities(
 
     activity_ids = Activity.save_bulk(user, activities=activities)
 
+    if force:
+        activity_ids = [a.id for a in activities]
+
     if not activity_ids:
         return
 
-    g = group([_actor_update_activity_details.message(user=user, activity_id=aid) for aid in activity_ids])
+    g = group([_actor_update_activity_details.message(user=user, activity_id=aid, force=force) for aid in activity_ids])
     g.run()
 
     _actor_fill_training_log_actual.send(user=user)

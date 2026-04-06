@@ -15,7 +15,8 @@ from data.db import (
     Activity,
     ActivityHrv,
     AiWorkout,
-    AthleteConfig,
+    AthleteSettings,
+    AthleteThresholdsDTO,
     HrvAnalysis,
     RhrAnalysis,
     ScheduledWorkout,
@@ -54,6 +55,7 @@ def _actor_enrich_wellness_sport_info(
         activity_row: list[Activity] = Activity.get_for_ctl(user_id=user.id, as_of=dt, session=session)
 
         sport_ctl: dict[str, float] = calculate_sport_ctl(activity_row)
+        logger.info("Sport CTL for user %d on %s: %s (%d activities)", user.id, dt, sport_ctl, len(activity_row))
 
         Wellness.update_sport_ctl(
             user_id=user.id,
@@ -249,6 +251,7 @@ def _actor_update_hrv_analysis(
 def _actor_update_recovery_score(
     user: UserDTO,
     dt: DateDTO,
+    force: bool = False,
 ):
     _dt = dt.isoformat()
     with get_sync_session() as session:
@@ -279,7 +282,7 @@ def _actor_update_recovery_score(
 
         session.commit()
 
-    _actor_record_training_log.send(user=user, dt=dt)
+    _actor_record_training_log.send(user=user, dt=dt, force=force)
 
 
 @dramatiq.actor(queue_name="default")
@@ -287,6 +290,7 @@ def _actor_update_recovery_score(
 def _actor_record_training_log(
     user: UserDTO,
     dt: DateDTO,
+    force: bool = False,
 ):
     """Record training log pre (today) + fill post (yesterday). Runs after recovery score."""
 
@@ -302,6 +306,10 @@ def _actor_record_training_log(
 
     # --- PRE: record today's training context ---
     existing = TrainingLog.get_for_date(dt, user_id=user.id)
+    if existing and force:
+        deleted = TrainingLog.delete_for_date(user_id=user.id, dt=dt)
+        logger.info("Force: deleted %d training log entries for user %d on %s", deleted, user.id, dt)
+        existing = []
     if not existing:
         workouts = ScheduledWorkout.get_for_date(user.id, dt)
         ai_workouts = AiWorkout.get_for_date(user.id, dt)
@@ -450,7 +458,7 @@ def _actor_update_banister_ess(
             )
             return
 
-        thresholds = AthleteConfig.get_thresholds(user.id)
+        thresholds: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user.id)
         banister_r, ess_today = calculate_banister_for_date(
             activities_by_date=activities_by_date,
             dt=dt,
@@ -469,6 +477,7 @@ def _actor_update_banister_ess(
 def actor_user_wellness(
     user: UserDTO,
     dt: DateDTO | None = None,
+    force: bool = False,
 ):
     from .athlets import actor_sync_athlete_settings
 
@@ -487,7 +496,7 @@ def actor_user_wellness(
 
     _dt = _wellnessDTO.id
 
-    if not result.is_changed:
+    if not result.is_changed and not force:
         logger.debug("Wellness unchanged for user %s on %s, skipping pipelines", user.id, _dt)
         return
 
@@ -512,5 +521,5 @@ def actor_user_wellness(
             ),
         ]
     )
-    g.add_completion_callback(_actor_update_recovery_score.message(user=user, dt=_dt))
+    g.add_completion_callback(_actor_update_recovery_score.message(user=user, dt=_dt, force=force))
     g.run()

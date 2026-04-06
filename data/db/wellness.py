@@ -190,7 +190,7 @@ class Wellness(Base):
         result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
         row = result.scalar_one_or_none()
 
-        existing_info = row.sport_info or [{}]
+        existing_info = list(row.sport_info or [{}])  # copy to trigger SQLAlchemy change detection
         existing_types = {(e.get("type") or "").lower(): i for i, e in enumerate(existing_info)}
         for canonical, ctl_val in sport_ctl.items():
             if ctl_val < 0:

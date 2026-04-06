@@ -5,7 +5,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from statistics import median
 
-from data.db import Activity, ActivityDetail, AthleteConfig
+from data.db import Activity, ActivityDetail, AthleteSettings
+from data.db.dto import AthleteThresholdsDTO
 from data.metrics import decoupling_status, is_valid_for_decoupling
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
@@ -36,19 +37,17 @@ def _sport_group(activity_type: str) -> str | None:
     return None
 
 
-def _is_z2(avg_hr: float | None, sport: str, user_id: int) -> bool:
+def _is_z2(avg_hr: float | None, sport: str, thresholds: AthleteThresholdsDTO) -> bool:
     """Check if average HR is in Z2 range for the sport."""
     if not avg_hr:
         return False
     if sport == "bike":
-        t = AthleteConfig.get_thresholds(user_id)
-        lthr = t.lthr_bike
+        lthr = thresholds.lthr_bike
         if not lthr:
             return False
         lo, hi = _Z2_BIKE
     elif sport == "run":
-        t = AthleteConfig.get_thresholds(user_id)
-        lthr = t.lthr_run
+        lthr = thresholds.lthr_run
         if not lthr:
             return False
         lo, hi = _Z2_RUN
@@ -137,6 +136,8 @@ async def compute_efficiency_trend(
     if strict_filter:
         target_sports -= {"swim"}
 
+    thresholds: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
+
     # Pre-filter activities before bulk DB fetch
     filtered = []
     for act in activities:
@@ -145,7 +146,7 @@ async def compute_efficiency_trend(
             continue
         if (act.moving_time or 0) < _MIN_DURATION.get(sg, 0):
             continue
-        if sg in ("bike", "run") and not _is_z2(act.average_hr, sg, user_id):
+        if sg in ("bike", "run") and not _is_z2(act.average_hr, sg, thresholds):
             continue
         filtered.append((act, sg))
 

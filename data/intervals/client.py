@@ -6,6 +6,7 @@ Subclasses add transport (_request + retry) and thin one-liner endpoints.
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -21,7 +22,7 @@ from data.intervals.dto import ActivityDTO, EventExDTO, ScheduledWorkoutDTO, Spo
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://intervals.icu/api/v1"
-MAX_RETRIES = 3
+MAX_RETRIES = 10
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 FIT_MAX_SIZE = 50 * 1024 * 1024  # 50 MB
 
@@ -73,7 +74,7 @@ class IntervalsClientBase:
 
     def _compute_retry_delay(self, resp: httpx.Response, attempt: int) -> float:
         retry_after = resp.headers.get("Retry-After")
-        return float(retry_after) if retry_after else 2**attempt
+        return float(retry_after) if retry_after else 10 * (attempt + 1)
 
     def _log_retry(self, method: str, path: str, status: int, attempt: int, delay: float) -> None:
         logger.warning(
@@ -359,6 +360,7 @@ class IntervalsSyncClient(IntervalsClientBase):
                 return resp
             delay = self._compute_retry_delay(resp, attempt)
             self._log_retry(method, path, resp.status_code, attempt, delay)
+            time.sleep(delay)
         resp.raise_for_status()
         return resp  # unreachable
 

@@ -2,7 +2,8 @@ import zoneinfo
 from datetime import datetime
 
 from config import settings
-from data.db import AthleteConfig
+from data.db import AthleteGoal, AthleteSettings
+from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
 
 # ---------------------------------------------------------------------------
 # V2 — Tool-use system prompt (MCP Phase 2)
@@ -64,8 +65,8 @@ get_iqos_sticks для корреляции с recovery.
 
 def get_system_prompt_v2(user_id: int) -> str:
 
-    t = AthleteConfig.get_thresholds(user_id)
-    g = AthleteConfig.get_goal(user_id)
+    t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
+    g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
     return SYSTEM_PROMPT_V2.format(
         athlete_age=t.age or 0,
         goal_event=g.event_name if g else "не задана",
@@ -133,10 +134,10 @@ Scales: energy 1-5, mood 1-5, anxiety 1-5 (1=calm, 5=very anxious), social 1-5.
 """
 
 
-def get_system_prompt_chat(user_id: int) -> str:
+async def get_system_prompt_chat(user_id: int) -> str:
 
-    t = AthleteConfig.get_thresholds(user_id)
-    g = AthleteConfig.get_goal(user_id)
+    t: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
+    g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).strftime("%Y-%m-%d")
 

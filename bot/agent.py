@@ -86,7 +86,7 @@ class ClaudeAgent:
         mcp_token: per-user MCP Bearer token. Falls back to global MCP_AUTH_TOKEN.
         """
         mcp = MCPClient(token=mcp_token)
-        system = get_system_prompt_chat(user_id=user_id)
+        system = await get_system_prompt_chat(user_id=user_id)
         tools = await mcp.list_tools()
 
         if image_data:
