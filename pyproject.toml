@@ -47,9 +47,9 @@ dev = [
 packages = [
     { include = "bot" },
     { include = "data" },
-    { include = "ai" },
     { include = "api" },
     { include = "mcp_server" },
+    { include = "tasks" },
 ]
 
 [build-system]
