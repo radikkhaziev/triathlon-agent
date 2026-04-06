@@ -55,6 +55,7 @@ def _actor_enrich_wellness_sport_info(
         activity_row: list[Activity] = Activity.get_for_ctl(user_id=user.id, as_of=dt, session=session)
 
         sport_ctl: dict[str, float] = calculate_sport_ctl(activity_row)
+        logger.info("Sport CTL for user %d on %s: %s (%d activities)", user.id, dt, sport_ctl, len(activity_row))
 
         Wellness.update_sport_ctl(
             user_id=user.id,
@@ -306,7 +307,8 @@ def _actor_record_training_log(
     # --- PRE: record today's training context ---
     existing = TrainingLog.get_for_date(dt, user_id=user.id)
     if existing and force:
-        TrainingLog.delete_for_date(user_id=user.id, dt=dt)
+        deleted = TrainingLog.delete_for_date(user_id=user.id, dt=dt)
+        logger.info("Force: deleted %d training log entries for user %d on %s", deleted, user.id, dt)
         existing = []
     if not existing:
         workouts = ScheduledWorkout.get_for_date(user.id, dt)

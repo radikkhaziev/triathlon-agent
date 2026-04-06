@@ -4,6 +4,8 @@ import re
 from calendar import monthrange
 from datetime import date, timedelta
 
+from dramatiq import group
+
 from config import settings
 from data.db import User, Wellness, get_session
 from data.db.dto import UserDTO
@@ -100,23 +102,26 @@ def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
     mode = " (FORCE)" if force else ""
     print(f"Backfill user {user_id}: {start} → {end} ({len(days)} days){mode}")
 
-    # Activities first (delay N), then wellness (delay N + 30s) so sport_ctl has activities in DB
+    # Per day: activities first → wellness after (completion callback).
+    # Activities must finish before wellness so sport_ctl sees activities in DB.
     delay_per_day_ms = 60_000  # 1 min between days
-    activity_offset_ms = 0
-    wellness_offset_ms = 30_000  # 30s after activities
     for i, day in enumerate(days):
         dt = day.isoformat()
-        base_delay = i * delay_per_day_ms
-        actor_fetch_user_activities.send_with_options(
-            kwargs={"user": user, "oldest": dt, "newest": dt, "force": force},
-            delay=base_delay + activity_offset_ms,
+        delay = i * delay_per_day_ms
+        g = group(
+            [
+                actor_fetch_user_activities.message_with_options(
+                    kwargs={"user": user, "oldest": dt, "newest": dt, "force": force},
+                    delay=delay,
+                ),
+            ]
         )
-        actor_user_wellness.send_with_options(
-            kwargs={"user": user, "dt": dt, "force": force},
-            delay=base_delay + wellness_offset_ms,
+        g.add_completion_callback(
+            actor_user_wellness.message(user=user, dt=dt, force=force),
         )
+        g.run()
 
-    print(f"Queued: {len(days)} days (wellness + activities per day, 60s apart)")
+    print(f"Queued: {len(days)} days (activities → wellness per day, 60s apart)")
 
 
 def _shell() -> None:
