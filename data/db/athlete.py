@@ -78,9 +78,9 @@ class AthleteSettings(Base):
                 "updated_at": now,
             },
         ).returning(cls)
-        result = session.execute(stmt)
+        row = session.execute(stmt).scalar_one()
         session.commit()
-        return result.scalar_one()
+        return row
 
     @classmethod
     @dual

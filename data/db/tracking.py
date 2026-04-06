@@ -129,9 +129,9 @@ class IqosDaily(Base):
             )
             .returning(cls)
         )
-        result = await session.execute(stmt)
+        row = (await session.execute(stmt)).scalars().one()
         await session.commit()
-        return result.scalars().one()
+        return row
 
     @classmethod
     @with_session

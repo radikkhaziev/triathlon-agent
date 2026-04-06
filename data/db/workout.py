@@ -211,9 +211,9 @@ class AiWorkout(Base):
             )
             .returning(cls)
         )
-        result = session.execute(stmt)
+        row = session.execute(stmt).scalar_one()
         session.commit()
-        return result.scalar_one()
+        return row
 
     @classmethod
     @dual
@@ -480,9 +480,9 @@ class ExerciseCard(Base):
         stmt = (
             insert(cls).values(**values).on_conflict_do_update(index_elements=["id"], set_=update_values).returning(cls)
         )
-        result = await session.execute(stmt)
+        row = (await session.execute(stmt)).scalar_one()
         await session.commit()
-        return result.scalar_one()
+        return row
 
     @classmethod
     @with_session
