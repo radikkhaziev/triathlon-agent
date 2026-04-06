@@ -82,7 +82,7 @@ def _actor_download_fit_file(
     return activity.fit_file_path
 
 
-@dramatiq.actor(queue_name="default")
+@dramatiq.actor(queue_name="default", time_limit=30 * 60 * 1000)
 @validate_call
 def _actor_process_fit_file(prev: str | None):
     """Parse FIT file once, extracting both RR intervals and Record messages.
@@ -132,7 +132,7 @@ def _actor_process_fit_file(prev: str | None):
     return rr_ms, records
 
 
-@dramatiq.actor(queue_name="default")
+@dramatiq.actor(queue_name="default", time_limit=30 * 60 * 1000)
 @validate_call
 def _actor_post_process_fit_file(
     parsed_fit_data: tuple[list[float], list[dict]] | None,
