@@ -4,7 +4,7 @@ import re
 from calendar import monthrange
 from datetime import date, timedelta
 
-from dramatiq import group
+from dramatiq import pipeline
 
 from config import settings
 from data.db import User, Wellness, get_session
@@ -102,17 +102,19 @@ def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
     mode = " (FORCE)" if force else ""
     print(f"Backfill user {user_id}: {start} → {end} ({len(days)} days){mode}")
 
-    # Each day: wellness + activities as a group, delayed by day index (60s apart)
+    # Each day: activities first → then wellness (sport_ctl needs activities in DB)
     delay_per_day_ms = 60_000  # 1 min between days
     for i, day in enumerate(days):
         dt = day.isoformat()
         delay = i * delay_per_day_ms
-        group(
+        pipeline(
             [
-                actor_user_wellness.message_with_options(kwargs={"user": user, "dt": dt, "force": force}, delay=delay),
                 actor_fetch_user_activities.message_with_options(
                     kwargs={"user": user, "oldest": dt, "newest": dt, "force": force},
                     delay=delay,
+                ),
+                actor_user_wellness.message_with_options(
+                    kwargs={"user": user, "dt": dt, "force": force},
                 ),
             ]
         ).run()

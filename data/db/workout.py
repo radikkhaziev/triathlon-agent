@@ -357,6 +357,15 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
+    def delete_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> int:
+        """Delete all training log entries for a given date. Returns deleted count."""
+        date_str = dt if isinstance(dt, str) else dt.isoformat()
+        result = session.execute(delete(cls).where(cls.user_id == user_id, cls.date == date_str))
+        session.commit()
+        return result.rowcount
+
+    @classmethod
+    @dual
     def get_range(cls, user_id: int, days_back: int = 14, *, session: Session) -> list[TrainingLog]:
         """Fetch training log entries for the last N days."""
         from_date = str(date.today() - timedelta(days=days_back - 1))

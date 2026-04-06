@@ -250,6 +250,7 @@ def _actor_update_hrv_analysis(
 def _actor_update_recovery_score(
     user: UserDTO,
     dt: DateDTO,
+    force: bool = False,
 ):
     _dt = dt.isoformat()
     with get_sync_session() as session:
@@ -280,7 +281,7 @@ def _actor_update_recovery_score(
 
         session.commit()
 
-    _actor_record_training_log.send(user=user, dt=dt)
+    _actor_record_training_log.send(user=user, dt=dt, force=force)
 
 
 @dramatiq.actor(queue_name="default")
@@ -288,6 +289,7 @@ def _actor_update_recovery_score(
 def _actor_record_training_log(
     user: UserDTO,
     dt: DateDTO,
+    force: bool = False,
 ):
     """Record training log pre (today) + fill post (yesterday). Runs after recovery score."""
 
@@ -303,6 +305,9 @@ def _actor_record_training_log(
 
     # --- PRE: record today's training context ---
     existing = TrainingLog.get_for_date(dt, user_id=user.id)
+    if existing and force:
+        TrainingLog.delete_for_date(user_id=user.id, dt=dt)
+        existing = []
     if not existing:
         workouts = ScheduledWorkout.get_for_date(user.id, dt)
         ai_workouts = AiWorkout.get_for_date(user.id, dt)
@@ -514,5 +519,5 @@ def actor_user_wellness(
             ),
         ]
     )
-    g.add_completion_callback(_actor_update_recovery_score.message(user=user, dt=_dt))
+    g.add_completion_callback(_actor_update_recovery_score.message(user=user, dt=_dt, force=force))
     g.run()
