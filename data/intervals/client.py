@@ -6,6 +6,7 @@ Subclasses add transport (_request + retry) and thin one-liner endpoints.
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -359,6 +360,7 @@ class IntervalsSyncClient(IntervalsClientBase):
                 return resp
             delay = self._compute_retry_delay(resp, attempt)
             self._log_retry(method, path, resp.status_code, attempt, delay)
+            time.sleep(delay)
         resp.raise_for_status()
         return resp  # unreachable
 
