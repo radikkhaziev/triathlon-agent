@@ -4,8 +4,9 @@ from datetime import date, timedelta
 
 from sqlalchemy import select
 
-from data.database import ActivityHrvRow, get_session
+from data.db import Activity, ActivityHrv, get_session
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -26,8 +27,12 @@ async def get_activity_hrv(activity_id: str) -> dict:
     Args:
         activity_id: Intervals.icu activity ID (e.g. "i12345")
     """
+    user_id = get_current_user_id()
     async with get_session() as session:
-        row = await session.get(ActivityHrvRow, activity_id)
+        activity = await session.get(Activity, activity_id)
+        if not activity or activity.user_id != user_id:
+            return {"error": f"Activity {activity_id} not found."}
+        row = await session.get(ActivityHrv, activity_id)
 
     if not row:
         return {
@@ -36,7 +41,7 @@ async def get_activity_hrv(activity_id: str) -> dict:
 
     result = {
         "activity_id": activity_id,
-        "date": row.date,
+        "date": activity.start_date_local if activity else None,
         "activity_type": row.activity_type,
         "processing_status": row.processing_status,
     }
@@ -107,17 +112,23 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
         "run": ("Run", "VirtualRun", "TrailRun"),
     }
 
+    user_id = get_current_user_id()
     async with get_session() as session:
         query = (
-            select(ActivityHrvRow)
-            .where(ActivityHrvRow.date >= cutoff)
-            .where(ActivityHrvRow.hrvt1_hr.isnot(None))
-            .order_by(ActivityHrvRow.date.asc())
+            select(ActivityHrv, Activity.start_date_local)
+            .join(Activity, Activity.id == ActivityHrv.activity_id)
+            .where(
+                Activity.user_id == user_id,
+                Activity.start_date_local >= cutoff,
+                ActivityHrv.hrvt1_hr.isnot(None),
+            )
+            .order_by(Activity.start_date_local.asc())
         )
         if sport.lower() in _SPORT_TYPES:
-            query = query.where(ActivityHrvRow.activity_type.in_(_SPORT_TYPES[sport.lower()]))
+            query = query.where(ActivityHrv.activity_type.in_(_SPORT_TYPES[sport.lower()]))
 
-        rows = (await session.execute(query)).scalars().all()
+        result = await session.execute(query)
+        rows = result.all()
 
     if not rows:
         return {
@@ -127,9 +138,9 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
         }
 
     thresholds = []
-    for r in rows:
+    for r, activity_date in rows:
         entry = {
-            "date": r.date,
+            "date": activity_date,
             "activity_id": r.activity_id,
             "activity_type": r.activity_type,
             "hrvt1_hr": r.hrvt1_hr,
@@ -170,17 +181,23 @@ async def get_readiness_history(sport: str = "", days_back: int = 30) -> dict:
         "run": ("Run", "VirtualRun", "TrailRun"),
     }
 
+    user_id = get_current_user_id()
     async with get_session() as session:
         query = (
-            select(ActivityHrvRow)
-            .where(ActivityHrvRow.date >= cutoff)
-            .where(ActivityHrvRow.ra_pct.isnot(None))
-            .order_by(ActivityHrvRow.date.asc())
+            select(ActivityHrv, Activity.start_date_local)
+            .join(Activity, Activity.id == ActivityHrv.activity_id)
+            .where(
+                Activity.user_id == user_id,
+                Activity.start_date_local >= cutoff,
+                ActivityHrv.ra_pct.isnot(None),
+            )
+            .order_by(Activity.start_date_local.asc())
         )
         if sport.lower() in _SPORT_TYPES:
-            query = query.where(ActivityHrvRow.activity_type.in_(_SPORT_TYPES[sport.lower()]))
+            query = query.where(ActivityHrv.activity_type.in_(_SPORT_TYPES[sport.lower()]))
 
-        rows = (await session.execute(query)).scalars().all()
+        result = await session.execute(query)
+        rows = result.all()
 
     if not rows:
         return {
@@ -190,11 +207,11 @@ async def get_readiness_history(sport: str = "", days_back: int = 30) -> dict:
         }
 
     readiness = []
-    for r in rows:
+    for r, activity_date in rows:
         status = "excellent" if r.ra_pct > 5 else "normal" if r.ra_pct > -5 else "under_recovered"
         readiness.append(
             {
-                "date": r.date,
+                "date": activity_date,
                 "activity_id": r.activity_id,
                 "activity_type": r.activity_type,
                 "ra_pct": r.ra_pct,

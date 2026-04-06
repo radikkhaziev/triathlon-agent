@@ -140,7 +140,7 @@ export default function Wellness() {
           )}
 
           {/* AI */}
-          <AiRecommendation claude={data.ai_recommendation} gemini={data.ai_recommendation_gemini} />
+          <AiRecommendation claude={data.ai_recommendation} />
         </>
       )}
     </Layout>

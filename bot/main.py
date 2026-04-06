@@ -5,18 +5,31 @@ import zoneinfo
 from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
-from ai.claude_agent import ClaudeAgent
 from api.auth import generate_code
-from bot.formatter import build_morning_message
+from bot.agent import ClaudeAgent
+from bot.decorator import athlete_required
 from bot.scheduler import create_scheduler
 from config import settings
-from data.database import IqosDailyRow, WellnessRow
-from data.intervals_client import IntervalsClient, sync_athlete_settings
+from data.db import IqosDaily, User, UserDTO, Wellness
 from data.redis_client import close_redis, init_redis
+from tasks.actors import actor_compose_user_morning_report
 
 logger = logging.getLogger(__name__)
+
+agent = ClaudeAgent()
+
+TZ = zoneinfo.ZoneInfo(settings.TIMEZONE)
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +38,23 @@ logger = logging.getLogger(__name__)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start command — welcome message with bot description."""
+    """Handle /start command — welcome message + ensure user exists in DB."""
+    tg_user = update.effective_user
+    chat_id = str(tg_user.id)
+
+    user = await User.get_by_chat_id(chat_id)
+    if not user:
+        try:
+            user = await User.create(
+                chat_id=chat_id,
+                username=tg_user.username,
+                display_name=tg_user.full_name,
+            )
+            logger.info("New user registered: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
+        except Exception:
+            # Race condition: another /start created the user between check and insert
+            user = await User.get_by_chat_id(chat_id)
+
     webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup(
         [
@@ -33,7 +62,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ]
     )
     await update.message.reply_text(
-        "Triathlon AI Coach — персональный тренер на основе данных.\n\n"
+        "AI Coach — персональный тренер на основе данных.\n\n"
         "Что умеет бот:\n"
         "• Утренний анализ готовности (HRV, recovery, sleep)\n"
         "• AI-рекомендации по тренировкам\n"
@@ -50,32 +79,32 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Web Dashboard", reply_markup=keyboard)
 
 
-async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /morning command — build report from current DB data."""
-    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
-        await update.message.reply_text("Нет доступа.")
-        return
-
-    dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
-    row = await WellnessRow.get(dt)
+@athlete_required
+async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle /morning command — show report if ready, otherwise dispatch generation."""
+    dt = datetime.now(TZ).date()
+    row = await Wellness.get(user.id, dt)
+    webapp_url = settings.API_BASE_URL
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
 
     if not row:
         await update.message.reply_text("Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут.")
         return
 
-    summary = build_morning_message(row)
-    webapp_url = settings.API_BASE_URL
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
-    await update.message.reply_text(summary, reply_markup=keyboard)
-
-
-async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /web command — generate one-time login code for desktop browser."""
-    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
-        await update.message.reply_text("Нет доступа.")
+    if row.ai_recommendation:
+        await update.message.reply_text("Утренний отчёт готов.", reply_markup=keyboard)
         return
 
-    code = generate_code(str(update.effective_user.id))
+    # Report not generated yet — dispatch dramatiq task
+    actor_compose_user_morning_report.send(user=UserDTO.model_validate(user).model_dump())
+
+    await update.message.reply_text("Отчёт формируется, подождите пару минут.", reply_markup=keyboard)
+
+
+@athlete_required
+async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle /web command — generate one-time login code for desktop browser."""
+    code = generate_code(str(user.chat_id))
     login_url = f"{settings.API_BASE_URL}/login"
     await update.message.reply_text(
         f"🔑 Код: `{code}`\n\nДействует 5 минут. Введите на странице:\n{login_url}",
@@ -83,35 +112,48 @@ async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /stick command — increment IQOS stick counter for today."""
-    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
+@athlete_required
+async def silent(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle /silent command — toggle silent mode."""
+    from data.db import get_session
+
+    async with get_session() as session:
+        db_user = await session.get(User, user.id)
+        db_user.is_silent = not db_user.is_silent
+        await session.commit()
+        status = "включён" if db_user.is_silent else "выключен"
+
+    await update.message.reply_text(f"🔇 Тихий режим {status}")
+
+
+@athlete_required
+async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle /stick command — increment IQOS stick counter for today. Owner only."""
+    if user.role != "owner":
         await update.message.reply_text("Нет доступа.")
         return
 
-    dt = datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
-    row = await IqosDailyRow.increment(dt)
+    dt = datetime.now(TZ).date()
+    row = await IqosDaily.increment(user_id=user.id, target_date=dt)
     await update.message.reply_text(f"🚬 Стик #{row.count} за {dt.strftime('%d.%m')}")
 
 
-async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle free-form text messages — AI chat via tool-use (Phase 3)."""
-    if not settings.AI_CHAT_ENABLED:
-        return
-
-    # Owner only — silent ignore for others
-    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
-        return
-
+@athlete_required
+async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle free-form text messages — AI chat via tool-use."""
     user_text = update.message.text
     if not user_text or not user_text.strip():
         return
 
+    # Include reply context if replying to a message
+    reply = update.message.reply_to_message
+    if reply and reply.text:
+        user_text = f"[В ответ на: {reply.text}]\n\n{user_text}"
+
     await update.message.chat.send_action("typing")
 
     try:
-        agent = ClaudeAgent()
-        response = await agent.chat(user_text)
+        response = await agent.chat(user_text, mcp_token=user.mcp_token, user_id=user.id)
 
         # Telegram Markdown is fragile — fallback to plain text on parse error
         try:
@@ -123,13 +165,9 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Ошибка при обработке. Попробуй ещё раз.")
 
 
-async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@athlete_required
+async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle photo messages — download, save locally, pass to AI chat with vision."""
-    if not settings.AI_CHAT_ENABLED:
-        return
-
-    if str(update.effective_user.id) != settings.TELEGRAM_CHAT_ID:
-        return
 
     photo = update.message.photo[-1]  # highest resolution
     caption = update.message.caption or ""
@@ -154,9 +192,10 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         image_url = f"{settings.API_BASE_URL}/static/uploads/{filename}"
 
-        agent = ClaudeAgent()
         response = await agent.chat(
             user_message=caption,
+            mcp_token=user.mcp_token,
+            user_id=user.id,
             image_data=bytes(photo_bytes),
             image_url=image_url,
         )
@@ -168,6 +207,234 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error("Photo chat error: %s", e, exc_info=True)
         await update.message.reply_text("Ошибка при обработке фото. Попробуй ещё раз.")
+
+
+# ---------------------------------------------------------------------------
+# /workout — ConversationHandler
+# ---------------------------------------------------------------------------
+
+WORKOUT_CHOOSE_SPORT, WORKOUT_DIALOG = range(2)
+
+
+@athlete_required
+async def workout_start(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> int:
+    """Entry point: /workout → show sport selection."""
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("💪 Фитнес", callback_data="workout:WeightTraining"),
+                InlineKeyboardButton("🏃 Run", callback_data="workout:Run"),
+            ],
+            [
+                InlineKeyboardButton("🏊 Swim", callback_data="workout:Swim"),
+                InlineKeyboardButton("🚴 Ride", callback_data="workout:Ride"),
+            ],
+        ]
+    )
+    await update.message.reply_text("Выбери вид тренировки:", reply_markup=keyboard)
+    return WORKOUT_CHOOSE_SPORT
+
+
+@athlete_required
+async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> int:
+    """Sport selected → ask Claude to generate first workout variant."""
+    query = update.callback_query
+    await query.answer()
+
+    sport = query.data.split(":", 1)[1]
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    context.user_data["workout_sport"] = sport
+    context.user_data["workout_messages"] = []
+
+    await query.message.chat.send_action("typing")
+
+    prompt = (
+        f"Сгенерируй тренировку на сегодня. Вид спорта: {sport}. "
+        f"Используй suggest_workout tool с dry_run=True (только превью, не отправляй)."
+    )
+    if sport == "WeightTraining":
+        prompt = (
+            "Сгенерируй фитнес-тренировку на сегодня. "
+            "Сначала вызови get_animation_guidelines, затем list_exercise_cards, "
+            "и собери тренировку через compose_workout с dry_run=True."
+        )
+
+    try:
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+        context.user_data["workout_messages"].append({"role": "assistant", "content": response})
+    except Exception:
+        logger.exception("Workout generation failed")
+        response = "Ошибка при генерации. Попробуй ещё раз или /cancel."
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="workout_cancel")],
+        ]
+    )
+
+    try:
+        await query.message.reply_text(response, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await query.message.reply_text(response, reply_markup=keyboard)
+
+    return WORKOUT_DIALOG
+
+
+@athlete_required
+async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> int:
+    """User sends text to refine the workout."""
+    user_text = update.message.text
+    context.user_data.setdefault("workout_messages", [])
+
+    sport = context.user_data.get("workout_sport", "Run")
+    prompt = f"[Контекст: создаём тренировку {sport}]\n\n{user_text}"
+
+    await update.message.chat.send_action("typing")
+
+    try:
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+        context.user_data["workout_messages"].append({"role": "assistant", "content": response})
+    except Exception:
+        logger.exception("Workout dialog error")
+        response = "Ошибка. Попробуй ещё раз или /cancel."
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="workout_cancel")],
+        ]
+    )
+
+    try:
+        await update.message.reply_text(response, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text(response, reply_markup=keyboard)
+
+    return WORKOUT_DIALOG
+
+
+@athlete_required
+async def workout_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> int:
+    """Push the generated workout to Intervals.icu via Claude tool-use."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    sport = context.user_data.get("workout_sport", "Run")
+    await query.message.chat.send_action("typing")
+
+    prompt = (
+        f"Отправь последнюю сгенерированную тренировку ({sport}) в Intervals. "
+        f"Вызови suggest_workout с теми же параметрами но dry_run=False."
+    )
+
+    try:
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+    except Exception:
+        logger.exception("Workout push failed")
+        response = "Ошибка при отправке."
+
+    try:
+        await query.message.reply_text(response, parse_mode="Markdown")
+    except Exception:
+        await query.message.reply_text(response)
+
+    context.user_data.pop("workout_sport", None)
+    context.user_data.pop("workout_messages", None)
+    return ConversationHandler.END
+
+
+@athlete_required
+async def workout_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> int:
+    """Cancel workout creation."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text("Отменено.")
+
+    context.user_data.pop("workout_sport", None)
+    context.user_data.pop("workout_messages", None)
+    return ConversationHandler.END
+
+
+async def workout_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel via /cancel command."""
+    await update.message.reply_text("Создание тренировки отменено.")
+    context.user_data.pop("workout_sport", None)
+    context.user_data.pop("workout_messages", None)
+    return ConversationHandler.END
+
+
+@athlete_required
+async def handle_adapt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle 'Адаптировать' button from morning report → start workout dialog."""
+    query = update.callback_query
+    await query.answer()
+
+    workout_id = query.data.split(":", 1)[1]
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.chat.send_action("typing")
+
+    prompt = (
+        f"Тренировка (id={workout_id}) требует адаптации под текущее состояние атлета. "
+        f"Получи данные о тренировке через get_scheduled_workouts, "
+        f"оцени текущее восстановление через get_recovery, "
+        f"и предложи адаптированную версию через suggest_workout с dry_run=True."
+    )
+
+    try:
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+    except Exception:
+        logger.exception("Adapt workout failed")
+        response = "Ошибка при адаптации. Попробуй через /workout."
+        try:
+            await query.message.reply_text(response)
+        except Exception:
+            pass
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="workout_cancel")],
+        ]
+    )
+
+    try:
+        await query.message.reply_text(response, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        await query.message.reply_text(response, reply_markup=keyboard)
+
+
+@athlete_required
+async def handle_ramp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle 'Создать Ramp Test' inline button press."""
+    from tasks.utils import RampTrainingSuggestion
+
+    query = update.callback_query
+    await query.answer()
+
+    sport = query.data.split(":", 1)[1] if ":" in query.data else "Run"
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    ramp = RampTrainingSuggestion(user=UserDTO.model_validate(user), wellness=None)
+    msg = ramp.plan_ramp(sport=sport)
+    await query.message.reply_text(f"⚡ {msg}")
+
+
+@athlete_required
+async def handle_update_zones_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle 'Обновить зоны' inline button press — dispatch actor."""
+    from tasks.actors import actor_update_zones
+
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    actor_update_zones.send(user=UserDTO.model_validate(user))
+    await query.message.reply_text("⚡ Обновление зон запущено")
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -191,9 +458,9 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _post_init(application: Application) -> None:
     await init_redis()
-    await sync_athlete_settings()
+    # See docs/MULTI_TENANT_SECURITY.md §5.1: per-tenant credentials in multi-tenant
 
-    scheduler = await create_scheduler(bot=application.bot)
+    scheduler = await create_scheduler()
     scheduler.start()
     application.bot_data["scheduler"] = scheduler
     logger.info("Scheduler started")
@@ -206,10 +473,6 @@ async def _post_shutdown(application: Application) -> None:
         logger.info("Scheduler stopped")
 
     await close_redis()
-
-    if IntervalsClient._instance is not None and IntervalsClient._instance.is_active:
-        await IntervalsClient._instance.close()
-        logger.info("IntervalsClient closed")
 
 
 def build_application() -> Application:
@@ -231,6 +494,25 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))
+    app.add_handler(CommandHandler("silent", silent))
+    workout_conv = ConversationHandler(
+        entry_points=[CommandHandler("workout", workout_start)],
+        states={
+            WORKOUT_CHOOSE_SPORT: [
+                CallbackQueryHandler(workout_sport_chosen, pattern=r"^workout:"),
+            ],
+            WORKOUT_DIALOG: [
+                CallbackQueryHandler(workout_push, pattern=r"^workout_push$"),
+                CallbackQueryHandler(workout_cancel, pattern=r"^workout_cancel$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, workout_dialog_text),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", workout_cancel_command)],
+    )
+    app.add_handler(workout_conv)
+    app.add_handler(CallbackQueryHandler(handle_adapt_callback, pattern=r"^adapt:"))
+    app.add_handler(CallbackQueryHandler(handle_ramp_callback, pattern=r"^ramp_test:"))
+    app.add_handler(CallbackQueryHandler(handle_update_zones_callback, pattern=r"^update_zones$"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     # Photo handler — download, save, pass to AI chat with vision
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))

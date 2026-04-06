@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import exists, select
 
-from api.deps import require_viewer
+from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.database import ActivityDetailRow, ActivityHrvRow, ActivityRow, get_session
+from data.db import Activity, ActivityDetail, ActivityHrv, User, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
-from mcp_server.tools.progress import get_efficiency_trend
+from mcp_server.tools.progress import compute_efficiency_trend
 
 router = APIRouter()
 
@@ -18,7 +18,7 @@ _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 @router.get("/api/activities-week")
 async def activities_week(
     week_offset: int = Query(default=0, ge=-52, le=52),
-    role: str = Depends(require_viewer),
+    user: User = Depends(require_viewer),
 ) -> dict:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).date()
@@ -26,7 +26,8 @@ async def activities_week(
     monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
     sunday = monday + timedelta(days=6)
 
-    activities, last_synced_at = await ActivityRow.get_range(monday, sunday)
+    uid = get_data_user_id(user)
+    activities, last_synced_at = await Activity.get_range(uid, monday, sunday)
 
     by_date: dict[str, list] = {}
     for a in activities:
@@ -52,7 +53,9 @@ async def activities_week(
 
     prev_sunday = monday - timedelta(days=1)
     async with get_session() as session:
-        prev_result = await session.execute(select(exists().where(ActivityRow.start_date_local <= str(prev_sunday))))
+        prev_result = await session.execute(
+            select(exists().where(Activity.user_id == uid, Activity.start_date_local <= str(prev_sunday)))
+        )
         has_prev = prev_result.scalar_one()
 
     return {
@@ -62,7 +65,7 @@ async def activities_week(
         "today": str(today),
         "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
         "has_prev": has_prev,
-        "role": role,
+        "role": user.role,
         "days": days,
     }
 
@@ -70,18 +73,19 @@ async def activities_week(
 @router.get("/api/activity/{activity_id}/details")
 async def activity_details(
     activity_id: str,
-    _: str = Depends(require_viewer),
+    user: User = Depends(require_viewer),
 ) -> dict:
     if not activity_id or not activity_id.startswith("i") or not activity_id[1:].isdigit():
         raise HTTPException(status_code=400, detail="Invalid activity ID format")
 
     async with get_session() as session:
-        activity = await session.get(ActivityRow, activity_id)
-        if activity is None:
+        activity = await session.get(Activity, activity_id)
+        uid = get_data_user_id(user)
+        if activity is None or activity.user_id != uid:
             raise HTTPException(status_code=404, detail="Activity not found")
 
-        detail = await session.get(ActivityDetailRow, activity_id)
-        hrv = await session.get(ActivityHrvRow, activity_id)
+        detail = await session.get(ActivityDetail, activity_id)
+        hrv = await session.get(ActivityHrv, activity_id)
 
     return {
         "activity_id": activity.id,
@@ -101,6 +105,11 @@ async def progress(
     sport: str = Query(default="", description="bike, run, or swim. Empty = all"),
     days: int = Query(default=90, ge=7, le=365),
     strict_filter: bool = Query(default=False, description="Strict decoupling filter"),
-    _: str = Depends(require_viewer),
+    user: User = Depends(require_viewer),
 ) -> dict:
-    return await get_efficiency_trend(sport=sport, days_back=days, strict_filter=strict_filter)
+    return await compute_efficiency_trend(
+        user_id=get_data_user_id(user),
+        sport=sport,
+        days_back=days,
+        strict_filter=strict_filter,
+    )

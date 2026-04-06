@@ -2,8 +2,9 @@
 
 from datetime import date, timedelta
 
-from data.database import IqosDailyRow
+from data.db import IqosDaily
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 
 @mcp.tool()
@@ -19,14 +20,15 @@ async def get_iqos_sticks(target_date: str = "", days_back: int = 0) -> dict:
     """
     ref = date.fromisoformat(target_date) if target_date else date.today()
 
+    user_id = get_current_user_id()
     if days_back == 0:
-        row = await IqosDailyRow.get(ref)
+        row = await IqosDaily.get(user_id=user_id, target_date=ref)
         return {
             "date": str(ref),
             "count": row.count if row else 0,
         }
 
-    rows = await IqosDailyRow.get_range(target_date=str(ref), days_back=days_back)
+    rows = await IqosDaily.get_range(user_id=user_id, target_date=str(ref), days_back=days_back)
     from_date = ref - timedelta(days=days_back - 1)
 
     rows_by_date = {r.date: r.count for r in rows}

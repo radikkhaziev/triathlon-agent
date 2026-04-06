@@ -27,12 +27,11 @@ dependencies = [
     "jinja2>=3.1.0",
     "mcp[cli] (>=1.0.0)",
     "redis (>=7.4.0,<8.0.0)",
+    "cryptography>=44.0.0",
+    "dramatiq[redis]>=1.17.0",
 ]
 
 [project.optional-dependencies]
-gemini = [
-    "google-genai>=1.0.0",
-]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -74,3 +73,6 @@ exclude = [".git", "__pycache__", ".venv", "alembic/versions"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "real_db: use real database instead of test database",
+]

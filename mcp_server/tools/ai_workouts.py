@@ -7,15 +7,17 @@ import httpx
 
 from bot.formatter import build_workout_pushed_message
 from config import settings
-from data.database import AiWorkoutRow
-from data.intervals_client import IntervalsClient
-from data.models import PlannedWorkout, WorkoutStep
+from data.db import AiWorkout, User
+from data.intervals.client import IntervalsAsyncClient
+from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
 from mcp_server.app import mcp
+from mcp_server.context import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
 
 async def _send_workout_notification(
+    user_id: int,
     sport: str,
     name: str,
     duration_minutes: int,
@@ -24,7 +26,11 @@ async def _send_workout_notification(
     intervals_id: int | None,
     target_date: date,
 ) -> None:
-    """Send Telegram notification about pushed workout via HTTP API."""
+    """Send Telegram notification about pushed workout to the requesting user."""
+    user = await User.get_by_id(user_id)
+    if not user or not user.chat_id:
+        return
+
     msg = build_workout_pushed_message(
         sport=sport,
         name=name,
@@ -32,15 +38,15 @@ async def _send_workout_notification(
         target_tss=target_tss,
         suffix=suffix,
         intervals_id=intervals_id,
-        athlete_id=settings.INTERVALS_ATHLETE_ID,
+        athlete_id=user.athlete_id or "",
         target_date=target_date,
     )
     token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
-    if not token or not settings.TELEGRAM_CHAT_ID:
+    if not token:
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": msg})
+        resp = await client.post(url, json={"chat_id": user.chat_id, "text": msg})
         resp.raise_for_status()
 
 
@@ -53,8 +59,9 @@ async def suggest_workout(
     target_tss: int | None = None,
     rationale: str = "",
     target_date: str = "",
+    dry_run: bool = False,
 ) -> str:
-    """Push an AI-generated workout to the athlete's Intervals.icu calendar.
+    """Generate an AI workout and push to the athlete's Intervals.icu calendar.
 
     The workout appears on the athlete's devices (Garmin/Wahoo) via Intervals.icu sync.
     Only creates workouts with AI: prefix — never modifies existing workouts.
@@ -82,55 +89,66 @@ async def suggest_workout(
         target_tss: Estimated Training Stress Score (optional).
         rationale: Why this workout (1-2 sentences).
         target_date: Date in YYYY-MM-DD format. Default: today.
+        dry_run: If True, only preview the workout without pushing to Intervals.icu.
     """
-    if not settings.AI_WORKOUT_ENABLED:
-        return "AI workout generation is disabled (AI_WORKOUT_ENABLED=false)"
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
 
-    workout = PlannedWorkout(
+    workout = PlannedWorkoutDTO(
         sport=sport,
         name=name,
-        steps=WorkoutStep.from_raw_list(steps),
+        steps=WorkoutStepDTO.from_raw_list(steps),
         duration_minutes=duration_minutes,
         target_tss=target_tss,
         rationale=rationale,
         target_date=dt,
     )
 
+    tss_part = f", ~{target_tss} TSS" if target_tss else ""
+
+    if dry_run:
+        return (
+            f"Preview: AI: {name} ({sport}, {duration_minutes} min{tss_part}).\n"
+            f"Rationale: {rationale}\n"
+            f"Steps: {len(steps)} step(s). "
+            f"Use suggest_workout with dry_run=False or press 'Отправить' to push."
+        )
+
+    user_id = get_current_user_id()
+
     # Check for existing AI workout on this date+sport
-    existing = await AiWorkoutRow.get_by_external_id(workout.external_id)
+    existing = await AiWorkout.get_by_external_id(user_id, workout.external_id)
 
     # Push to Intervals.icu
-    client = IntervalsClient()
     event_data = workout.to_intervals_event()
     intervals_id = None
 
     try:
-        if existing and existing.intervals_id:
-            try:
-                result = await client.update_event(existing.intervals_id, event_data)
-                intervals_id = result.get("id", existing.intervals_id)
-                action = "updated"
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 404:
-                    # Event was deleted externally (UI or remove_ai_workout) — create new
-                    logger.info("Event %s not found (404), creating new", existing.intervals_id)
-                    result = await client.create_event(event_data)
-                    intervals_id = result.get("id")
-                    action = "created"
-                else:
-                    raise
-        else:
-            result = await client.create_event(event_data)
-            intervals_id = result.get("id")
-            action = "created"
+        async with IntervalsAsyncClient.for_user(user_id) as client:
+            if existing and existing.intervals_id:
+                try:
+                    result = await client.update_event(existing.intervals_id, event_data)
+                    intervals_id = result.id or existing.intervals_id
+                    action = "updated"
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 404:
+                        logger.info("Event %s not found (404), creating new", existing.intervals_id)
+                        result = await client.create_event(event_data)
+                        intervals_id = result.id
+                        action = "created"
+                    else:
+                        raise
+            else:
+                result = await client.create_event(event_data)
+                intervals_id = result.id
+                action = "created"
     except Exception as e:
         logger.exception("Failed to push workout to Intervals.icu")
         return f"Error pushing to Intervals.icu: {e}"
 
     # Save to local DB
-    await AiWorkoutRow.save(
+    await AiWorkout.save(
+        user_id=user_id,
         date_str=str(dt),
         sport=sport,
         slot=workout.slot,
@@ -146,6 +164,7 @@ async def suggest_workout(
     # Send Telegram notification
     try:
         await _send_workout_notification(
+            user_id=user_id,
             sport=sport,
             name=name,
             duration_minutes=duration_minutes,
@@ -157,7 +176,6 @@ async def suggest_workout(
     except Exception:
         logger.warning("Failed to send workout notification from MCP", exc_info=True)
 
-    tss_part = f", ~{target_tss} TSS" if target_tss else ""
     return (
         f"Workout {action} in Intervals.icu: AI: {name} "
         f"({sport}, {duration_minutes} min{tss_part}). "
@@ -179,27 +197,26 @@ async def remove_ai_workout(
         target_date: Date in YYYY-MM-DD format.
         sport: Sport type to remove (e.g. "Ride"). If empty, removes all AI workouts for the date.
     """
-    if not settings.AI_WORKOUT_ENABLED:
-        return "AI workout generation is disabled (AI_WORKOUT_ENABLED=false)"
 
+    user_id = get_current_user_id()
     dt = date.fromisoformat(target_date)
-    targets = await AiWorkoutRow.get_for_date(dt)
+    targets = await AiWorkout.get_for_date(user_id, dt)
     if sport:
         targets = [w for w in targets if w.sport.lower() == sport.lower()]
 
     if not targets:
         return f"No AI workouts found for {target_date}" + (f" ({sport})" if sport else "")
 
-    client = IntervalsClient()
     removed = []
-    for w in targets:
-        if w.intervals_id:
-            try:
-                await client.delete_event(w.intervals_id)
-            except Exception:
-                logger.warning("Failed to delete event %s from Intervals.icu", w.intervals_id)
-        await AiWorkoutRow.cancel(w.external_id)
-        removed.append(f"AI: {w.name} ({w.sport})")
+    async with IntervalsAsyncClient.for_user(user_id) as client:
+        for w in targets:
+            if w.intervals_id:
+                try:
+                    await client.delete_event(w.intervals_id)
+                except Exception:
+                    logger.warning("Failed to delete event %s from Intervals.icu", w.intervals_id)
+            await AiWorkout.cancel(user_id, w.external_id)
+            removed.append(f"AI: {w.name} ({w.sport})")
 
     return f"Removed {len(removed)} workout(s): " + ", ".join(removed)
 
@@ -214,7 +231,8 @@ async def list_ai_workouts(days_ahead: int = 7) -> dict:
     Args:
         days_ahead: Number of days to look ahead (default: 7).
     """
-    rows = await AiWorkoutRow.get_upcoming(days_ahead=days_ahead)
+    user_id = get_current_user_id()
+    rows = await AiWorkout.get_upcoming(user_id=user_id, days_ahead=days_ahead)
     return {
         "count": len(rows),
         "workouts": [

@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     # Anthropic
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
 
-    # Google AI (optional — enables Gemini second opinion in dashboard)
-    GOOGLE_AI_API_KEY: SecretStr = SecretStr("")  # empty = Gemini disabled
-
     # App
     API_BASE_URL: str = "https://your-api.railway.app"
     WEBAPP_URL: str = "https://your-app.vercel.app"
@@ -67,13 +64,8 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: SecretStr = SecretStr("")  # PAT for issue creation
     GITHUB_REPO: str = "radikkhaziev/triathlon-agent"
 
-    # AI Workout Generation (Phase 1: Adaptive Training Plan)
-    AI_WORKOUT_ENABLED: bool = True  # Enable AI workout generation and MCP tools
-    AI_WORKOUT_AUTO_PUSH: bool = True  # Auto-push generated workouts to Intervals.icu in morning cron
-
-    # AI Tool-Use (MCP Phase 2)
-    AI_USE_TOOL_USE: bool = True  # Tool-use for morning analysis (vs fixed prompt V1)
-    AI_CHAT_ENABLED: bool = True  # Free-form Telegram chat (Phase 3)
+    # Multi-tenant security
+    FIELD_ENCRYPTION_KEY: SecretStr = SecretStr("")  # Fernet key for encrypting per-user secrets in DB
 
 
 settings = Settings()

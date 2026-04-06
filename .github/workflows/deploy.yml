@@ -2,7 +2,8 @@ name: Deploy
 
 on:
   push:
-    branches: [main, versions/intervals-version]
+    branches:
+      - main
 
 jobs:
   deploy:

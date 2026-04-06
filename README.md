@@ -34,15 +34,15 @@ The agent knows your target event (date, distance, required fitness). It tracks 
 
 **Desktop Web** -- the same dashboard accessible from a browser, authenticated via a one-time code from the bot.
 
-**MCP Server** -- for AI assistants like Claude. Exposes 30 tools covering wellness, HRV, training load, recovery, workouts, activities, aerobic efficiency trends, mood tracking, and more. This is how Claude in desktop mode can query your training data directly.
+**MCP Server** -- for AI assistants like Claude. Exposes 33 tools covering wellness, HRV, training load, recovery, workouts, activities, aerobic efficiency trends, mood tracking, exercise library, and more. This is how Claude in desktop mode can query your training data directly. Each user authenticates with their own MCP token -- the server resolves user identity and returns only their data.
 
 ## The AI Layer
 
-Two AI models work together:
+**Claude** (`claude-sonnet-4-6`) is the sole AI engine. All tool calls go through MCP -- the bot never accesses the database directly. Morning reports are generated via a tool-use loop: Claude requests data (recovery, HRV, workouts), the MCP server returns user-scoped results, Claude produces a concise assessment in Russian. Free-form chat works the same way -- you ask anything, Claude queries relevant tools, responds with context.
 
-**Claude** handles the daily morning analysis. Using tool-use, it pulls exactly the data it needs -- recovery score, HRV trends, scheduled workouts, recent activities -- and produces a concise assessment in Russian. It also powers free-form chat: you can ask anything about your training and it will query the relevant data before answering.
+Each user's chat goes through MCP with their personal token, so tool calls return only their data. The Anthropic API key is shared (one per service), but data access is per-user.
 
-**Gemini** (planned) will run weekly pattern analysis. With enough training history, it will find personal patterns like "after Zone 2 rides when recovery is above 70, you bounce back in one day -- but Zone 3 runs below recovery 60 take two days to recover from." These patterns feed back into Claude's daily recommendations.
+**Gemini** (planned) will add weekly pattern analysis once enough training log data accumulates.
 
 ## Exercise Library
 
@@ -55,25 +55,29 @@ Claude silently tracks emotional state during conversations -- energy, mood, anx
 ## Data Flow
 
 ```
-Intervals.icu  ──sync──>  PostgreSQL  ──analyze──>  AI (Claude / Gemini)
-                               |                          |
-                               v                          v
-                     Telegram Mini App             Telegram Bot
-                     (dashboard, charts)        (morning reports, chat)
-                               |
-                               v
-                       MCP Server (30 tools)
-                  (for AI assistants like Claude Desktop)
+Intervals.icu ──sync──> PostgreSQL ──> MCP Server (33 tools, per-user auth)
+                             ↑               ↑              ↑
+                         Dramatiq        Claude API     Claude Desktop
+                        (background     (tool-use         (direct MCP
+                         pipelines)      via MCP)          connection)
+                             |               |
+                             v               v
+                      Telegram Bot     Telegram Mini App
+                    (reports, chat)    (dashboard, charts)
 ```
 
-All fitness data originates from Intervals.icu, which aggregates from Garmin, Strava, or direct uploads. The agent syncs wellness data every 10 minutes, workouts hourly, and activities at the half-hour mark. Everything is stored locally in PostgreSQL -- no third-party analytics platforms.
+All fitness data originates from Intervals.icu, which aggregates from Garmin, Strava, or direct uploads. Background sync runs via Dramatiq task queue: wellness every 10 minutes, workouts hourly, activities at the half-hour mark. Each user syncs with their own Intervals.icu credentials. MCP is the single data access layer -- both the Telegram bot AI and external Claude Desktop connect through it.
+
+## Multi-Tenant
+
+The system supports multiple athletes. Each user has their own Intervals.icu credentials (encrypted in DB), MCP authentication token, and data isolation. Scheduler runs sync jobs for all active athletes in parallel via Dramatiq task groups. API endpoints resolve the authenticated user and return only their data. Viewers without athlete credentials see the owner's data in read-only mode.
 
 ## Project Status
 
-The core system is fully operational: daily syncing, dual-HRV analysis, recovery scoring, morning reports, workout adaptation, training log with compliance detection, post-activity zone analysis, Telegram bot with AI chat, web dashboard, and MCP server.
+The core system is fully operational: daily syncing, dual-HRV analysis, recovery scoring, morning reports, workout adaptation, training log with compliance detection, post-activity zone analysis, Telegram bot with AI chat, web dashboard, MCP server with per-user auth, and Dramatiq background pipelines.
 
-Aerobic efficiency tracking is live: bike and run show Efficiency Factor trends over time (more watts or speed per heartbeat = fitter), swimming tracks pace and SWOLF (a combined time + stroke count metric where lower is better). All filtered to comparable steady-state Z2 sessions only. Currently waiting on data accumulation (~30 days of training log entries) to enable Gemini weekly pattern analysis.
+Aerobic efficiency tracking is live: bike and run show Efficiency Factor trends over time (more watts or speed per heartbeat = fitter), swimming tracks pace and SWOLF (a combined time + stroke count metric where lower is better). All filtered to comparable steady-state Z2 sessions only.
 
 ## Tech Stack
 
-Python 3.12, FastAPI, PostgreSQL, React + TypeScript (Vite), python-telegram-bot, Anthropic Claude API, Google Gemini API, Docker Compose.
+Python 3.12, FastAPI, PostgreSQL, SQLAlchemy (async + sync), Dramatiq + Redis, React + TypeScript (Vite), python-telegram-bot, Anthropic Claude API, FastMCP (Streamable HTTP), Docker Compose.
