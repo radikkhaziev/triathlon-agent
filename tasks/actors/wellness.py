@@ -469,6 +469,7 @@ def _actor_update_banister_ess(
 def actor_user_wellness(
     user: UserDTO,
     dt: DateDTO | None = None,
+    force: bool = False,
 ):
     from .athlets import actor_sync_athlete_settings
 
@@ -487,7 +488,7 @@ def actor_user_wellness(
 
     _dt = _wellnessDTO.id
 
-    if not result.is_changed:
+    if not result.is_changed and not force:
         logger.debug("Wellness unchanged for user %s on %s, skipping pipelines", user.id, _dt)
         return
 

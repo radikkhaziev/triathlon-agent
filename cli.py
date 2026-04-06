@@ -30,6 +30,7 @@ def main() -> None:
         default=None,
         help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)",
     )
+    p_back.add_argument("--force", action="store_true", help="Force re-process even if data unchanged")
 
     args = parser.parse_args()
 
@@ -38,7 +39,7 @@ def main() -> None:
     elif args.command == "sync-settings":
         _sync_settings(args.user_id)
     elif args.command == "backfill":
-        _backfill(args.user_id, args.period)
+        _backfill(args.user_id, args.period, force=args.force)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -88,7 +89,7 @@ def _sync_settings(user_id: int) -> None:
     print(f"Queued sync-settings + sync-goals for user {user_id}")
 
 
-def _backfill(user_id: int, period: str | None) -> None:
+def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
     user = _resolve_user(user_id)
     start, end = _parse_period(period)
 
@@ -98,7 +99,8 @@ def _backfill(user_id: int, period: str | None) -> None:
         days.append(current)
         current += timedelta(days=1)
 
-    print(f"Backfill user {user_id}: {start} → {end} ({len(days)} days)")
+    mode = " (FORCE)" if force else ""
+    print(f"Backfill user {user_id}: {start} → {end} ({len(days)} days){mode}")
 
     # Each day: wellness + activities as a group, delayed by day index (60s apart)
     delay_per_day_ms = 60_000  # 1 min between days
@@ -107,9 +109,9 @@ def _backfill(user_id: int, period: str | None) -> None:
         delay = i * delay_per_day_ms
         group(
             [
-                actor_user_wellness.message_with_options(kwargs={"user": user, "dt": dt}, delay=delay),
+                actor_user_wellness.message_with_options(kwargs={"user": user, "dt": dt, "force": force}, delay=delay),
                 actor_fetch_user_activities.message_with_options(
-                    kwargs={"user": user, "oldest": dt, "newest": dt},
+                    kwargs={"user": user, "oldest": dt, "newest": dt, "force": force},
                     delay=delay,
                 ),
             ]
