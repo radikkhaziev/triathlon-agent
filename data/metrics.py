@@ -461,7 +461,10 @@ def combined_recovery_score(
     if rmssd.cv_7d and rmssd.cv_7d > 15:
         score -= 5
         flags.append("hrv_unstable")
-    if rmssd.trend and rmssd.trend.direction in ("declining", "declining_fast"):
+    trend_dir = getattr(rmssd, "trend_direction", None) or (
+        rmssd.trend.direction if getattr(rmssd, "trend", None) else None
+    )
+    if trend_dir in ("declining", "declining_fast"):
         flags.append("rmssd_declining")  # warning only, no score penalty
 
     score = max(0.0, min(100.0, score))
