@@ -383,7 +383,7 @@ class TelegramTool:
 
 @dataclass
 class MCPTool:
-    mcp_url: str = f"{settings.API_BASE_URL}/mcp"
+    mcp_url: str = f"{settings.API_BASE_URL}/mcp/"
     token: str = field(default_factory=lambda: settings.MCP_AUTH_TOKEN.get_secret_value())
     user_id: int = 1
     headers: dict = field(init=False)
