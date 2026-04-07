@@ -5,6 +5,8 @@ Private actors (prefixed with _) are internal to the package and should be
 imported directly from their submodules when needed (e.g. in tests).
 """
 
+import tasks.middleware  # noqa: F401 — ensure Pydantic encoder is active before any actor dispatch
+
 from .activities import actor_fetch_user_activities  # noqa: F401
 from .athlets import actor_sync_athlete_goals, actor_sync_athlete_settings, actor_update_zones  # noqa: F401
 from .reports import (  # noqa: F401
