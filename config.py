@@ -59,6 +59,7 @@ class Settings(BaseSettings):
 
     # MCP
     MCP_AUTH_TOKEN: SecretStr = SecretStr("")  # Bearer token for remote MCP access
+    MCP_BASE_URL: str = "http://api:8000"  # Internal MCP URL for Docker; override in .env for local dev
 
     # GitHub
     GITHUB_TOKEN: SecretStr = SecretStr("")  # PAT for issue creation
