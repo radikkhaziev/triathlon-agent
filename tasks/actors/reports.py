@@ -192,7 +192,6 @@ def actor_compose_user_morning_report(
             not _wellness_row
             or not _wellness_row.banister_recovery
             or not _wellness_row.sleep_score
-            or not _wellness_row.recovery_score
             or _wellness_row.ai_recommendation
         ):
             return
