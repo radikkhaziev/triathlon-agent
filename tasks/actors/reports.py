@@ -13,7 +13,6 @@ from data.db import (
     ActivityHrv,
     AthleteSettings,
     HrvAnalysis,
-    RhrAnalysis,
     ScheduledWorkout,
     ThresholdDriftDTO,
     User,
@@ -188,20 +187,7 @@ def actor_compose_user_morning_report(
             )
         ).scalar_one_or_none()
 
-        if (
-            not _wellness_row
-            or not _wellness_row.banister_recovery
-            or not _wellness_row.sleep_score
-            or not _wellness_row.recovery_score
-            or _wellness_row.ai_recommendation
-        ):
-            return
-
-        _hrv_flat_row = session.get(HrvAnalysis, (user.id, _dt, "flatt_esco"))
-        _hrv_flat_aie_row = session.get(HrvAnalysis, (user.id, _dt, "ai_endurance"))
-        _rhr_row = session.get(RhrAnalysis, (user.id, _dt))
-
-        if not _hrv_flat_row or not _hrv_flat_aie_row or not _rhr_row:
+        if not _wellness_row or not _wellness_row.sleep_score or _wellness_row.ai_recommendation:
             return
 
         # Generate morning report: sync Claude API + MCP tools (per-user token)
