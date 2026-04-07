@@ -2,8 +2,7 @@
 
 import logging
 import statistics
-from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Literal
 
 import dramatiq
@@ -12,11 +11,8 @@ from pydantic import validate_call
 from sqlalchemy import select
 
 from data.db import (
-    Activity,
     ActivityHrv,
     AiWorkout,
-    AthleteSettings,
-    AthleteThresholdsDTO,
     HrvAnalysis,
     RhrAnalysis,
     ScheduledWorkout,
@@ -29,8 +25,6 @@ from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, RhrStatusDTO, RmssdStatusDTO, WellnessDTO
 from data.metrics import (
     TREND_THRESHOLDS,
-    calculate_banister_for_date,
-    calculate_sport_ctl,
     calculate_trend,
     combined_recovery_score,
     rmssd_ai_endurance,
@@ -38,31 +32,9 @@ from data.metrics import (
 )
 from tasks.dto import DateDTO
 
-from ._common import _CATEGORY_TO_READINESS, TZ
-from .reports import actor_user_scheduled_workouts
+from .common import CATEGORY_TO_READINESS, actor_after_activity_update
 
 logger = logging.getLogger(__name__)
-
-
-@dramatiq.actor(queue_name="default")
-@validate_call
-def _actor_enrich_wellness_sport_info(
-    user: UserDTO,
-    dt: DateDTO,
-) -> None:
-    """Enrich wellness with per-sport CTL from DB (not API)."""
-    with get_sync_session() as session:
-        activity_row: list[Activity] = Activity.get_for_ctl(user_id=user.id, as_of=dt, session=session)
-
-        sport_ctl: dict[str, float] = calculate_sport_ctl(activity_row)
-        logger.info("Sport CTL for user %d on %s: %s (%d activities)", user.id, dt, sport_ctl, len(activity_row))
-
-        Wellness.update_sport_ctl(
-            user_id=user.id,
-            dt=dt,
-            sport_ctl=sport_ctl,
-            session=session,
-        )
 
 
 @dramatiq.actor(queue_name="default")
@@ -253,16 +225,10 @@ def _actor_update_recovery_score(
     dt: DateDTO,
     force: bool = False,
 ):
-    _dt = dt.isoformat()
     with get_sync_session() as session:
-        _wellness_row = session.execute(
-            select(Wellness).where(
-                Wellness.user_id == user.id,
-                Wellness.date == _dt,
-            )
-        ).scalar_one_or_none()
-        _hrv_row = session.get(HrvAnalysis, (user.id, _dt, "flatt_esco"))
-        _rhr_row = session.get(RhrAnalysis, (user.id, _dt))
+        _wellness_row = Wellness.get(user_id=user.id, dt=dt, session=session)
+        _hrv_row = HrvAnalysis.get(user_id=user.id, dt=dt, algorithm="flatt_esco", session=session)
+        _rhr_row = RhrAnalysis.get(user_id=user.id, dt=dt, session=session)
 
         if not _wellness_row or not _hrv_row or not _rhr_row:
             return
@@ -278,7 +244,7 @@ def _actor_update_recovery_score(
         _wellness_row.recovery_category = recovery.category
         _wellness_row.recovery_recommendation = recovery.recommendation
         _wellness_row.readiness_score = int(recovery.score)  # legacy alias
-        _wellness_row.readiness_level = _CATEGORY_TO_READINESS.get(recovery.category, "yellow")
+        _wellness_row.readiness_level = CATEGORY_TO_READINESS.get(recovery.category, "yellow")
 
         session.commit()
 
@@ -427,53 +393,6 @@ def _actor_record_training_log(
 
 @dramatiq.actor(queue_name="default")
 @validate_call
-def _actor_update_banister_ess(
-    user: UserDTO,
-    dt: DateDTO,
-):
-    """Calculate Banister model and update wellness.banister_recovery + wellness.ess_today.
-
-    Requires resting_hr to be already saved in the wellness row before calculation.
-    """
-
-    activity_rows: list[Activity] = Activity.get_for_banister(user_id=user.id, as_of=dt)
-    if not activity_rows:
-        logger.info("No activities found for Banister ESS calculation for user %s on %s", user.id, dt)
-        return
-
-    activities_by_date: dict[str, list] = defaultdict(list)
-    for act in activity_rows:
-        activities_by_date[act.start_date_local].append(act)
-
-    with get_sync_session() as session:
-        _wellness_row = session.execute(
-            select(Wellness).where(Wellness.user_id == user.id, Wellness.date == dt.isoformat())
-        ).scalar_one_or_none()
-
-        if _wellness_row is None or not _wellness_row.resting_hr:
-            logger.warning(
-                "Cannot update Banister ESS: Wellness row not found or resting_hr missing for user %s on %s",
-                user.id,
-                dt,
-            )
-            return
-
-        thresholds: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user.id)
-        banister_r, ess_today = calculate_banister_for_date(
-            activities_by_date=activities_by_date,
-            dt=dt,
-            hr_rest=_wellness_row.resting_hr,
-            hr_max=thresholds.max_hr or 179,
-            lthr=thresholds.lthr_run or 153,
-        )
-
-        _wellness_row.banister_recovery = banister_r
-        _wellness_row.ess_today = ess_today
-        session.commit()
-
-
-@dramatiq.actor(queue_name="default")
-@validate_call
 def actor_user_wellness(
     user: UserDTO,
     dt: DateDTO | None = None,
@@ -481,7 +400,7 @@ def actor_user_wellness(
 ):
     from .athlets import actor_sync_athlete_settings
 
-    today = datetime.now(TZ).date()
+    today = DateDTO.today()
     dt = dt or today
     # is_today = dt == today
 
@@ -501,12 +420,15 @@ def actor_user_wellness(
         return
 
     # all independent tasks run in parallel
+    group(
+        [
+            actor_sync_athlete_settings.message(user=user),
+            actor_after_activity_update.message(user=user, dt=_dt),
+        ]
+    ).run()
+
     g = group(
         [
-            _actor_enrich_wellness_sport_info.message(user=user, dt=_dt),
-            actor_user_scheduled_workouts.message(user=user),
-            _actor_update_banister_ess.message(user=user, dt=_dt),
-            actor_sync_athlete_settings.message(user=user),
             pipeline(
                 [
                     _actor_calculate_rhr.message(user=user, dt=_dt),

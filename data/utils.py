@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from data.db import ActivityDetail, ActivityHrv
 
 # Canonical mapping: Intervals.icu activity/sport type → swim/bike/run
+# TODO: consider using a more robust approach (e.g. fuzzy matching) if we encounter more variations in the future.
 SPORT_MAP: dict[str, str] = {
     "swim": "swim",
     "swimming": "swim",

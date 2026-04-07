@@ -1,7 +1,7 @@
 """Dramatiq actors — activity pipeline: fetch, FIT processing, DFA a1, notifications."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,10 +25,10 @@ from data.intervals.dto import ActivityDTO
 from data.utils import SPORT_MAP
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO
 from tasks.formatter import build_post_activity_message
+from tasks.tools import TelegramTool
 from tasks.utils import detect_compliance
 
-from ..tools import TelegramTool
-from ._common import TZ
+from .common import actor_after_activity_update
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +319,7 @@ def _actor_send_activity_notification(
         activity_row: Activity = session.get(Activity, activity_id)
         hrv_row: ActivityHrv = session.get(ActivityHrv, activity_id)
 
-    if activity_row.start_date_local != datetime.now(TZ).date().isoformat():
+    if activity_row.start_date_local != DateDTO.today().isoformat():
         return  # only notify for today's activities
 
     tg = TelegramTool(user=user)
@@ -341,9 +341,17 @@ def _actor_update_activity_details(
     if not detail_data:
         return
 
-    result: ORMDTO = ActivityDetail.save(activity_id, detail_data, intervals_data)
-    if not result.is_changed and not force:
-        return
+    with get_sync_session() as session:
+        result: ORMDTO = ActivityDetail.save(
+            activity_id,
+            detail_data,
+            intervals_data,
+            session=session,
+        )
+        if not result.is_changed and not force:
+            return
+
+        activity_row: Activity = session.get(Activity, result.row.activity_id)
 
     pipeline(
         [
@@ -355,6 +363,8 @@ def _actor_update_activity_details(
         ]
     ).run()
 
+    actor_after_activity_update.send(user=user, dt=activity_row.start_date_local)
+
 
 @dramatiq.actor(queue_name="default")
 @validate_call
@@ -364,7 +374,7 @@ def actor_fetch_user_activities(
     newest: DateDTO | None = None,
     force: bool = False,
 ):
-    today = datetime.now(TZ).date()
+    today = DateDTO.today()
     _newest = newest or today
     _oldest = oldest or (today - timedelta(days=30))
 

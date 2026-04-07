@@ -65,10 +65,11 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_scheduled_workouts,
         trigger="cron",
         hour="4-23",
-        minute="*/10",
+        minute=0,
         id="scheduler_scheduled_workouts",
     )
 
+    # TODO: объединить scheduler_wellness_job, scheduler_morning_report_job
     scheduler.add_job(
         scheduler_wellness_job,
         trigger="cron",
@@ -89,15 +90,15 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_activities_job,
         trigger="cron",
         hour="4-23",
-        minute=30,
+        minute="*/10",
         id="scheduler_activities_job",
     )
 
     scheduler.add_job(
         scheduler_evening_report_job,
         trigger="cron",
-        hour=20,
-        minute=30,
+        hour=19,
+        minute=00,
         id="scheduler_evening_report_job",
     )
 
@@ -105,7 +106,7 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_sync_goals_job,
         trigger="cron",
         hour="4-23",
-        minute=15,
+        minute=30,
         id="scheduler_sync_goals_job",
     )
 

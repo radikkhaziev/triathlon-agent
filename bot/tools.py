@@ -87,6 +87,23 @@ class MCPClient:
 
         logger.info("MCP session initialized: %s", self._session_id)
 
+    async def _post(self, client: httpx.AsyncClient, payload: dict) -> httpx.Response:
+        """POST to MCP with automatic session recovery on 409 Conflict."""
+        resp = await client.post(
+            self.mcp_url,
+            json=payload,
+            headers=self._headers(),
+        )
+        if resp.status_code == 409:
+            logger.warning("MCP session expired (409), re-initializing")
+            self._session_id = None
+            await self._ensure_session()
+            resp = await client.post(self.mcp_url, json=payload, headers=self._headers())
+            if resp.status_code == 409:
+                logger.error("MCP 409 persists after re-init, session_id=%s", self._session_id)
+        resp.raise_for_status()
+        return resp
+
     async def list_tools(self, *, force_refresh: bool = False) -> list[dict]:
         """Fetch available tools from MCP. Returns Anthropic tool-use format.
 
@@ -100,8 +117,7 @@ class MCPClient:
         payload = {"jsonrpc": "2.0", "method": "tools/list", "params": {}, "id": 2}
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(self.mcp_url, json=payload, headers=self._headers())
-            resp.raise_for_status()
+            resp = await self._post(client, payload)
 
         data = self._parse_sse(resp.text)
         if "error" in data:
@@ -126,8 +142,7 @@ class MCPClient:
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(self.mcp_url, json=payload, headers=self._headers())
-            resp.raise_for_status()
+            resp = await self._post(client, payload)
 
         data = self._parse_sse(resp.text)
 
