@@ -508,7 +508,6 @@ def build_application() -> Application:
             ],
         },
         fallbacks=[CommandHandler("cancel", workout_cancel_command)],
-        per_message=False,
     )
     app.add_handler(workout_conv)
     app.add_handler(CallbackQueryHandler(handle_adapt_callback, pattern=r"^adapt:"))
