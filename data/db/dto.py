@@ -88,7 +88,7 @@ class WellnessPostDTO(BaseModel):
     ramp_rate: float | None = None
     ctl_load: float | None = None
     atl_load: float | None = None
-    sport_info: dict | None = None
+    sport_info: list | dict | None = None
     weight: float | None = None
     resting_hr: int | None = None
     hrv: float | None = None
