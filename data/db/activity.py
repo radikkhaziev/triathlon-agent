@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .user import UserDTO
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, func, select
+from sqlalchemy import JSON, ColumnElement, DateTime, Float, ForeignKey, Integer, String, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -89,25 +89,18 @@ class Activity(Base):
 
     @classmethod
     @with_sync_session
-    def get_for_ctl(
+    def get_windowed(
         cls,
         user_id: int,
-        days: int = 90,
         *,
+        filters: tuple[ColumnElement, ...] = (),
         as_of: DateDTO | None = None,
         session: Session,
     ) -> list[Activity]:
-        """Return activities for CTL calculation, ordered by date (oldest first).
-
-        Args:
-            days: Window size in days.
-            as_of: Reference date (default: today). Activities from
-                   (as_of - days) to as_of are returned.
-
-        Returned objects are detached from session — safe to access simple columns
-        but not lazy-loaded relationships.
-        """
+        """Return activities within a date window with extra SA filters."""
         ref = as_of or date.today()
+        days = 90
+
         cutoff = (ref - timedelta(days=days)).isoformat()
         newest = ref.isoformat()
 
@@ -117,41 +110,7 @@ class Activity(Base):
                 cls.user_id == user_id,
                 cls.start_date_local >= cutoff,
                 cls.start_date_local <= newest,
-                cls.icu_training_load.isnot(None),
-            )
-            .order_by(cls.start_date_local.asc())
-        )
-        return list(result.scalars().all())
-
-    @classmethod
-    @with_sync_session
-    def get_for_banister(
-        cls,
-        user_id: int,
-        days: int = 90,
-        *,
-        as_of: DateDTO | None = None,
-        session: Session,
-    ) -> list[Activity]:
-        """Return activities for Banister ESS calculation (need average_hr, not training_load).
-
-        Args:
-            days: Window size in days.
-            as_of: Reference date (default: today).
-            session: Optional session to reuse.
-        """
-        ref = as_of or date.today()
-        cutoff = (ref - timedelta(days=days)).isoformat()
-        newest = ref.isoformat()
-
-        result = session.execute(
-            select(cls)
-            .where(
-                cls.user_id == user_id,
-                cls.start_date_local >= cutoff,
-                cls.start_date_local <= newest,
-                cls.average_hr.isnot(None),
-                cls.average_hr > 0,
+                *filters,
             )
             .order_by(cls.start_date_local.asc())
         )

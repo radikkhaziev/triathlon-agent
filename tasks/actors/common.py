@@ -32,8 +32,9 @@ def _actor_enrich_wellness_sport_info(
     """Enrich wellness with per-sport CTL from DB (not API)."""
 
     with get_sync_session() as session:
-        activity_row: list[Activity] = Activity.get_for_ctl(
-            user_id=user.id,
+        activity_row: list[Activity] = Activity.get_windowed(
+            user.id,
+            filters=(Activity.icu_training_load.isnot(None),),
             as_of=dt,
             session=session,
         )
@@ -60,16 +61,21 @@ def _actor_update_banister_ess(
     Requires resting_hr to be already saved in the wellness row before calculation.
     """
 
-    activity_rows: list[Activity] = Activity.get_for_banister(user_id=user.id, as_of=dt)
-    if not activity_rows:
-        logger.info("No activities found for Banister ESS calculation for user %s on %s", user.id, dt)
-        return
-
-    activities_by_date: dict[str, list] = defaultdict(list)
-    for act in activity_rows:
-        activities_by_date[act.start_date_local].append(act)
-
     with get_sync_session() as session:
+        activity_rows: list[Activity] = Activity.get_windowed(
+            user.id,
+            filters=(Activity.average_hr.isnot(None), Activity.average_hr > 0),
+            as_of=dt,
+            session=session,
+        )
+        if not activity_rows:
+            logger.info("No activities found for Banister ESS calculation for user %s on %s", user.id, dt)
+            return
+
+        activities_by_date: dict[str, list] = defaultdict(list)
+        for act in activity_rows:
+            activities_by_date[act.start_date_local].append(act)
+
         _wellness_row = session.execute(
             select(Wellness).where(Wellness.user_id == user.id, Wellness.date == dt.isoformat())
         ).scalar_one_or_none()
@@ -82,7 +88,8 @@ def _actor_update_banister_ess(
             )
             return
 
-        thresholds: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user.id)
+        thresholds: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user.id, session=session)
+
         banister_r, ess_today = calculate_banister_for_date(
             activities_by_date=activities_by_date,
             dt=dt,

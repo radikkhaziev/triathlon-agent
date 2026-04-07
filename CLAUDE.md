@@ -38,7 +38,7 @@ triathlon-agent/
 ├── Dockerfile / docker-compose.yml
 ├── alembic.ini
 ├── config.py                        # pydantic-settings
-├── cli.py                           # shell, backfill (--force), sync-settings
+├── cli.py                           # shell, backfill (--force), sync-settings, sync-wellness
 ├── bot/
 │   ├── main.py                      # bot entry (polling + webhook), handlers, ClaudeAgent instance
 │   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
@@ -56,6 +56,7 @@ triathlon-agent/
 │   ├── utils.py                     # RampTrainingSuggestion, detect_compliance
 │   ├── dto.py                       # DateDTO, ORMDTO, FitProcessingResultDTO, ThresholdsDTO
 │   └── actors/
+│       ├── common.py                # Shared: CATEGORY_TO_READINESS, actor_after_activity_update, sport CTL enrichment
 │       ├── wellness.py              # Wellness sync + RHR/HRV/recovery pipelines + training log
 │       ├── activities.py            # Activity sync + FIT processing + DFA a1 + training log actual
 │       ├── reports.py               # Morning/evening report composition + workout adaptation
@@ -350,10 +351,11 @@ Production: Docker multi-stage — Node 20 builds SPA → Python 3.12 serves `we
 ```bash
 python -m cli shell                                  # interactive Python shell with app context
 python -m cli sync-settings <user_id>                # sync athlete settings & goals from Intervals.icu
+python -m cli sync-wellness <user_id> [period]        # force re-sync wellness + HRV/RHR/recovery day by day
 python -m cli backfill <user_id> [period] [--force]   # backfill wellness + activities day by day
 ```
 
-### Period formats for `backfill`
+### Period formats for `backfill` and `sync-wellness`
 
 | Format                    | Example            | Result                         |
 | ------------------------- | ------------------ | ------------------------------ |
@@ -463,9 +465,9 @@ python -m bot.cli onboard <user_id> --days 180
 
 ```bash
 docker compose up -d db                  # PostgreSQL only
-docker compose up -d                     # all (includes React build)
-docker compose --profile polling up -d   # + bot polling mode
+docker compose up -d                     # all (includes React build, bot via webhook in api)
 docker compose run --rm api python -m cli sync-settings 2   # CLI in Docker
+docker compose run --rm api python -m cli sync-wellness 2   # CLI in Docker
 docker compose run --rm api python -m cli backfill 2        # CLI in Docker
 ```
 
@@ -475,7 +477,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 
 ## Key Implementation Notes
 
-- **Intervals.icu API** — wellness every 10 min (5-23h), workouts hourly (4-23h), activities at :30 (4-23h), DFA every 5 min (5-22h), evening report at 21:00
+- **Intervals.icu API** — wellness every 10 min (5-23h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00
 - **Both HRV algorithms** always computed; `HRV_ALGORITHM` selects primary
 - **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls
 - **All timestamps** UTC in DB, local timezone for display

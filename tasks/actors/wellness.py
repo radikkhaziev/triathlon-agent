@@ -192,6 +192,7 @@ def _actor_update_hrv_analysis(
     for algorithm, rmssd in prev.items():
         if rmssd.status == "insufficient_data":
             continue  # skip if not enough data
+
         _dt = dt.isoformat()
         with get_sync_session() as session:
             _hrv_row = session.get(HrvAnalysis, (user.id, _dt, algorithm))

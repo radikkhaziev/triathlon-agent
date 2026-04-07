@@ -554,14 +554,14 @@ class TestActorEnrichWellnessSportInfo:
 
         with (
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
-            patch("tasks.actors.common.Activity.get_for_ctl", return_value=[]) as mock_get,
+            patch("tasks.actors.common.Activity.get_windowed", return_value=[]) as mock_get,
             patch("tasks.actors.common.calculate_sport_ctl", return_value={"swim": 0.0, "bike": 0.0, "run": 0.0}),
             patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(_user().model_dump(), _DT)
 
         mock_get.assert_called_once()
-        assert mock_get.call_args[1]["user_id"] == 1
+        assert mock_get.call_args[0][0] == 1  # user_id positional
         assert mock_get.call_args[1]["as_of"] == _DT
         mock_update.assert_called_once()
         assert mock_update.call_args[1]["user_id"] == 1
@@ -581,7 +581,7 @@ class TestActorEnrichWellnessSportInfo:
 
         with (
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
-            patch("tasks.actors.common.Activity.get_for_ctl", return_value=activities),
+            patch("tasks.actors.common.Activity.get_windowed", return_value=activities),
             patch("tasks.actors.common.calculate_sport_ctl", return_value=expected_ctl) as mock_ctl,
             patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
         ):
@@ -592,7 +592,7 @@ class TestActorEnrichWellnessSportInfo:
         assert mock_update.call_args[1]["sport_ctl"] == expected_ctl
 
     def test_uses_user_id_from_dto(self):
-        """user_id passed to both Activity.get_for_ctl and Wellness.update_sport_ctl."""
+        """user_id passed to both Activity.get_windowed and Wellness.update_sport_ctl."""
         from tasks.actors.common import _actor_enrich_wellness_sport_info
 
         user = _user(id=7)
@@ -603,14 +603,14 @@ class TestActorEnrichWellnessSportInfo:
 
         with (
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
-            patch("tasks.actors.common.Activity.get_for_ctl", return_value=[]) as mock_get,
+            patch("tasks.actors.common.Activity.get_windowed", return_value=[]) as mock_get,
             patch("tasks.actors.common.calculate_sport_ctl", return_value={}),
             patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(user.model_dump(), _DT)
 
         mock_get.assert_called_once()
-        assert mock_get.call_args[1]["user_id"] == 7
+        assert mock_get.call_args[0][0] == 7  # user_id positional
         mock_update.assert_called_once()
         assert mock_update.call_args[1]["user_id"] == 7
 
@@ -633,16 +633,18 @@ class TestActorUpdateBanisterEss:
         return session
 
     def test_no_activities_returns_early(self):
-        """No activities → no DB session opened."""
+        """No activities → early return, no wellness query."""
         from tasks.actors.common import _actor_update_banister_ess
 
+        mock_session = self._mock_session(wellness_row=None)
+
         with (
-            patch("tasks.actors.common.Activity.get_for_banister", return_value=[]),
-            patch("tasks.actors.common.get_sync_session") as mock_gs,
+            patch("tasks.actors.common.Activity.get_windowed", return_value=[]),
+            patch("tasks.actors.common.get_sync_session", return_value=mock_session),
         ):
             _actor_update_banister_ess(_user().model_dump(), _DT)
 
-        mock_gs.assert_not_called()
+        mock_session.execute.assert_not_called()
 
     def test_no_wellness_row_returns_early(self):
         """Wellness row missing → no calculation."""
@@ -653,7 +655,7 @@ class TestActorUpdateBanisterEss:
         mock_session = self._mock_session(wellness_row=None)
 
         with (
-            patch("tasks.actors.common.Activity.get_for_banister", return_value=[act]),
+            patch("tasks.actors.common.Activity.get_windowed", return_value=[act]),
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
         ):
             _actor_update_banister_ess(_user().model_dump(), _DT)
@@ -671,7 +673,7 @@ class TestActorUpdateBanisterEss:
         mock_session = self._mock_session(wellness_row=wellness)
 
         with (
-            patch("tasks.actors.common.Activity.get_for_banister", return_value=[act]),
+            patch("tasks.actors.common.Activity.get_windowed", return_value=[act]),
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
         ):
             _actor_update_banister_ess(_user().model_dump(), _DT)
@@ -693,7 +695,7 @@ class TestActorUpdateBanisterEss:
         thresholds.lthr_run = 153
 
         with (
-            patch("tasks.actors.common.Activity.get_for_banister", return_value=[act]),
+            patch("tasks.actors.common.Activity.get_windowed", return_value=[act]),
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
             patch("tasks.actors.common.AthleteSettings.get_thresholds", return_value=thresholds),
             patch("tasks.actors.common.calculate_banister_for_date", return_value=(0.85, 42.0)) as mock_calc,
@@ -859,7 +861,7 @@ class TestActorUserWellnessMocked:
             actor_user_wellness(_user().model_dump(), _DT)
 
         assert mock_group_cls.call_count == 2
-        mock_after.send.assert_called_once()
+        mock_after.message.assert_called_once()
 
     def test_runs_rhr_hrv_group(self):
         """actor_user_wellness builds and runs a dramatiq group with completion callback."""
