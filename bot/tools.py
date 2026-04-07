@@ -30,7 +30,8 @@ class MCPClient:
         mcp_url: str | None = None,
         token: str | None = None,
     ):
-        self.mcp_url = (mcp_url or f"{settings.API_BASE_URL}/mcp").rstrip("/") + "/"
+        base = mcp_url or settings.MCP_BASE_URL or settings.API_BASE_URL
+        self.mcp_url = f"{base.rstrip('/')}/mcp/"
         self._token = token or settings.MCP_AUTH_TOKEN.get_secret_value()
         self._session_id: str | None = None
 
