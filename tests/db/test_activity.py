@@ -36,7 +36,7 @@ class TestSaveActivities:
         new_ids = await Activity.save_bulk(1, activities=[act])
         assert "i100" in new_ids
 
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=date(2026, 3, 15))
+        rows = Activity.get_windowed(user_id=1, as_of=date(2026, 3, 15))
         assert len(rows) == 1
         assert rows[0].average_hr == 145.0
 
@@ -45,7 +45,7 @@ class TestSaveActivities:
         await Activity.save_bulk(1, activities=[_make_activity(id="i200", dt=dt, average_hr=130.0)])
         await Activity.save_bulk(1, activities=[_make_activity(id="i200", dt=dt, average_hr=142.0)])
 
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=dt)
+        rows = Activity.get_windowed(user_id=1, as_of=dt)
         assert len(rows) == 1
         assert rows[0].average_hr == 142.0
 
@@ -58,12 +58,15 @@ class TestSaveActivities:
         # assert "i300" in new_ids
 
         # # Should NOT appear in banister query (filters average_hr IS NOT NULL)
-        # rows = Activity.get_for_banister(user_id=1, days=90, as_of=date(2026, 3, 15))
+        # rows = Activity.get_windowed(user_id=1, as_of=date(2026, 3, 15))
         # assert all(r.id != "i300" for r in rows)
 
         # But should appear in CTL query (filters icu_training_load IS NOT NULL)
-        ctl_rows = Activity.get_for_ctl(user_id=1, days=90)
+        ctl_rows = Activity.get_windowed(user_id=1)
         assert any(r.id == "i300" for r in ctl_rows)
+
+
+BANISTER_FILTERS = (Activity.average_hr.isnot(None), Activity.average_hr > 0)
 
 
 class TestGetActivitiesForBanister:
@@ -77,7 +80,7 @@ class TestGetActivitiesForBanister:
             ],
         )
 
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=ref)
+        rows = Activity.get_windowed(user_id=1, filters=BANISTER_FILTERS, as_of=ref)
         ids = {r.id for r in rows}
         assert "i401" in ids
         assert "i402" not in ids  # outside 90-day window
@@ -92,7 +95,7 @@ class TestGetActivitiesForBanister:
             ],
         )
 
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=dt)
+        rows = Activity.get_windowed(user_id=1, filters=BANISTER_FILTERS, as_of=dt)
         ids = {r.id for r in rows}
         assert "i501" not in ids
         assert "i502" in ids
@@ -108,6 +111,6 @@ class TestGetActivitiesForBanister:
             ],
         )
 
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=ref)
+        rows = Activity.get_windowed(user_id=1, filters=BANISTER_FILTERS, as_of=ref)
         dates = [r.start_date_local for r in rows]
         assert dates == sorted(dates)

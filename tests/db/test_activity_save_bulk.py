@@ -66,7 +66,7 @@ class TestSaveBulkNewSignature:
         act = _make_activity(id="j102")
         await Activity.save_bulk(user, activities=[act])
 
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=date(2026, 3, 15))
+        rows = Activity.get_windowed(user_id=1, as_of=date(2026, 3, 15))
         assert any(r.id == "j102" for r in rows)
 
 
@@ -138,7 +138,7 @@ class TestSaveBulkSyncContext:
         act = _make_activity(id="j300")
         result = Activity.save_bulk(1, activities=[act])
         assert isinstance(result, list)
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=date(2026, 3, 15))
+        rows = Activity.get_windowed(user_id=1, as_of=date(2026, 3, 15))
         assert any(r.id == "j300" for r in rows)
 
     def test_sync_upsert_does_not_return_existing_id(self):
@@ -159,7 +159,7 @@ class TestSaveBulkSyncContext:
         act = _make_activity(id="j302")
         result = Activity.save_bulk(user, activities=[act])
         assert isinstance(result, list)
-        rows = Activity.get_for_banister(user_id=1, days=90, as_of=date(2026, 3, 15))
+        rows = Activity.get_windowed(user_id=1, as_of=date(2026, 3, 15))
         assert any(r.id == "j302" for r in rows)
 
 

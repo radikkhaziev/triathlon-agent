@@ -22,6 +22,15 @@ def main() -> None:
     p_sync = sub.add_parser("sync-settings", help="Sync athlete settings & goals from Intervals.icu")
     p_sync.add_argument("user_id", type=int)
 
+    p_sw = sub.add_parser("sync-wellness", help="Force re-sync wellness + HRV/RHR pipelines day by day")
+    p_sw.add_argument("user_id", type=int)
+    p_sw.add_argument(
+        "period",
+        nargs="?",
+        default=None,
+        help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)",
+    )
+
     p_back = sub.add_parser("backfill", help="Backfill wellness + activities day by day")
     p_back.add_argument("user_id", type=int)
     p_back.add_argument(
@@ -38,6 +47,8 @@ def main() -> None:
         _shell()
     elif args.command == "sync-settings":
         _sync_settings(args.user_id)
+    elif args.command == "sync-wellness":
+        _sync_wellness(args.user_id, args.period)
     elif args.command == "backfill":
         _backfill(args.user_id, args.period, force=args.force)
 
@@ -87,6 +98,29 @@ def _sync_settings(user_id: int) -> None:
     actor_sync_athlete_settings.send(user=user)
     actor_sync_athlete_goals.send(user=user)
     print(f"Queued sync-settings + sync-goals for user {user_id}")
+
+
+def _sync_wellness(user_id: int, period: str | None) -> None:
+    """Force re-sync wellness with HRV/RHR/recovery pipelines, day by day sequentially."""
+    user = _resolve_user(user_id)
+    start, end = _parse_period(period)
+
+    days = []
+    current = start
+    while current <= end:
+        days.append(current)
+        current += timedelta(days=1)
+
+    print(f"sync-wellness user {user_id}: {start} → {end} ({len(days)} days, force=True)")
+
+    delay_per_day_ms = 60_000
+    for i, day in enumerate(days):
+        actor_user_wellness.send_with_options(
+            kwargs={"user": user, "dt": day.isoformat(), "force": True},
+            delay=i * delay_per_day_ms,
+        )
+
+    print(f"Queued: {len(days)} days (wellness+HRV+RHR+recovery, 60s apart)")
 
 
 def _backfill(user_id: int, period: str | None, force: bool = False) -> None:

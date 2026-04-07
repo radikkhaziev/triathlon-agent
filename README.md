@@ -42,8 +42,6 @@ The agent knows your target event (date, distance, required fitness). It tracks 
 
 Each user's chat goes through MCP with their personal token, so tool calls return only their data. The Anthropic API key is shared (one per service), but data access is per-user.
 
-**Gemini** (planned) will add weekly pattern analysis once enough training log data accumulates.
-
 ## Exercise Library
 
 The agent includes a visual exercise library with animated stick-figure cards for warm-up routines, strength work, and stretching. Workouts can be composed from these cards and pushed to Intervals.icu with the correct sport type.
@@ -66,7 +64,7 @@ Intervals.icu ──sync──> PostgreSQL ──> MCP Server (33 tools, per-use
                     (reports, chat)    (dashboard, charts)
 ```
 
-All fitness data originates from Intervals.icu, which aggregates from Garmin, Strava, or direct uploads. Background sync runs via Dramatiq task queue: wellness every 10 minutes, workouts hourly, activities at the half-hour mark. Each user syncs with their own Intervals.icu credentials. MCP is the single data access layer -- both the Telegram bot AI and external Claude Desktop connect through it.
+All fitness data originates from Intervals.icu, which aggregates from Garmin, Strava, or direct uploads. Background sync runs via Dramatiq task queue: wellness every 10 minutes, workouts hourly at :00, activities every 10 minutes. Each user syncs with their own Intervals.icu credentials. MCP is the single data access layer -- both the Telegram bot AI and external Claude Desktop connect through it.
 
 ## Multi-Tenant
 
