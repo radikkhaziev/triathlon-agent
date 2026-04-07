@@ -379,10 +379,11 @@ def calculate_sport_ctl(
         sport = SPORT_MAP.get(raw_type)
         if not sport:
             continue
+
         if act.icu_training_load is None:
             continue
-        date_str = str(act.start_date_local)[:10]
-        daily_load[sport][date_str] += act.icu_training_load
+
+        daily_load[sport][str(act.start_date_local)] += act.icu_training_load
 
     if not daily_load:
         return {"swim": 0.0, "bike": 0.0, "run": 0.0}

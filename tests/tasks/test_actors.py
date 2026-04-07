@@ -79,8 +79,8 @@ class TestSyncUserWellness:
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-_DT = date(2026, 4, 3)
-_DT_STR = "2026-04-03"
+_DT = date(2026, 4, 6)
+_DT_STR = "2026-04-06"
 
 
 def _user(*, id: int = 1) -> UserDTO:
@@ -546,17 +546,17 @@ class TestActorEnrichWellnessSportInfo:
 
     def test_no_activities_calls_update_with_empty_ctl(self):
         """No activities → calculate_sport_ctl returns empty/zero dict → update_sport_ctl called."""
-        from tasks.actors.wellness import _actor_enrich_wellness_sport_info
+        from tasks.actors.common import _actor_enrich_wellness_sport_info
 
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)
         mock_session.__exit__ = MagicMock(return_value=False)
 
         with (
-            patch("tasks.actors.wellness.get_sync_session", return_value=mock_session),
-            patch("tasks.actors.wellness.Activity.get_for_ctl", return_value=[]) as mock_get,
-            patch("tasks.actors.wellness.calculate_sport_ctl", return_value={"swim": 0.0, "bike": 0.0, "run": 0.0}),
-            patch("tasks.actors.wellness.Wellness.update_sport_ctl") as mock_update,
+            patch("tasks.actors.common.get_sync_session", return_value=mock_session),
+            patch("tasks.actors.common.Activity.get_for_ctl", return_value=[]) as mock_get,
+            patch("tasks.actors.common.calculate_sport_ctl", return_value={"swim": 0.0, "bike": 0.0, "run": 0.0}),
+            patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(_user().model_dump(), _DT)
 
@@ -570,7 +570,7 @@ class TestActorEnrichWellnessSportInfo:
 
     def test_activities_present_calculates_sport_ctl(self):
         """Activities passed to calculate_sport_ctl and result forwarded to Wellness."""
-        from tasks.actors.wellness import _actor_enrich_wellness_sport_info
+        from tasks.actors.common import _actor_enrich_wellness_sport_info
 
         activities = [self._make_activity("Run", 80.0), self._make_activity("Ride", 120.0)]
         expected_ctl = {"swim": 0.0, "bike": 10.5, "run": 6.3}
@@ -580,10 +580,10 @@ class TestActorEnrichWellnessSportInfo:
         mock_session.__exit__ = MagicMock(return_value=False)
 
         with (
-            patch("tasks.actors.wellness.get_sync_session", return_value=mock_session),
-            patch("tasks.actors.wellness.Activity.get_for_ctl", return_value=activities),
-            patch("tasks.actors.wellness.calculate_sport_ctl", return_value=expected_ctl) as mock_ctl,
-            patch("tasks.actors.wellness.Wellness.update_sport_ctl") as mock_update,
+            patch("tasks.actors.common.get_sync_session", return_value=mock_session),
+            patch("tasks.actors.common.Activity.get_for_ctl", return_value=activities),
+            patch("tasks.actors.common.calculate_sport_ctl", return_value=expected_ctl) as mock_ctl,
+            patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(_user().model_dump(), _DT)
 
@@ -593,26 +593,117 @@ class TestActorEnrichWellnessSportInfo:
 
     def test_uses_user_id_from_dto(self):
         """user_id passed to both Activity.get_for_ctl and Wellness.update_sport_ctl."""
-        from tasks.actors.wellness import _actor_enrich_wellness_sport_info
+        from tasks.actors.common import _actor_enrich_wellness_sport_info
 
-        user = _user(id=42)
+        user = _user(id=7)
 
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)
         mock_session.__exit__ = MagicMock(return_value=False)
 
         with (
-            patch("tasks.actors.wellness.get_sync_session", return_value=mock_session),
-            patch("tasks.actors.wellness.Activity.get_for_ctl", return_value=[]) as mock_get,
-            patch("tasks.actors.wellness.calculate_sport_ctl", return_value={}),
-            patch("tasks.actors.wellness.Wellness.update_sport_ctl") as mock_update,
+            patch("tasks.actors.common.get_sync_session", return_value=mock_session),
+            patch("tasks.actors.common.Activity.get_for_ctl", return_value=[]) as mock_get,
+            patch("tasks.actors.common.calculate_sport_ctl", return_value={}),
+            patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(user.model_dump(), _DT)
 
         mock_get.assert_called_once()
-        assert mock_get.call_args[1]["user_id"] == 42
+        assert mock_get.call_args[1]["user_id"] == 7
         mock_update.assert_called_once()
-        assert mock_update.call_args[1]["user_id"] == 42
+        assert mock_update.call_args[1]["user_id"] == 7
+
+
+# ---------------------------------------------------------------------------
+# _actor_update_banister_ess
+# ---------------------------------------------------------------------------
+
+
+class TestActorUpdateBanisterEss:
+    """_actor_update_banister_ess calculates Banister model and updates wellness."""
+
+    def _mock_session(self, wellness_row=None):
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = wellness_row
+        session.execute.return_value = result
+        return session
+
+    def test_no_activities_returns_early(self):
+        """No activities → no DB session opened."""
+        from tasks.actors.common import _actor_update_banister_ess
+
+        with (
+            patch("tasks.actors.common.Activity.get_for_banister", return_value=[]),
+            patch("tasks.actors.common.get_sync_session") as mock_gs,
+        ):
+            _actor_update_banister_ess(_user().model_dump(), _DT)
+
+        mock_gs.assert_not_called()
+
+    def test_no_wellness_row_returns_early(self):
+        """Wellness row missing → no calculation."""
+        from tasks.actors.common import _actor_update_banister_ess
+
+        act = MagicMock()
+        act.start_date_local = _DT_STR
+        mock_session = self._mock_session(wellness_row=None)
+
+        with (
+            patch("tasks.actors.common.Activity.get_for_banister", return_value=[act]),
+            patch("tasks.actors.common.get_sync_session", return_value=mock_session),
+        ):
+            _actor_update_banister_ess(_user().model_dump(), _DT)
+
+        mock_session.commit.assert_not_called()
+
+    def test_no_resting_hr_returns_early(self):
+        """Wellness row exists but resting_hr is None → no calculation."""
+        from tasks.actors.common import _actor_update_banister_ess
+
+        act = MagicMock()
+        act.start_date_local = _DT_STR
+        wellness = MagicMock()
+        wellness.resting_hr = None
+        mock_session = self._mock_session(wellness_row=wellness)
+
+        with (
+            patch("tasks.actors.common.Activity.get_for_banister", return_value=[act]),
+            patch("tasks.actors.common.get_sync_session", return_value=mock_session),
+        ):
+            _actor_update_banister_ess(_user().model_dump(), _DT)
+
+        mock_session.commit.assert_not_called()
+
+    def test_calculates_and_saves(self):
+        """Happy path: calculates Banister and saves to wellness row."""
+        from tasks.actors.common import _actor_update_banister_ess
+
+        act = MagicMock()
+        act.start_date_local = _DT_STR
+        wellness = MagicMock()
+        wellness.resting_hr = 52
+
+        mock_session = self._mock_session(wellness_row=wellness)
+        thresholds = MagicMock()
+        thresholds.max_hr = 179
+        thresholds.lthr_run = 153
+
+        with (
+            patch("tasks.actors.common.Activity.get_for_banister", return_value=[act]),
+            patch("tasks.actors.common.get_sync_session", return_value=mock_session),
+            patch("tasks.actors.common.AthleteSettings.get_thresholds", return_value=thresholds),
+            patch("tasks.actors.common.calculate_banister_for_date", return_value=(0.85, 42.0)) as mock_calc,
+        ):
+            _actor_update_banister_ess(_user().model_dump(), _DT)
+
+        mock_calc.assert_called_once()
+        assert wellness.banister_recovery == 0.85
+        assert wellness.ess_today == 42.0
+        mock_session.commit.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +809,7 @@ class TestActorUserWellnessMocked:
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.wellness.Wellness.save") as mock_save,
-            patch("tasks.actors.wellness._actor_enrich_wellness_sport_info") as mock_enrich,
+            patch("tasks.actors.wellness.actor_after_activity_update") as mock_enrich,
         ):
             actor_user_wellness(_user().model_dump(), _DT)
 
@@ -740,8 +831,8 @@ class TestActorUserWellnessMocked:
                 "tasks.actors.wellness.Wellness.save",
                 return_value=ORMDTO(is_new=False, is_changed=True, row=mock_wellness_row),
             ) as mock_save,
-            patch("tasks.actors.wellness._actor_enrich_wellness_sport_info"),
-            patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
+            patch("tasks.actors.wellness.actor_after_activity_update"),
+            patch("tasks.actors.athlets.actor_sync_athlete_settings"),
             patch("tasks.actors.wellness.pipeline", return_value=mock_pipeline),
             patch("tasks.actors.wellness.group"),
         ):
@@ -749,8 +840,8 @@ class TestActorUserWellnessMocked:
 
         mock_save.assert_called_once_with(user_id=1, wellness=wellness_dto)
 
-    def test_dispatches_sport_info_enrichment(self):
-        """After saving wellness, _actor_enrich_wellness_sport_info is included in group."""
+    def test_dispatches_after_activity_update(self):
+        """After saving wellness, actor_after_activity_update.send is included in group."""
         from tasks.actors import actor_user_wellness
 
         wellness_dto = self._make_wellness_dto()
@@ -760,16 +851,15 @@ class TestActorUserWellnessMocked:
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.wellness.Wellness.save", return_value=ORMDTO(is_changed=True, row=MagicMock())),
-            patch("tasks.actors.wellness._actor_enrich_wellness_sport_info") as mock_enrich,
-            patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
+            patch("tasks.actors.wellness.actor_after_activity_update") as mock_after,
+            patch("tasks.actors.athlets.actor_sync_athlete_settings"),
             patch("tasks.actors.wellness.pipeline"),
             patch("tasks.actors.wellness.group", return_value=mock_group) as mock_group_cls,
         ):
             actor_user_wellness(_user().model_dump(), _DT)
 
-        # group() was called and _actor_enrich_wellness_sport_info.message was invoked
-        mock_group_cls.assert_called_once()
-        mock_enrich.message.assert_called_once()
+        assert mock_group_cls.call_count == 2
+        mock_after.send.assert_called_once()
 
     def test_runs_rhr_hrv_group(self):
         """actor_user_wellness builds and runs a dramatiq group with completion callback."""
@@ -782,15 +872,15 @@ class TestActorUserWellnessMocked:
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.wellness.Wellness.save", return_value=ORMDTO(is_changed=True, row=MagicMock())),
-            patch("tasks.actors.wellness._actor_enrich_wellness_sport_info"),
-            patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
+            patch("tasks.actors.wellness.actor_after_activity_update"),
+            patch("tasks.actors.athlets.actor_sync_athlete_settings"),
             patch("tasks.actors.wellness.pipeline"),
             patch("tasks.actors.wellness.group", return_value=mock_group),
         ):
             actor_user_wellness(_user().model_dump(), _DT)
 
         mock_group.add_completion_callback.assert_called_once()
-        mock_group.run.assert_called_once()
+        assert mock_group.run.call_count == 2  # first group (settings+activity) + second group (RHR/HRV pipelines)
 
     def test_accepts_none_dt_and_uses_today(self):
         """When dt=None, actor uses today's date and calls the client."""
@@ -803,8 +893,8 @@ class TestActorUserWellnessMocked:
         with (
             patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.wellness.Wellness.save", return_value=ORMDTO(is_changed=True, row=MagicMock())),
-            patch("tasks.actors.wellness._actor_enrich_wellness_sport_info"),
-            patch("tasks.actors.wellness.actor_user_scheduled_workouts"),
+            patch("tasks.actors.wellness.actor_after_activity_update"),
+            patch("tasks.actors.athlets.actor_sync_athlete_settings"),
             patch("tasks.actors.wellness.pipeline", return_value=mock_pipeline),
             patch("tasks.actors.wellness.group"),
         ):

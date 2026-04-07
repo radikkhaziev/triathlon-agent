@@ -38,7 +38,7 @@ class Wellness(Base):
     ramp_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     ctl_load: Mapped[float | None] = mapped_column(Float, nullable=True)
     atl_load: Mapped[float | None] = mapped_column(Float, nullable=True)
-    sport_info: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sport_info: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     weight: Mapped[float | None] = mapped_column(Float, nullable=True)
     resting_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
     hrv: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -65,6 +65,26 @@ class Wellness(Base):
 
     # --- AI output ---
     ai_recommendation: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @classmethod
+    def _merge_sport_info(
+        cls,
+        existing: list[dict] | None,
+        incoming: list[dict],
+    ) -> list[dict]:
+        """Merge incoming sport_info entries into existing by 'type' key.
+
+        Updates fields from incoming entries but preserves fields (e.g. 'ctl')
+        that exist in the DB but are absent in the incoming data.
+        """
+        merged = {(e.get("type") or "").lower(): dict(e) for e in (existing or [])}
+        for entry in incoming:
+            key = (entry.get("type") or "").lower()
+            if key in merged:
+                merged[key].update(entry)
+            else:
+                merged[key] = dict(entry)
+        return list(merged.values())
 
     # --- CRUD ---
 
@@ -161,7 +181,7 @@ class Wellness(Base):
 
         is_new = row is None
         if is_new:
-            row = cls(date=date_str, user_id=user_id)
+            row = cls(date=date_str, user_id=user_id, sport_info=[])
             session.add(row)
         elif row.updated == wellness.updated:
             return ORMDTO(is_new=False, is_changed=False, row=row)
@@ -169,6 +189,9 @@ class Wellness(Base):
         for field, val in wellness.intervals_dict().items():
             if val is None:
                 continue
+            if field == "sport_info":
+                val = cls._merge_sport_info(row.sport_info, val)
+
             setattr(row, field, val)
 
         session.commit()
@@ -189,13 +212,17 @@ class Wellness(Base):
         date_str = dt.isoformat()
         result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
         row = result.scalar_one_or_none()
+        if row is None:
+            return
 
-        existing_info = list(row.sport_info or [{}])  # copy to trigger SQLAlchemy change detection
-        existing_types = {(e.get("type") or "").lower(): i for i, e in enumerate(existing_info)}
-        for canonical, ctl_val in sport_ctl.items():
+        existing_info = list(row.sport_info or [])  # copy to trigger SQLAlchemy change detection
+        existing_types = {e["type"].lower(): i for i, e in enumerate(existing_info) if e.get("type")}
+
+        for canonical_sport, ctl_val in sport_ctl.items():
             if ctl_val < 0:
                 continue
-            iv_type = _CANONICAL_TO_TYPE[canonical]
+            iv_type = _CANONICAL_TO_TYPE[canonical_sport]
+
             iv_type_lower = iv_type.lower()
             if iv_type_lower in existing_types:
                 existing_info[existing_types[iv_type_lower]]["ctl"] = ctl_val

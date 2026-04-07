@@ -17,7 +17,7 @@ Personal AI agent for a triathlete: syncs wellness/HRV/training from Intervals.i
 | Language          | Python 3.12+                                                          |
 | Package Manager   | Poetry                                                                |
 | Data Source       | Intervals.icu API                                                     |
-| AI Analysis       | Anthropic Claude API (`claude-sonnet-4-6`) + Google Gemini (optional) |
+| AI Analysis       | Anthropic Claude API (`claude-sonnet-4-6`)                            |
 | Telegram Bot      | `python-telegram-bot` v21+                                            |
 | Scheduler         | `APScheduler`                                                         |
 | Database          | PostgreSQL 16 + `SQLAlchemy` (async) + Alembic                        |
@@ -38,7 +38,7 @@ triathlon-agent/
 ├── Dockerfile / docker-compose.yml
 ├── alembic.ini
 ├── config.py                        # pydantic-settings
-├── cli.py                           # shell, backfill, sync-workouts, sync-activities, onboard
+├── cli.py                           # shell, backfill (--force), sync-settings
 ├── bot/
 │   ├── main.py                      # bot entry (polling + webhook), handlers, ClaudeAgent instance
 │   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
@@ -79,7 +79,7 @@ triathlon-agent/
 │       ├── decorator.py             # @with_session, @with_sync_session, @dual
 │       ├── dto.py                   # DB DTOs: UserDTO, WellnessPostDTO, AthleteThresholdsDTO
 │       ├── user.py                  # User ORM + get_threshold_freshness, detect_threshold_drift
-│       ├── athlete.py               # AthleteSettings, AthleteGoal ORM + AthleteConfig
+│       ├── athlete.py               # AthleteSettings, AthleteGoal ORM (get_thresholds, get_goal_dto)
 │       ├── wellness.py              # Wellness ORM + HRV/RHR history
 │       ├── activity.py              # Activity, ActivityHrv, ActivityDetail ORM
 │       ├── hrv.py                   # HrvAnalysis, RhrAnalysis, PaBaseline ORM
@@ -145,7 +145,7 @@ Fifteen tables. Full column specs in `data/db/`.
 | Module                 | Status            | Notes                                                                                                                                  |
 | ---------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `data/*`               | Done              | Intervals.icu client (per-user factory), metrics pipeline, DFA a1, ORM (dual sync/async), crypto (Fernet)                              |
-| `data/db/`             | Done              | SQLAlchemy ORM with `@dual` DualMethod (auto-dispatches sync/async by context), `@with_session`/`@with_sync_session` decorators         |
+| `data/db/`             | Done              | SQLAlchemy ORM with `@dual` DualMethod (auto-dispatches sync/async by context), `@with_session`/`@with_sync_session` decorators. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()` (no AthleteConfig wrapper) |
 | Multi-tenant           | Phase 1.3 done    | `users` table, `user_id` FK on all tables, per-user MCP auth (token → contextvars), per-user scheduler, API auth returns User object   |
 | `bot/*`                | Done              | ClaudeAgent (thin MCP client), MCPClient (Streamable HTTP), per-user mcp_token, @athlete_required decorator                           |
 | `tasks/*`              | Done              | Dramatiq actors: wellness/RHR/HRV/recovery pipelines, FIT processing, training log lifecycle, workout push                             |
@@ -182,8 +182,6 @@ JWT_EXPIRY_DAYS=7
 MCP_AUTH_TOKEN=...                # Owner MCP token (per-user tokens in DB)
 FIELD_ENCRYPTION_KEY=...          # Fernet key for per-user secrets
 
-# Adaptive Training Plan
-AI_WORKOUT_ENABLED=true           # Enable AI workout generation and MCP tools
 ```
 
 ---
@@ -352,7 +350,7 @@ Production: Docker multi-stage — Node 20 builds SPA → Python 3.12 serves `we
 ```bash
 python -m cli shell                                  # interactive Python shell with app context
 python -m cli sync-settings <user_id>                # sync athlete settings & goals from Intervals.icu
-python -m cli backfill <user_id> [period]            # backfill wellness + activities day by day
+python -m cli backfill <user_id> [period] [--force]   # backfill wellness + activities day by day
 ```
 
 ### Period formats for `backfill`
@@ -483,7 +481,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 - **All timestamps** UTC in DB, local timezone for display
 - **Telegram bot** — polling (local dev, `TELEGRAM_WEBHOOK_URL` empty) or webhook (production)
 - **Frontend** — React SPA via Vite; dev proxies /api to FastAPI; production serves from webapp/dist/
-- **Task queue** — Dramatiq + Redis. Scheduler dispatches groups per-user. Jobs endpoints dispatch directly
+- **Task queue** — Dramatiq + Redis. Scheduler dispatches groups per-user. Jobs endpoints dispatch directly. Actor time limits (30 min for FIT processing). `--force` flag for re-processing unchanged data
 - **ORM** — `@dual` decorator creates `DualMethod` descriptor: auto-dispatches sync/async by detecting event loop. One method name works in both contexts: `Activity.get_for_date()` (sync) and `await Activity.get_for_date()` (async)
 - **DTOs** — organized by domain: `data/dto.py` (metrics), `data/db/dto.py` (DB models), `data/intervals/dto.py` (API), `tasks/dto.py` (processing)
 
@@ -564,7 +562,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 | `SCHEDULED_WORKOUTS_PAGE.md`   | Workouts page architecture                                                          |
 | `ACTIVITIES_PAGE.md`           | Activities page architecture                                                        |
 | `ADAPTIVE_TRAINING_PLAN.md`    | Adaptive Training Plan — 4 phases: Write API, adaptation, training log, ramp tests  |
-| `GEMINI_ROLE_SPEC.md`          | Gemini role — weekly pattern analyst (depends on ATP Phase 3)                       |
+| `GEMINI_ROLE_SPEC.md`          | ~~Gemini role~~ — removed, dependencies dropped                                    |
 | `PROGRESS_TRACKING_PLAN.md`    | EF + SWOLF + pace trends. MCP tool + API done. Webapp chart pending                 |
 | `MOOD_TRACKING.md`             | Mood tracking via MCP — scales, workflow                                            |
 | `WORKOUT_CARDS.md`             | Workout Cards — exercise library + workout composition from cards                   |
@@ -598,7 +596,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
 19. ~~MCP Phase 2~~ — Done (Tool-use for morning analysis via MCP HTTP)
 20. ~~MCP Phase 3~~ — Done (Free-form Telegram chat: stateless, per-user MCP token, tool-use via MCP)
-21. **Gemini Role Spec** — weekly pattern analyst (depends on ATP Phase 3). See `docs/GEMINI_ROLE_SPEC.md`
+21. ~~Gemini Role Spec~~ — Removed (Gemini dependencies dropped)
 22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + SVG animations, Jinja templates, 6 MCP tools incl. guidelines)
 23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя)
 24. ~~Multi-Tenant Phase 1~~ — Done (users table, user_id on 13 tables, crypto, onboarding CLI)

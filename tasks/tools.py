@@ -472,7 +472,7 @@ class MCPTool:
             timeout=30.0,
         )
 
-        if resp.status_code in (401, 404, 408) and retry:
+        if resp.status_code in (401, 404, 408, 409) and retry:
             logger.warning("MCP session stale (%d), re-initializing", resp.status_code)
             self._invalidate_session()
             return self._call_mcp_inner(name, arguments, retry=False)
@@ -501,7 +501,10 @@ class MCPTool:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
 
         try:
-            client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY.get_secret_value())
+            client = anthropic.Anthropic(
+                api_key=settings.ANTHROPIC_API_KEY.get_secret_value(),
+                max_retries=5,
+            )
 
             system = get_system_prompt_v2(user_id=self.user_id)
             prompt = f"Сгенерируй утренний отчёт за {_dt}"

@@ -1,7 +1,7 @@
 """Dramatiq actors — reports (morning, evening), echo, scheduled workouts."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import dramatiq
 from pydantic import validate_call
@@ -24,10 +24,9 @@ from data.db import (
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
 from data.workout_adapter import compute_constraints, needs_adaptation, parse_humango_description
+from tasks.dto import DateDTO
 from tasks.formatter import build_evening_message, build_morning_message
 from tasks.tools import MCPTool, TelegramTool
-
-from ._common import TZ
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ def actor_echo(message: str) -> str:
 @dramatiq.actor(queue_name="default")
 @validate_call
 def actor_user_scheduled_workouts(user: UserDTO):
-    today = datetime.now(TZ).date()
+    today = DateDTO.today()
     newest = today + timedelta(days=14)
 
     with IntervalsSyncClient.for_user(user) as client:
@@ -111,7 +110,7 @@ def _actor_send_user_morning_report(
         )
 
     # Workout adaptation check
-    today = datetime.now(TZ).date()
+    today = DateDTO.today()
 
     hrv_flatt = HrvAnalysis.get(
         user_id=user.id,
@@ -177,7 +176,7 @@ def _actor_send_user_morning_report(
 def actor_compose_user_morning_report(
     user: UserDTO,
 ):
-    _dt = datetime.now(TZ).date().isoformat()
+    _dt = DateDTO.today().isoformat()
 
     with get_sync_session() as session:
         _wellness_row = session.execute(
@@ -219,7 +218,7 @@ def actor_compose_user_morning_report(
 def actor_compose_user_evening_report(
     user: UserDTO,
 ) -> None:
-    today = datetime.now(TZ).date()
+    today = DateDTO.today()
     _dt = today.isoformat()
 
     with get_sync_session() as session:

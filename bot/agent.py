@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 class ClaudeAgent:
     def __init__(self) -> None:
-        self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY.get_secret_value())
+        self.client = anthropic.AsyncAnthropic(
+            api_key=settings.ANTHROPIC_API_KEY.get_secret_value(),
+            max_retries=5,
+        )
         self.model = "claude-sonnet-4-6"
 
     async def _run_tool_use_loop(

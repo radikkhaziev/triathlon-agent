@@ -57,7 +57,7 @@ class TestClaudeAgentChat:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", return_value="You are a coach."),
+            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
         ):
             mock_mcp = MagicMock()
             mock_mcp.list_tools = AsyncMock(return_value=[])
@@ -82,7 +82,7 @@ class TestClaudeAgentChat:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", return_value="You are a coach."),
+            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
         ):
             mock_mcp = MagicMock()
             mock_mcp.list_tools = AsyncMock(return_value=[])
@@ -108,7 +108,7 @@ class TestClaudeAgentChat:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", return_value="You are a coach."),
+            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
         ):
             mock_mcp = MagicMock()
             mock_mcp.list_tools = AsyncMock(return_value=[])
@@ -248,7 +248,7 @@ class TestClaudeAgentMCPWiring:
 
         with (
             patch("bot.agent.MCPClient", return_value=mock_mcp) as mock_cls,
-            patch("bot.agent.get_system_prompt_chat", return_value="You are a coach."),
+            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
         ):
             await agent.chat("Вопрос", mcp_token="user_token_123")
 
@@ -271,7 +271,7 @@ class TestClaudeAgentMCPWiring:
 
         with (
             patch("bot.agent.MCPClient", return_value=mock_mcp) as mock_cls,
-            patch("bot.agent.get_system_prompt_chat", return_value="You are a coach."),
+            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
         ):
             await agent.chat("Вопрос", mcp_token=None)
 
@@ -294,7 +294,7 @@ class TestClaudeAgentMCPWiring:
 
         with (
             patch("bot.agent.MCPClient", return_value=mock_mcp),
-            patch("bot.agent.get_system_prompt_chat", return_value="You are a coach."),
+            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
         ):
             result = await agent.chat(
                 "Что тут?",

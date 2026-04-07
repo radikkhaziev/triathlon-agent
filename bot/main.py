@@ -528,6 +528,8 @@ def build_application() -> Application:
 
 def start_bot() -> None:
     """Start the Telegram bot with polling (for local development)."""
+    if settings.TELEGRAM_WEBHOOK_URL:
+        raise RuntimeError("TELEGRAM_WEBHOOK_URL is set — bot runs via webhook in api service, not polling")
     app = build_application()
     logger.info("Bot started (polling mode)")
     app.run_polling()
