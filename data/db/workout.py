@@ -143,7 +143,7 @@ class AiWorkout(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
+    date: Mapped[str] = mapped_column(String, nullable=False, index=True)  # "YYYY-MM-DD"
     sport: Mapped[str] = mapped_column(String(30), nullable=False)
     slot: Mapped[str] = mapped_column(String(30), nullable=False, default="morning")
     external_id: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -283,7 +283,7 @@ class TrainingLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
+    date: Mapped[str] = mapped_column(String, nullable=False, index=True)  # "YYYY-MM-DD"
     sport: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     # What was planned
@@ -549,7 +549,7 @@ class WorkoutCard(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    date: Mapped[str] = mapped_column(String(10), nullable=False)
+    date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     sport: Mapped[str] = mapped_column(String(30), nullable=False, default="Other", server_default="Other")
     exercises: Mapped[list] = mapped_column(JSON, nullable=False)
