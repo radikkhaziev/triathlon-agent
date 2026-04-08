@@ -8,6 +8,7 @@ import json
 import logging
 
 import anthropic
+import sentry_sdk
 
 from bot.prompts import get_system_prompt_chat
 from bot.tools import MCPClient
@@ -91,6 +92,7 @@ class ClaudeAgent:
         mcp = MCPClient(token=mcp_token)
         system = await get_system_prompt_chat(user_id=user_id)
         tools = await mcp.list_tools()
+        sentry_sdk.set_tag("user_id", user_id)
 
         if image_data:
             content_blocks: list[dict] = [

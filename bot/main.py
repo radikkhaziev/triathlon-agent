@@ -4,6 +4,7 @@ import uuid
 import zoneinfo
 from datetime import datetime
 
+import sentry_sdk
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
     Application,
@@ -23,9 +24,12 @@ from bot.scheduler import create_scheduler
 from config import settings
 from data.db import IqosDaily, User, UserDTO, Wellness
 from data.redis_client import close_redis, init_redis
+from sentry_config import init_sentry
 from tasks.actors import actor_compose_user_morning_report
 
 logger = logging.getLogger(__name__)
+
+init_sentry()
 
 agent = ClaudeAgent()
 
@@ -161,6 +165,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception:
             await update.message.reply_text(response)
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         logger.error("Chat error: %s", e, exc_info=True)
         await update.message.reply_text("Ошибка при обработке. Попробуй ещё раз.")
 
@@ -205,6 +210,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception:
             await update.message.reply_text(response)
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         logger.error("Photo chat error: %s", e, exc_info=True)
         await update.message.reply_text("Ошибка при обработке фото. Попробуй ещё раз.")
 

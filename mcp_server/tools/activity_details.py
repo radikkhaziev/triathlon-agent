@@ -4,9 +4,11 @@ from data.db import Activity, ActivityDetail, ActivityHrv, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+from mcp_server.sentry import sentry_tool
 
 
 @mcp.tool()
+@sentry_tool
 async def get_activity_details(activity_id: str) -> dict:
     """Get detailed statistics for a specific activity.
 

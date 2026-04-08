@@ -2,11 +2,19 @@
 
 import contextvars
 
+import sentry_sdk
+
 _current_user_id: contextvars.ContextVar[int] = contextvars.ContextVar("mcp_user_id")
 
 
-def set_current_user_id(user_id: int) -> None:
+def set_current_user_id(user_id: int, athlete_id: str | None = None) -> None:
     _current_user_id.set(user_id)
+    sentry_sdk.set_user(
+        {
+            "id": str(user_id),
+            "username": f"athlete_{athlete_id}" if athlete_id else f"user_{user_id}",
+        }
+    )
 
 
 def get_current_user_id() -> int:

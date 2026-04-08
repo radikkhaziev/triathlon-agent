@@ -4,6 +4,7 @@ import logging
 from datetime import timedelta
 
 import dramatiq
+import sentry_sdk
 from pydantic import validate_call
 from sqlalchemy import select
 
@@ -190,8 +191,13 @@ def actor_compose_user_morning_report(
             return
 
         # Generate morning report: sync Claude API + MCP tools (per-user token)
-        mcp = MCPTool(token=user.mcp_token, user_id=user.id)
-        text = mcp.generate_morning_report_via_mcp(_dt)
+        try:
+            mcp = MCPTool(token=user.mcp_token, user_id=user.id)
+            text = mcp.generate_morning_report_via_mcp(_dt)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            logger.exception("Morning report generation failed for user %d", user.id)
+            return
         if not text:
             return
 

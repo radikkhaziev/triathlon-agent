@@ -12,6 +12,7 @@ from data.intervals.client import IntervalsAsyncClient
 from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+from mcp_server.sentry import sentry_tool
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ async def _send_workout_notification(
 
 
 @mcp.tool()
+@sentry_tool
 async def suggest_workout(
     sport: str,
     name: str,

@@ -24,6 +24,7 @@ Personal AI agent for a triathlete: syncs wellness/HRV/training from Intervals.i
 | API Server        | `FastAPI` + `uvicorn`                                                 |
 | Mini App Frontend | React 18 + TypeScript + Vite + Tailwind CSS + Chart.js                |
 | Backend Hosting   | Docker Compose on VPS                                                 |
+| Error Monitoring  | Sentry (`sentry-sdk[fastapi,dramatiq]`)                               |
 | Config            | `pydantic-settings` + `.env`                                          |
 
 ---
@@ -38,6 +39,7 @@ triathlon-agent/
 ├── Dockerfile / docker-compose.yml
 ├── alembic.ini
 ├── config.py                        # pydantic-settings
+├── sentry_config.py                 # Sentry SDK init, data scrubbing, traces sampler
 ├── cli.py                           # shell, backfill (--force), sync-settings, sync-wellness
 ├── bot/
 │   ├── main.py                      # bot entry (polling + webhook), handlers, ClaudeAgent instance
@@ -102,6 +104,7 @@ triathlon-agent/
 │   ├── app.py                       # FastMCP instance
 │   ├── server.py                    # MCP server with all tools + resources imported
 │   ├── context.py                   # contextvars: set/get_current_user_id (from MCPAuthMiddleware)
+│   ├── sentry.py                    # @sentry_tool decorator (spans + error capture for MCP tools)
 │   ├── tools/                       # 33 tools (all use get_current_user_id() for tenant isolation)
 │   └── resources/                   # athlete profile, goal, thresholds
 ├── webapp/                          # React SPA (Vite + TypeScript + Tailwind)
@@ -154,6 +157,7 @@ Fifteen tables. Full column specs in `data/db/`.
 | `mcp_server/`          | Done              | 33 tools + 3 resources. All tools use `get_current_user_id()` from contextvars. Per-user Bearer token auth                             |
 | `webapp/` (React SPA)  | Done              | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme                                                           |
 | Adaptive Training Plan | Phase 4 done      | Write API, HumanGo adaptation, training log (pre/actual/post via actors), ramp tests + threshold drift                                 |
+| Sentry                 | Done              | Error monitoring, performance tracing, data scrubbing (incl. stackframe vars), user context, `@sentry_tool` for MCP                   |
 
 **Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
 
@@ -182,6 +186,12 @@ JWT_SECRET=                       # if empty, uses TELEGRAM_BOT_TOKEN
 JWT_EXPIRY_DAYS=7
 MCP_AUTH_TOKEN=...                # Owner MCP token (per-user tokens in DB)
 FIELD_ENCRYPTION_KEY=...          # Fernet key for per-user secrets
+
+# Sentry (empty DSN = disabled)
+SENTRY_DSN=https://...@o0.ingest.sentry.io/0
+SENTRY_ENVIRONMENT=production     # production / development / staging
+SENTRY_TRACES_SAMPLE_RATE=0.1    # 10% of transactions
+SENTRY_RELEASE=                   # optional, auto-detect from git
 
 ```
 
@@ -486,6 +496,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 - **Task queue** — Dramatiq + Redis. Scheduler dispatches groups per-user. Jobs endpoints dispatch directly. Actor time limits (30 min for FIT processing). `--force` flag for re-processing unchanged data
 - **ORM** — `@dual` decorator creates `DualMethod` descriptor: auto-dispatches sync/async by detecting event loop. One method name works in both contexts: `Activity.get_for_date()` (sync) and `await Activity.get_for_date()` (async)
 - **DTOs** — organized by domain: `data/dto.py` (metrics), `data/db/dto.py` (DB models), `data/intervals/dto.py` (API), `tasks/dto.py` (processing)
+- **Sentry** — single init via `sentry_config.py`, called from `tasks/broker.py` (workers), `api/server.py` (API), `bot/main.py` (polling). Empty `SENTRY_DSN` = disabled. Data scrubbing: request headers/body, breadcrumbs, stackframe local vars. `@sentry_tool` decorator for MCP tools with spans. Intervals.icu client has spans + retry breadcrumbs
 
 ### Telegram Bot — Webhook Lifecycle
 
@@ -603,7 +614,8 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя)
 24. ~~Multi-Tenant Phase 1~~ — Done (users table, user_id on 13 tables, crypto, onboarding CLI)
 25. ~~Multi-Tenant Phase 1.3~~ — Done (per-user MCP auth, contextvars user_id, API auth returns User, per-user scheduler via dramatiq, jobs dispatch per-user actors)
-26. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant), initData freshness check. See `docs/MULTI_TENANT_SECURITY.md`
+26. ~~Sentry Integration~~ — Done (error monitoring, performance tracing, data scrubbing, user context, `@sentry_tool`, 19 tests)
+27. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant), initData freshness check. See `docs/MULTI_TENANT_SECURITY.md`
 
 ---
 

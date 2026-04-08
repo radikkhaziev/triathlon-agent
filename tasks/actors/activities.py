@@ -7,6 +7,7 @@ from typing import Any
 
 import dramatiq
 import numpy as np
+import sentry_sdk
 from dramatiq import group, pipeline
 from fitparse import FitFile
 from pydantic import validate_call
@@ -63,8 +64,13 @@ def _actor_download_fit_file(
         if activity.moving_time is None or activity.moving_time < 900:  # ≥15 min
             return
 
-        with IntervalsSyncClient.for_user(user) as client:
-            fit_bytes = client.download_fit(activity_id)
+        try:
+            with IntervalsSyncClient.for_user(user) as client:
+                fit_bytes = client.download_fit(activity_id)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            logger.exception("Failed to download FIT file for activity %s", activity_id)
+            return
 
         if fit_bytes is None:
             logger.debug("No FIT file for activity %s, skipping", activity_id)
@@ -73,7 +79,12 @@ def _actor_download_fit_file(
         fit_dir = Path("static/fit-files")
         fit_dir.mkdir(parents=True, exist_ok=True)
         fit_path = fit_dir / f"{activity_id}.fit"
-        fit_path.write_bytes(fit_bytes)
+        try:
+            fit_path.write_bytes(fit_bytes)
+        except OSError as e:
+            sentry_sdk.capture_exception(e)
+            logger.exception("Failed to write FIT file %s", fit_path)
+            return
 
         activity.fit_file_path = str(fit_path)
         session.commit()
@@ -97,7 +108,8 @@ def _actor_process_fit_file(prev: str | None):
         return
     try:
         fit = FitFile(prev)
-    except Exception:
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
         logger.exception("Failed to parse FIT file: %s", prev)
         return
     rr_ms: list[float] = []
