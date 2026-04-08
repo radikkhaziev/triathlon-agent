@@ -4,8 +4,9 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -17,6 +18,9 @@ from config import settings
 from data.db import User
 from data.redis_client import close_redis, init_redis
 from mcp_server.context import set_current_user_id
+from sentry_config import init_sentry
+
+init_sentry()
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +56,7 @@ class MCPAuthMiddleware:
                 await self._reject(scope, receive, send, 401, b'{"detail":"Invalid MCP token"}')
                 return
 
-            set_current_user_id(user.id)
+            set_current_user_id(user.id, athlete_id=user.athlete_id)
 
         await self.app(scope, receive, send)
 
@@ -124,6 +128,17 @@ app.add_middleware(
 )
 
 app.add_middleware(MCPAuthMiddleware)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    # Let FastAPI handle HTTP exceptions normally (4xx, etc.)
+    if isinstance(exc, StarletteHTTPException):
+        raise exc
+    # Sentry FastApiIntegration captures automatically — no manual capture needed
+    logger.exception("Unhandled exception", exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
 
 app.include_router(router)
 app.include_router(dashboard_router)

@@ -29,6 +29,7 @@ dependencies = [
     "redis (>=7.4.0,<8.0.0)",
     "cryptography>=44.0.0",
     "dramatiq[redis]>=1.17.0",
+    "sentry-sdk[fastapi,dramatiq]>=2.19.0",
 ]
 
 [project.optional-dependencies]

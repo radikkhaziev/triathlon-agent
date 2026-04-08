@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 import httpx
+import sentry_sdk
 from pydantic import BaseModel
 
 from data.db import User, UserDTO
@@ -92,6 +93,15 @@ class IntervalsClientBase:
             MAX_RETRIES,
             delay,
         )
+        sentry_sdk.add_breadcrumb(
+            category="intervals_icu",
+            message=f"Retry {attempt + 1}/{MAX_RETRIES} for {path}: {status}",
+            level="warning",
+        )
+
+    @staticmethod
+    def _start_span(method: str, path: str):
+        return sentry_sdk.start_span(op="http.client", description=f"{method} intervals.icu{path}")
 
     # ------------------------------------------------------------------
     # Response parsers
@@ -263,16 +273,19 @@ class IntervalsAsyncClient(IntervalsClientBase):
             yield session
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        for attempt in range(MAX_RETRIES):
-            resp = await self._client.request(method, path, **kwargs)
-            if resp.status_code not in RETRY_STATUSES:
-                resp.raise_for_status()
-                return resp
-            delay = self._compute_retry_delay(resp, attempt)
-            self._log_retry(method, path, resp.status_code, attempt, delay)
-            await asyncio.sleep(delay)
-        resp.raise_for_status()
-        return resp  # unreachable
+        with self._start_span(method, path) as span:
+            span.set_data("http.method", method)
+            for attempt in range(MAX_RETRIES):
+                resp = await self._client.request(method, path, **kwargs)
+                if resp.status_code not in RETRY_STATUSES:
+                    resp.raise_for_status()
+                    span.set_data("http.status_code", resp.status_code)
+                    return resp
+                delay = self._compute_retry_delay(resp, attempt)
+                self._log_retry(method, path, resp.status_code, attempt, delay)
+                await asyncio.sleep(delay)
+            resp.raise_for_status()
+            return resp  # unreachable
 
     async def _execute(self, spec: RequestSpec) -> Any:
         try:
@@ -359,16 +372,19 @@ class IntervalsSyncClient(IntervalsClientBase):
         self.close()
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        for attempt in range(MAX_RETRIES):
-            resp = self._client.request(method, path, **kwargs)
-            if resp.status_code not in RETRY_STATUSES:
-                resp.raise_for_status()
-                return resp
-            delay = self._compute_retry_delay(resp, attempt)
-            self._log_retry(method, path, resp.status_code, attempt, delay)
-            time.sleep(delay)
-        resp.raise_for_status()
-        return resp  # unreachable
+        with self._start_span(method, path) as span:
+            span.set_data("http.method", method)
+            for attempt in range(MAX_RETRIES):
+                resp = self._client.request(method, path, **kwargs)
+                if resp.status_code not in RETRY_STATUSES:
+                    resp.raise_for_status()
+                    span.set_data("http.status_code", resp.status_code)
+                    return resp
+                delay = self._compute_retry_delay(resp, attempt)
+                self._log_retry(method, path, resp.status_code, attempt, delay)
+                time.sleep(delay)
+            resp.raise_for_status()
+            return resp  # unreachable
 
     def _execute(self, spec: RequestSpec) -> Any:
         try:

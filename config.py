@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: SecretStr = SecretStr("")  # PAT for issue creation
     GITHUB_REPO: str = "radikkhaziev/triathlon-agent"
 
+    # Sentry
+    SENTRY_DSN: str = ""  # empty = Sentry disabled
+    SENTRY_ENVIRONMENT: str = "production"
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_RELEASE: str = ""
+
     # Multi-tenant security
     FIELD_ENCRYPTION_KEY: SecretStr = SecretStr("")  # Fernet key for encrypting per-user secrets in DB
 

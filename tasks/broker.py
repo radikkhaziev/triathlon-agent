@@ -17,10 +17,12 @@ from dramatiq.results.backends import RedisBackend as RedisResultBackend
 
 import tasks.middleware  # noqa: F401 — patches Actor.message_with_options for Pydantic auto-serialization
 from config import settings
+from sentry_config import init_sentry
 
 
 def setup_broker() -> RedisBroker:
     """Create and set the global Dramatiq broker backed by Redis."""
+    init_sentry()  # must run before actors are decorated (DramatiqIntegration patches dramatiq)
     result_backend = RedisResultBackend(url=settings.REDIS_URL)
     rate_limiter_backend = RedisRateLimiterBackend(url=settings.REDIS_URL)
 

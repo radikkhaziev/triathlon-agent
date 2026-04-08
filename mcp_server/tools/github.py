@@ -3,9 +3,11 @@
 from data.github import create_issue, list_issues
 from mcp_server.app import mcp
 from mcp_server.context import require_owner
+from mcp_server.sentry import sentry_tool
 
 
 @mcp.tool()
+@sentry_tool
 async def create_github_issue(
     title: str,
     body: str,

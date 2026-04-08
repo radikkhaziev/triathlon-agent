@@ -6,6 +6,7 @@ import json
 import time
 from urllib.parse import parse_qs
 
+import sentry_sdk
 from fastapi import Depends, Header, HTTPException
 
 from api.auth import verify_jwt
@@ -42,7 +43,16 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     if not chat_id:
         return None
 
-    return await User.get_by_chat_id(chat_id)
+    user = await User.get_by_chat_id(chat_id)
+    if user:
+        sentry_sdk.set_user(
+            {
+                "id": str(user.id),
+                "username": f"athlete_{user.athlete_id}" if user.athlete_id else f"user_{user.id}",
+                "role": user.role,
+            }
+        )
+    return user
 
 
 def _verify_and_parse_init_data(init_data: str, bot_token: str) -> dict | None:
