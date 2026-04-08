@@ -9,7 +9,10 @@ jobs:
   deploy:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        run: |
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --force "$GITHUB_SHA"
 
       - name: Sync to deploy directory
         run: rsync -a --delete --exclude='.env' --exclude='.git' --exclude='webapp/node_modules' --exclude='webapp/dist' --exclude='webapp_old' ./ /opt/triatlon-bot/src/

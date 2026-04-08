@@ -29,7 +29,7 @@ class Activity(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)  # Intervals.icu activity ID (e.g. "i12345")
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    start_date_local: Mapped[str] = mapped_column(String)  # "YYYY-MM-DD"
+    start_date_local: Mapped[str] = mapped_column(String, index=True)  # "YYYY-MM-DD"
     type: Mapped[str | None] = mapped_column(String, nullable=True)  # Ride, Run, Swim, ...
     icu_training_load: Mapped[float | None] = mapped_column(Float, nullable=True)
     moving_time: Mapped[int | None] = mapped_column(Integer, nullable=True)  # seconds
