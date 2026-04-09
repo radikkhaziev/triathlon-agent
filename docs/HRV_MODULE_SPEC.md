@@ -106,7 +106,7 @@ trend_direction, trend_slope, trend_r_squared
 
 ```
 id (String PK, e.g. "i12345"), start_date_local (String),
-type (String — Ride, Run, Swim, VirtualRide, etc.),
+type (String — canonical: Ride, Run, Swim, Other),
 icu_training_load (Float — TSS/hrTSS/ssTSS),
 moving_time (Integer — seconds)
 ```

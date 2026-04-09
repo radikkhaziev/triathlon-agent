@@ -131,7 +131,7 @@ function EFChart({ data, sport }: { data: ProgressResponse; sport: Sport }) {
 
     const labels = data.weekly.map(w => w.week.replace(/^\d{4}-/, ''))
     const values = data.weekly.map(w => w.ef_mean ?? null)
-    const color = sport === 'bike' ? CHART_COLORS.bike : CHART_COLORS.run
+    const color = sport === 'bike' ? CHART_COLORS.ride : CHART_COLORS.run
 
     chartInstRef.current = new Chart(chartRef.current, {
       type: 'line',
