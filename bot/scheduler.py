@@ -1,6 +1,8 @@
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.combining import OrTrigger
+from apscheduler.triggers.cron import CronTrigger
 from dramatiq import group
 
 from config import settings
@@ -29,15 +31,10 @@ async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
 
 
 @with_athletes
-async def scheduler_wellness_job(athletes: list[UserDTO]) -> None:
-    _group = group([actor_user_wellness.message(user=a) for a in athletes])
-    _group.run()
-
-
-@with_athletes
-async def scheduler_morning_report_job(athletes: list[UserDTO]) -> None:
-    _group = group([actor_compose_user_morning_report.message(user=a) for a in athletes])
-    _group.run()
+async def scheduler_wellness_and_reports_job(athletes: list[UserDTO]) -> None:
+    """Wellness sync + morning report generation (merged job)."""
+    group([actor_user_wellness.message(user=a) for a in athletes]).run()
+    group([actor_compose_user_morning_report.message(user=a) for a in athletes]).run()
 
 
 @with_athletes
@@ -69,21 +66,15 @@ async def create_scheduler() -> AsyncIOScheduler:
         id="scheduler_scheduled_workouts",
     )
 
-    # TODO: объединить scheduler_wellness_job, scheduler_morning_report_job
     scheduler.add_job(
-        scheduler_wellness_job,
-        trigger="cron",
-        hour="4-23",
-        minute="*/10",
-        id="scheduler_wellness_job",
-    )
-
-    scheduler.add_job(
-        scheduler_morning_report_job,
-        trigger="cron",
-        hour="5-11",
-        minute="*/10",
-        id="scheduler_morning_report_job",
+        scheduler_wellness_and_reports_job,
+        trigger=OrTrigger(
+            [
+                CronTrigger(hour="5-8", minute="*/10"),
+                CronTrigger(hour="9-22", minute="*/30"),
+            ]
+        ),
+        id="scheduler_wellness_and_reports_job",
     )
 
     scheduler.add_job(
