@@ -106,10 +106,10 @@ function LoadTab() {
       }
 
       if (tssChartRef.current && actData.activities?.length) {
-        const byDate: Record<string, { swim: number; bike: number; run: number }> = {}
+        const byDate: Record<string, { swim: number; ride: number; run: number }> = {}
         for (const act of actData.activities) {
-          if (!byDate[act.date]) byDate[act.date] = { swim: 0, bike: 0, run: 0 }
-          const sport = act.sport === 'swimming' ? 'swim' : act.sport === 'cycling' ? 'bike' : act.sport === 'running' ? 'run' : null
+          if (!byDate[act.date]) byDate[act.date] = { swim: 0, ride: 0, run: 0 }
+          const sport = act.sport === 'swimming' ? 'swim' : act.sport === 'cycling' ? 'ride' : act.sport === 'running' ? 'run' : null
           if (sport && act.tss) byDate[act.date][sport] += act.tss
         }
         const dates = Object.keys(byDate).sort()
@@ -120,7 +120,7 @@ function LoadTab() {
             labels,
             datasets: [
               { label: 'Swim', data: dates.map(d => byDate[d].swim), backgroundColor: CHART_COLORS.swim + 'cc', borderRadius: 2 },
-              { label: 'Bike', data: dates.map(d => byDate[d].bike), backgroundColor: CHART_COLORS.bike + 'cc', borderRadius: 2 },
+              { label: 'Ride', data: dates.map(d => byDate[d].ride), backgroundColor: CHART_COLORS.ride + 'cc', borderRadius: 2 },
               { label: 'Run', data: dates.map(d => byDate[d].run), backgroundColor: CHART_COLORS.run + 'cc', borderRadius: 2 },
             ],
           },
