@@ -14,9 +14,9 @@ from mcp_server.context import get_current_user_id
 logger = logging.getLogger(__name__)
 
 # Sport type groupings
-_BIKE_TYPES = {"Ride", "VirtualRide"}
-_RUN_TYPES = {"Run", "TrailRun"}
-_SWIM_TYPES = {"Swim"}
+_BIKE_TYPES = {"Ride", "VirtualRide", "GravelRide", "MountainBikeRide", "EBikeRide"}
+_RUN_TYPES = {"Run", "VirtualRun", "TrailRun"}
+_SWIM_TYPES = {"Swim", "OpenWaterSwim"}
 
 # Minimum duration (seconds) for meaningful steady-state comparison
 _MIN_DURATION = {"bike": 30 * 60, "run": 20 * 60, "swim": 15 * 60}
@@ -144,9 +144,13 @@ async def compute_efficiency_trend(
         sg = _sport_group(act.type)
         if not sg or sg not in target_sports:
             continue
-        if (act.moving_time or 0) < _MIN_DURATION.get(sg, 0):
+        min_dur = _MIN_DURATION.get(sg, 0)
+        if strict_filter:
+            pass  # strict duration handled by is_valid_for_decoupling below
+        elif (act.moving_time or 0) < min_dur:
             continue
-        if sg in ("bike", "run") and not _is_z2(act.average_hr, sg, thresholds):
+        # Z2 HR filter only in strict mode — non-strict includes all activities with EF
+        if strict_filter and sg in ("bike", "run") and not _is_z2(act.average_hr, sg, thresholds):
             continue
         filtered.append((act, sg))
 
@@ -185,6 +189,9 @@ async def compute_efficiency_trend(
 
         if sg in ("bike", "run"):
             ef = detail.efficiency_factor
+            # Fallback: compute EF from speed/HR when Intervals.icu doesn't provide it
+            if (not ef or ef <= 0) and detail.pace and detail.pace > 0 and act.average_hr and act.average_hr > 0:
+                ef = detail.pace / act.average_hr
             if not ef or ef <= 0:
                 continue
             entry["ef"] = round(ef, 4)
