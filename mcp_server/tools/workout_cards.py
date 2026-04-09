@@ -454,7 +454,7 @@ async def compose_workout(
             return f"HTML generated: {url}\nError pushing to Intervals.icu: {e}\nResponse: {resp_body}"
 
     # Register in ai_workouts so list_ai_workouts / remove_ai_workout can find it
-    if intervals_id and push_to_intervals:
+    if push_to_intervals:
         await AiWorkout.save(
             user_id=user_id,
             date_str=date_str,
