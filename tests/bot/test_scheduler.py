@@ -1,6 +1,6 @@
 """Tests for bot/scheduler.py — integration test requiring real DB + Redis + API.
 
-scheduler_wellness_job is decorated with @with_athletes and dispatches
+scheduler_wellness_and_reports_job is decorated with @with_athletes and dispatches
 dramatiq actors, so it needs a running Redis broker and real DB with active athletes.
 Skip in normal test runs.
 """
@@ -19,6 +19,6 @@ class TestSyncWellnessJobManual:
 
     @pytest.mark.asyncio
     async def test_sync_wellness_today(self):
-        from bot.scheduler import scheduler_wellness_job
+        from bot.scheduler import scheduler_wellness_and_reports_job
 
-        await scheduler_wellness_job()
+        await scheduler_wellness_and_reports_job()
