@@ -11,11 +11,13 @@ interface SyncButtonProps {
 
 export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncButtonProps) {
   const [syncing, setSyncing] = useState(false)
+  const [queued, setQueued] = useState(false)
 
   const handleSync = async () => {
     setSyncing(true)
     try {
       const result = await apiFetch<SyncResponse>(endpoint, { method: 'POST' })
+      setQueued(true)
       onSynced(result)
     } catch (err) {
       const msg = 'Ошибка синхронизации. Проверьте соединение.'
@@ -33,10 +35,14 @@ export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncBut
     <div className="flex items-center justify-center gap-2.5 py-2.5 pb-4">
       <button
         onClick={handleSync}
-        disabled={syncing}
+        disabled={syncing || queued}
         className="bg-accent text-white border-none rounded-lg px-4 py-2 text-[13px] font-semibold cursor-pointer transition-all hover:bg-[#2563eb] active:scale-[0.97] disabled:opacity-60 disabled:cursor-not-allowed font-sans flex items-center gap-1.5"
       >
-        <span className={syncing ? 'animate-spin inline-block' : ''}>&#x1f504;</span> Синхронизировать
+        {queued ? (
+          <><span>&#x2705;</span> В очереди</>
+        ) : (
+          <><span className={syncing ? 'animate-spin inline-block' : ''}>&#x1f504;</span> Синхронизировать</>
+        )}
       </button>
       <span className="text-xs text-text-dim">
         {lastSyncedAt ? `Обновлено: ${relativeTime(lastSyncedAt)}` : 'Не синхронизировано'}
