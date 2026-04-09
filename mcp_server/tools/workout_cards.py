@@ -422,6 +422,8 @@ async def compose_workout(
                 }
             )
 
+        ext_id = f"tricoach:workout-card:{date_str}:{slug}"
+        push_error = None
         try:
             # Use PlannedWorkout to build workout_doc for Intervals.icu
             parsed_steps = WorkoutStepDTO.from_raw_list(workout_steps)
@@ -434,7 +436,6 @@ async def compose_workout(
             )
             event = pw.to_intervals_event()
             # Override with compose_workout specifics
-            ext_id = f"tricoach:workout-card:{date_str}:{slug}"
             desc_prefix = f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}"
             desc = f"{desc_prefix}\n\n{event.description}" if event.description else desc_prefix
             event = event.model_copy(
@@ -451,10 +452,9 @@ async def compose_workout(
         except Exception as e:
             resp_body = getattr(getattr(e, "response", None), "text", "")
             logger.error("Failed to push workout to Intervals.icu: %s | body: %s", e, resp_body)
-            return f"HTML generated: {url}\nError pushing to Intervals.icu: {e}\nResponse: {resp_body}"
+            push_error = f"Error pushing to Intervals.icu: {e}\nResponse: {resp_body}"
 
-    # Register in ai_workouts so list_ai_workouts / remove_ai_workout can find it
-    if push_to_intervals:
+        # Always register so list_ai_workouts / remove_ai_workout can find it
         await AiWorkout.save(
             user_id=user_id,
             date_str=date_str,
@@ -468,6 +468,9 @@ async def compose_workout(
             target_tss=None,
             rationale=f"Composed from exercise cards: {url}",
         )
+
+        if push_error:
+            return f"HTML generated: {url}\n{push_error}"
 
     # Save to DB
     await WorkoutCard.save(
