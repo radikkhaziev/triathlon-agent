@@ -3,6 +3,8 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
+from data.utils import normalize_sport
+
 
 class WellnessDTO(BaseModel):
     model_config = ConfigDict(
@@ -102,12 +104,17 @@ class ScheduledWorkoutDTO(BaseModel):
     end_date_local: date | None = None
     name: str | None = None
     category: str = "WORKOUT"  # WORKOUT | RACE_A | RACE_B | RACE_C | NOTE
-    type: str | None = None  # Run, Ride, Swim, etc.
+    type: str | None = None  # Normalized: Ride | Run | Swim | Other
     description: str | None = None
     moving_time: int | None = None  # planned duration in seconds
     distance: float | None = None  # planned distance in km
     workout_doc: dict | None = None  # structured intervals
     updated: datetime | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalize_type(cls, v: str | None) -> str | None:
+        return normalize_sport(v)
 
     @field_validator("start_date_local", "end_date_local", mode="before")
     @classmethod
@@ -137,10 +144,15 @@ class ActivityDTO(BaseModel):
 
     id: str  # Intervals.icu activity ID (e.g. "i12345")
     start_date_local: date
-    type: str | None = None  # Ride, Run, Swim, VirtualRide, etc.
+    type: str | None = None  # Normalized: Ride | Run | Swim | Other
     icu_training_load: float | None = None
     moving_time: int | None = None  # seconds
     average_hr: float | None = None  # average heart rate (from average_heartrate API field)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalize_type(cls, v: str | None) -> str | None:
+        return normalize_sport(v)
 
     @field_validator("start_date_local", mode="before")
     @classmethod

@@ -122,7 +122,7 @@ export default function Wellness() {
               <MetricCard label="TSB (форма)" value={data.training_load?.tsb != null ? `${data.training_load.tsb > 0 ? '+' : ''}${num(data.training_load.tsb)}` : '--'} />
               <MetricCard label="Ramp Rate" value={data.training_load?.ramp_rate != null ? `${num(data.training_load.ramp_rate)} TSS/нед` : '--'} />
             </div>
-            {data.training_load?.sport_ctl && (data.training_load.sport_ctl.swim != null || data.training_load.sport_ctl.bike != null || data.training_load.sport_ctl.run != null) && (
+            {data.training_load?.sport_ctl && (data.training_load.sport_ctl.swim != null || data.training_load.sport_ctl.ride != null || data.training_load.sport_ctl.run != null) && (
               <SportCtlBars {...data.training_load.sport_ctl} />
             )}
           </Section>

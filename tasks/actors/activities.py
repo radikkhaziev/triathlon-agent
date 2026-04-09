@@ -23,7 +23,7 @@ from data.hrv_activity import (
 )
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
-from data.utils import SPORT_MAP
+from data.utils import HRV_ELIGIBLE_TYPES
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO
 from tasks.formatter import build_post_activity_message
 from tasks.tools import TelegramTool
@@ -32,16 +32,6 @@ from tasks.utils import detect_compliance
 from .common import actor_after_activity_update
 
 logger = logging.getLogger(__name__)
-
-_ELIGIBLE_TYPES = (
-    "Ride",
-    "VirtualRide",
-    "GravelRide",
-    "MountainBikeRide",
-    "Run",
-    "VirtualRun",
-    "TrailRun",
-)
 
 
 @dramatiq.actor(queue_name="default")
@@ -58,7 +48,7 @@ def _actor_download_fit_file(
         if activity.fit_file_path and not force:
             return
 
-        if activity.type not in _ELIGIBLE_TYPES:
+        if activity.type not in HRV_ELIGIBLE_TYPES:
             return
 
         if activity.moving_time is None or activity.moving_time < 900:  # ≥15 min
@@ -214,7 +204,7 @@ def _actor_post_process_fit_file(
     # Pa baseline data for saving
     pa_baseline_data = None
     if warmup_points:
-        if activity.type in ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"):
+        if activity.type == "Ride":
             warmup_perf = [
                 p["power"]
                 for p in warmup_points
@@ -452,12 +442,9 @@ def _actor_fill_training_log_actual(user: UserDTO):
 
     filled_count = 0
     for log in unfilled:
-        log_sport = log.sport or ""
-        canonical = SPORT_MAP.get(log_sport, log_sport)
-
         activities = Activity.get_for_date(user.id, log.date)
         matched = next(
-            (a for a in activities if SPORT_MAP.get(a.type, a.type) == canonical),
+            (a for a in activities if a.type == log.sport),
             None,
         )
 

@@ -13,11 +13,6 @@ from mcp_server.context import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
-# Sport type groupings
-_BIKE_TYPES = {"Ride", "VirtualRide", "GravelRide", "MountainBikeRide", "EBikeRide"}
-_RUN_TYPES = {"Run", "VirtualRun", "TrailRun"}
-_SWIM_TYPES = {"Swim", "OpenWaterSwim"}
-
 # Minimum duration (seconds) for meaningful steady-state comparison
 _MIN_DURATION = {"bike": 30 * 60, "run": 20 * 60, "swim": 15 * 60}
 
@@ -27,12 +22,12 @@ _Z2_RUN = (0.72, 0.82)
 
 
 def _sport_group(activity_type: str) -> str | None:
-    """Map Intervals.icu activity type to sport group."""
-    if activity_type in _BIKE_TYPES:
+    """Map canonical activity type to sport group."""
+    if activity_type == "Ride":
         return "bike"
-    if activity_type in _RUN_TYPES:
+    if activity_type == "Run":
         return "run"
-    if activity_type in _SWIM_TYPES:
+    if activity_type == "Swim":
         return "swim"
     return None
 

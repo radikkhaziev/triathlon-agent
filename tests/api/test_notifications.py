@@ -101,17 +101,14 @@ class TestSportEmoji:
     def test_ride(self):
         assert sport_emoji("Ride") == "🚴"
 
-    def test_virtual_ride(self):
-        assert sport_emoji("VirtualRide") == "🚴"
-
     def test_run(self):
         assert sport_emoji("Run") == "🏃"
 
-    def test_trail_run(self):
-        assert sport_emoji("TrailRun") == "🏃"
-
     def test_swim(self):
         assert sport_emoji("Swim") == "🏊"
+
+    def test_other(self):
+        assert sport_emoji("Other") == "🏋️"
 
     def test_none(self):
         assert sport_emoji(None) == "🏋️"

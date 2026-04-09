@@ -1,4 +1,4 @@
-"""Shared utilities for sport type mapping, CTL extraction, and serialization."""
+"""Shared utilities for sport type normalization, CTL extraction, and serialization."""
 
 from __future__ import annotations
 
@@ -7,26 +7,58 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from data.db import ActivityDetail, ActivityHrv
 
-# Canonical mapping: Intervals.icu activity/sport type → swim/bike/run
-# TODO: consider using a more robust approach (e.g. fuzzy matching) if we encounter more variations in the future.
-SPORT_MAP: dict[str, str] = {
-    "swim": "swim",
-    "swimming": "swim",
-    "openwaterswim": "swim",
-    "ride": "bike",
-    "bike": "bike",
-    "cycling": "bike",
-    "virtualride": "bike",
-    "mountainbikeride": "bike",
-    "gravelride": "bike",
-    "ebikeride": "bike",
-    "emountainbikeride": "bike",
-    "trackride": "bike",
-    "run": "run",
-    "running": "run",
-    "virtualrun": "run",
-    "trailrun": "run",
+# ---------------------------------------------------------------------------
+# Sport type normalization: Intervals.icu raw types → 4 canonical types
+# ---------------------------------------------------------------------------
+
+_RAW_TO_CANONICAL: dict[str, str] = {
+    # Swim
+    "Swim": "Swim",
+    "OpenWaterSwim": "Swim",
+    # Bike
+    "Ride": "Ride",
+    "VirtualRide": "Ride",
+    "GravelRide": "Ride",
+    "MountainBikeRide": "Ride",
+    "EBikeRide": "Ride",
+    "EMountainBikeRide": "Ride",
+    "TrackRide": "Ride",
+    "Velomobile": "Ride",
+    "Handcycle": "Ride",
+    # Run
+    "Run": "Run",
+    "VirtualRun": "Run",
+    "TrailRun": "Run",
 }
+
+CANONICAL_TYPES = frozenset({"Ride", "Run", "Swim", "Other"})
+HRV_ELIGIBLE_TYPES = frozenset({"Ride", "Run"})
+
+
+def normalize_sport(raw_type: str | None) -> str | None:
+    """Normalize Intervals.icu activity type to canonical: Ride, Run, Swim, Other."""
+    if raw_type is None:
+        return None
+    return _RAW_TO_CANONICAL.get(raw_type, "Other")
+
+
+def is_bike(t: str | None) -> bool:
+    return t == "Ride"
+
+
+def is_run(t: str | None) -> bool:
+    return t == "Run"
+
+
+def is_swim(t: str | None) -> bool:
+    return t == "Swim"
+
+
+# Legacy alias: lowercase sport key for CTL extraction.
+# After normalization, activity types are already canonical — just .lower().
+SPORT_MAP: dict[str, str] = {v.lower(): v.lower() for v in _RAW_TO_CANONICAL.values()}
+# Add legacy aliases that may appear in sport_info JSON from Intervals.icu
+SPORT_MAP.update({"bike": "ride", "cycling": "ride", "swimming": "swim", "running": "run"})
 
 
 def tsb_zone(tsb: float | None) -> str | None:
@@ -50,12 +82,12 @@ def extract_sport_ctl(sport_info: list[dict] | None) -> dict[str, float | None]:
     """Extract per-sport CTL from sport_info JSON stored in wellness.
 
     Looks for 'ctl' field inside each sport entry. Returns dict with
-    swim/bike/run CTL values, or None if not available.
+    swim/ride/run CTL values, or None if not available.
 
     Works with both the original Intervals.icu format (type + eftp/wPrime/pMax)
     enriched with 'ctl' field by our pipeline, and any legacy formats.
     """
-    result: dict[str, float | None] = {"swim": None, "bike": None, "run": None}
+    result: dict[str, float | None] = {"swim": None, "ride": None, "run": None}
     if not sport_info:
         return result
     if not isinstance(sport_info, list):
@@ -75,12 +107,12 @@ def extract_sport_ctl(sport_info: list[dict] | None) -> dict[str, float | None]:
 
 
 def extract_sport_ctl_tuple(sport_info: list[dict] | None) -> tuple[float, float, float]:
-    """Same as extract_sport_ctl but returns (swim, bike, run) tuple.
+    """Same as extract_sport_ctl but returns (swim, ride, run) tuple.
 
     Returns 0.0 instead of None for missing values — used in AI prompt formatting.
     """
     d = extract_sport_ctl(sport_info)
-    return (d["swim"] or 0.0, d["bike"] or 0.0, d["run"] or 0.0)
+    return (d["swim"] or 0.0, d["ride"] or 0.0, d["run"] or 0.0)
 
 
 # ---------------------------------------------------------------------------

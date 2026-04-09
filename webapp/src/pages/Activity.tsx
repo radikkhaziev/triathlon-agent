@@ -5,7 +5,7 @@ import ErrorMessage from '../components/ErrorMessage'
 import ZoneChart from '../components/ZoneChart'
 import { useApi } from '../hooks/useApi'
 import { fmtDateShort, sportLabel, fmtPace, fmtSpeed, fmtDuration } from '../lib/formatters'
-import { SPORT_ICONS, BIKE_TYPES, RUN_TYPES } from '../lib/constants'
+import { SPORT_ICONS } from '../lib/constants'
 import type { ActivityDetailsResponse } from '../api/types'
 
 export default function Activity() {
@@ -23,8 +23,8 @@ export default function Activity() {
 
   const d = data.details
   const hrv = data.hrv
-  const isBike = BIKE_TYPES.includes(data.type || '')
-  const isRun = RUN_TYPES.includes(data.type || '')
+  const isBike = data.type === 'Ride'
+  const isRun = data.type === 'Run'
   const isSwim = data.type === 'Swim'
   const hrZones = d?.hr_zone_times ?? d?.hr_zones
   const powerZones = d?.power_zone_times ?? d?.power_zones

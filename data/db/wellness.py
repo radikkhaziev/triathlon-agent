@@ -16,7 +16,7 @@ from .decorator import dual, with_sync_session
 logger = logging.getLogger(__name__)
 
 
-_CANONICAL_TO_TYPE = {"swim": "Swim", "bike": "Ride", "run": "Run"}
+_CANONICAL_TO_TYPE = {"swim": "Swim", "ride": "Ride", "run": "Run"}
 
 
 # Backward-compatible re-export (moved to data.db.dto)

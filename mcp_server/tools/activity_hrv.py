@@ -107,10 +107,7 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
     """
     cutoff = str(date.today() - timedelta(days=days_back))
 
-    _SPORT_TYPES = {
-        "bike": ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"),
-        "run": ("Run", "VirtualRun", "TrailRun"),
-    }
+    _SPORT_MAP = {"bike": "Ride", "run": "Run"}
 
     user_id = get_current_user_id()
     async with get_session() as session:
@@ -124,8 +121,8 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
             )
             .order_by(Activity.start_date_local.asc())
         )
-        if sport.lower() in _SPORT_TYPES:
-            query = query.where(ActivityHrv.activity_type.in_(_SPORT_TYPES[sport.lower()]))
+        if sport.lower() in _SPORT_MAP:
+            query = query.where(ActivityHrv.activity_type == _SPORT_MAP[sport.lower()])
 
         result = await session.execute(query)
         rows = result.all()
@@ -176,10 +173,7 @@ async def get_readiness_history(sport: str = "", days_back: int = 30) -> dict:
     """
     cutoff = str(date.today() - timedelta(days=days_back))
 
-    _SPORT_TYPES = {
-        "bike": ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"),
-        "run": ("Run", "VirtualRun", "TrailRun"),
-    }
+    _SPORT_MAP = {"bike": "Ride", "run": "Run"}
 
     user_id = get_current_user_id()
     async with get_session() as session:
@@ -193,8 +187,8 @@ async def get_readiness_history(sport: str = "", days_back: int = 30) -> dict:
             )
             .order_by(Activity.start_date_local.asc())
         )
-        if sport.lower() in _SPORT_TYPES:
-            query = query.where(ActivityHrv.activity_type.in_(_SPORT_TYPES[sport.lower()]))
+        if sport.lower() in _SPORT_MAP:
+            query = query.where(ActivityHrv.activity_type == _SPORT_MAP[sport.lower()])
 
         result = await session.execute(query)
         rows = result.all()

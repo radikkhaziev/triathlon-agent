@@ -29,7 +29,7 @@ def _generate_load_series(days: int) -> dict:
 
     # Start values
     ctl, atl = 52.0, 58.0
-    ctl_swim, ctl_bike, ctl_run = 8.0, 22.0, 14.0
+    ctl_swim, ctl_ride, ctl_run = 8.0, 22.0, 14.0
 
     ctl_arr, atl_arr, tsb_arr = [], [], []
     swim_arr, bike_arr, run_arr = [], [], []
@@ -61,11 +61,11 @@ def _generate_load_series(days: int) -> dict:
         sport_tss[sport] = tss
 
         ctl_swim = ctl_swim + (sport_tss["swim"] - ctl_swim) / 42
-        ctl_bike = ctl_bike + (sport_tss["bike"] - ctl_bike) / 42
+        ctl_ride = ctl_ride + (sport_tss["bike"] - ctl_ride) / 42
         ctl_run = ctl_run + (sport_tss["run"] - ctl_run) / 42
 
         swim_arr.append(round(ctl_swim, 1))
-        bike_arr.append(round(ctl_bike, 1))
+        bike_arr.append(round(ctl_ride, 1))
         run_arr.append(round(ctl_run, 1))
 
     return {
@@ -74,7 +74,7 @@ def _generate_load_series(days: int) -> dict:
         "atl": atl_arr,
         "tsb": tsb_arr,
         "ctl_swim": swim_arr,
-        "ctl_bike": bike_arr,
+        "ctl_ride": bike_arr,
         "ctl_run": run_arr,
     }
 
