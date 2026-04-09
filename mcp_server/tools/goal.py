@@ -44,7 +44,7 @@ async def get_goal_progress() -> dict:
         row = result.scalar_one_or_none()
 
     current_ctl = row.ctl if row else None
-    sport_ctl = extract_sport_ctl(row.sport_info) if row else {"swim": None, "bike": None, "run": None}
+    sport_ctl = extract_sport_ctl(row.sport_info) if row else {"swim": None, "ride": None, "run": None}
     targets = g.per_sport_targets or {}
 
     return {
@@ -63,10 +63,10 @@ async def get_goal_progress() -> dict:
             "target_ctl": targets.get("swim"),
             "pct": _pct(sport_ctl["swim"], targets.get("swim")),
         },
-        "bike": {
-            "current_ctl": sport_ctl["bike"],
-            "target_ctl": targets.get("bike"),
-            "pct": _pct(sport_ctl["bike"], targets.get("bike")),
+        "ride": {
+            "current_ctl": sport_ctl["ride"],
+            "target_ctl": targets.get("ride"),
+            "pct": _pct(sport_ctl["ride"], targets.get("ride")),
         },
         "run": {
             "current_ctl": sport_ctl["run"],

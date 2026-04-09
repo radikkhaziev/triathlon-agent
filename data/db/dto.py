@@ -72,7 +72,7 @@ class AthleteGoalDTO(BaseModel):
     sport_type: str
     disciplines: list[str] | None = None
     ctl_target: float | None = None
-    per_sport_targets: dict | None = None  # {"swim": 15, "bike": 35, "run": 25}
+    per_sport_targets: dict | None = None  # {"swim": 15, "ride": 35, "run": 25}
 
 
 class WellnessPostDTO(BaseModel):

@@ -411,7 +411,7 @@ def detect_hrv_thresholds(
     }
 
     # Add power at HRVT1 if power data available
-    if activity_type in ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"):
+    if activity_type == "Ride":
         power_points = [p for p in points if p.get("power") is not None]
         if len(power_points) >= 10:
             p_hr = np.array([p["hr_avg"] for p in power_points])
@@ -425,7 +425,7 @@ def detect_hrv_thresholds(
                 pass
 
     # Add pace at HRVT1 for running
-    if activity_type in ("Run", "VirtualRun", "TrailRun"):
+    if activity_type == "Run":
         speed_points = [p for p in points if p.get("speed") is not None and p["speed"] > 0]
         if len(speed_points) >= 10:
             s_hr = np.array([p["hr_avg"] for p in speed_points])
@@ -476,7 +476,7 @@ def calculate_readiness_ra(
         return None
 
     # Get the performance metric (power for bike, speed for run)
-    if activity_type in ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"):
+    if activity_type == "Ride":
         values = [p["power"] for p in moderate_points if p.get("power") is not None and p["power"] > 0]
     else:
         values = [p["speed"] for p in moderate_points if p.get("speed") is not None and p["speed"] > 0]
@@ -532,7 +532,7 @@ def calculate_durability_da(
         return None
 
     # Get performance values
-    if activity_type in ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"):
+    if activity_type == "Ride":
         key = "power"
     else:
         key = "speed"
@@ -632,7 +632,7 @@ def _compute_hrv(
     # Pa baseline data for saving
     pa_baseline_data = None
     if warmup_points:
-        if activity_type in ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"):
+        if activity_type == "Ride":
             warmup_perf = [
                 p["power"]
                 for p in warmup_points

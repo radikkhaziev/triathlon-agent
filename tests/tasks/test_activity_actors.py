@@ -425,9 +425,7 @@ class TestActorDownloadFitFile:
         assert activity.fit_file_path == "static/fit-files/i12345.fit"
         mock_session.commit.assert_called_once()
 
-    @pytest.mark.parametrize(
-        "activity_type", ["Ride", "VirtualRide", "GravelRide", "MountainBikeRide", "Run", "VirtualRun", "TrailRun"]
-    )
+    @pytest.mark.parametrize("activity_type", ["Ride", "Run"])
     def test_eligible_activity_types_proceed(self, activity_type):
         """All eligible activity types proceed to download attempt."""
         from tasks.actors.activities import _actor_download_fit_file

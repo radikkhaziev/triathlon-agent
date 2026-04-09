@@ -80,7 +80,7 @@ class DailyMetricsDTO(BaseModel):
     atl: float
     tsb: float
     ctl_swim: float
-    ctl_bike: float
+    ctl_ride: float
     ctl_run: float
 
 

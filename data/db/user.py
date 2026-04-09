@@ -22,17 +22,6 @@ from data.db.dto import (  # noqa: F401, E402
 from .common import Base
 from .decorator import dual, with_session
 
-_SPORT_GROUPS = {
-    "Ride": ["Ride", "VirtualRide", "GravelRide", "MountainBikeRide", "EBikeRide"],
-    "Run": ["Run", "VirtualRun", "TrailRun"],
-    "Swim": ["Swim", "OpenWaterSwim"],
-}
-
-
-def _get_sport_group(sport: str) -> list[str]:
-    """Return all activity types that belong to the same sport group."""
-    return _SPORT_GROUPS.get(sport, [sport])
-
 
 class UserRole(str, Enum):
     owner = "owner"
@@ -133,7 +122,6 @@ class User(Base):
         alerts: list[DriftAlertDTO] = []
 
         for sport_label in ("Ride", "Run"):
-            sport_types = _get_sport_group(sport_label)
             settings_row = session.execute(
                 select(AthleteSettings).where(
                     AthleteSettings.user_id == user_id,
@@ -152,7 +140,7 @@ class User(Base):
                     ActivityHrv.processing_status == "processed",
                     ActivityHrv.hrvt1_hr.isnot(None),
                     ActivityHrv.hrv_quality.in_(["good", "moderate"]),
-                    Activity.type.in_(sport_types),
+                    Activity.type == sport_label,
                 )
                 .order_by(Activity.start_date_local.desc())
                 .limit(3)
@@ -212,9 +200,7 @@ class User(Base):
             )
         )
         if sport:
-            # Include sport subtypes (e.g. Ride → VirtualRide, GravelRide, etc.)
-            sport_types = _get_sport_group(sport)
-            query = query.where(Activity.type.in_(sport_types))
+            query = query.where(Activity.type == sport)
 
         query = query.order_by(Activity.start_date_local.desc()).limit(5)
 

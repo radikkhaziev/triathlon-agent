@@ -8,6 +8,8 @@ from data.db import Activity, ActivityHrv, get_session
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
 
+_SPORT_FILTER = {"bike": "Ride", "run": "Run"}
+
 
 @mcp.tool()
 async def get_activity_hrv(activity_id: str) -> dict:
@@ -107,11 +109,6 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
     """
     cutoff = str(date.today() - timedelta(days=days_back))
 
-    _SPORT_TYPES = {
-        "bike": ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"),
-        "run": ("Run", "VirtualRun", "TrailRun"),
-    }
-
     user_id = get_current_user_id()
     async with get_session() as session:
         query = (
@@ -124,8 +121,8 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
             )
             .order_by(Activity.start_date_local.asc())
         )
-        if sport.lower() in _SPORT_TYPES:
-            query = query.where(ActivityHrv.activity_type.in_(_SPORT_TYPES[sport.lower()]))
+        if sport.lower() in _SPORT_FILTER:
+            query = query.where(ActivityHrv.activity_type == _SPORT_FILTER[sport.lower()])
 
         result = await session.execute(query)
         rows = result.all()
@@ -176,11 +173,6 @@ async def get_readiness_history(sport: str = "", days_back: int = 30) -> dict:
     """
     cutoff = str(date.today() - timedelta(days=days_back))
 
-    _SPORT_TYPES = {
-        "bike": ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide"),
-        "run": ("Run", "VirtualRun", "TrailRun"),
-    }
-
     user_id = get_current_user_id()
     async with get_session() as session:
         query = (
@@ -193,8 +185,8 @@ async def get_readiness_history(sport: str = "", days_back: int = 30) -> dict:
             )
             .order_by(Activity.start_date_local.asc())
         )
-        if sport.lower() in _SPORT_TYPES:
-            query = query.where(ActivityHrv.activity_type.in_(_SPORT_TYPES[sport.lower()]))
+        if sport.lower() in _SPORT_FILTER:
+            query = query.where(ActivityHrv.activity_type == _SPORT_FILTER[sport.lower()])
 
         result = await session.execute(query)
         rows = result.all()

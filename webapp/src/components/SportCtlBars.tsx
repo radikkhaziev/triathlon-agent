@@ -2,19 +2,19 @@ import { num } from '../lib/formatters'
 
 interface SportCtlBarsProps {
   swim: number | null
-  bike: number | null
+  ride: number | null
   run: number | null
 }
 
 const sports = [
   { key: 'swim' as const, emoji: '🏊', name: 'Swim' },
-  { key: 'bike' as const, emoji: '🚴', name: 'Bike' },
+  { key: 'ride' as const, emoji: '🚴', name: 'Ride' },
   { key: 'run' as const, emoji: '🏃', name: 'Run' },
 ]
 
-export default function SportCtlBars({ swim, bike, run }: SportCtlBarsProps) {
-  const values = { swim, bike, run }
-  const maxCtl = Math.max(swim || 0, bike || 0, run || 0, 1)
+export default function SportCtlBars({ swim, ride, run }: SportCtlBarsProps) {
+  const values = { swim, ride, run }
+  const maxCtl = Math.max(swim || 0, ride || 0, run || 0, 1)
 
   return (
     <div>

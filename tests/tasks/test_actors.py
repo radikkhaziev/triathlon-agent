@@ -555,7 +555,7 @@ class TestActorEnrichWellnessSportInfo:
         with (
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
             patch("tasks.actors.common.Activity.get_windowed", return_value=[]) as mock_get,
-            patch("tasks.actors.common.calculate_sport_ctl", return_value={"swim": 0.0, "bike": 0.0, "run": 0.0}),
+            patch("tasks.actors.common.calculate_sport_ctl", return_value={"swim": 0.0, "ride": 0.0, "run": 0.0}),
             patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(_user().model_dump(), _DT)
@@ -566,14 +566,14 @@ class TestActorEnrichWellnessSportInfo:
         mock_update.assert_called_once()
         assert mock_update.call_args[1]["user_id"] == 1
         assert mock_update.call_args[1]["dt"] == _DT
-        assert mock_update.call_args[1]["sport_ctl"] == {"swim": 0.0, "bike": 0.0, "run": 0.0}
+        assert mock_update.call_args[1]["sport_ctl"] == {"swim": 0.0, "ride": 0.0, "run": 0.0}
 
     def test_activities_present_calculates_sport_ctl(self):
         """Activities passed to calculate_sport_ctl and result forwarded to Wellness."""
         from tasks.actors.common import _actor_enrich_wellness_sport_info
 
         activities = [self._make_activity("Run", 80.0), self._make_activity("Ride", 120.0)]
-        expected_ctl = {"swim": 0.0, "bike": 10.5, "run": 6.3}
+        expected_ctl = {"swim": 0.0, "ride": 10.5, "run": 6.3}
 
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)

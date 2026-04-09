@@ -41,17 +41,11 @@ def format_duration(seconds: int | None) -> str:
 
 
 def sport_emoji(activity_type: str | None) -> str:
-    """Return sport emoji based on activity type."""
+    """Return sport emoji based on canonical activity type."""
     if not activity_type:
         return "🏋️"
-    t = activity_type.lower()
-    if "ride" in t or "bike" in t or "cycling" in t:
-        return "🚴"
-    if "run" in t:
-        return "🏃"
-    if "swim" in t:
-        return "🏊"
-    return "🏋️"
+    _EMOJI = {"Ride": "🚴", "Run": "🏃", "Swim": "🏊"}
+    return _EMOJI.get(activity_type, "🏋️")
 
 
 _MONTHS_RU = {
@@ -109,9 +103,8 @@ def _format_workout_short(w) -> str:
     sport_names = {
         "Swim": "Плавание",
         "Ride": "Вело",
-        "VirtualRide": "Вело",
         "Run": "Бег",
-        "WeightTraining": "Силовая",
+        "Other": "Другое",
     }
     sport = sport_names.get(w.type or "", w.type or "Тренировка")
     name_part = ""

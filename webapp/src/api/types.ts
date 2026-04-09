@@ -89,7 +89,7 @@ export interface TrainingLoadData {
   ramp_rate: number | null
   sport_ctl: {
     swim: number | null
-    bike: number | null
+    ride: number | null
     run: number | null
   }
 }
@@ -275,7 +275,7 @@ export interface TrainingLoadSeries {
   atl: number[]
   tsb: number[]
   ctl_swim: number[]
-  ctl_bike: number[]
+  ctl_ride: number[]
   ctl_run: number[]
 }
 

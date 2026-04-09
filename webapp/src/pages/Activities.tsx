@@ -10,7 +10,7 @@ import { useWeekNav } from '../hooks/useWeekNav'
 import { useApi } from '../hooks/useApi'
 import { apiFetch } from '../api/client'
 import { formatDayDate, sportLabel, fmtPace } from '../lib/formatters'
-import { SPORT_ICONS, BIKE_TYPES, RUN_TYPES } from '../lib/constants'
+import { SPORT_ICONS } from '../lib/constants'
 import type { ActivitiesWeekResponse, ActivityItem, ActivityDetailsResponse, SyncResponse } from '../api/types'
 
 export default function Activities() {
@@ -156,7 +156,7 @@ function InlineDetail({ data }: { data: ActivityDetailsResponse }) {
 
   const lines: React.ReactNode[] = []
 
-  if (BIKE_TYPES.includes(type)) {
+  if (type === 'Ride') {
     const parts: React.ReactNode[] = []
     if (d.normalized_power) parts.push(<strong>NP {d.normalized_power}W</strong>)
     if (d.intensity_factor) parts.push(`IF ${d.intensity_factor.toFixed(2)}`)
@@ -168,7 +168,7 @@ function InlineDetail({ data }: { data: ActivityDetailsResponse }) {
     if (d.avg_cadence) parts2.push(`\uD83D\uDD04 ${Math.round(d.avg_cadence)}rpm`)
     if (d.calories) parts2.push(`\uD83D\uDD25 ${d.calories}kcal`)
     if (parts2.length) lines.push(<DetailLine parts={parts2} />)
-  } else if (RUN_TYPES.includes(type)) {
+  } else if (type === 'Run') {
     const parts: React.ReactNode[] = []
     const pace = fmtPace(d.pace)
     if (pace) parts.push(<strong>Pace {pace}/km</strong>)

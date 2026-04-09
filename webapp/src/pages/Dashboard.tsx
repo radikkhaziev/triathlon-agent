@@ -215,7 +215,7 @@ function GoalTab() {
             labels,
             datasets: [
               { label: 'Swim CTL', data: loadData.ctl_swim || [], borderColor: CHART_COLORS.swim, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-              { label: 'Bike CTL', data: loadData.ctl_bike || [], borderColor: CHART_COLORS.bike, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+              { label: 'Ride CTL', data: loadData.ctl_ride || [], borderColor: CHART_COLORS.ride, tension: 0.3, pointRadius: 0, borderWidth: 2 },
               { label: 'Run CTL', data: loadData.ctl_run || [], borderColor: CHART_COLORS.run, tension: 0.3, pointRadius: 0, borderWidth: 2 },
             ],
           },

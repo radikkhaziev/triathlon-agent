@@ -15,7 +15,7 @@ import numpy as np
 
 from data.db import Activity, HrvAnalysis, RhrAnalysis
 from data.intervals.dto import RecoveryScoreDTO, RecoveryStateDTO, RmssdStatusDTO, TrendResultDTO
-from data.utils import SPORT_MAP
+from data.utils import is_bike, is_run
 
 # ---------------------------------------------------------------------------
 # Trend Analysis
@@ -366,18 +366,17 @@ def calculate_sport_ctl(
         tau: Time constant in days (default 42, matching Intervals.icu CTL).
 
     Returns:
-        {"swim": float, "bike": float, "run": float} — CTL per sport.
+        {"swim": float, "ride": float, "run": float} — CTL per sport.
         Returns 0.0 for sports with no activities.
     """
     if not activities:
-        return {"swim": 0.0, "bike": 0.0, "run": 0.0}
+        return {"swim": 0.0, "ride": 0.0, "run": 0.0}
 
-    # Group daily load by sport
+    # Group daily load by sport (types are already canonical: Ride/Run/Swim/Other)
     daily_load: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for act in activities:
-        raw_type = (act.type or "").lower().replace(" ", "")
-        sport = SPORT_MAP.get(raw_type)
-        if not sport:
+        sport = (act.type or "").lower()
+        if sport not in ("swim", "ride", "run"):
             continue
 
         if act.icu_training_load is None:
@@ -386,7 +385,7 @@ def calculate_sport_ctl(
         daily_load[sport][str(act.start_date_local)] += act.icu_training_load
 
     if not daily_load:
-        return {"swim": 0.0, "bike": 0.0, "run": 0.0}
+        return {"swim": 0.0, "ride": 0.0, "run": 0.0}
 
     # Find date range across all sports
     all_dates = set()
@@ -398,11 +397,10 @@ def calculate_sport_ctl(
 
     # Calculate EMA for each sport day by day
     k = 1.0 / tau  # rate constant
-
     decay = math.exp(-k)
 
     result = {}
-    for sport in ("swim", "bike", "run"):
+    for sport in ("swim", "ride", "run"):
         ctl = 0.0
         sport_loads = daily_load.get(sport, {})
         current = min_date
@@ -516,15 +514,12 @@ _DECOUPLING_MAX_VI = 1.10
 # Minimum fraction of time in Z1+Z2
 _DECOUPLING_MIN_Z12_FRACTION = 0.70
 
-_DECOUPLING_BIKE_TYPES = {"Ride", "VirtualRide"}
-_DECOUPLING_RUN_TYPES = {"Run", "TrailRun"}
-
 
 def decoupling_sport_group(activity_type: str) -> str | None:
     """Map activity type to sport group for decoupling analysis. Swim excluded."""
-    if activity_type in _DECOUPLING_BIKE_TYPES:
+    if is_bike(activity_type):
         return "bike"
-    if activity_type in _DECOUPLING_RUN_TYPES:
+    if is_run(activity_type):
         return "run"
     return None
 

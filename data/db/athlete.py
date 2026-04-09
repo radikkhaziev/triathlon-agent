@@ -140,7 +140,7 @@ class AthleteGoal(Base):
     disciplines: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Swim", "Ride", "Run"]
 
     ctl_target: Mapped[float | None] = mapped_column(Float, nullable=True)
-    per_sport_targets: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"swim": 15, "bike": 35, "run": 25}
+    per_sport_targets: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"swim": 15, "ride": 35, "run": 25}
 
     intervals_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

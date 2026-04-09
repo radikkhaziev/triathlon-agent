@@ -60,15 +60,6 @@ class TestIsValidForDecoupling:
             decoupling=5.3,
         )
 
-    def test_valid_virtual_ride(self):
-        assert is_valid_for_decoupling(
-            activity_type="VirtualRide",
-            moving_time=5400,
-            variability_index=1.01,
-            hr_zone_times=[2000, 2000, 500, 0, 0],
-            decoupling=3.0,
-        )
-
     def test_valid_run(self):
         assert is_valid_for_decoupling(
             activity_type="Run",
@@ -76,15 +67,6 @@ class TestIsValidForDecoupling:
             variability_index=1.05,
             hr_zone_times=[1500, 1000, 200, 0, 0],
             decoupling=8.0,
-        )
-
-    def test_valid_trail_run(self):
-        assert is_valid_for_decoupling(
-            activity_type="TrailRun",
-            moving_time=3600,
-            variability_index=1.08,
-            hr_zone_times=[2000, 1500, 100, 0, 0],
-            decoupling=4.0,
         )
 
     def test_swim_excluded(self):
@@ -98,7 +80,7 @@ class TestIsValidForDecoupling:
 
     def test_other_sport_excluded(self):
         assert not is_valid_for_decoupling(
-            activity_type="WeightTraining",
+            activity_type="Other",
             moving_time=3600,
             variability_index=1.00,
             hr_zone_times=[3600, 0, 0, 0, 0],

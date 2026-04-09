@@ -648,7 +648,7 @@ ai_usage (новая таблица)
 
 22. [x] CLI `onboard <user_id> [--days 180]` — полный онбоардинг: wellness → activities → details → workouts
 23. [x] `IntervalsClient.for_user(api_key, athlete_id)` — non-singleton factory для per-user API доступа
-24. [x] `fill_training_log_actual` — SPORT_MAP matching (Ride↔VirtualRide, Run↔VirtualRun, etc.)
+24. [x] `fill_training_log_actual` — direct type comparison (types normalized at DTO layer)
 25. [x] CLI `fix-training-log-actual` — одноразовый пересчёт actual data после фикса матчинга
 26. [x] Code review фиксы: race condition в /start, is_active проверка в lookups, Fernet caching, session.get→select, missing user_id filters
 

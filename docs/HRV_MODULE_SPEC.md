@@ -163,7 +163,7 @@ Banister TRIMP-based. Нормализация: 1 час на LTHR ≈ ESS 100. 
 
 > Реализовано в `data/metrics.py`: `calculate_sport_ctl()`
 
-Intervals.icu API не предоставляет per-sport CTL. Рассчитывается локально: EMA с τ=42d по каждой дисциплине (swim/bike/run). Маппинг типов: `data/utils.py` `SPORT_MAP` (16 типов → 3 дисциплины). `sync_wellness_job` читает из БД, рассчитывает CTL, обогащает `wellness.sport_info`.
+Intervals.icu API не предоставляет per-sport CTL. Рассчитывается локально: EMA с τ=42d по каждой дисциплине (swim/ride/run). Типы активностей нормализуются на входе в DTO (`normalize_sport()` → 4 каноничных типа: Ride, Run, Swim, Other). `sync_wellness_job` читает из БД, рассчитывает CTL, обогащает `wellness.sport_info`.
 
 > Full theory (обоснование τ=42d, специфичность адаптации): [docs/knowledge/hrv.md](knowledge/hrv.md)
 

@@ -1,17 +1,9 @@
 export const SPORT_ICONS: Record<string, string> = {
   Swim: '\u{1F3CA}',
   Ride: '\u{1F6B4}',
-  VirtualRide: '\u{1F6B4}',
-  GravelRide: '\u{1F6B4}',
-  MountainBikeRide: '\u26F0\uFE0F',
   Run: '\u{1F3C3}',
-  VirtualRun: '\u{1F3C3}',
-  TrailRun: '\u26F0\uFE0F',
-  WeightTraining: '\u{1F3CB}\uFE0F',
+  Other: '\u{1F3CB}\uFE0F',
 }
-
-export const BIKE_TYPES = ['Ride', 'VirtualRide', 'GravelRide', 'MountainBikeRide']
-export const RUN_TYPES = ['Run', 'VirtualRun', 'TrailRun']
 
 export const WEEKDAY_RU: Record<string, string> = {
   Mon: 'Пн', Tue: 'Вт', Wed: 'Ср', Thu: 'Чт', Fri: 'Пт', Sat: 'Сб', Sun: 'Вс',
@@ -41,6 +33,6 @@ export const CHART_COLORS = {
   atl: 'rgb(239, 68, 68)',
   tsb: 'rgb(34, 197, 94)',
   swim: 'rgb(59, 130, 246)',
-  bike: 'rgb(34, 197, 94)',
+  ride: 'rgb(34, 197, 94)',
   run: 'rgb(245, 158, 11)',
 }
