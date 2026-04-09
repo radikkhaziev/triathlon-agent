@@ -61,7 +61,7 @@ Both algorithms are **always computed** on every save. `settings.HRV_ALGORITHM` 
 | `end_date_local` | String, nullable | end date for multi-day events |
 | `name` | String, nullable | workout name (e.g. "CYCLING:Endurance w/ 2min tempo") |
 | `category` | String | WORKOUT / RACE_A / RACE_B / RACE_C / NOTE |
-| `type` | String, nullable | sport type: Ride, Run, Swim, WeightTraining |
+| `type` | String, nullable | canonical sport type: Ride, Run, Swim, Other |
 | `description` | Text, nullable | full workout structure (intervals, zones, power targets from HumanGo) |
 | `moving_time` | Integer, nullable | planned duration in seconds |
 | `distance` | Float, nullable | planned distance in km |
@@ -76,7 +76,7 @@ Synced every 1 hour (at :00, hours 4-23) via scheduler. Upserted by Intervals.ic
 |---|---|---|
 | `id` | String PK | Intervals.icu activity ID (e.g. "i12345") |
 | `start_date_local` | String | "YYYY-MM-DD" |
-| `type` | String, nullable | sport type: Ride, Run, Swim, VirtualRide, etc. |
+| `type` | String, nullable | canonical sport type: Ride, Run, Swim, Other |
 | `icu_training_load` | Float, nullable | TSS/hrTSS/ssTSS from Intervals.icu |
 | `moving_time` | Integer, nullable | duration in seconds |
 | `average_hr` | Float, nullable | average heart rate during activity |

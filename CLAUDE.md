@@ -70,7 +70,7 @@ triathlon-agent/
 │   ├── hrv_activity.py              # DFA a1 pipeline (FIT → RR → DFA → thresholds → Ra/Da)
 │   ├── workout_adapter.py           # HumanGo parser + adaptation engine
 │   ├── ramp_tests.py                # Ramp test protocol generation
-│   ├── utils.py                     # SPORT_MAP, extract_sport_ctl, format_duration
+│   ├── utils.py                     # normalize_sport, is_bike/run/swim, CANONICAL_TYPES, extract_sport_ctl
 │   ├── crypto.py                    # Fernet encryption for per-user secrets
 │   ├── redis_client.py              # Redis init/close
 │   ├── github.py                    # GitHub issue creation
@@ -454,7 +454,7 @@ from data.db.common import get_sync_session
 with get_sync_session() as s:
     goal = s.query(AthleteGoal).filter_by(user_id=2, category="RACE_A").first()
     goal.ctl_target = 75
-    goal.per_sport_targets = {"swim": 15, "bike": 35, "run": 25}
+    goal.per_sport_targets = {"swim": 15, "ride": 35, "run": 25}
     s.commit()
 ```
 

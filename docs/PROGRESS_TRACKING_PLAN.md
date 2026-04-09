@@ -138,7 +138,7 @@ is_z2_run = 0.72 <= (activity.average_hr / ATHLETE_LTHR_RUN) <= 0.82
 1. **Минимальная длительность**: Bike ≥ 30 мин, Run ≥ 20 мин, Swim ≥ 15 мин
 2. **Только steady-state Z2**: средний HR в пределах Z2 от LTHR (см. выше)
 3. **Исключить**: интервальные тренировки (высокий variability_index), гонки, brick sessions
-4. **Типы активностей**: Bike = `Ride`, `VirtualRide`; Run = `Run`, `TrailRun`; Swim = `Swim`
+4. **Типы активностей**: нормализованы на входе в DTO → `Ride`, `Run`, `Swim`, `Other`
 
 Дополнительный фильтр (v2, опционально):
 - `variability_index < 1.05` — исключить интервальные сессии
@@ -261,7 +261,7 @@ Swim не использует EF. Отдельная секция в ответ
 
 ## Текущие данные (на 2026-03-29)
 
-За последние 60 дней: ~8 VirtualRide, 3 Run, ~10 Swim. Для начального тренда Bike/Run достаточно. Swim — pace trend возможен.
+За последние 60 дней: ~8 Ride, 3 Run, ~10 Swim. Для начального тренда Ride/Run достаточно. Swim — pace trend возможен.
 
 ---
 

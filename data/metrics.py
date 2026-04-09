@@ -366,7 +366,7 @@ def calculate_sport_ctl(
         tau: Time constant in days (default 42, matching Intervals.icu CTL).
 
     Returns:
-        {"swim": float, "bike": float, "run": float} — CTL per sport.
+        {"swim": float, "ride": float, "run": float} — CTL per sport.
         Returns 0.0 for sports with no activities.
     """
     if not activities:

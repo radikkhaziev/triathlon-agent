@@ -139,7 +139,7 @@ Interpretation:
 
 ## Scope and Limitations
 
-**Applicable sports:** Cycling (Ride, VirtualRide) and Running (Run, VirtualRun, TrailRun). Requires RR interval data from a chest-strap HRM (BLE/ANT+).
+**Applicable sports:** Cycling (Ride) and Running (Run). Types are normalized at the DTO layer. Requires RR interval data from a chest-strap HRM (BLE/ANT+).
 
 **Not applicable:**
 - Swimming — no RR data in water
