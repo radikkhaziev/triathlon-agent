@@ -64,7 +64,7 @@ Intervals.icu ──sync──> PostgreSQL ──> MCP Server (33 tools, per-use
                     (reports, chat)    (dashboard, charts)
 ```
 
-All fitness data originates from Intervals.icu, which aggregates from Garmin, Strava, or direct uploads. Background sync runs via Dramatiq task queue: wellness every 10 minutes, workouts hourly at :00, activities every 10 minutes. Each user syncs with their own Intervals.icu credentials. MCP is the single data access layer -- both the Telegram bot AI and external Claude Desktop connect through it.
+All fitness data originates from Intervals.icu, which aggregates from Garmin, Strava, or direct uploads. Background sync runs via Dramatiq task queue: wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00, activities every 10 min. Each user syncs with their own Intervals.icu credentials. MCP is the single data access layer -- both the Telegram bot AI and external Claude Desktop connect through it.
 
 ## Multi-Tenant
 

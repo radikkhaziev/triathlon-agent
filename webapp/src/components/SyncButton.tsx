@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { apiFetch } from '../api/client'
 import type { SyncResponse } from '../api/types'
 import { relativeTime } from '../lib/formatters'
@@ -12,6 +12,10 @@ interface SyncButtonProps {
 export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncButtonProps) {
   const [syncing, setSyncing] = useState(false)
   const [queued, setQueued] = useState(false)
+
+  useEffect(() => {
+    setQueued(false)
+  }, [lastSyncedAt])
 
   const handleSync = async () => {
     setSyncing(true)

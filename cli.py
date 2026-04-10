@@ -120,7 +120,7 @@ def _sync_wellness(user_id: int, period: str | None) -> None:
             delay=i * delay_per_day_ms,
         )
 
-    print(f"Queued: {len(days)} days (wellness+HRV+RHR+recovery, 60s apart)")
+    print(f"Queued: {len(days)} days (wellness+HRV+RHR+recovery, {delay_per_day_ms // 1000}s apart)")
 
 
 def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
@@ -155,7 +155,7 @@ def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
         )
         g.run()
 
-    print(f"Queued: {len(days)} days (activities → wellness per day, 60s apart)")
+    print(f"Queued: {len(days)} days (activities → wellness per day, {delay_per_day_ms // 1000}s apart)")
 
 
 def _shell() -> None:
