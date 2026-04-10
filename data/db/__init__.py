@@ -12,7 +12,7 @@ from .dto import (  # noqa
     WellnessPostDTO,
 )
 from .hrv import HrvAnalysis, PaBaseline, RhrAnalysis  # noqa
-from .tracking import IqosDaily, MoodCheckin  # noqa
+from .tracking import ApiUsageDaily, IqosDaily, MoodCheckin  # noqa
 from .user import User  # noqa
 from .wellness import Wellness  # noqa
 from .workout import AiWorkout, ExerciseCard, ScheduledWorkout, TrainingLog, WorkoutCard  # noqa
