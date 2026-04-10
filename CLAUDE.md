@@ -40,7 +40,7 @@ triathlon-agent/
 ├── alembic.ini
 ├── config.py                        # pydantic-settings
 ├── sentry_config.py                 # Sentry SDK init, data scrubbing, traces sampler
-├── cli.py                           # shell, backfill (--force), sync-settings, sync-wellness
+├── cli.py                           # shell, sync-settings, sync-wellness, sync-activities
 ├── bot/
 │   ├── main.py                      # bot entry (polling + webhook), handlers, ClaudeAgent instance
 │   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
@@ -59,8 +59,9 @@ triathlon-agent/
 │   ├── dto.py                       # DateDTO, ORMDTO, FitProcessingResultDTO, ThresholdsDTO
 │   └── actors/
 │       ├── common.py                # Shared: CATEGORY_TO_READINESS, actor_after_activity_update, sport CTL enrichment
-│       ├── wellness.py              # Wellness sync + RHR/HRV/recovery pipelines + training log
-│       ├── activities.py            # Activity sync + FIT processing + DFA a1 + training log actual
+│       ├── wellness.py              # Wellness sync + RHR/HRV/recovery pipelines
+│       ├── activities.py            # Activity sync + FIT processing + DFA a1
+│       ├── training_log.py          # Training log lifecycle: PRE+ACTUAL (same day), POST (next day)
 │       ├── reports.py               # Morning/evening report composition + workout adaptation
 │       ├── workout.py               # actor_push_workout → Intervals.icu + DB + Telegram
 │       └── athlets.py               # Athlete settings sync from Intervals.icu
@@ -359,22 +360,22 @@ Production: Docker multi-stage — Node 20 builds SPA → Python 3.12 serves `we
 ## CLI (cli.py)
 
 ```bash
-python -m cli shell                                  # interactive Python shell with app context
-python -m cli sync-settings <user_id>                # sync athlete settings & goals from Intervals.icu
-python -m cli sync-wellness <user_id> [period]        # force re-sync wellness + HRV/RHR/recovery day by day
-python -m cli backfill <user_id> [period] [--force]   # backfill wellness + activities day by day
+python -m cli shell                                              # interactive Python shell with app context
+python -m cli sync-settings <user_id>                            # sync athlete settings & goals from Intervals.icu
+python -m cli sync-wellness <user_id> [period]                   # force re-sync wellness + HRV/RHR/recovery day by day
+python -m cli sync-activities <user_id> [period] [--force]       # force re-sync activities day by day
 ```
 
-### Period formats for `backfill` and `sync-wellness`
+### Period formats for `sync-wellness` and `sync-activities`
 
-| Format                    | Example            | Result                         |
-| ------------------------- | ------------------ | ------------------------------ |
-| (none)                    | `backfill 2`       | Last 180 days                  |
-| Quarter                   | `backfill 2 2025Q4`| 2025-10-01 → 2025-12-31       |
-| Month                     | `backfill 2 2025-11`| 2025-11-01 → 2025-11-30      |
-| Date range                | `backfill 2 2025-01-01:2025-03-31` | Explicit range    |
+| Format                    | Example                  | Result                         |
+| ------------------------- | ------------------------ | ------------------------------ |
+| (none)                    | `sync-activities 2`      | Last 180 days                  |
+| Quarter                   | `sync-activities 2 2025Q4`| 2025-10-01 → 2025-12-31      |
+| Month                     | `sync-activities 2 2025-11`| 2025-11-01 → 2025-11-30     |
+| Date range                | `sync-activities 2 2025-01-01:2025-03-31` | Explicit range |
 
-Backfill dispatches dramatiq groups per day (wellness + activities in parallel), with 20s delay between days. Requires a running worker (`dramatiq tasks.actors`) and Redis.
+All sync commands dispatch dramatiq tasks with 20s delay between days. Requires a running worker (`dramatiq tasks.actors`) and Redis.
 
 ---
 
@@ -436,11 +437,11 @@ python -m cli sync-settings 2
 
 Pulls sport-specific thresholds (LTHR, FTP, max HR, threshold pace) and race goals (RACE_A/B/C events) from Intervals.icu into `athlete_settings` and `athlete_goals` tables.
 
-### Step 4: Backfill historical data
+### Step 4: Sync historical data
 
 ```bash
-python -m cli backfill 2              # last 180 days
-python -m cli backfill 2 2025Q4       # specific quarter
+python -m cli sync-wellness 2               # 1. wellness + training log POST
+python -m cli sync-activities 2             # 2. activities + training log PRE/ACTUAL
 ```
 
 For each day: fetches wellness data (HRV, CTL, sleep) and activities from Intervals.icu, computes HRV/RHR baselines, Banister/ESS, recovery scores, and syncs activity details.
@@ -467,7 +468,7 @@ with get_sync_session() as s:
 python -m bot.cli onboard <user_id> --days 180
 ```
 
-Команда `onboard` выполняет последовательно: backfill wellness → sync activities → backfill details → sync workouts. Использует per-user Intervals.icu credentials из таблицы `users`.
+Команда `onboard` выполняет последовательно: sync wellness → sync activities → sync details → sync workouts. Использует per-user Intervals.icu credentials из таблицы `users`.
 
 ---
 
@@ -478,7 +479,7 @@ docker compose up -d db                  # PostgreSQL only
 docker compose up -d                     # all (includes React build, bot via webhook in api)
 docker compose run --rm api python -m cli sync-settings 2   # CLI in Docker
 docker compose run --rm api python -m cli sync-wellness 2   # CLI in Docker
-docker compose run --rm api python -m cli backfill 2        # CLI in Docker
+docker compose run --rm api python -m cli sync-activities 2     # CLI in Docker
 ```
 
 Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. No Node in final image.
@@ -594,7 +595,7 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 3. ~~Post-activity notification~~ — Done
 4. ~~Evening report~~ — Done
 5. ~~Morning prompt + DFA~~ — Done
-6. ~~Activity Details~~ — Done (table, API, MCP tool, React page, sync job, CLI backfill)
+6. ~~Activity Details~~ — Done (table, API, MCP tool, React page, sync job, CLI sync-activities)
 7. ~~Scheduled Workouts page~~ — Done
 8. ~~React Migration~~ — Done (React 18 + TypeScript + Vite + Tailwind)
 9. ~~Web Dashboard~~ — Done (3 tabs: Load, Goal, Week)

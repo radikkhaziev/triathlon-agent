@@ -43,7 +43,11 @@ class MCPAuthMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] in ("http", "websocket") and scope["path"].startswith("/mcp"):
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        if scope["path"].startswith("/mcp"):
             headers = dict(scope.get("headers", []))
             auth = headers.get(b"authorization", b"").decode()
             if not auth.startswith("Bearer "):

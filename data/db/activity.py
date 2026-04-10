@@ -226,6 +226,7 @@ class ActivityHrv(Base):
     ) -> list[ActivityHrv]:
         """Get all activity_hrv rows for activities on a specific date (via JOIN)."""
         _dt = dt if isinstance(dt, str) else dt.isoformat()
+
         result = session.execute(
             select(cls)
             .join(Activity, Activity.id == cls.activity_id)

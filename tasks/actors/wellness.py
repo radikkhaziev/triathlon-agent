@@ -2,25 +2,13 @@
 
 import logging
 import statistics
-from datetime import timedelta
 from typing import Literal
 
 import dramatiq
 from dramatiq import group, pipeline
 from pydantic import validate_call
-from sqlalchemy import select
 
-from data.db import (
-    ActivityHrv,
-    AiWorkout,
-    HrvAnalysis,
-    RhrAnalysis,
-    ScheduledWorkout,
-    TrainingLog,
-    UserDTO,
-    Wellness,
-    get_sync_session,
-)
+from data.db import HrvAnalysis, RhrAnalysis, UserDTO, Wellness, get_sync_session
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, RhrStatusDTO, RmssdStatusDTO, WellnessDTO
 from data.metrics import (
@@ -248,148 +236,6 @@ def _actor_update_recovery_score(
         _wellness_row.readiness_level = CATEGORY_TO_READINESS.get(recovery.category, "yellow")
 
         session.commit()
-
-    _actor_record_training_log.send(user=user, dt=dt, force=force)
-
-
-@dramatiq.actor(queue_name="default")
-@validate_call
-def _actor_record_training_log(
-    user: UserDTO,
-    dt: DateDTO,
-    force: bool = False,
-):
-    """Record training log pre (today) + fill post (yesterday). Runs after recovery score."""
-
-    _dt = dt.isoformat()
-
-    with get_sync_session() as session:
-        wellness_row = session.execute(
-            select(Wellness).where(Wellness.user_id == user.id, Wellness.date == _dt)
-        ).scalar_one_or_none()
-
-    if not wellness_row:
-        return
-
-    # --- PRE: record today's training context ---
-    existing = TrainingLog.get_for_date(dt, user_id=user.id)
-    if existing and force:
-        deleted = TrainingLog.delete_for_date(user_id=user.id, dt=dt)
-        logger.info("Force: deleted %d training log entries for user %d on %s", deleted, user.id, dt)
-        existing = []
-    if not existing:
-        workouts = ScheduledWorkout.get_for_date(user.id, dt)
-        ai_workouts = AiWorkout.get_for_date(user.id, dt)
-
-        hrv_flatt = HrvAnalysis.get(user_id=user.id, dt=dt, algorithm="flatt_esco")
-        rhr_row = RhrAnalysis.get(user_id=user.id, dt=dt)
-
-        hrv_status = hrv_flatt.status if hrv_flatt else "insufficient_data"
-        hrv_7d = hrv_flatt.rmssd_7d if hrv_flatt else 0
-        hrv_today = float(wellness_row.hrv) if wellness_row.hrv else 0
-        hrv_delta = ((hrv_today - hrv_7d) / hrv_7d * 100) if hrv_today and hrv_7d else 0.0
-        tsb = (
-            (wellness_row.ctl - wellness_row.atl)
-            if wellness_row.ctl is not None and wellness_row.atl is not None
-            else 0
-        )
-
-        yesterday = dt - timedelta(days=1)
-        ra = None
-        for h in ActivityHrv.get_for_date(user.id, yesterday):
-            if h.ra_pct is not None:
-                ra = h.ra_pct
-                break
-
-        pre_kwargs = dict(
-            pre_recovery_score=wellness_row.recovery_score,
-            pre_recovery_category=wellness_row.recovery_category,
-            pre_hrv_status=hrv_status,
-            pre_hrv_delta_pct=round(hrv_delta, 1),
-            pre_rhr_today=rhr_row.rhr_today if rhr_row else None,
-            pre_rhr_status=rhr_row.status if rhr_row else None,
-            pre_tsb=round(tsb, 1),
-            pre_ctl=wellness_row.ctl,
-            pre_atl=wellness_row.atl,
-            pre_ra_pct=ra,
-            pre_sleep_score=wellness_row.sleep_score,
-        )
-
-        if workouts:
-            for w in workouts:
-                adapted = next(
-                    (a for a in ai_workouts if a.sport == w.type and "adapted" in (a.rationale or "").lower()),
-                    None,
-                )
-                TrainingLog.create(
-                    user_id=user.id,
-                    date=_dt,
-                    sport=w.type,
-                    source="adapted" if adapted else "humango",
-                    original_name=w.name,
-                    original_description=(w.description or "")[:500],
-                    original_duration_sec=w.moving_time,
-                    adapted_name=adapted.name if adapted else None,
-                    adapted_description=adapted.description if adapted else None,
-                    adapted_duration_sec=(adapted.duration_minutes * 60) if adapted else None,
-                    adaptation_reason=adapted.rationale if adapted else None,
-                    **pre_kwargs,
-                )
-        elif ai_workouts:
-            for a in ai_workouts:
-                TrainingLog.create(
-                    user_id=user.id,
-                    date=_dt,
-                    sport=a.sport,
-                    source="ai",
-                    original_name=a.name,
-                    original_duration_sec=(a.duration_minutes or 0) * 60,
-                    **pre_kwargs,
-                )
-        else:
-            TrainingLog.create(
-                user_id=user.id,
-                date=_dt,
-                source="none",
-                **pre_kwargs,
-            )
-
-        logger.info("Training log PRE recorded for user %d on %s", user.id, dt)
-
-    # --- POST: fill yesterday's outcome using today's wellness ---
-    yesterday = dt - timedelta(days=1)
-    unfilled = TrainingLog.get_unfilled_post(user_id=user.id)
-    targets = [r for r in unfilled if r.date == str(yesterday)]
-
-    if targets:
-        hrv_flatt_today = HrvAnalysis.get(user_id=user.id, dt=dt, algorithm="flatt_esco")
-        hrv_7d = hrv_flatt_today.rmssd_7d if hrv_flatt_today else 0
-        hrv_today = float(wellness_row.hrv) if wellness_row.hrv else 0
-        hrv_delta = ((hrv_today - hrv_7d) / hrv_7d * 100) if hrv_today and hrv_7d else 0.0
-        rhr_today = RhrAnalysis.get(user_id=user.id, dt=dt)
-
-        post_ra = None
-        yesterday_hrv = ActivityHrv.get_for_date(user.id, yesterday)
-        for h in yesterday_hrv:
-            if h.ra_pct is not None:
-                post_ra = h.ra_pct
-                break
-
-        for log in targets:
-            pre_score = log.pre_recovery_score or 0
-            post_score = wellness_row.recovery_score or 0
-            TrainingLog.update(
-                log.id,
-                user_id=user.id,
-                post_recovery_score=post_score,
-                post_hrv_delta_pct=round(hrv_delta, 1),
-                post_rhr_today=rhr_today.rhr_today if rhr_today else None,
-                post_sleep_score=wellness_row.sleep_score,
-                post_ra_pct=post_ra,
-                recovery_delta=round(post_score - pre_score, 1),
-            )
-
-        logger.info("Training log POST filled for user %d, yesterday=%s (%d entries)", user.id, yesterday, len(targets))
 
 
 @dramatiq.actor(queue_name="default")

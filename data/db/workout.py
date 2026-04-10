@@ -117,7 +117,13 @@ class ScheduledWorkout(Base):
 
     @classmethod
     @dual
-    def get_for_date(cls, user_id: int, dt: date, *, session: Session) -> list[ScheduledWorkout]:
+    def get_for_date(
+        cls,
+        user_id: int,
+        dt: date,
+        *,
+        session: Session,
+    ) -> list[ScheduledWorkout]:
         """Return all scheduled workouts for a given date."""
         dt_str = str(dt)
         result = session.execute(select(cls).where(cls.user_id == user_id, cls.start_date_local == dt_str))
@@ -267,7 +273,13 @@ class AiWorkout(Base):
 
     @classmethod
     @dual
-    def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> list[AiWorkout]:
+    def get_for_date(
+        cls,
+        user_id: int,
+        dt: date | str,
+        *,
+        session: Session,
+    ) -> list[AiWorkout]:
         """Fetch active AI workouts for a specific date."""
         date_str = dt if isinstance(dt, str) else dt.isoformat()
         result = session.execute(
@@ -353,7 +365,13 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
-    def create(cls, *, user_id: int, session: Session, **kwargs) -> TrainingLog:
+    def create(
+        cls,
+        *,
+        user_id: int,
+        session: Session,
+        **kwargs,
+    ) -> TrainingLog:
         """Create a training log entry with pre-context."""
         row = cls(user_id=user_id, **kwargs)
         session.add(row)
@@ -363,15 +381,34 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
-    def get_for_date(cls, dt: date | str, user_id: int, *, session: Session) -> list[TrainingLog]:
+    def get_for_date(
+        cls,
+        user_id: int,
+        dt: date | str,
+        *,
+        session: Session,
+    ) -> list[TrainingLog]:
         """Fetch training log entries for a specific date."""
         date_str = dt if isinstance(dt, str) else dt.isoformat()
-        result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str).order_by(cls.id.asc()))
+        result = session.execute(
+            select(cls)
+            .where(
+                cls.user_id == user_id,
+                cls.date == date_str,
+            )
+            .order_by(cls.id.asc())
+        )
         return list(result.scalars().all())
 
     @classmethod
     @dual
-    def delete_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> int:
+    def delete_for_date(
+        cls,
+        user_id: int,
+        dt: date | str,
+        *,
+        session: Session,
+    ) -> int:
         """Delete all training log entries for a given date. Returns deleted count."""
         date_str = dt if isinstance(dt, str) else dt.isoformat()
         result = session.execute(delete(cls).where(cls.user_id == user_id, cls.date == date_str))
@@ -380,7 +417,13 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
-    def get_range(cls, user_id: int, days_back: int = 14, *, session: Session) -> list[TrainingLog]:
+    def get_range(
+        cls,
+        user_id: int,
+        days_back: int = 14,
+        *,
+        session: Session,
+    ) -> list[TrainingLog]:
         """Fetch training log entries for the last N days."""
         from_date = str(date.today() - timedelta(days=days_back - 1))
         result = session.execute(
@@ -390,27 +433,22 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
-    def get_unfilled_actual(cls, user_id: int, *, session: Session) -> list[TrainingLog]:
+    def get_unfilled_actual(
+        cls,
+        user_id: int,
+        dt: str | date,
+        *,
+        session: Session,
+    ) -> list[TrainingLog]:
         """Fetch log entries with no actual data yet (compliance is NULL)."""
-        cutoff = str(date.today())
-        result = session.execute(
-            select(cls)
-            .where(cls.user_id == user_id, cls.compliance.is_(None), cls.date < cutoff)
-            .order_by(cls.date.asc())
-        )
-        return list(result.scalars().all())
+        cutoff = dt if isinstance(dt, str) else dt.isoformat()
 
-    @classmethod
-    @dual
-    def get_unfilled_post(cls, user_id: int, *, session: Session) -> list[TrainingLog]:
-        """Fetch log entries with actual data but no post-outcome yet."""
         result = session.execute(
             select(cls)
             .where(
                 cls.user_id == user_id,
-                cls.compliance.isnot(None),
-                cls.post_recovery_score.is_(None),
-                cls.date < str(date.today()),
+                cls.compliance.is_(None),
+                cls.date < cutoff,
             )
             .order_by(cls.date.asc())
         )
@@ -418,9 +456,43 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
-    def update(cls, log_id: int, *, user_id: int, session: Session, **kwargs) -> TrainingLog | None:
+    def get_unfilled_post(
+        cls,
+        user_id: int,
+        dt: str | date,
+        *,
+        session: Session,
+    ) -> list[TrainingLog]:
+        """Fetch log entries with actual data but no post-outcome yet."""
+        result = session.execute(
+            select(cls)
+            .where(
+                cls.user_id == user_id,
+                cls.compliance.isnot(None),
+                cls.post_recovery_score.is_(None),
+                cls.date == str(dt),
+            )
+            .order_by(cls.date.asc())
+        )
+        return list(result.scalars().all())
+
+    @classmethod
+    @dual
+    def update(
+        cls,
+        user_id: int,
+        log_id: int,
+        *,
+        session: Session,
+        **kwargs,
+    ) -> TrainingLog | None:
         """Update a training log entry with actual or post data."""
-        result = session.execute(select(cls).where(cls.id == log_id, cls.user_id == user_id))
+        result = session.execute(
+            select(cls).where(
+                cls.id == log_id,
+                cls.user_id == user_id,
+            )
+        )
         row = result.scalar_one_or_none()
         if row:
             for k, v in kwargs.items():

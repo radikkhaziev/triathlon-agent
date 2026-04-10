@@ -1,6 +1,6 @@
 from datetime import date
 
-from data.db import AiWorkout, ThresholdFreshnessDTO, User, UserDTO, WellnessPostDTO
+from data.db import ActivityDetail, AiWorkout, ThresholdFreshnessDTO, User, UserDTO, WellnessPostDTO, get_sync_session
 from data.intervals.dto import PlannedWorkoutDTO
 from data.ramp_tests import create_ramp_test
 
@@ -101,3 +101,34 @@ def detect_compliance(log, activity) -> str:
             return "followed_original"
 
     return "modified"
+
+
+def compute_max_zone_sync(activity_id: int | str, sport: str | None = None) -> str | None:
+    """Sync version: determine the zone where the athlete spent the most time."""
+    with get_sync_session() as session:
+        detail = session.get(ActivityDetail, activity_id)
+    if not detail:
+        return None
+
+    zones = None
+    if sport == "Ride" and detail.power_zone_times:
+        zones = detail.power_zone_times
+    elif sport == "Swim" and detail.pace_zone_times:
+        zones = detail.pace_zone_times
+    if not zones and detail.hr_zone_times:
+        zones = detail.hr_zone_times
+    if not zones:
+        return None
+
+    if len(zones) >= 6:
+        zone_values = zones[1:6]
+    elif len(zones) == 5:
+        zone_values = zones[:5]
+    else:
+        return None
+
+    if all(v == 0 for v in zone_values):
+        return None
+
+    max_idx = min(range(len(zone_values)), key=lambda i: (-zone_values[i], i))
+    return f"Z{max_idx + 1}"
