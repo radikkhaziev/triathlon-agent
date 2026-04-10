@@ -16,5 +16,6 @@ from .reports import (  # noqa: F401
     actor_echo,
     actor_user_scheduled_workouts,
 )
+from .training_log import actor_fill_training_log, actor_fill_training_log_post  # noqa: F401
 from .wellness import actor_user_wellness  # noqa: F401
 from .workout import actor_push_workout  # noqa: F401

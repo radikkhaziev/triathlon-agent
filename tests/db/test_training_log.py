@@ -23,7 +23,7 @@ class TestTrainingLogCRUD:
         assert row.source == "humango"
         assert row.pre_recovery_score == 78.0
 
-        fetched = await TrainingLog.get_for_date("2026-04-01", user_id=1)
+        fetched = await TrainingLog.get_for_date(1, "2026-04-01")
         assert len(fetched) >= 1
         assert any(r.original_name == "Z2 Endurance" for r in fetched)
 
@@ -83,7 +83,7 @@ class TestTrainingLogCRUD:
             pre_recovery_category="moderate",
         )
 
-        unfilled = await TrainingLog.get_unfilled_actual(user_id=1)
+        unfilled = await TrainingLog.get_unfilled_actual(user_id=1, dt="2026-04-01")
         assert any(r.id == row.id for r in unfilled)
 
     async def test_update_actual(self, _test_db):
@@ -97,8 +97,8 @@ class TestTrainingLogCRUD:
         )
 
         updated = await TrainingLog.update(
+            1,
             row.id,
-            user_id=1,
             actual_activity_id="i12345",
             actual_sport="Ride",
             actual_duration_sec=3600,
@@ -119,9 +119,9 @@ class TestTrainingLogCRUD:
             pre_recovery_score=55.0,
             pre_recovery_category="moderate",
         )
-        await TrainingLog.update(row.id, user_id=1, compliance="followed_adapted")
+        await TrainingLog.update(1, row.id, compliance="followed_adapted")
 
-        unfilled = await TrainingLog.get_unfilled_post(user_id=1)
+        unfilled = await TrainingLog.get_unfilled_post(user_id=1, dt=past_date)
         assert any(r.id == row.id for r in unfilled)
 
     async def test_update_post(self, _test_db):
@@ -133,11 +133,11 @@ class TestTrainingLogCRUD:
             pre_recovery_score=70.0,
             pre_recovery_category="good",
         )
-        await TrainingLog.update(row.id, user_id=1, compliance="followed_original")
+        await TrainingLog.update(1, row.id, compliance="followed_original")
 
         updated = await TrainingLog.update(
+            1,
             row.id,
-            user_id=1,
             post_recovery_score=75.0,
             post_hrv_delta_pct=3.2,
             post_sleep_score=82.0,

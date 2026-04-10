@@ -13,7 +13,7 @@ from fitparse import FitFile
 from pydantic import validate_call
 from sqlalchemy import select
 
-from data.db import Activity, ActivityDetail, ActivityHrv, PaBaseline, TrainingLog, UserDTO, get_sync_session
+from data.db import Activity, ActivityDetail, ActivityHrv, PaBaseline, UserDTO, get_sync_session
 from data.hrv_activity import (
     calculate_dfa_timeseries,
     calculate_durability_da,
@@ -27,7 +27,6 @@ from data.utils import HRV_ELIGIBLE_TYPES
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO
 from tasks.formatter import build_post_activity_message
 from tasks.tools import TelegramTool
-from tasks.utils import detect_compliance
 
 from .common import actor_after_activity_update
 
@@ -396,77 +395,3 @@ def actor_fetch_user_activities(
 
     g = group([_actor_update_activity_details.message(user=user, activity_id=aid, force=force) for aid in activity_ids])
     g.run()
-
-    _actor_fill_training_log_actual.send(user=user)
-
-
-def _compute_max_zone_sync(activity_id: int | str, sport: str | None = None) -> str | None:
-    """Sync version: determine the zone where the athlete spent the most time."""
-    with get_sync_session() as session:
-        detail = session.get(ActivityDetail, activity_id)
-    if not detail:
-        return None
-
-    zones = None
-    if sport == "Ride" and detail.power_zone_times:
-        zones = detail.power_zone_times
-    elif sport == "Swim" and detail.pace_zone_times:
-        zones = detail.pace_zone_times
-    if not zones and detail.hr_zone_times:
-        zones = detail.hr_zone_times
-    if not zones:
-        return None
-
-    if len(zones) >= 6:
-        zone_values = zones[1:6]
-    elif len(zones) == 5:
-        zone_values = zones[:5]
-    else:
-        return None
-
-    if all(v == 0 for v in zone_values):
-        return None
-
-    max_idx = min(range(len(zone_values)), key=lambda i: (-zone_values[i], i))
-    return f"Z{max_idx + 1}"
-
-
-@dramatiq.actor(queue_name="default")
-@validate_call
-def _actor_fill_training_log_actual(user: UserDTO):
-    """Fill actual workout data for training_log entries that have no compliance yet."""
-
-    unfilled = TrainingLog.get_unfilled_actual(user_id=user.id)
-    if not unfilled:
-        return
-
-    filled_count = 0
-    for log in unfilled:
-        activities = Activity.get_for_date(user.id, log.date)
-        matched = next(
-            (a for a in activities if a.type == log.sport),
-            None,
-        )
-
-        if not matched:
-            TrainingLog.update(log.id, user_id=user.id, compliance="skipped")
-            filled_count += 1
-            continue
-
-        compliance = detect_compliance(log, matched)
-        max_zone = _compute_max_zone_sync(matched.id, matched.type)
-        TrainingLog.update(
-            log.id,
-            user_id=user.id,
-            actual_activity_id=matched.id,
-            actual_sport=matched.type,
-            actual_duration_sec=matched.moving_time,
-            actual_avg_hr=matched.average_hr,
-            actual_tss=matched.icu_training_load,
-            actual_max_zone_time=max_zone,
-            compliance=compliance,
-        )
-        filled_count += 1
-
-    if filled_count:
-        logger.info("Training log ACTUAL filled for user %d: %d entries", user.id, filled_count)

@@ -12,6 +12,8 @@ from data.db import Activity, AthleteSettings, AthleteThresholdsDTO, UserDTO, We
 from data.metrics import calculate_banister_for_date, calculate_sport_ctl
 from tasks.dto import DateDTO
 
+from .training_log import actor_fill_training_log, actor_fill_training_log_post
+
 logger = logging.getLogger(__name__)
 
 
@@ -114,6 +116,8 @@ def actor_after_activity_update(
         [
             _actor_enrich_wellness_sport_info.message(user=user, dt=dt),
             _actor_update_banister_ess.message(user=user, dt=dt),
+            actor_fill_training_log.message(user=user, dt=dt),
+            actor_fill_training_log_post.message(user=user, dt=dt),
         ]
     )
     g.run()

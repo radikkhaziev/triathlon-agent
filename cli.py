@@ -4,8 +4,6 @@ import re
 from calendar import monthrange
 from datetime import date, timedelta
 
-from dramatiq import group
-
 from config import settings
 from data.db import User, Wellness, get_session
 from data.db.dto import UserDTO
@@ -31,15 +29,15 @@ def main() -> None:
         help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)",
     )
 
-    p_back = sub.add_parser("backfill", help="Backfill wellness + activities day by day")
-    p_back.add_argument("user_id", type=int)
-    p_back.add_argument(
+    p_sa = sub.add_parser("sync-activities", help="Force re-sync activities day by day")
+    p_sa.add_argument("user_id", type=int)
+    p_sa.add_argument(
         "period",
         nargs="?",
         default=None,
         help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)",
     )
-    p_back.add_argument("--force", action="store_true", help="Force re-process even if data unchanged")
+    p_sa.add_argument("--force", action="store_true", help="Force re-process even if data unchanged")
 
     args = parser.parse_args()
 
@@ -49,8 +47,8 @@ def main() -> None:
         _sync_settings(args.user_id)
     elif args.command == "sync-wellness":
         _sync_wellness(args.user_id, args.period)
-    elif args.command == "backfill":
-        _backfill(args.user_id, args.period, force=args.force)
+    elif args.command == "sync-activities":
+        _sync_activities(args.user_id, args.period, force=args.force)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -123,7 +121,8 @@ def _sync_wellness(user_id: int, period: str | None) -> None:
     print(f"Queued: {len(days)} days (wellness+HRV+RHR+recovery, {delay_per_day_ms // 1000}s apart)")
 
 
-def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
+def _sync_activities(user_id: int, period: str | None, force: bool = False) -> None:
+    """Force re-sync activities day by day sequentially."""
     user = _resolve_user(user_id)
     start, end = _parse_period(period)
 
@@ -134,28 +133,16 @@ def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
         current += timedelta(days=1)
 
     mode = " (FORCE)" if force else ""
-    print(f"Backfill user {user_id}: {start} → {end} ({len(days)} days){mode}")
+    print(f"sync-activities user {user_id}: {start} → {end} ({len(days)} days{mode})")
 
-    # Per day: activities first → wellness after (completion callback).
-    # Activities must finish before wellness so sport_ctl sees activities in DB.
     delay_per_day_ms = 20_000
     for i, day in enumerate(days):
-        dt = day.isoformat()
-        delay = i * delay_per_day_ms
-        g = group(
-            [
-                actor_fetch_user_activities.message_with_options(
-                    kwargs={"user": user, "oldest": dt, "newest": dt, "force": force},
-                    delay=delay,
-                ),
-            ]
+        actor_fetch_user_activities.send_with_options(
+            kwargs={"user": user, "oldest": day.isoformat(), "newest": day.isoformat(), "force": force},
+            delay=i * delay_per_day_ms,
         )
-        g.add_completion_callback(
-            actor_user_wellness.message(user=user, dt=dt, force=force),
-        )
-        g.run()
 
-    print(f"Queued: {len(days)} days (activities → wellness per day, {delay_per_day_ms // 1000}s apart)")
+    print(f"Queued: {len(days)} days (activities, {delay_per_day_ms // 1000}s apart)")
 
 
 def _shell() -> None:
