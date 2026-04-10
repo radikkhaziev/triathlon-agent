@@ -113,14 +113,14 @@ def _sync_wellness(user_id: int, period: str | None) -> None:
 
     print(f"sync-wellness user {user_id}: {start} → {end} ({len(days)} days, force=True)")
 
-    delay_per_day_ms = 60_000
+    delay_per_day_ms = 20_000
     for i, day in enumerate(days):
         actor_user_wellness.send_with_options(
             kwargs={"user": user, "dt": day.isoformat(), "force": True},
             delay=i * delay_per_day_ms,
         )
 
-    print(f"Queued: {len(days)} days (wellness+HRV+RHR+recovery, 60s apart)")
+    print(f"Queued: {len(days)} days (wellness+HRV+RHR+recovery, {delay_per_day_ms // 1000}s apart)")
 
 
 def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
@@ -138,7 +138,7 @@ def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
 
     # Per day: activities first → wellness after (completion callback).
     # Activities must finish before wellness so sport_ctl sees activities in DB.
-    delay_per_day_ms = 60_000  # 1 min between days
+    delay_per_day_ms = 20_000
     for i, day in enumerate(days):
         dt = day.isoformat()
         delay = i * delay_per_day_ms
@@ -155,7 +155,7 @@ def _backfill(user_id: int, period: str | None, force: bool = False) -> None:
         )
         g.run()
 
-    print(f"Queued: {len(days)} days (activities → wellness per day, 60s apart)")
+    print(f"Queued: {len(days)} days (activities → wellness per day, {delay_per_day_ms // 1000}s apart)")
 
 
 def _shell() -> None:

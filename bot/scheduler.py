@@ -70,8 +70,8 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_wellness_and_reports_job,
         trigger=OrTrigger(
             [
-                CronTrigger(hour="5-8", minute="*/10"),
-                CronTrigger(hour="9-22", minute="*/30"),
+                CronTrigger(hour="4-8", minute="*/10", timezone=settings.TIMEZONE),
+                CronTrigger(hour="9-22", minute="*/30", timezone=settings.TIMEZONE),
             ]
         ),
         id="scheduler_wellness_and_reports_job",

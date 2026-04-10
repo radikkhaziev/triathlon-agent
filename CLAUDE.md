@@ -374,7 +374,7 @@ python -m cli backfill <user_id> [period] [--force]   # backfill wellness + acti
 | Month                     | `backfill 2 2025-11`| 2025-11-01 → 2025-11-30      |
 | Date range                | `backfill 2 2025-01-01:2025-03-31` | Explicit range    |
 
-Backfill dispatches dramatiq groups per day (wellness + activities in parallel), with 60s delay between days. Requires a running worker (`dramatiq tasks.actors`) and Redis.
+Backfill dispatches dramatiq groups per day (wellness + activities in parallel), with 20s delay between days. Requires a running worker (`dramatiq tasks.actors`) and Redis.
 
 ---
 
@@ -487,7 +487,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 
 ## Key Implementation Notes
 
-- **Intervals.icu API** — wellness every 10 min (5-23h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00
+- **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00
 - **Both HRV algorithms** always computed; `HRV_ALGORITHM` selects primary
 - **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls
 - **All timestamps** UTC in DB, local timezone for display
