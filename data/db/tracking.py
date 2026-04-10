@@ -91,6 +91,92 @@ class MoodCheckin(Base):
         return list(result.scalars().all())
 
 
+class ApiUsageDaily(Base):
+    """Daily API token usage per user. One row per user per date."""
+
+    __tablename__ = "api_usage_daily"
+    __table_args__ = (UniqueConstraint("user_id", "date", name="uq_api_usage_daily_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    date: Mapped[str] = mapped_column(String, nullable=False)  # "YYYY-MM-DD"
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_creation_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # --- CRUD ---
+
+    @classmethod
+    @with_session
+    async def increment(
+        cls,
+        user_id: int,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        *,
+        session: AsyncSession,
+    ) -> ApiUsageDaily:
+        """Atomic upsert: increment daily token counters."""
+        dt = str(_dt.date.today())
+        stmt = (
+            insert(cls)
+            .values(
+                user_id=user_id,
+                date=dt,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                request_count=1,
+            )
+            .on_conflict_do_update(
+                constraint="uq_api_usage_daily_user_date",
+                set_={
+                    "input_tokens": cls.input_tokens + input_tokens,
+                    "output_tokens": cls.output_tokens + output_tokens,
+                    "cache_read_tokens": cls.cache_read_tokens + cache_read_tokens,
+                    "cache_creation_tokens": cls.cache_creation_tokens + cache_creation_tokens,
+                    "request_count": cls.request_count + 1,
+                    "updated_at": datetime.now(timezone.utc),
+                },
+            )
+            .returning(cls)
+        )
+        row = (await session.execute(stmt)).scalars().one()
+        await session.commit()
+        return row
+
+    @classmethod
+    @with_session
+    async def get_range(
+        cls,
+        user_id: int,
+        target_date: str | None = None,
+        days_back: int = 30,
+        *,
+        session: AsyncSession,
+    ) -> list[ApiUsageDaily]:
+        """Get daily usage for a date range."""
+        ref = _dt.date.fromisoformat(target_date) if target_date else _dt.date.today()
+        from_date = ref - timedelta(days=days_back - 1)
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.date >= str(from_date), cls.date <= str(ref))
+            .order_by(cls.date.asc())
+        )
+        return list(result.scalars().all())
+
+
 class IqosDaily(Base):
     """Daily IQOS stick counter. One row per date."""
 

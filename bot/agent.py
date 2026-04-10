@@ -13,6 +13,7 @@ import sentry_sdk
 from bot.prompts import get_system_prompt_chat
 from bot.tools import MCPClient
 from config import settings
+from data.db import ApiUsageDaily
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,13 @@ class ClaudeAgent:
         tools: list[dict],
         max_tokens: int = 4096,
         max_iterations: int = 10,
-    ) -> str:
-        """Run Claude API with tool-use loop. Returns final text response.
+    ) -> tuple[str, dict]:
+        """Run Claude API with tool-use loop. Returns (text, usage_totals).
 
         Tool calls are proxied to MCP server via HTTP.
         """
+        total_usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0}
+
         response = await self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
@@ -45,6 +48,7 @@ class ClaudeAgent:
             messages=messages,
             tools=tools,
         )
+        self._accumulate_usage(total_usage, response)
 
         iterations = 0
         while response.stop_reason == "tool_use" and iterations < max_iterations:
@@ -70,10 +74,18 @@ class ClaudeAgent:
                 messages=messages,
                 tools=tools,
             )
+            self._accumulate_usage(total_usage, response)
             iterations += 1
 
         text_blocks = [b.text for b in response.content if b.type == "text"]
-        return "\n".join(text_blocks)
+        return "\n".join(text_blocks), total_usage
+
+    @staticmethod
+    def _accumulate_usage(totals: dict, response) -> None:
+        totals["input_tokens"] += response.usage.input_tokens
+        totals["output_tokens"] += response.usage.output_tokens
+        totals["cache_read_tokens"] += getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        totals["cache_creation_tokens"] += getattr(response.usage, "cache_creation_input_tokens", 0) or 0
 
     async def chat(
         self,
@@ -118,5 +130,11 @@ class ClaudeAgent:
         else:
             messages = [{"role": "user", "content": user_message}]
 
-        result = await self._run_tool_use_loop(mcp, system, messages, tools, max_tokens=2048)
-        return result or "Не удалось обработать запрос."
+        text, usage = await self._run_tool_use_loop(mcp, system, messages, tools, max_tokens=2048)
+
+        try:
+            await ApiUsageDaily.increment(user_id=user_id, **usage)
+        except Exception:
+            logger.warning("Failed to track token usage for user %s", user_id, exc_info=True)
+
+        return text or "Не удалось обработать запрос."
