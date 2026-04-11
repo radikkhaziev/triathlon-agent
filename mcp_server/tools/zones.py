@@ -48,12 +48,7 @@ def _build_power_zones(ftp: int) -> list[dict]:
 
 @mcp.tool()
 async def get_zones() -> dict:
-    """Get HR, power, and pace zone configuration with boundaries.
-
-    Returns zone boundaries for Run (HR), Bike (HR + Power), and Swim (pace).
-    Includes LTHR, FTP, max_hr, CSS values. Useful for interpreting workout
-    zone distribution and recommending zone updates after threshold drift.
-    """
+    """Get HR, power, and pace zone boundaries for Run, Bike, and Swim."""
     user_id = get_current_user_id()
     t: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
 

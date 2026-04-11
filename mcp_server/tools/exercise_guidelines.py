@@ -60,9 +60,5 @@ GUIDELINES = """
 
 @mcp.tool()
 async def get_animation_guidelines() -> str:
-    """Get guidelines for creating exercise card SVG animations.
-
-    Call this before creating exercise cards to get the color palette,
-    stick figure anatomy coordinates, animation rules, and parameter format.
-    """
+    """Get color palette, stick figure anatomy, and animation rules for exercise card creation."""
     return GUIDELINES

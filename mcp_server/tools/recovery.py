@@ -9,15 +9,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_recovery(date: str) -> dict:
-    """Get composite recovery score and training recommendation.
-
-    Recovery score (0-100) combines: RMSSD 35%, Banister 25%, RHR 20%, Sleep 20%.
-    Categories: excellent >85, good 70-85, moderate 40-70, low <40.
-    Recommendations: zone2_ok, zone1_long, zone1_short, skip.
-
-    Args:
-        date: Date in YYYY-MM-DD format
-    """
+    """Get composite recovery score (0-100), category, and training recommendation."""
     user_id = get_current_user_id()
     async with get_session() as session:
         result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))

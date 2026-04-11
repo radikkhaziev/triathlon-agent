@@ -11,19 +11,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_activities(target_date: str = "", days_back: int = 7) -> dict:
-    """Get completed activities from Intervals.icu.
-
-    Returns activities for a specific date or a date range looking backwards.
-    Includes sport type, training load (TSS), duration, and whether DFA alpha 1
-    analysis is available (has_hrv_analysis, dfa_a1_mean).
-
-    Note: Training load values (TSS/hrTSS/ssTSS) come from Intervals.icu
-    and are calibrated for its impulse-response model, not TrainingPeaks.
-
-    Args:
-        target_date: Date in YYYY-MM-DD format. Default: today.
-        days_back: Number of days to look back (0 = single day, 7 = last week, 30 = last month).
-    """
+    """Get completed activities with sport type, training load, duration, and DFA a1 availability."""
     end = date.fromisoformat(target_date) if target_date else date.today()
     start = end - timedelta(days=days_back)
 

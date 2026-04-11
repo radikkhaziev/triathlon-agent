@@ -11,16 +11,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_scheduled_workouts(target_date: str = "", days_ahead: int = 0) -> dict:
-    """Get planned workouts from Intervals.icu calendar.
-
-    Returns scheduled workouts for a specific date or a date range.
-    Includes workout name, sport type, duration, distance, and full description
-    with interval structure (zones, power targets) from HumanGo.
-
-    Args:
-        target_date: Date in YYYY-MM-DD format. Default: today.
-        days_ahead: Number of days ahead to include (0 = single day, 7 = week, 14 = two weeks).
-    """
+    """Get planned workouts from Intervals.icu calendar with name, sport, duration, and description."""
     start = date.fromisoformat(target_date) if target_date else date.today()
     end = start + timedelta(days=days_ahead)
 

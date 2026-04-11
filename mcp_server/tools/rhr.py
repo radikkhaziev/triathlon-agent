@@ -7,15 +7,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_rhr_analysis(date: str) -> dict:
-    """Get resting heart rate analysis for a given date.
-
-    Returns RHR status with 7-day, 30-day, and 60-day baselines.
-    Bounds are ±0.5 SD of 30-day mean.
-    Inverted vs HRV: elevated RHR = under-recovered (red), low RHR = well-recovered (green).
-
-    Args:
-        date: Date in YYYY-MM-DD format
-    """
+    """Get RHR status, baselines (7d/30d/60d), bounds, and trend. Inverted: high RHR = red."""
     user_id = get_current_user_id()
     async with get_session() as session:
         row = await session.get(RhrAnalysis, (user_id, date))

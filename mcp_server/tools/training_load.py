@@ -11,15 +11,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_training_load(date: str) -> dict:
-    """Get CTL/ATL/TSB and per-sport CTL for a given date.
-
-    All values come from Intervals.icu (impulse-response model, tau_CTL=42d, tau_ATL=7d).
-    Thresholds are calibrated for Intervals.icu, NOT TrainingPeaks.
-    TSB zones: >+10 under-training, -10..+10 optimal, -10..-25 productive overreach, <-25 overtraining risk.
-
-    Args:
-        date: Date in YYYY-MM-DD format
-    """
+    """Get CTL/ATL/TSB, ramp rate, and per-sport CTL from Intervals.icu."""
     user_id = get_current_user_id()
     async with get_session() as session:
         result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))

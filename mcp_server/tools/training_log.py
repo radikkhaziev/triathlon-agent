@@ -7,15 +7,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
-    """Get training log with pre-workout context, actual data, and post-outcome.
-
-    Each entry shows: what was planned (HumanGo/AI/adapted), athlete state before
-    the workout, what was actually done, compliance, and recovery outcome next day.
-
-    Args:
-        target_date: Not used yet (reserved). Default: today.
-        days_back: Number of days to look back (default: 14).
-    """
+    """Get training log: planned vs actual, pre-workout state, compliance, and recovery outcome."""
     user_id = get_current_user_id()
     rows = await TrainingLog.get_range(user_id=user_id, days_back=days_back)
 
@@ -70,17 +62,7 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
 
 @mcp.tool()
 async def get_personal_patterns(days_back: int = 90) -> dict:
-    """Compute personal recovery and compliance patterns from training_log.
-
-    Analyzes how the athlete responds to different training loads at different
-    recovery levels. Requires 30+ entries for meaningful patterns.
-
-    Returns patterns for: recovery response by zone, compliance rates,
-    HRV sensitivity, and average recovery deltas.
-
-    Args:
-        days_back: Days of history to analyze (default: 90).
-    """
+    """Compute personal recovery and compliance patterns. Requires 30+ training log entries."""
     user_id = get_current_user_id()
     rows = await TrainingLog.get_range(user_id=user_id, days_back=days_back)
 

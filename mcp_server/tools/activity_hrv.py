@@ -13,22 +13,7 @@ _SPORT_FILTER = {"bike": "Ride", "run": "Run"}
 
 @mcp.tool()
 async def get_activity_hrv(activity_id: str) -> dict:
-    """Get DFA alpha 1 analysis for a specific activity.
-
-    Returns DFA a1 summary (mean, warmup), quality metrics (artifact_pct, rr_count),
-    detected thresholds (HRVT1/HRVT2 with HR/power/pace), Readiness (Ra %),
-    Durability (Da %), and processing status.
-
-    Only available for bike/run activities processed with chest strap HRM (BLE).
-    Swim activities have no RR data.
-
-    Note: Thresholds (HRVT1/HRVT2) are detected from DFA a1 vs HR relationship
-    during activities with progressive intensity increase. HRVT1 (a1=0.75) corresponds
-    to aerobic threshold, HRVT2 (a1=0.50) to anaerobic threshold.
-
-    Args:
-        activity_id: Intervals.icu activity ID (e.g. "i12345")
-    """
+    """Get DFA a1 analysis: quality, thresholds (HRVT1/HRVT2), Readiness (Ra), Durability (Da)."""
     user_id = get_current_user_id()
     async with get_session() as session:
         activity = await session.get(Activity, activity_id)
@@ -93,20 +78,7 @@ async def get_activity_hrv(activity_id: str) -> dict:
 
 @mcp.tool()
 async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
-    """Get HRVT1/HRVT2 threshold trend over recent activities.
-
-    Tracks how aerobic (HRVT1, DFA a1=0.75) and anaerobic (HRVT2, DFA a1=0.50)
-    thresholds change over time. Useful for monitoring fitness progression —
-    rising HRVT1 HR means improved aerobic capacity.
-
-    Note: Thresholds are only detected from activities with progressive intensity
-    (ramp-style or gradually increasing effort). Steady-state activities don't
-    produce threshold data.
-
-    Args:
-        sport: Filter by sport: "bike" or "run". Empty = all.
-        days_back: How many days to look back (default 90).
-    """
+    """Get HRVT1/HRVT2 threshold trend over time. Tracks aerobic/anaerobic threshold progression."""
     cutoff = str(date.today() - timedelta(days=days_back))
 
     user_id = get_current_user_id()
@@ -159,18 +131,7 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
 
 @mcp.tool()
 async def get_readiness_history(sport: str = "", days_back: int = 30) -> dict:
-    """Get Readiness (Ra) trend over recent activities.
-
-    Ra compares warmup power/pace at a fixed DFA a1 level against 14-day baseline.
-    Ra > +5%: excellent readiness, -5..+5%: normal, < -5%: under-recovered.
-
-    This is a pre-workout readiness indicator — if Ra is consistently negative,
-    the athlete may be accumulating fatigue and needs more recovery.
-
-    Args:
-        sport: Filter by sport: "bike" or "run". Empty = all.
-        days_back: How many days to look back (default 30).
-    """
+    """Get Readiness (Ra %) trend over recent activities. Pre-workout fatigue indicator."""
     cutoff = str(date.today() - timedelta(days=days_back))
 
     user_id = get_current_user_id()

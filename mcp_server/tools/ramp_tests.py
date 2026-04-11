@@ -13,14 +13,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_threshold_freshness(sport: str = "") -> dict:
-    """Check how fresh HRVT1/HRVT2 thresholds are.
-
-    Returns days since last valid DFA threshold test, last measured values,
-    and recent test history. Thresholds older than 21 days are considered stale.
-
-    Args:
-        sport: Filter by sport ("Ride" or "Run"). Empty = all sports.
-    """
+    """Check HRVT1/HRVT2 threshold freshness: days since last test, values, and drift alerts."""
     user_id = get_current_user_id()
 
     freshness, drift = await asyncio.gather(
@@ -40,17 +33,7 @@ async def create_ramp_test_tool(
     sport: str,
     target_date: str = "",
 ) -> str:
-    """Create a ramp test workout in Intervals.icu calendar.
-
-    Ramp tests are progressive step-based workouts used to determine
-    HRVT1/HRVT2 thresholds via DFA alpha 1 analysis. Chest strap required.
-
-    Only Ride and Run are supported. Each step is 5 minutes for DFA stabilization.
-
-    Args:
-        sport: "Ride" or "Run"
-        target_date: Date in YYYY-MM-DD format. Default: today.
-    """
+    """Create a ramp test workout in Intervals.icu for HRVT1/HRVT2 threshold detection."""
     user_id = get_current_user_id()
 
     if sport not in ("Ride", "Run"):
