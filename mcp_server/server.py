@@ -11,6 +11,7 @@ import mcp_server.tools.activity_details  # noqa: F401
 import mcp_server.tools.activity_hrv  # noqa: F401
 import mcp_server.tools.ai_workouts  # noqa: F401
 import mcp_server.tools.compliance  # noqa: F401
+import mcp_server.tools.ctl_prediction  # noqa: F401
 import mcp_server.tools.exercise_guidelines  # noqa: F401
 import mcp_server.tools.garmin  # noqa: F401
 import mcp_server.tools.github  # noqa: F401
@@ -25,6 +26,7 @@ import mcp_server.tools.rhr  # noqa: F401
 import mcp_server.tools.scheduled_workouts  # noqa: F401
 import mcp_server.tools.training_load  # noqa: F401
 import mcp_server.tools.training_log  # noqa: F401
+import mcp_server.tools.update_zones  # noqa: F401
 import mcp_server.tools.usage  # noqa: F401
 import mcp_server.tools.weight  # noqa: F401
 

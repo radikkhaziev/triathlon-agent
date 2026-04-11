@@ -49,12 +49,14 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "get_zones",
         "get_weight_trend",
         "get_workout_compliance",
+        "predict_ctl",
     ],
     "admin": [
         "create_github_issue",
         "get_github_issues",
         "get_api_usage",
         "create_ramp_test_tool",
+        "update_zones",
     ],
 }
 
@@ -105,6 +107,8 @@ KEYWORD_TO_GROUPS: dict[str, list[str]] = {
     "compliance": ["analysis"],
     "выполнен": ["analysis"],
     "dfa": ["analysis"],
+    "ctl": ["analysis"],
+    "обнови": ["analysis", "admin"],
     "паттерн": ["analysis"],
     "log": ["analysis"],
     "лог": ["analysis"],
