@@ -31,7 +31,7 @@ async def get_workout_compliance(activity_id: str) -> dict:
         act_moving_time = activity.moving_time
         act_avg_hr = activity.average_hr
         act_tss = activity.icu_training_load
-        det_avg_power = detail.average_power if detail else None
+        det_avg_power = detail.avg_power if detail else None
 
     workouts = await ScheduledWorkout.get_for_date(user_id, act_date)
     matched = next((w for w in workouts if w.type == act_type), None)

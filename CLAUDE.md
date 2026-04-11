@@ -46,6 +46,7 @@ triathlon-agent/
 │   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
 │   ├── tools.py                     # MCPClient — async MCP Streamable HTTP client (list_tools, call_tool)
 │   ├── prompts.py                   # system prompts for chat + morning analysis
+│   ├── tool_filter.py               # keyword → tool group filtering for chat (reduces token footprint)
 │   ├── scheduler.py                 # APScheduler cron jobs → dramatiq group dispatch
 │   ├── decorator.py                 # @athlete_required — resolves User from Telegram update
 │   └── formatter.py                 # report formatting (re-exports from tasks.formatter)
@@ -508,7 +509,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 
 - **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00
 - **Both HRV algorithms** always computed; `HRV_ALGORITHM` selects primary
-- **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls
+- **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls. Prompt caching (`cache_control: ephemeral`) on system prompt. Tool filtering: 6 groups, keyword-based, core+tracking always included (~75% token reduction for simple messages)
 - **All timestamps** UTC in DB, local timezone for display
 - **Telegram bot** — polling (local dev, `TELEGRAM_WEBHOOK_URL` empty) or webhook (production)
 - **Frontend** — React SPA via Vite; dev proxies /api to FastAPI; production serves from webapp/dist/

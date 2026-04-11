@@ -83,10 +83,10 @@ def _make_activity(
     return a
 
 
-def _make_detail(activity_id: str = "A1", average_power: float | None = 210.0) -> MagicMock:
+def _make_detail(activity_id: str = "A1", avg_power: float | None = 210.0) -> MagicMock:
     d = MagicMock()
     d.activity_id = activity_id
-    d.average_power = average_power
+    d.avg_power = avg_power
     return d
 
 
@@ -443,7 +443,7 @@ class TestGetWorkoutComplianceUnplanned:
         from mcp_server.tools.compliance import get_workout_compliance
 
         activity = _make_activity(activity_id="A1", activity_type="Ride")
-        detail = _make_detail(activity_id="A1", average_power=200.0)
+        detail = _make_detail(activity_id="A1", avg_power=200.0)
 
         with (
             patch(f"{_MODULE_C}.get_current_user_id", return_value=1),
