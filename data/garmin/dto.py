@@ -1,6 +1,8 @@
-"""Pydantic DTOs for Garmin GDPR export data (Phase 1a)."""
+"""Pydantic DTOs for Garmin GDPR export data."""
 
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from pydantic import BaseModel
 
@@ -241,7 +243,144 @@ class GarminHealthStatusDTO(BaseModel):
         )
 
 
+class GarminTrainingLoadDTO(BaseModel):
+    calendar_date: str
+
+    acute_load: float | None = None
+    chronic_load: float | None = None
+    acwr: float | None = None
+    acwr_status: str | None = None
+
+    @classmethod
+    def from_garmin(cls, raw: dict) -> GarminTrainingLoadDTO:
+        return cls(
+            calendar_date=_ms_to_date(raw["calendarDate"]),
+            acute_load=raw.get("dailyTrainingLoadAcute"),
+            chronic_load=raw.get("dailyTrainingLoadChronic"),
+            acwr=raw.get("dailyAcuteChronicWorkloadRatio"),
+            acwr_status=raw.get("acwrStatus"),
+        )
+
+
+class GarminFitnessMetricsDTO(BaseModel):
+    calendar_date: str
+
+    vo2max_running: float | None = None
+    vo2max_cycling: float | None = None
+    endurance_score: float | None = None
+    max_met: float | None = None
+    fitness_age: int | None = None
+    source_activity_id: str | None = None
+
+    @classmethod
+    def from_vo2max(cls, raw: dict) -> GarminFitnessMetricsDTO:
+        sport = raw.get("sport", "")
+        return cls(
+            calendar_date=raw["calendarDate"],
+            vo2max_running=raw.get("vo2MaxValue") if "RUNNING" in sport else None,
+            vo2max_cycling=raw.get("vo2MaxValue") if "CYCLING" in sport else None,
+            source_activity_id=str(raw["activityId"]) if raw.get("activityId") else None,
+        )
+
+    @classmethod
+    def from_endurance(cls, raw: dict) -> GarminFitnessMetricsDTO:
+        return cls(
+            calendar_date=_ms_to_date(raw["calendarDate"]),
+            endurance_score=raw.get("overallScore"),
+        )
+
+    @classmethod
+    def from_max_met(cls, raw: dict) -> GarminFitnessMetricsDTO:
+        return cls(
+            calendar_date=raw["calendarDate"],
+            max_met=raw.get("maxMet"),
+            fitness_age=raw.get("fitnessAge"),
+        )
+
+
+class GarminRacePredictionsDTO(BaseModel):
+    calendar_date: str
+
+    prediction_5k_secs: int | None = None
+    prediction_10k_secs: int | None = None
+    prediction_half_secs: int | None = None
+    prediction_marathon_secs: int | None = None
+
+    @classmethod
+    def from_garmin(cls, raw: dict) -> GarminRacePredictionsDTO:
+        return cls(
+            calendar_date=raw["calendarDate"],
+            prediction_5k_secs=raw.get("raceTime5K"),
+            prediction_10k_secs=raw.get("raceTime10K"),
+            prediction_half_secs=raw.get("raceTimeHalf"),
+            prediction_marathon_secs=raw.get("raceTimeMarathon"),
+        )
+
+
+class GarminBioMetricsDTO(BaseModel):
+    calendar_date: str
+
+    weight_kg: float | None = None
+    height_cm: float | None = None
+    lactate_threshold_hr: int | None = None
+    lactate_threshold_speed: float | None = None
+
+    @classmethod
+    def from_garmin(cls, raw: dict) -> GarminBioMetricsDTO | None:
+        meta = raw.get("metaData") or {}
+        cal_date = meta.get("calendarDate", "")[:10]
+        if not cal_date:
+            return None
+
+        weight_raw = raw.get("weight") or {}
+        weight_g = weight_raw.get("weight")
+        weight_kg = round(weight_g / 1000, 1) if weight_g else None
+
+        height_raw = raw.get("height")
+        height_cm = height_raw.get("height") if isinstance(height_raw, dict) else height_raw
+        if height_cm and height_cm < 3.0:
+            height_cm = round(height_cm * 100, 1)
+
+        lt = raw.get("lactateThreshold") or {}
+        lt_hr = lt.get("heartRate")
+        lt_speed = lt.get("speed")
+
+        if not any([weight_kg, height_cm, lt_hr, lt_speed]):
+            return None
+
+        return cls(
+            calendar_date=cal_date,
+            weight_kg=weight_kg,
+            height_cm=height_cm,
+            lactate_threshold_hr=lt_hr,
+            lactate_threshold_speed=lt_speed,
+        )
+
+
+class GarminAbnormalHrEventDTO(BaseModel):
+    timestamp_gmt: str
+    calendar_date: str
+    hr_value: int | None = None
+    threshold_value: int | None = None
+
+    @classmethod
+    def from_garmin(cls, raw: dict) -> GarminAbnormalHrEventDTO:
+        return cls(
+            timestamp_gmt=raw["abnormalHrEventGMT"],
+            calendar_date=raw.get("calendarDate", raw["abnormalHrEventGMT"][:10]),
+            hr_value=raw.get("abnormalHrValue"),
+            threshold_value=raw.get("abnormalHrThresholdValue"),
+        )
+
+
 def _int_or_none(v) -> int | None:
     if v is None:
         return None
     return int(v)
+
+
+def _ms_to_date(v: int | str) -> str:
+    """Convert milliseconds epoch or ISO string to YYYY-MM-DD."""
+    if isinstance(v, int):
+        return datetime.fromtimestamp(v / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    return str(v)[:10]

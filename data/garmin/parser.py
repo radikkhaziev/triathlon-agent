@@ -7,7 +7,17 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from .dto import GarminDailySummaryDTO, GarminHealthStatusDTO, GarminSleepDTO, GarminTrainingReadinessDTO
+from .dto import (
+    GarminAbnormalHrEventDTO,
+    GarminBioMetricsDTO,
+    GarminDailySummaryDTO,
+    GarminFitnessMetricsDTO,
+    GarminHealthStatusDTO,
+    GarminRacePredictionsDTO,
+    GarminSleepDTO,
+    GarminTrainingLoadDTO,
+    GarminTrainingReadinessDTO,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +27,13 @@ _PATTERNS = {
     "daily": ("DI-Connect-Aggregator", "UDSFile_*.json"),
     "readiness": ("DI-Connect-Metrics", "TrainingReadinessDTO_*.json"),
     "health": ("DI-Connect-Wellness", "*_healthStatusData.json"),
+    "load": ("DI-Connect-Metrics", "MetricsAcuteTrainingLoad_*.json"),
+    "vo2max": ("DI-Connect-Metrics", "ActivityVo2Max_*.json"),
+    "endurance": ("DI-Connect-Metrics", "EnduranceScore_*.json"),
+    "race": ("DI-Connect-Metrics", "RunRacePredictions_*.json"),
+    "max_met": ("DI-Connect-Metrics", "MetricsMaxMetData_*.json"),
+    "bio": ("DI-Connect-Wellness", "*_userBioMetrics.json"),
+    "abnormal_hr": ("DI-Connect-Wellness", "*_AbnormalHrEvents.json"),
 }
 
 
@@ -101,3 +118,97 @@ class GarminExportParser:
         entries = [e for e in entries if e.get("calendarDate")]
         entries = self._filter_by_period(entries, period, "calendarDate")
         return [GarminHealthStatusDTO.from_garmin(e) for e in entries]
+
+    def parse_training_load(self, period: tuple[date, date] | None = None) -> list[GarminTrainingLoadDTO]:
+        subdir, pattern = _PATTERNS["load"]
+        entries = self._load_chunked_files(subdir, pattern)
+        entries = [e for e in entries if e.get("calendarDate")]
+        # calendarDate is ms epoch — convert for filtering, DTO handles conversion
+        dtos = [GarminTrainingLoadDTO.from_garmin(e) for e in entries]
+        if period:
+            start_str, end_str = str(period[0]), str(period[1])
+            dtos = [d for d in dtos if start_str <= d.calendar_date <= end_str]
+        # Deduplicate by date — keep last entry (most recent timestamp)
+        by_date: dict[str, GarminTrainingLoadDTO] = {}
+        for d in dtos:
+            by_date[d.calendar_date] = d
+        return list(by_date.values())
+
+    def parse_fitness_metrics(self, period: tuple[date, date] | None = None) -> list[GarminFitnessMetricsDTO]:
+        """Merge ActivityVo2Max + EnduranceScore + MetricsMaxMetData by date → one DTO per day."""
+        merged: dict[str, dict] = {}
+
+        # VO2max (ISO dates)
+        for e in self._load_chunked_files(*_PATTERNS["vo2max"]):
+            if not e.get("calendarDate"):
+                continue
+            dt = str(e["calendarDate"])[:10]
+            merged.setdefault(dt, {})
+            sport = e.get("sport", "")
+            if "RUNNING" in sport:
+                merged[dt]["vo2max_running"] = e.get("vo2MaxValue")
+            elif "CYCLING" in sport:
+                merged[dt]["vo2max_cycling"] = e.get("vo2MaxValue")
+            if e.get("activityId"):
+                merged[dt]["source_activity_id"] = str(e["activityId"])
+
+        # Endurance Score (ms epoch dates)
+        for e in self._load_chunked_files(*_PATTERNS["endurance"]):
+            if not e.get("calendarDate"):
+                continue
+            dto = GarminFitnessMetricsDTO.from_endurance(e)
+            merged.setdefault(dto.calendar_date, {})
+            merged[dto.calendar_date]["endurance_score"] = dto.endurance_score
+
+        # Max MET (ISO dates)
+        for e in self._load_chunked_files(*_PATTERNS["max_met"]):
+            if not e.get("calendarDate"):
+                continue
+            dt = str(e["calendarDate"])[:10]
+            merged.setdefault(dt, {})
+            merged[dt]["max_met"] = e.get("maxMet")
+            if e.get("fitnessAge"):
+                merged[dt]["fitness_age"] = e.get("fitnessAge")
+
+        # Build DTOs
+        dtos = [GarminFitnessMetricsDTO(calendar_date=dt, **vals) for dt, vals in sorted(merged.items())]
+        if period:
+            start_str, end_str = str(period[0]), str(period[1])
+            dtos = [d for d in dtos if start_str <= d.calendar_date <= end_str]
+        return dtos
+
+    def parse_race_predictions(self, period: tuple[date, date] | None = None) -> list[GarminRacePredictionsDTO]:
+        subdir, pattern = _PATTERNS["race"]
+        entries = self._load_chunked_files(subdir, pattern)
+        entries = [e for e in entries if e.get("calendarDate")]
+        entries = self._filter_by_period(entries, period, "calendarDate")
+        # Deduplicate by date — keep last
+        by_date: dict[str, dict] = {}
+        for e in entries:
+            by_date[e["calendarDate"]] = e
+        return [GarminRacePredictionsDTO.from_garmin(e) for e in by_date.values()]
+
+    def parse_bio_metrics(self, period: tuple[date, date] | None = None) -> list[GarminBioMetricsDTO]:
+        subdir, pattern = _PATTERNS["bio"]
+        entries = self._load_chunked_files(subdir, pattern)
+        # BioMetrics has nested metaData.calendarDate, from_garmin returns None for empty entries
+        dtos = [GarminBioMetricsDTO.from_garmin(e) for e in entries]
+        dtos = [d for d in dtos if d is not None]
+        if period:
+            start_str, end_str = str(period[0]), str(period[1])
+            dtos = [d for d in dtos if start_str <= d.calendar_date <= end_str]
+        # Deduplicate by date — keep last (most recent)
+        by_date: dict[str, GarminBioMetricsDTO] = {}
+        for d in dtos:
+            by_date[d.calendar_date] = d
+        return list(by_date.values())
+
+    def parse_abnormal_hr_events(self, period: tuple[date, date] | None = None) -> list[GarminAbnormalHrEventDTO]:
+        subdir, pattern = _PATTERNS["abnormal_hr"]
+        entries = self._load_chunked_files(subdir, pattern)
+        entries = [e for e in entries if e.get("abnormalHrEventGMT")]
+        dtos = [GarminAbnormalHrEventDTO.from_garmin(e) for e in entries]
+        if period:
+            start_str, end_str = str(period[0]), str(period[1])
+            dtos = [d for d in dtos if start_str <= d.calendar_date <= end_str]
+        return dtos

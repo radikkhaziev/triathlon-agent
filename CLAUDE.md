@@ -93,7 +93,7 @@ triathlon-agent/
 │       ├── hrv.py                   # HrvAnalysis, RhrAnalysis, PaBaseline ORM
 │       ├── workout.py               # ScheduledWorkout, AiWorkout, TrainingLog, ExerciseCard, WorkoutCard
 │       ├── tracking.py              # MoodCheckin, IqosDaily, ApiUsageDaily
-│       └── garmin.py                # GarminSleep, GarminDailySummary, GarminTrainingReadiness, GarminHealthStatus
+│       └── garmin.py                # 9 Garmin ORM models (sleep, daily, readiness, health, load, fitness, race, bio, abnormal_hr)
 ├── api/
 │   ├── server.py                    # FastAPI + MCPAuthMiddleware (per-user token) + webhook
 │   ├── deps.py                      # Auth dependencies: get_current_user, require_viewer/athlete/owner
@@ -126,7 +126,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Twenty tables. Full column specs in `data/db/`.
+Twenty-five tables. Full column specs in `data/db/`.
 
 | Table                 | PK                         | Purpose                                                                                         |
 | --------------------- | -------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -152,6 +152,11 @@ Twenty tables. Full column specs in `data/db/`.
 | `garmin_daily_summary`| (user_id, calendar_date)   | Garmin UDS: steps, calories, stress breakdown, body battery, RHR                                |
 | `garmin_training_readiness` | (user_id, date, ctx) | Garmin Training Readiness: score, level, factor breakdown (HRV/sleep/ACWR/stress)               |
 | `garmin_health_status`| (user_id, calendar_date)   | Garmin Health Status: HRV/HR/SpO2/skin temp/respiration with baselines                          |
+| `garmin_training_load`| (user_id, calendar_date)   | Garmin ACWR: acute/chronic load, ratio, status                                                  |
+| `garmin_fitness_metrics`| (user_id, calendar_date) | Combined VO2max (run/bike) + Endurance Score + Max MET. Sparse (~1/week)                        |
+| `garmin_race_predictions`| (user_id, calendar_date)| Race time predictions: 5K/10K/half/marathon (seconds)                                           |
+| `garmin_bio_metrics`  | (user_id, calendar_date)   | Weight, height, lactate threshold HR/speed. Sparse (~1/week)                                    |
+| `garmin_abnormal_hr_events`| (user_id, timestamp)  | Abnormal HR events: high HR value + threshold                                                   |
 
 ---
 
@@ -169,7 +174,7 @@ Twenty tables. Full column specs in `data/db/`.
 | `webapp/` (React SPA)  | Done              | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme                                                           |
 | Adaptive Training Plan | Phase 4 done      | Write API, HumanGo adaptation, training log (pre/actual/post via actors), ramp tests + threshold drift                                 |
 | Sentry                 | Done              | Error monitoring, performance tracing, data scrubbing (incl. stackframe vars), user context, `@sentry_tool` for MCP                   |
-| Garmin Import (1a)     | Done              | 4 tables (sleep, daily, readiness, health), parser, DTOs, bulk importer, CLI `import-garmin`                                           |
+| Garmin Import          | Phase 1 done      | 9 tables, parser (chunked JSON + ms-epoch), DTOs, bulk importer, CLI `import-garmin` (URL/ZIP/DIR)                                     |
 
 **Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
 
