@@ -602,17 +602,17 @@ class TestComputeCompliance:
         from mcp_server.tools.compliance import _compute_compliance
 
         planned = (
-            {"duration_min": planned_min, "name": "Test workout", "description": None}
+            {"duration_min": planned_min, "name": "Test workout", "power_target": None}
             if planned_min is not None
             else None
         )
-        actual = {"duration_min": actual_min}
-        return _compute_compliance(planned, actual)
+        actual = {"duration_min": actual_min, "avg_power": None}
+        return _compute_compliance(planned, actual, None, None, None)
 
     def test_no_planned_returns_unplanned(self):
         from mcp_server.tools.compliance import _compute_compliance
 
-        result = _compute_compliance(None, {"duration_min": 60})
+        result = _compute_compliance(None, {"duration_min": 60}, None, None, None)
         assert result["overall"] == "unplanned"
 
     def test_both_durations_none_returns_unknown(self):
@@ -623,8 +623,8 @@ class TestComputeCompliance:
         """Scheduled workout exists but has no duration set → unknown, not unplanned."""
         from mcp_server.tools.compliance import _compute_compliance
 
-        planned = {"duration_min": None, "name": "Test", "description": None}
-        result = _compute_compliance(planned, {"duration_min": 60})
+        planned = {"duration_min": None, "name": "Test", "power_target": None}
+        result = _compute_compliance(planned, {"duration_min": 60, "avg_power": None}, None, None, None)
         assert result["overall"] == "unknown"
 
     @pytest.mark.parametrize(
@@ -649,10 +649,10 @@ class TestComputeCompliance:
             result["overall"] == expected_rating
         ), f"actual {actual_pct}% of planned expected '{expected_rating}', got '{result['overall']}'"
 
-    def test_missed_includes_pct_in_note(self):
+    def test_off_target_has_duration_pct(self):
         result = self._run(100, 40)
         assert result["overall"] == "off_target"
-        assert "40" in result["note"]
+        assert result["duration_pct"] == 40
 
     def test_duration_pct_stored_in_result(self):
         result = self._run(100, 80)
