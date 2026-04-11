@@ -242,7 +242,7 @@ def _resolve_garmin_source(source: str) -> str:
     import tempfile
     import zipfile
     from pathlib import Path
-    from urllib.request import urlopen
+    from urllib.request import Request, urlopen
 
     path = Path(source)
 
@@ -251,7 +251,8 @@ def _resolve_garmin_source(source: str) -> str:
         tmp_dir = Path(tempfile.mkdtemp(prefix="garmin-import-"))
         zip_path = tmp_dir / "export.zip"
         print(f"Downloading {source[:80]}...")
-        with urlopen(source, timeout=300) as resp, open(zip_path, "wb") as out:
+        req = Request(source, headers={"User-Agent": "garmin-import/1.0"})
+        with urlopen(req, timeout=300) as resp, open(zip_path, "wb") as out:
             while chunk := resp.read(1024 * 1024):
                 out.write(chunk)
         print(f"Downloaded: {zip_path.stat().st_size / 1024 / 1024:.1f} MB")
