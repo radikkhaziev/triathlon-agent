@@ -11,6 +11,7 @@ from .dto import (  # noqa
     UserDTO,
     WellnessPostDTO,
 )
+from .garmin import GarminDailySummary, GarminHealthStatus, GarminSleep, GarminTrainingReadiness  # noqa
 from .hrv import HrvAnalysis, PaBaseline, RhrAnalysis  # noqa
 from .tracking import ApiUsageDaily, IqosDaily, MoodCheckin  # noqa
 from .user import User  # noqa

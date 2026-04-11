@@ -7,6 +7,8 @@ from datetime import date, timedelta
 from config import settings
 from data.db import User, Wellness, get_session
 from data.db.dto import UserDTO
+from data.garmin import importer as garmin_importer
+from data.garmin.parser import GarminExportParser
 from tasks.actors.activities import actor_fetch_user_activities
 from tasks.actors.wellness import actor_user_wellness
 
@@ -48,6 +50,14 @@ def main() -> None:
         help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)",
     )
 
+    p_gi = sub.add_parser("import-garmin", help="Import Garmin GDPR export")
+    p_gi.add_argument("user_id", type=int)
+    p_gi.add_argument("source", help="Path to extracted export directory or ZIP file")
+    p_gi.add_argument("--types", default="all", help="Comma-separated: sleep,daily,readiness,health (default: all)")
+    p_gi.add_argument("--period", default=None, help="Date filter: 2025Q1, 2025-11, 2025-01-01:2025-06-30")
+    p_gi.add_argument("--force", action="store_true", help="Overwrite existing records")
+    p_gi.add_argument("--dry-run", action="store_true", help="Parse and validate only, don't write to DB")
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -60,6 +70,8 @@ def main() -> None:
         _sync_activities(args.user_id, args.period, force=args.force)
     elif args.command == "sync-training-log":
         _sync_training_log(args.user_id, args.period)
+    elif args.command == "import-garmin":
+        _import_garmin(args.user_id, args.source, args.types, args.period, args.force, args.dry_run)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -223,6 +235,77 @@ def _sync_training_log(user_id: int, period: str | None) -> None:
         )
 
     print(f"Queued: {len(dates)} dates (training log PRE+ACTUAL+POST, {delay_ms // 1000}s apart)")
+
+
+def _resolve_garmin_source(source: str) -> str:
+    """Resolve source: URL → download + extract, ZIP → extract, DIR → as-is. Returns directory path."""
+    import tempfile
+    import zipfile
+    from pathlib import Path
+    from urllib.request import urlopen
+
+    path = Path(source)
+
+    # URL → download (HTTPS only, 5 min timeout)
+    if source.startswith("https://"):
+        tmp_dir = Path(tempfile.mkdtemp(prefix="garmin-import-"))
+        zip_path = tmp_dir / "export.zip"
+        print(f"Downloading {source[:80]}...")
+        with urlopen(source, timeout=300) as resp, open(zip_path, "wb") as out:
+            while chunk := resp.read(1024 * 1024):
+                out.write(chunk)
+        print(f"Downloaded: {zip_path.stat().st_size / 1024 / 1024:.1f} MB")
+        path = zip_path
+
+    # ZIP → extract
+    if path.is_file() and path.suffix == ".zip":
+        extract_dir = path.parent / path.stem
+        print(f"Extracting to {extract_dir}...")
+        with zipfile.ZipFile(path) as zf:
+            zf.extractall(extract_dir)
+        return str(extract_dir)
+
+    if path.is_dir():
+        return str(path)
+
+    raise SystemExit(f"Source not found or unsupported: {source}")
+
+
+def _import_garmin(user_id: int, source: str, types: str, period: str | None, force: bool, dry_run: bool) -> None:
+    """Import Garmin GDPR export data."""
+    _resolve_user(user_id)  # validate user exists
+
+    export_dir = _resolve_garmin_source(source)
+    period_range = _parse_period(period) if period else None
+    enabled = set(types.split(",")) if types != "all" else {"sleep", "daily", "readiness", "health"}
+
+    parser = GarminExportParser(export_dir)
+
+    parsed: dict[str, list] = {}
+    if "sleep" in enabled:
+        parsed["sleep"] = parser.parse_sleep(period_range)
+    if "daily" in enabled:
+        parsed["daily"] = parser.parse_daily_summary(period_range)
+    if "readiness" in enabled:
+        parsed["readiness"] = parser.parse_training_readiness(period_range)
+    if "health" in enabled:
+        parsed["health"] = parser.parse_health_status(period_range)
+
+    print(f"Parsed: {', '.join(f'{k}: {len(v)}' for k, v in parsed.items())}")
+
+    if dry_run:
+        print("Dry run — no data written to DB")
+        return
+
+    counts = garmin_importer.import_all(
+        user_id,
+        sleep=parsed.get("sleep"),
+        daily=parsed.get("daily"),
+        readiness=parsed.get("readiness"),
+        health=parsed.get("health"),
+        force=force,
+    )
+    print(f"Imported: {', '.join(f'{k}: {v}' for k, v in counts.items())}")
 
 
 def _shell() -> None:
