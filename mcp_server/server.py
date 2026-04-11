@@ -28,6 +28,7 @@ import mcp_server.tools.training_load  # noqa: F401
 import mcp_server.tools.training_log  # noqa: F401
 import mcp_server.tools.update_zones  # noqa: F401
 import mcp_server.tools.usage  # noqa: F401
+import mcp_server.tools.weekly_summary  # noqa: F401
 import mcp_server.tools.weight  # noqa: F401
 
 # Register tools (side-effect imports)

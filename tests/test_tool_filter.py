@@ -122,8 +122,8 @@ class TestToolGroupIntegrity:
         all_names: set[str] = set()
         for tools in TOOL_GROUPS.values():
             all_names.update(tools)
-        # 45 tools total (7 core + 6 garmin + 10 workouts + 3 tracking + 14 analysis + 5 admin)
-        assert len(all_names) == 45
+        # 46 tools total (7 core + 6 garmin + 10 workouts + 3 tracking + 15 analysis + 5 admin)
+        assert len(all_names) == 46
 
     def test_core_has_essential_tools(self):
         core = set(TOOL_GROUPS["core"])

@@ -50,6 +50,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "get_weight_trend",
         "get_workout_compliance",
         "predict_ctl",
+        "get_weekly_summary",
     ],
     "admin": [
         "create_github_issue",
@@ -112,6 +113,10 @@ KEYWORD_TO_GROUPS: dict[str, list[str]] = {
     "паттерн": ["analysis"],
     "log": ["analysis"],
     "лог": ["analysis"],
+    "недел": ["analysis"],
+    "week": ["analysis"],
+    "итог": ["analysis"],
+    "summary": ["analysis"],
     # Tracking
     "настроен": ["tracking"],
     "mood": ["tracking"],
