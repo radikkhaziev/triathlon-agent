@@ -19,11 +19,7 @@ def _pct(current: float | None, target: float | None) -> float | None:
 
 @mcp.tool()
 async def get_goal_progress() -> dict:
-    """Get race goal progress — overall and per-sport CTL vs targets.
-
-    Shows event name, date, weeks remaining, and percentage of target CTL achieved
-    for total, swim, bike, and run. CTL values come from Intervals.icu.
-    """
+    """Get race goal progress: overall and per-sport CTL vs targets with weeks remaining."""
     user_id = get_current_user_id()
     g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
 

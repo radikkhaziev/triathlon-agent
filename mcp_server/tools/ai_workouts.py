@@ -63,36 +63,7 @@ async def suggest_workout(
     target_date: str = "",
     dry_run: bool = False,
 ) -> str:
-    """Generate an AI workout and push to the athlete's Intervals.icu calendar.
-
-    The workout appears on the athlete's devices (Garmin/Wahoo) via Intervals.icu sync.
-    Only creates workouts with AI: prefix — never modifies existing workouts.
-
-    Steps use Intervals.icu workout_doc format. Each step is an object:
-    - "text": step label ("Warm-up", "Tempo", "Cool-down")
-    - "duration": seconds (600 = 10 min) — OR "distance" (not both!)
-    - "distance": meters (100, 200, 1000) — for Swim and Run distance intervals
-    - "hr": {"units": "%lthr", "value": 75} — for Run
-    - "power": {"units": "%ftp", "value": 80} — for Ride
-    - "pace": {"units": "%pace", "value": 90} — for Swim
-    - "cadence": {"units": "rpm", "value": 90}
-    For intervals: "reps": 3, "steps": [work_step, rest_step]
-
-    Distance vs duration by sport:
-    - Swim: always "distance" (meters), target "pace" (%pace from CSS)
-    - Run intervals: "distance" for reps (400m, 1km), target "pace" or "hr"
-    - Ride: always "duration" (seconds), target "power" (%ftp)
-
-    Args:
-        sport: Activity type — "Ride", "Run", "Swim", or "WeightTraining".
-        name: Short workout name (e.g. "Z2 Endurance + 3x5m Tempo").
-        steps: Structured workout steps (Intervals.icu workout_doc format).
-        duration_minutes: Total duration in minutes.
-        target_tss: Estimated Training Stress Score (optional).
-        rationale: Why this workout (1-2 sentences).
-        target_date: Date in YYYY-MM-DD format. Default: today.
-        dry_run: If True, only preview the workout without pushing to Intervals.icu.
-    """
+    """Generate an AI workout and push to athlete's Intervals.icu calendar. Syncs to Garmin/Wahoo."""
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
 
@@ -190,15 +161,7 @@ async def remove_ai_workout(
     target_date: str,
     sport: str = "",
 ) -> str:
-    """Remove an AI-generated workout from the Intervals.icu calendar.
-
-    Only removes workouts created by TriCoach AI (with AI: prefix and external_id
-    starting with 'tricoach:'). Does not affect manually created or coach-assigned workouts.
-
-    Args:
-        target_date: Date in YYYY-MM-DD format.
-        sport: Sport type to remove (e.g. "Ride"). If empty, removes all AI workouts for the date.
-    """
+    """Remove an AI-generated workout from Intervals.icu calendar for a given date."""
 
     user_id = get_current_user_id()
     dt = date.fromisoformat(target_date)
@@ -225,14 +188,7 @@ async def remove_ai_workout(
 
 @mcp.tool()
 async def list_ai_workouts(days_ahead: int = 7) -> dict:
-    """List upcoming AI-generated workouts.
-
-    Returns workouts with AI: prefix that were created by TriCoach AI
-    and are currently active in the Intervals.icu calendar.
-
-    Args:
-        days_ahead: Number of days to look ahead (default: 7).
-    """
+    """List upcoming AI-generated workouts in the Intervals.icu calendar."""
     user_id = get_current_user_id()
     rows = await AiWorkout.get_upcoming(user_id=user_id, days_ahead=days_ahead)
     return {

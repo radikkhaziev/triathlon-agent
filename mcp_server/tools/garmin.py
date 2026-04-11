@@ -47,15 +47,7 @@ async def _data_freshness(user_id: int) -> dict:
 
 @mcp.tool()
 async def get_garmin_sleep(target_date: str = "", days_back: int = 7) -> dict:
-    """Get detailed Garmin sleep data: phases (deep/light/REM), scores, respiration, stress.
-
-    Much richer than Intervals.icu sleep data. Includes 7 sleep sub-scores.
-    REM decline is an early marker of overtraining.
-
-    Args:
-        target_date: YYYY-MM-DD (default: today).
-        days_back: Days to look back (default: 7).
-    """
+    """Get Garmin sleep data: phases (deep/light/REM), 7 sub-scores, respiration, stress."""
     user_id = get_current_user_id()
     freshness = await _data_freshness(user_id)
     start, end = _date_range(target_date, days_back)
@@ -99,15 +91,7 @@ async def get_garmin_sleep(target_date: str = "", days_back: int = 7) -> dict:
 
 @mcp.tool()
 async def get_garmin_readiness(target_date: str = "", days_back: int = 7) -> dict:
-    """Get Garmin Training Readiness: score (0-100), level, and factor breakdown.
-
-    Compare with our Recovery Score for calibration. Factors show what contributed
-    most to readiness (sleep, HRV, recovery time, ACWR, stress history).
-
-    Args:
-        target_date: YYYY-MM-DD (default: today).
-        days_back: Days to look back (default: 7).
-    """
+    """Get Garmin Training Readiness: score (0-100), level, and contributing factors."""
     user_id = get_current_user_id()
     freshness = await _data_freshness(user_id)
     start, end = _date_range(target_date, days_back)
@@ -141,14 +125,7 @@ async def get_garmin_readiness(target_date: str = "", days_back: int = 7) -> dic
 
 @mcp.tool()
 async def get_garmin_daily_metrics(target_date: str = "", days_back: int = 7) -> dict:
-    """Get combined Garmin daily metrics: stress, body battery, steps + health baselines + ACWR.
-
-    Merges garmin_daily_summary, garmin_health_status, and garmin_training_load.
-
-    Args:
-        target_date: YYYY-MM-DD (default: today).
-        days_back: Days to look back (default: 7).
-    """
+    """Get Garmin daily metrics: stress, body battery, steps, health baselines, and ACWR."""
     user_id = get_current_user_id()
     freshness = await _data_freshness(user_id)
     start, end = _date_range(target_date, days_back)
@@ -206,14 +183,7 @@ async def get_garmin_daily_metrics(target_date: str = "", days_back: int = 7) ->
 
 @mcp.tool()
 async def get_garmin_race_predictions(target_date: str = "", days_back: int = 30) -> dict:
-    """Get Garmin race time predictions: 5K, 10K, half marathon, marathon.
-
-    Useful for goal tracking and comparing with actual race results.
-
-    Args:
-        target_date: YYYY-MM-DD (default: today).
-        days_back: Days to look back (default: 30).
-    """
+    """Get Garmin race predictions: 5K, 10K, half marathon, marathon times."""
     user_id = get_current_user_id()
     freshness = await _data_freshness(user_id)
     start, end = _date_range(target_date, days_back)
@@ -244,14 +214,7 @@ async def get_garmin_race_predictions(target_date: str = "", days_back: int = 30
 
 @mcp.tool()
 async def get_garmin_vo2max_trend(sport: str = "cycling", days_back: int = 90) -> dict:
-    """Get VO2max + endurance score + max MET trend from Garmin fitness metrics.
-
-    Sparse data (~1/week). Shows aerobic capacity evolution over time.
-
-    Args:
-        sport: "running" or "cycling" (default: cycling).
-        days_back: Days to look back (default: 90).
-    """
+    """Get VO2max, endurance score, and max MET trend from Garmin fitness metrics."""
     user_id = get_current_user_id()
     freshness = await _data_freshness(user_id)
     start, end = _date_range("", days_back)
@@ -277,13 +240,7 @@ async def get_garmin_vo2max_trend(sport: str = "cycling", days_back: int = 90) -
 
 @mcp.tool()
 async def get_garmin_abnormal_hr_events(days_back: int = 30) -> dict:
-    """Get abnormal HR events detected by Garmin (high HR alerts).
-
-    Important for health monitoring. Flag in morning report if recent events detected.
-
-    Args:
-        days_back: Days to look back (default: 30).
-    """
+    """Get abnormal HR events detected by Garmin (high HR alerts)."""
     user_id = get_current_user_id()
     freshness = await _data_freshness(user_id)
     start, end = _date_range("", days_back)

@@ -38,14 +38,7 @@ def _row_to_dict(row: Wellness) -> dict:
 
 @mcp.tool()
 async def get_wellness(date: str) -> dict:
-    """Get all wellness fields for a given date.
-
-    Returns Intervals.icu synced data (CTL, ATL, HRV, sleep, body metrics)
-    plus computed fields (recovery score, readiness).
-
-    Args:
-        date: Date in YYYY-MM-DD format
-    """
+    """Get all wellness fields: CTL, ATL, HRV, sleep, body metrics, recovery score, readiness."""
     user_id = get_current_user_id()
     async with get_session() as session:
         result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))
@@ -57,14 +50,7 @@ async def get_wellness(date: str) -> dict:
 
 @mcp.tool()
 async def get_wellness_range(from_date: str, to_date: str) -> dict:
-    """Get wellness data for a date range (inclusive).
-
-    Useful for trend analysis — returns a list of daily wellness records.
-
-    Args:
-        from_date: Start date in YYYY-MM-DD format
-        to_date: End date in YYYY-MM-DD format
-    """
+    """Get wellness data for a date range (inclusive). Returns daily records list."""
     user_id = get_current_user_id()
     async with get_session() as session:
         result = await session.execute(

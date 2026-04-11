@@ -10,18 +10,7 @@ from mcp_server.sentry import sentry_tool
 @mcp.tool()
 @sentry_tool
 async def get_activity_details(activity_id: str) -> dict:
-    """Get detailed statistics for a specific activity.
-
-    Returns summary metrics (power, HR, pace, efficiency), zone distributions
-    (HR/power/pace), interval breakdown, and DFA alpha 1 analysis if available.
-    Combines data from activity_details and activity_hrv tables.
-
-    Note: CTL/ATL/TSB and training load values come from Intervals.icu and
-    thresholds are calibrated for its model, not TrainingPeaks.
-
-    Args:
-        activity_id: Intervals.icu activity ID (e.g. "i12345")
-    """
+    """Get detailed activity stats: power, HR, pace, zones, intervals, and DFA a1."""
     user_id = get_current_user_id()
     async with get_session() as session:
         activity = await session.get(Activity, activity_id)

@@ -9,15 +9,7 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_api_usage(target_date: str = "", days_back: int = 30) -> dict:
-    """Get API token usage for the current user.
-
-    Returns daily breakdown with input/output/cache tokens and request count.
-    Useful for monitoring consumption and cost estimation.
-
-    Args:
-        target_date: Date in YYYY-MM-DD format. Default: today.
-        days_back: Number of days to look back (default: 30).
-    """
+    """Get API token usage: daily breakdown with input/output/cache tokens and request count."""
     user_id = get_current_user_id()
     ref = date.fromisoformat(target_date) if target_date else date.today()
     from_date = ref - timedelta(days=days_back - 1)

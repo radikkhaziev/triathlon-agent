@@ -28,20 +28,7 @@ def _swc_verdict(today_val: float | None, baseline_60d: float | None, swc: float
 
 @mcp.tool()
 async def get_hrv_analysis(date: str, algorithm: str = "") -> dict:
-    """Get HRV (RMSSD) analysis for a given date.
-
-    Returns dual-algorithm HRV status, baselines, bounds, SWC, CV, and trend.
-    Both Flatt & Esco and AIEndurance algorithms are always computed.
-    Flatt & Esco compares today vs 7-day mean (fast response).
-    AIEndurance compares 7-day mean vs 60-day mean (chronic fatigue detection).
-
-    Status: green (above upper bound) = full load, yellow (between bounds) = monitor,
-    red (below lower bound) = reduce intensity.
-
-    Args:
-        date: Date in YYYY-MM-DD format
-        algorithm: Optional — "flatt_esco" or "ai_endurance". If empty, returns both.
-    """
+    """Get HRV status, baselines, and trend. Returns dual-algorithm analysis (flatt_esco + ai_endurance)."""
     user_id = get_current_user_id()
     async with get_session() as session:
         result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))

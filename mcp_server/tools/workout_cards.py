@@ -113,21 +113,7 @@ async def create_exercise_card(
     default_duration_sec: int | None = None,
     distance_m: float | None = None,
 ) -> str:
-    """Create an exercise card in the library.
-
-    Provide metadata + unique animation (HTML + CSS for stick figure).
-    Server renders full HTML from Jinja template with light theme.
-
-    animation_html: HTML markup of the stick figure (~10-20 lines).
-    Use exercise_id as CSS class prefix for all elements to avoid collisions.
-    animation_css: CSS @keyframes and positioning (~30-50 lines).
-    Prefix all selectors with .card-{exercise_id} for namespace isolation.
-
-    distance_m: meters per rep — for swim drills (e.g. 25, 50, 100).
-    When set, compose_workout uses distance instead of duration for this exercise.
-
-    See the clamshell example in docs/WORKOUT_CARDS.md for reference.
-    """
+    """Create an exercise card with metadata and SVG animation. Renders HTML from Jinja template."""
     try:
         await require_owner()
     except PermissionError:
@@ -186,11 +172,7 @@ async def update_exercise_card(
     animation_html: str | None = None,
     animation_css: str | None = None,
 ) -> str:
-    """Update an existing exercise card.
-
-    Only provided fields are updated. HTML file is re-rendered after update.
-    distance_m: meters per rep — for swim drills (e.g. 25, 50, 100).
-    """
+    """Update an existing exercise card. Only provided fields are changed, HTML re-rendered."""
     try:
         await require_owner()
     except PermissionError:
@@ -247,13 +229,7 @@ async def list_exercise_cards(
     group_tag: str | None = None,
     muscles: str | None = None,
 ) -> dict:
-    """List available exercise cards in the library.
-
-    Returns exercise metadata (id, name, muscles, equipment, default reps).
-    Use this to see what exercises are available before composing a workout.
-
-    Optional filters: equipment ("Мини-петля"), group_tag ("День А"), muscles ("ягодичная").
-    """
+    """List exercise cards in the library. Optional filters: equipment, group_tag, muscles."""
     cards = await ExerciseCard.get_list(equipment=equipment, group_tag=group_tag, muscles=muscles)
     return {
         "count": len(cards),
@@ -282,25 +258,7 @@ async def compose_workout(
     push_to_intervals: bool = False,
     sport: str = "Other",
 ) -> str:
-    """Compose a workout from exercise library cards.
-
-    Each exercise entry: {"id": "exercise_id", "sets": N, "reps": N}
-    or {"id": "exercise_id", "sets": N, "duration_sec": N} for timed exercises.
-    Optional "note" field for per-exercise comments.
-
-    Validates all exercise IDs before generation.
-    Generates a single HTML page with all exercise cards inline.
-    Returns URL to the workout page.
-
-    If push_to_intervals=True, also creates a WORKOUT event in Intervals.icu.
-
-    Args:
-        name: Workout name (e.g. "Утренняя зарядка -- День Б").
-        exercises: List of exercise entries with custom sets/reps.
-        target_date: Date in YYYY-MM-DD format. Default: today.
-        push_to_intervals: Create event in Intervals.icu calendar.
-        sport: Sport type for Intervals.icu — "Swim", "Ride", "Run", "Other". Default: "Other".
-    """
+    """Compose a workout from exercise cards. Generates HTML page and optionally pushes to Intervals.icu."""
     user_id = get_current_user_id()
 
     if sport not in VALID_SPORTS:
@@ -492,14 +450,7 @@ async def compose_workout(
 
 @mcp.tool()
 async def remove_workout_card(card_id: int) -> str:
-    """Remove a composed workout (зарядка) by its ID.
-
-    Deletes from local DB and from Intervals.icu calendar (if it was pushed there).
-    Use list_workout_cards to find the card_id.
-
-    Args:
-        card_id: Workout card ID (from list_workout_cards).
-    """
+    """Remove a composed workout by ID from DB and Intervals.icu."""
     user_id = get_current_user_id()
     row = await WorkoutCard.get_by_id(card_id, user_id=user_id)
     if not row:
@@ -532,13 +483,7 @@ async def remove_workout_card(card_id: int) -> str:
 
 @mcp.tool()
 async def list_workout_cards(days_back: int = 30) -> dict:
-    """List composed workouts (зарядки) for the last N days.
-
-    Returns workout name, date, exercise count, duration, and Intervals.icu event ID.
-
-    Args:
-        days_back: Number of days to look back (default: 30).
-    """
+    """List composed workouts for the last N days with exercise count and duration."""
     user_id = get_current_user_id()
     rows = await WorkoutCard.get_list(user_id=user_id, days_back=days_back)
     return {

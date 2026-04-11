@@ -11,6 +11,7 @@ import anthropic
 import sentry_sdk
 
 from bot.prompts import get_system_prompt_chat
+from bot.tool_filter import filter_tools, select_tool_groups
 from bot.tools import MCPClient
 from config import settings
 from data.db import ApiUsageDaily
@@ -41,10 +42,12 @@ class ClaudeAgent:
         """
         total_usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0}
 
+        cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
         response = await self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
-            system=system,
+            system=cached_system,
             messages=messages,
             tools=tools,
         )
@@ -70,7 +73,7 @@ class ClaudeAgent:
             response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                system=system,
+                system=cached_system,
                 messages=messages,
                 tools=tools,
             )
@@ -103,8 +106,12 @@ class ClaudeAgent:
         """
         mcp = MCPClient(token=mcp_token)
         system = await get_system_prompt_chat(user_id=user_id)
-        tools = await mcp.list_tools()
+        all_tools = await mcp.list_tools()
         sentry_sdk.set_tag("user_id", user_id)
+
+        groups = select_tool_groups(user_message or "")
+        tools = filter_tools(all_tools, groups)
+        logger.info("Tool filtering: %d/%d tools, groups=%s", len(tools), len(all_tools), sorted(groups))
 
         if image_data:
             content_blocks: list[dict] = [

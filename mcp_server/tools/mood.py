@@ -15,22 +15,7 @@ async def save_mood_checkin_tool(
     social: int | None = None,
     note: str | None = None,
 ) -> dict:
-    """Record a mood check-in with optional emotion ratings and note.
-
-    At least one field must be provided. All numeric fields use a 1-5 scale.
-    Scale meanings:
-    - energy: 1=very low, 5=very high
-    - mood: 1=very poor, 5=excellent
-    - anxiety: 1=very calm, 5=very anxious
-    - social: 1=withdrawn, 5=very social
-
-    Args:
-        energy: Energy level (1-5)
-        mood: Mood (1-5)
-        anxiety: Anxiety level (1-5)
-        social: Social desire (1-5)
-        note: Optional text note
-    """
+    """Record a mood check-in with emotion ratings (1-5 scale) and optional note."""
     user_id = get_current_user_id()
     try:
         row = await MoodCheckin.save(
@@ -51,14 +36,7 @@ async def save_mood_checkin_tool(
 
 @mcp.tool()
 async def get_mood_checkins_tool(date_str: str | None = None, days_back: int = 7) -> dict:
-    """Get mood check-ins for a date range.
-
-    Returns check-ins from the last N days (inclusive) with all recorded ratings and notes.
-
-    Args:
-        date_str: Reference date in YYYY-MM-DD format. Defaults to today.
-        days_back: Number of days to look back (inclusive). Default is 7.
-    """
+    """Get mood check-ins for a date range with all ratings and notes."""
     user_id = get_current_user_id()
     checkins = await MoodCheckin.get_range(user_id=user_id, target_date=date_str, days_back=days_back)
 

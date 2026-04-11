@@ -86,24 +86,10 @@ async def get_efficiency_trend(
     group_by: str = "week",
     strict_filter: bool = False,
 ) -> dict:
-    """Get aerobic efficiency trend over time.
-
-    Bike: EF = Normalized Power / Avg HR (higher = fitter). From Intervals.icu icu_efficiency_factor.
-    Run: EF = Speed / Avg HR (higher = fitter). From Intervals.icu icu_efficiency_factor.
-    Swim: Pace per 100m trend (lower = faster) + SWOLF (lower = more efficient).
-
-    Only includes Z2 steady-state sessions for meaningful comparison.
-    Minimum duration: bike 30min, run 20min, swim 15min.
-
-    With strict_filter=True: applies stricter filtering for decoupling analysis
-    (VI <= 1.10, >70% Z1+Z2, bike >= 60min / run >= 45min, swim excluded).
-    Adds decoupling_trend with last-5 median and traffic light status.
+    """Get aerobic efficiency trend: EF (bike/run) or pace+SWOLF (swim) over time.
 
     Args:
-        sport: "bike", "run", or "swim". Empty string = all three sports.
-        days_back: Lookback period in days (default: 90).
-        group_by: "week" for weekly averages, "activity" for individual data points.
-        strict_filter: Apply strict decoupling-analysis filter (VI, zone adherence, duration).
+        strict_filter: Apply strict decoupling filter (VI, zone adherence, min duration).
     """
     user_id = get_current_user_id()
     return await compute_efficiency_trend(
