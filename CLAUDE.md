@@ -40,7 +40,7 @@ triathlon-agent/
 ├── alembic.ini
 ├── config.py                        # pydantic-settings
 ├── sentry_config.py                 # Sentry SDK init, data scrubbing, traces sampler
-├── cli.py                           # shell, sync-settings, sync-wellness, sync-activities
+├── cli.py                           # shell, sync-settings, sync-wellness, sync-activities, sync-training-log
 ├── bot/
 │   ├── main.py                      # bot entry (polling + webhook), handlers, ClaudeAgent instance
 │   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
@@ -365,6 +365,7 @@ python -m cli shell                                              # interactive P
 python -m cli sync-settings <user_id>                            # sync athlete settings & goals from Intervals.icu
 python -m cli sync-wellness <user_id> [period]                   # force re-sync wellness + HRV/RHR/recovery day by day
 python -m cli sync-activities <user_id> [period] [--force]       # force re-sync activities day by day
+python -m cli sync-training-log <user_id> [period]               # recalculate training log from existing activities
 ```
 
 ### Period formats for `sync-wellness` and `sync-activities`
