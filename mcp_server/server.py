@@ -11,6 +11,7 @@ import mcp_server.tools.activity_details  # noqa: F401
 import mcp_server.tools.activity_hrv  # noqa: F401
 import mcp_server.tools.ai_workouts  # noqa: F401
 import mcp_server.tools.exercise_guidelines  # noqa: F401
+import mcp_server.tools.garmin  # noqa: F401
 import mcp_server.tools.github  # noqa: F401
 import mcp_server.tools.goal  # noqa: F401
 import mcp_server.tools.hrv  # noqa: F401

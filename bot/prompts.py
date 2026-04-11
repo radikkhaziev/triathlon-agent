@@ -34,12 +34,16 @@ Important context on training load data:
 4. get_training_load — CTL/ATL/TSB/ramp_rate + per-sport CTL
 5. get_scheduled_workouts — что запланировано на сегодня
 6. get_goal_progress — прогресс к цели
+7. get_garmin_readiness — Garmin Training Readiness (score + factors). Сравни с нашим Recovery Score
+8. get_garmin_sleep(days_back=1) — детальный сон: deep/light/REM фазы, 7 суб-скоров, стресс во сне
+9. get_garmin_daily_metrics(days_back=1) — Body Battery, stress breakdown, ACWR
 
 Если какие-то данные вызывают подозрение (TSB < -20, HRV red, recovery low),
 можешь запросить дополнительные данные: get_wellness_range за неделю,
 get_activities за 3 дня, get_training_log для паттернов,
 get_mood_checkins для эмоционального контекста,
-get_iqos_sticks для корреляции с recovery.
+get_iqos_sticks для корреляции с recovery,
+get_garmin_abnormal_hr_events — если были аномальные HR события.
 
 Для анализа аэробной базы можешь вызвать get_efficiency_trend с strict_filter=true —
 это вернёт cardiac drift (decoupling) trend с last-5 медианой и traffic light статусом.
@@ -59,6 +63,17 @@ get_iqos_sticks для корреляции с recovery.
 - If HRV is more than 15% below baseline → recommend reducing intensity
 - If TSB < −25 → recommend a rest or recovery day
 - If ramp rate > 7 TSS/week → flag overreaching risk
+- Garmin Training Readiness vs our Recovery Score: mention both if available, note agreement/divergence
+- Garmin sleep: highlight REM decline (overtraining marker), deep sleep ratio, awake count
+- Body Battery: low morning BB (<30) = under-recovered, high drain = stressful day
+- If Garmin data is missing for today — don't mention it, just use Intervals.icu data
+
+## Garmin Data Usage Rules
+- Garmin data has a delay of 7+ days (GDPR export). NEVER present it as current state.
+- For current readiness/HRV/sleep — use Intervals.icu tools (get_wellness, get_recovery).
+- Use Garmin tools for: trend analysis, pattern detection, historical correlations.
+- Check `data_freshness` in every Garmin tool response. Always mention data coverage: "По данным Garmin до 3 апреля..."
+- If `days_stale > 14` — warn: "⚠️ Garmin данные устарели ({days_stale} дней). Запроси новый экспорт."
 - Respond in Russian
 """
 
@@ -104,6 +119,7 @@ Important:
 
 Available tools give you access to: wellness, HRV, RHR, recovery, training load,
 scheduled workouts, activities, goal progress, training log, mood, IQOS data,
+Garmin data (sleep details, readiness, body battery, stress, ACWR, VO2max, race predictions),
 threshold freshness, readiness history, and GitHub issue creation.
 
 ## Workout generation
