@@ -215,11 +215,14 @@ class TestActorFillTrainingLogPost:
         yesterday_log.id = 42
         yesterday_log.pre_recovery_score = 70.0
 
+        hrv_mock = MagicMock(rmssd_7d=60.0)
+        rhr_mock = MagicMock(rhr_today=65.0)
+
         with (
             patch(f"{_MODULE}.Wellness.get", return_value=wellness),
             patch(f"{_MODULE}.TrainingLog.get_unfilled_post", return_value=[yesterday_log]),
-            patch(f"{_MODULE}.HrvAnalysis.get", return_value=None),
-            patch(f"{_MODULE}.RhrAnalysis.get", return_value=None),
+            patch(f"{_MODULE}.HrvAnalysis.get", return_value=hrv_mock),
+            patch(f"{_MODULE}.RhrAnalysis.get", return_value=rhr_mock),
             patch(f"{_MODULE}.ActivityHrv.get_for_date", return_value=[]),
             patch(f"{_MODULE}.TrainingLog.update") as mock_update,
         ):
@@ -240,11 +243,14 @@ class TestActorFillTrainingLogPost:
         log.id = 1
         log.pre_recovery_score = 60.0
 
+        hrv_mock = MagicMock(rmssd_7d=50.0)
+        rhr_mock = MagicMock(rhr_today=68.0)
+
         with (
             patch(f"{_MODULE}.Wellness.get", return_value=wellness),
             patch(f"{_MODULE}.TrainingLog.get_unfilled_post", return_value=[log]),
-            patch(f"{_MODULE}.HrvAnalysis.get", return_value=None),
-            patch(f"{_MODULE}.RhrAnalysis.get", return_value=None),
+            patch(f"{_MODULE}.HrvAnalysis.get", return_value=hrv_mock),
+            patch(f"{_MODULE}.RhrAnalysis.get", return_value=rhr_mock),
             patch(f"{_MODULE}.ActivityHrv.get_for_date", return_value=[]),
             patch(f"{_MODULE}.TrainingLog.update") as mock_update,
         ):

@@ -1,4 +1,4 @@
-"""ORM models for Garmin GDPR export data (Phase 1a: 4 core tables)."""
+"""ORM models for Garmin GDPR export data (9 tables)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, Uniqu
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .common import Base, Session
-from .decorator import dual, with_session
+from .decorator import dual
 
 
 class GarminSleep(Base):
@@ -54,17 +54,15 @@ class GarminSleep(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminSleep | None:
+    def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminSleep | None:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminSleep]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminSleep]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.calendar_date.asc())
@@ -82,7 +80,6 @@ class GarminDailySummary(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     calendar_date: Mapped[str] = mapped_column(String, nullable=False)
 
-    # Activity metrics
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_calories: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -91,12 +88,10 @@ class GarminDailySummary(Base):
     highly_active_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     active_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Heart rate
     min_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
     resting_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Stress (from allDayStress TOTAL aggregator)
     avg_stress: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_stress: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stress_high_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -104,7 +99,6 @@ class GarminDailySummary(Base):
     stress_low_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stress_rest_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Body Battery
     body_battery_high: Mapped[int | None] = mapped_column(Integer, nullable=True)
     body_battery_low: Mapped[int | None] = mapped_column(Integer, nullable=True)
     body_battery_charged: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -114,17 +108,15 @@ class GarminDailySummary(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminDailySummary | None:
+    def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminDailySummary | None:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminDailySummary]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminDailySummary]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.calendar_date.asc())
@@ -145,13 +137,11 @@ class GarminTrainingReadiness(Base):
     calendar_date: Mapped[str] = mapped_column(String, nullable=False)
     timestamp_gmt: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Core score
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     level: Mapped[str | None] = mapped_column(String, nullable=True)
     feedback_short: Mapped[str | None] = mapped_column(String, nullable=True)
     feedback_long: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Factor breakdown (% contribution)
     sleep_score_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     recovery_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
     recovery_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -160,7 +150,6 @@ class GarminTrainingReadiness(Base):
     hrv_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     sleep_history_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Context
     hrv_weekly_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
     acute_load: Mapped[float | None] = mapped_column(Float, nullable=True)
     input_context: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -169,23 +158,21 @@ class GarminTrainingReadiness(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_for_date(
+    def get_for_date(
         cls, user_id: int, dt: date | str, context: str = "AFTER_WAKEUP_RESET", *, session: Session
     ) -> GarminTrainingReadiness | None:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(
+        result = session.execute(
             select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt, cls.input_context == context)
         )
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(
+    def get_range(
         cls, user_id: int, start: str, end: str, context: str = "AFTER_WAKEUP_RESET", *, session: Session
     ) -> list[GarminTrainingReadiness]:
-        result = await session.execute(
+        result = session.execute(
             select(cls)
             .where(
                 cls.user_id == user_id,
@@ -208,31 +195,26 @@ class GarminHealthStatus(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     calendar_date: Mapped[str] = mapped_column(String, nullable=False)
 
-    # HRV baseline
     hrv_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     hrv_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
     hrv_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
     hrv_status: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # HR baseline
     hr_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     hr_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
     hr_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
     hr_status: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # SpO2
     spo2_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     spo2_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
     spo2_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
     spo2_status: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Skin temp
     skin_temp_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     skin_temp_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
     skin_temp_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
     skin_temp_status: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Respiration
     respiration_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     respiration_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
     respiration_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -242,17 +224,15 @@ class GarminHealthStatus(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminHealthStatus | None:
+    def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminHealthStatus | None:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminHealthStatus]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminHealthStatus]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.calendar_date.asc())
@@ -279,17 +259,15 @@ class GarminTrainingLoad(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminTrainingLoad | None:
+    def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminTrainingLoad | None:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminTrainingLoad]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminTrainingLoad]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.calendar_date.asc())
@@ -318,17 +296,15 @@ class GarminFitnessMetrics(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminFitnessMetrics | None:
+    def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminFitnessMetrics | None:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminFitnessMetrics]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminFitnessMetrics]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.calendar_date.asc())
@@ -355,17 +331,15 @@ class GarminRacePredictions(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminRacePredictions | None:
+    def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminRacePredictions | None:
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminRacePredictions]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminRacePredictions]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.calendar_date.asc())
@@ -392,11 +366,10 @@ class GarminBioMetrics(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_latest_before(cls, user_id: int, dt: date | str, *, session: Session) -> GarminBioMetrics | None:
+    def get_latest_before(cls, user_id: int, dt: date | str, *, session: Session) -> GarminBioMetrics | None:
         """Get most recent bio metrics on or before the given date."""
         _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = await session.execute(
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date <= _dt)
             .order_by(cls.calendar_date.desc())
@@ -406,9 +379,8 @@ class GarminBioMetrics(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminBioMetrics]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminBioMetrics]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.calendar_date.asc())
@@ -434,9 +406,8 @@ class GarminAbnormalHrEvents(Base):
 
     @classmethod
     @dual
-    @with_session
-    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminAbnormalHrEvents]:
-        result = await session.execute(
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminAbnormalHrEvents]:
+        result = session.execute(
             select(cls)
             .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
             .order_by(cls.timestamp_gmt.asc())
