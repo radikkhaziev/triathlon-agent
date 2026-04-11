@@ -258,3 +258,187 @@ class GarminHealthStatus(Base):
             .order_by(cls.calendar_date.asc())
         )
         return list(result.scalars().all())
+
+
+class GarminTrainingLoad(Base):
+    """ACWR + daily training load from Garmin."""
+
+    __tablename__ = "garmin_training_load"
+    __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_load_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    acute_load: Mapped[float | None] = mapped_column(Float, nullable=True)
+    chronic_load: Mapped[float | None] = mapped_column(Float, nullable=True)
+    acwr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    acwr_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminTrainingLoad | None:
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminTrainingLoad]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
+
+
+class GarminFitnessMetrics(Base):
+    """Combined VO2max + Endurance Score + Max MET (sparse, ~1/week)."""
+
+    __tablename__ = "garmin_fitness_metrics"
+    __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_fitness_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    vo2max_running: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vo2max_cycling: Mapped[float | None] = mapped_column(Float, nullable=True)
+    endurance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_met: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fitness_age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_activity_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminFitnessMetrics | None:
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminFitnessMetrics]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
+
+
+class GarminRacePredictions(Base):
+    """Race time predictions (5K/10K/HM/Marathon)."""
+
+    __tablename__ = "garmin_race_predictions"
+    __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_race_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    prediction_5k_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prediction_10k_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prediction_half_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prediction_marathon_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminRacePredictions | None:
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminRacePredictions]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
+
+
+class GarminBioMetrics(Base):
+    """Weight / LT history (sparse, ~1/week). Use get_latest_before for fill-forward."""
+
+    __tablename__ = "garmin_bio_metrics"
+    __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_bio_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lactate_threshold_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lactate_threshold_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_latest_before(cls, user_id: int, dt: date | str, *, session: Session) -> GarminBioMetrics | None:
+        """Get most recent bio metrics on or before the given date."""
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date <= _dt)
+            .order_by(cls.calendar_date.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminBioMetrics]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
+
+
+class GarminAbnormalHrEvents(Base):
+    """Abnormal HR events (arrhythmia, pauses, high/low HR)."""
+
+    __tablename__ = "garmin_abnormal_hr_events"
+    __table_args__ = (UniqueConstraint("user_id", "timestamp_gmt", name="uq_garmin_abnormal_hr_user_ts"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    timestamp_gmt: Mapped[str] = mapped_column(String, nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    hr_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    threshold_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminAbnormalHrEvents]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.timestamp_gmt.asc())
+        )
+        return list(result.scalars().all())

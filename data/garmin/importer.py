@@ -6,10 +6,30 @@ import logging
 
 from sqlalchemy.dialects.postgresql import insert
 
-from data.db import GarminDailySummary, GarminHealthStatus, GarminSleep, GarminTrainingReadiness
+from data.db import (
+    GarminAbnormalHrEvents,
+    GarminBioMetrics,
+    GarminDailySummary,
+    GarminFitnessMetrics,
+    GarminHealthStatus,
+    GarminRacePredictions,
+    GarminSleep,
+    GarminTrainingLoad,
+    GarminTrainingReadiness,
+)
 from data.db.common import get_sync_session
 
-from .dto import GarminDailySummaryDTO, GarminHealthStatusDTO, GarminSleepDTO, GarminTrainingReadinessDTO
+from .dto import (
+    GarminAbnormalHrEventDTO,
+    GarminBioMetricsDTO,
+    GarminDailySummaryDTO,
+    GarminFitnessMetricsDTO,
+    GarminHealthStatusDTO,
+    GarminRacePredictionsDTO,
+    GarminSleepDTO,
+    GarminTrainingLoadDTO,
+    GarminTrainingReadinessDTO,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +81,31 @@ def import_health_status(user_id: int, data: list[GarminHealthStatusDTO], force:
     return _bulk_upsert(GarminHealthStatus, "uq_garmin_health_user_date", rows, force)
 
 
+def import_training_load(user_id: int, data: list[GarminTrainingLoadDTO], force: bool = False) -> int:
+    rows = [{"user_id": user_id, **d.model_dump()} for d in data]
+    return _bulk_upsert(GarminTrainingLoad, "uq_garmin_load_user_date", rows, force)
+
+
+def import_fitness_metrics(user_id: int, data: list[GarminFitnessMetricsDTO], force: bool = False) -> int:
+    rows = [{"user_id": user_id, **d.model_dump()} for d in data]
+    return _bulk_upsert(GarminFitnessMetrics, "uq_garmin_fitness_user_date", rows, force)
+
+
+def import_race_predictions(user_id: int, data: list[GarminRacePredictionsDTO], force: bool = False) -> int:
+    rows = [{"user_id": user_id, **d.model_dump()} for d in data]
+    return _bulk_upsert(GarminRacePredictions, "uq_garmin_race_user_date", rows, force)
+
+
+def import_bio_metrics(user_id: int, data: list[GarminBioMetricsDTO], force: bool = False) -> int:
+    rows = [{"user_id": user_id, **d.model_dump()} for d in data]
+    return _bulk_upsert(GarminBioMetrics, "uq_garmin_bio_user_date", rows, force)
+
+
+def import_abnormal_hr_events(user_id: int, data: list[GarminAbnormalHrEventDTO], force: bool = False) -> int:
+    rows = [{"user_id": user_id, **d.model_dump()} for d in data]
+    return _bulk_upsert(GarminAbnormalHrEvents, "uq_garmin_abnormal_hr_user_ts", rows, force)
+
+
 def import_all(
     user_id: int,
     *,
@@ -68,6 +113,11 @@ def import_all(
     daily: list[GarminDailySummaryDTO] | None = None,
     readiness: list[GarminTrainingReadinessDTO] | None = None,
     health: list[GarminHealthStatusDTO] | None = None,
+    load: list[GarminTrainingLoadDTO] | None = None,
+    fitness: list[GarminFitnessMetricsDTO] | None = None,
+    race: list[GarminRacePredictionsDTO] | None = None,
+    bio: list[GarminBioMetricsDTO] | None = None,
+    abnormal_hr: list[GarminAbnormalHrEventDTO] | None = None,
     force: bool = False,
 ) -> dict[str, int]:
     """Import all provided data types. Returns counts per type."""
@@ -80,4 +130,14 @@ def import_all(
         counts["readiness"] = import_training_readiness(user_id, readiness, force)
     if health is not None:
         counts["health"] = import_health_status(user_id, health, force)
+    if load is not None:
+        counts["load"] = import_training_load(user_id, load, force)
+    if fitness is not None:
+        counts["fitness"] = import_fitness_metrics(user_id, fitness, force)
+    if race is not None:
+        counts["race"] = import_race_predictions(user_id, race, force)
+    if bio is not None:
+        counts["bio"] = import_bio_metrics(user_id, bio, force)
+    if abnormal_hr is not None:
+        counts["abnormal_hr"] = import_abnormal_hr_events(user_id, abnormal_hr, force)
     return counts

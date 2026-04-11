@@ -52,7 +52,7 @@ def main() -> None:
 
     p_gi = sub.add_parser("import-garmin", help="Import Garmin GDPR export")
     p_gi.add_argument("user_id", type=int)
-    p_gi.add_argument("source", help="Path to extracted export directory or ZIP file")
+    p_gi.add_argument("source", help="Path to dir/ZIP or HTTPS URL (wrap URLs in quotes!)")
     p_gi.add_argument("--types", default="all", help="Comma-separated: sleep,daily,readiness,health (default: all)")
     p_gi.add_argument("--period", default=None, help="Date filter: 2025Q1, 2025-11, 2025-01-01:2025-06-30")
     p_gi.add_argument("--force", action="store_true", help="Overwrite existing records")
@@ -242,7 +242,8 @@ def _resolve_garmin_source(source: str) -> str:
     import tempfile
     import zipfile
     from pathlib import Path
-    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+    from urllib.request import urlopen
 
     path = Path(source)
 
@@ -251,10 +252,18 @@ def _resolve_garmin_source(source: str) -> str:
         tmp_dir = Path(tempfile.mkdtemp(prefix="garmin-import-"))
         zip_path = tmp_dir / "export.zip"
         print(f"Downloading {source[:80]}...")
-        req = Request(source, headers={"User-Agent": "garmin-import/1.0"})
-        with urlopen(req, timeout=300) as resp, open(zip_path, "wb") as out:
-            while chunk := resp.read(1024 * 1024):
-                out.write(chunk)
+        try:
+            with urlopen(source, timeout=300) as resp, open(zip_path, "wb") as out:
+                while chunk := resp.read(1024 * 1024):
+                    out.write(chunk)
+        except HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+            raise SystemExit(
+                f"Download failed: HTTP {e.code} {e.reason}\n"
+                f"Response: {body}\n"
+                "If the link is valid, try downloading manually and pass the local path:\n"
+                "  import-garmin <user_id> /path/to/export.zip"
+            ) from None
         print(f"Downloaded: {zip_path.stat().st_size / 1024 / 1024:.1f} MB")
         path = zip_path
 
@@ -278,7 +287,8 @@ def _import_garmin(user_id: int, source: str, types: str, period: str | None, fo
 
     export_dir = _resolve_garmin_source(source)
     period_range = _parse_period(period) if period else None
-    enabled = set(types.split(",")) if types != "all" else {"sleep", "daily", "readiness", "health"}
+    all_types = {"sleep", "daily", "readiness", "health", "load", "fitness", "race", "bio", "abnormal_hr"}
+    enabled = set(types.split(",")) if types != "all" else all_types
 
     parser = GarminExportParser(export_dir)
 
@@ -291,6 +301,16 @@ def _import_garmin(user_id: int, source: str, types: str, period: str | None, fo
         parsed["readiness"] = parser.parse_training_readiness(period_range)
     if "health" in enabled:
         parsed["health"] = parser.parse_health_status(period_range)
+    if "load" in enabled:
+        parsed["load"] = parser.parse_training_load(period_range)
+    if "fitness" in enabled:
+        parsed["fitness"] = parser.parse_fitness_metrics(period_range)
+    if "race" in enabled:
+        parsed["race"] = parser.parse_race_predictions(period_range)
+    if "bio" in enabled:
+        parsed["bio"] = parser.parse_bio_metrics(period_range)
+    if "abnormal_hr" in enabled:
+        parsed["abnormal_hr"] = parser.parse_abnormal_hr_events(period_range)
 
     print(f"Parsed: {', '.join(f'{k}: {len(v)}' for k, v in parsed.items())}")
 
@@ -304,6 +324,11 @@ def _import_garmin(user_id: int, source: str, types: str, period: str | None, fo
         daily=parsed.get("daily"),
         readiness=parsed.get("readiness"),
         health=parsed.get("health"),
+        load=parsed.get("load"),
+        fitness=parsed.get("fitness"),
+        race=parsed.get("race"),
+        bio=parsed.get("bio"),
+        abnormal_hr=parsed.get("abnormal_hr"),
         force=force,
     )
     print(f"Imported: {', '.join(f'{k}: {v}' for k, v in counts.items())}")
