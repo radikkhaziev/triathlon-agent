@@ -40,7 +40,7 @@ triathlon-agent/
 ├── alembic.ini
 ├── config.py                        # pydantic-settings
 ├── sentry_config.py                 # Sentry SDK init, data scrubbing, traces sampler
-├── cli.py                           # shell, sync-settings, sync-wellness, sync-activities, sync-training-log
+├── cli.py                           # shell, sync-settings, sync-wellness, sync-activities, sync-training-log, import-garmin
 ├── bot/
 │   ├── main.py                      # bot entry (polling + webhook), handlers, ClaudeAgent instance
 │   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
@@ -78,6 +78,10 @@ triathlon-agent/
 │   ├── intervals/
 │   │   ├── client.py                # IntervalsAsyncClient + IntervalsSyncClient (per-user factory)
 │   │   └── dto.py                   # Intervals.icu API DTOs: Wellness, Activity, Workout, EventEx
+│   ├── garmin/
+│   │   ├── parser.py                # GarminExportParser — chunked JSON discovery + period filter
+│   │   ├── dto.py                   # Pydantic DTOs for sleep, daily, readiness, health
+│   │   └── importer.py              # Bulk upsert to DB (ON CONFLICT DO NOTHING/UPDATE)
 │   └── db/
 │       ├── common.py                # Engine, session factories, @dual DualMethod descriptor
 │       ├── decorator.py             # @with_session, @with_sync_session, @dual
@@ -88,7 +92,8 @@ triathlon-agent/
 │       ├── activity.py              # Activity, ActivityHrv, ActivityDetail ORM
 │       ├── hrv.py                   # HrvAnalysis, RhrAnalysis, PaBaseline ORM
 │       ├── workout.py               # ScheduledWorkout, AiWorkout, TrainingLog, ExerciseCard, WorkoutCard
-│       └── tracking.py              # MoodCheckin, IqosDaily, ApiUsageDaily
+│       ├── tracking.py              # MoodCheckin, IqosDaily, ApiUsageDaily
+│       └── garmin.py                # GarminSleep, GarminDailySummary, GarminTrainingReadiness, GarminHealthStatus
 ├── api/
 │   ├── server.py                    # FastAPI + MCPAuthMiddleware (per-user token) + webhook
 │   ├── deps.py                      # Auth dependencies: get_current_user, require_viewer/athlete/owner
@@ -121,7 +126,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Sixteen tables. Full column specs in `data/db/`.
+Twenty tables. Full column specs in `data/db/`.
 
 | Table                 | PK                         | Purpose                                                                                         |
 | --------------------- | -------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -143,6 +148,10 @@ Sixteen tables. Full column specs in `data/db/`.
 | `exercise_cards`      | id string                  | Exercise library: animation HTML/CSS, metadata, steps, focus (shared, no user_id)               |
 | `workout_cards`       | autoincrement              | Composed workouts from exercise cards with custom sets/reps. Sport type (Swim/Ride/Run/Other)   |
 | `api_usage_daily`     | (user_id, date)            | Daily API token usage: input/output/cache tokens, request count. Atomic upsert                  |
+| `garmin_sleep`        | (user_id, calendar_date)   | Garmin sleep phases (deep/light/REM), 7 scores, respiration, stress. GDPR export                |
+| `garmin_daily_summary`| (user_id, calendar_date)   | Garmin UDS: steps, calories, stress breakdown, body battery, RHR                                |
+| `garmin_training_readiness` | (user_id, date, ctx) | Garmin Training Readiness: score, level, factor breakdown (HRV/sleep/ACWR/stress)               |
+| `garmin_health_status`| (user_id, calendar_date)   | Garmin Health Status: HRV/HR/SpO2/skin temp/respiration with baselines                          |
 
 ---
 
@@ -160,6 +169,7 @@ Sixteen tables. Full column specs in `data/db/`.
 | `webapp/` (React SPA)  | Done              | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme                                                           |
 | Adaptive Training Plan | Phase 4 done      | Write API, HumanGo adaptation, training log (pre/actual/post via actors), ramp tests + threshold drift                                 |
 | Sentry                 | Done              | Error monitoring, performance tracing, data scrubbing (incl. stackframe vars), user context, `@sentry_tool` for MCP                   |
+| Garmin Import (1a)     | Done              | 4 tables (sleep, daily, readiness, health), parser, DTOs, bulk importer, CLI `import-garmin`                                           |
 
 **Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
 
@@ -366,6 +376,7 @@ python -m cli sync-settings <user_id>                            # sync athlete 
 python -m cli sync-wellness <user_id> [period]                   # force re-sync wellness + HRV/RHR/recovery day by day
 python -m cli sync-activities <user_id> [period] [--force]       # force re-sync activities day by day
 python -m cli sync-training-log <user_id> [period]               # recalculate training log from existing activities
+python -m cli import-garmin <user_id> <source> [--types] [--period] [--force] [--dry-run]  # import Garmin GDPR export
 ```
 
 ### Period formats for `sync-wellness` and `sync-activities`

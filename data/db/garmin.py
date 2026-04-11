@@ -1,0 +1,260 @@
+"""ORM models for Garmin GDPR export data (Phase 1a: 4 core tables)."""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timezone
+
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .common import Base, Session
+from .decorator import dual, with_session
+
+
+class GarminSleep(Base):
+    """Detailed sleep data from Garmin GDPR export."""
+
+    __tablename__ = "garmin_sleep"
+    __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_sleep_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    sleep_start_gmt: Mapped[str | None] = mapped_column(String, nullable=True)
+    sleep_end_gmt: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Phases (seconds)
+    deep_sleep_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    light_sleep_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rem_sleep_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    awake_sleep_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Scores (0-100)
+    overall_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quality_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recovery_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deep_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rem_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    restfulness_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Respiration
+    avg_respiration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lowest_respiration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    highest_respiration: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Stress / Other
+    avg_sleep_stress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    awake_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    restless_moments: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    feedback: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminSleep | None:
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminSleep]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
+
+
+class GarminDailySummary(Base):
+    """UDS daily aggregates: stress, body battery, steps, HR."""
+
+    __tablename__ = "garmin_daily_summary"
+    __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_daily_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    # Activity metrics
+    total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_calories: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_calories: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    floors_ascended_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    highly_active_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Heart rate
+    min_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resting_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Stress (from allDayStress TOTAL aggregator)
+    avg_stress: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_stress: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stress_high_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stress_medium_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stress_low_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stress_rest_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Body Battery
+    body_battery_high: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    body_battery_low: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    body_battery_charged: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    body_battery_drained: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminDailySummary | None:
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminDailySummary]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
+
+
+class GarminTrainingReadiness(Base):
+    """Training Readiness score with factor breakdown."""
+
+    __tablename__ = "garmin_training_readiness"
+    __table_args__ = (
+        UniqueConstraint("user_id", "calendar_date", "input_context", name="uq_garmin_readiness_user_date_ctx"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp_gmt: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Core score
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    level: Mapped[str | None] = mapped_column(String, nullable=True)
+    feedback_short: Mapped[str | None] = mapped_column(String, nullable=True)
+    feedback_long: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Factor breakdown (% contribution)
+    sleep_score_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recovery_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recovery_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    acwr_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stress_history_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hrv_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sleep_history_factor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Context
+    hrv_weekly_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    acute_load: Mapped[float | None] = mapped_column(Float, nullable=True)
+    input_context: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_for_date(
+        cls, user_id: int, dt: date | str, context: str = "AFTER_WAKEUP_RESET", *, session: Session
+    ) -> GarminTrainingReadiness | None:
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(
+            select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt, cls.input_context == context)
+        )
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(
+        cls, user_id: int, start: str, end: str, context: str = "AFTER_WAKEUP_RESET", *, session: Session
+    ) -> list[GarminTrainingReadiness]:
+        result = await session.execute(
+            select(cls)
+            .where(
+                cls.user_id == user_id,
+                cls.calendar_date >= start,
+                cls.calendar_date <= end,
+                cls.input_context == context,
+            )
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
+
+
+class GarminHealthStatus(Base):
+    """Daily health baselines: HRV, HR, SpO2, skin temp, respiration."""
+
+    __tablename__ = "garmin_health_status"
+    __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_health_user_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    calendar_date: Mapped[str] = mapped_column(String, nullable=False)
+
+    # HRV baseline
+    hrv_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hrv_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hrv_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hrv_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # HR baseline
+    hr_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hr_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hr_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hr_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # SpO2
+    spo2_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spo2_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spo2_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spo2_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Skin temp
+    skin_temp_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    skin_temp_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
+    skin_temp_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
+    skin_temp_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Respiration
+    respiration_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    respiration_baseline_lower: Mapped[float | None] = mapped_column(Float, nullable=True)
+    respiration_baseline_upper: Mapped[float | None] = mapped_column(Float, nullable=True)
+    respiration_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_for_date(cls, user_id: int, dt: date | str, *, session: Session) -> GarminHealthStatus | None:
+        _dt = dt if isinstance(dt, str) else dt.isoformat()
+        result = await session.execute(select(cls).where(cls.user_id == user_id, cls.calendar_date == _dt))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    @with_session
+    async def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[GarminHealthStatus]:
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.calendar_date >= start, cls.calendar_date <= end)
+            .order_by(cls.calendar_date.asc())
+        )
+        return list(result.scalars().all())
