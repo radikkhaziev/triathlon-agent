@@ -111,7 +111,7 @@ triathlon-agent/
 │   ├── server.py                    # MCP server with all tools + resources imported
 │   ├── context.py                   # contextvars: set/get_current_user_id (from MCPAuthMiddleware)
 │   ├── sentry.py                    # @sentry_tool decorator (spans + error capture for MCP tools)
-│   ├── tools/                       # 40 tools (all use get_current_user_id() for tenant isolation)
+│   ├── tools/                       # 41 tools (all use get_current_user_id() for tenant isolation)
 │   └── resources/                   # athlete profile, goal, thresholds
 ├── webapp/                          # React SPA (Vite + TypeScript + Tailwind)
 ├── templates/                       # Jinja2 templates for exercise/workout cards
@@ -170,7 +170,7 @@ Twenty-five tables. Full column specs in `data/db/`.
 | `bot/*`                | Done              | ClaudeAgent (thin MCP client), MCPClient (Streamable HTTP), per-user mcp_token, @athlete_required decorator                           |
 | `tasks/*`              | Done              | Dramatiq actors: wellness/RHR/HRV/recovery pipelines, FIT processing, training log lifecycle, workout push                             |
 | `api/*`                | Done              | REST endpoints, auth (User-based, not role string), require_viewer/athlete/owner, jobs → dramatiq direct dispatch                      |
-| `mcp_server/`          | Done              | 40 tools + 3 resources. All tools use `get_current_user_id()` from contextvars. Per-user Bearer token auth                             |
+| `mcp_server/`          | Done              | 41 tools + 3 resources. All tools use `get_current_user_id()` from contextvars. Per-user Bearer token auth                             |
 | `webapp/` (React SPA)  | Done              | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme                                                           |
 | Adaptive Training Plan | Phase 4 done      | Write API, HumanGo adaptation, training log (pre/actual/post via actors), ramp tests + threshold drift                                 |
 | Sentry                 | Done              | Error monitoring, performance tracing, data scrubbing (incl. stackframe vars), user context, `@sentry_tool` for MCP                   |
@@ -535,13 +535,13 @@ User sends /morning → @athlete_required resolves User from chat_id
 
 ---
 
-## MCP Server (40 tools + 3 resources)
+## MCP Server (41 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per-user Bearer auth via `User.mcp_token`).
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards, get_efficiency_trend, create_github_issue, get_github_issues, get_animation_guidelines, get_api_usage, get_garmin_sleep, get_garmin_readiness, get_garmin_daily_metrics, get_garmin_race_predictions, get_garmin_vo2max_trend, get_garmin_abnormal_hr_events.
+**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards, get_efficiency_trend, create_github_issue, get_github_issues, get_animation_guidelines, get_api_usage, get_garmin_sleep, get_garmin_readiness, get_garmin_daily_metrics, get_garmin_race_predictions, get_garmin_vo2max_trend, get_garmin_abnormal_hr_events, get_zones.
 
 **Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
