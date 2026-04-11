@@ -39,6 +39,15 @@ def main() -> None:
     )
     p_sa.add_argument("--force", action="store_true", help="Force re-process even if data unchanged")
 
+    p_tl = sub.add_parser("sync-training-log", help="Recalculate training log from existing activities")
+    p_tl.add_argument("user_id", type=int)
+    p_tl.add_argument(
+        "period",
+        nargs="?",
+        default=None,
+        help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -49,6 +58,8 @@ def main() -> None:
         _sync_wellness(args.user_id, args.period)
     elif args.command == "sync-activities":
         _sync_activities(args.user_id, args.period, force=args.force)
+    elif args.command == "sync-training-log":
+        _sync_training_log(args.user_id, args.period)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -143,6 +154,75 @@ def _sync_activities(user_id: int, period: str | None, force: bool = False) -> N
         )
 
     print(f"Queued: {len(days)} days (activities, {delay_per_day_ms // 1000}s apart)")
+
+
+def _sync_training_log(user_id: int, period: str | None) -> None:
+    """Recalculate training log (PRE+ACTUAL+POST) from existing activities."""
+    from sqlalchemy import distinct, select, update
+
+    from data.db import Activity, TrainingLog, get_sync_session
+    from tasks.actors.training_log import actor_fill_training_log, actor_fill_training_log_post
+
+    user = _resolve_user(user_id)
+    start, end = _parse_period(period)
+
+    with get_sync_session() as s:
+        # Reset POST data so it gets recalculated with correct dt+1
+        reset = s.execute(
+            update(TrainingLog)
+            .where(
+                TrainingLog.user_id == user_id,
+                TrainingLog.date >= str(start),
+                TrainingLog.date <= str(end),
+                TrainingLog.post_recovery_score.isnot(None),
+            )
+            .values(
+                post_recovery_score=None,
+                post_hrv_delta_pct=None,
+                post_rhr_today=None,
+                post_sleep_score=None,
+                post_ra_pct=None,
+                recovery_delta=None,
+            )
+        )
+        s.commit()
+        if reset.rowcount:
+            print(f"Reset POST data for {reset.rowcount} entries")
+
+        dates = (
+            s.execute(
+                select(distinct(Activity.start_date_local))
+                .where(
+                    Activity.user_id == user_id,
+                    Activity.start_date_local >= str(start),
+                    Activity.start_date_local <= str(end),
+                )
+                .order_by(Activity.start_date_local)
+            )
+            .scalars()
+            .all()
+        )
+
+    if not dates:
+        print(f"sync-training-log user {user_id}: no activities found in {start} → {end}")
+        return
+
+    print(f"sync-training-log user {user_id}: {start} → {end} ({len(dates)} activity dates)")
+
+    delay_ms = 5_000
+    for i, dt in enumerate(dates):
+        next_day = (date.fromisoformat(dt) + timedelta(days=1)).isoformat()
+
+        actor_fill_training_log.send_with_options(
+            kwargs={"user": user, "dt": dt},
+            delay=i * delay_ms,
+        )
+        actor_fill_training_log_post.send_with_options(
+            kwargs={"user": user, "dt": next_day},
+            delay=i * delay_ms + 2_000,
+        )
+
+    print(f"Queued: {len(dates)} dates (training log PRE+ACTUAL+POST, {delay_ms // 1000}s apart)")
 
 
 def _shell() -> None:
