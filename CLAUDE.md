@@ -287,6 +287,7 @@ All commands use `@athlete_required` decorator — resolves `User` from Telegram
 /dashboard  — dashboard link (Mini App)
 /web        — one-time code for desktop login (5 min TTL)
 /stick      — increment IQOS stick counter for today (owner only)
+/health     — server diagnostics: DB, Redis, queues, Intervals.icu, Anthropic (owner only)
 /silent     — toggle silent mode (suppress Telegram notifications)
 /whoami     — show current user info (chat_id, role)
 <text>      — free-form AI chat (stateless, tool-use via MCP, per-user token)

@@ -143,6 +143,139 @@ async def stick(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) 
 
 
 @athlete_required
+async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle /health command — server diagnostics. Owner only."""
+    if user.role != "owner":
+        await update.message.reply_text("Нет доступа.")
+        return
+
+    import asyncio
+    import time
+
+    import httpx
+    import psutil
+    from sqlalchemy import text
+
+    from data.db import get_session
+    from data.redis_client import get_redis
+
+    lines = []
+    start = time.monotonic()
+
+    # System (htop-style) — cpu_percent in thread to avoid blocking event loop
+    boot = datetime.fromtimestamp(psutil.boot_time())
+    uptime = datetime.now() - boot
+    up_str = f"{uptime.days}d {uptime.seconds // 3600}h:{(uptime.seconds % 3600) // 60:02d}m"
+
+    cpu_per_core = await asyncio.to_thread(psutil.cpu_percent, interval=0.5, percpu=True)
+    cpu_total = psutil.cpu_percent()
+    mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+    disk = psutil.disk_usage("/")
+    load1, load5, load15 = psutil.getloadavg()
+    tasks = len(psutil.pids())
+
+    def _bar(pct: float, width: int = 20) -> str:
+        filled = int(pct / 100 * width)
+        return "█" * filled + "░" * (width - filled)
+
+    lines.append("```")
+    for i, pct in enumerate(cpu_per_core):
+        lines.append(f"CPU{i} [{_bar(pct)}] {pct:5.1f}%")
+    mem_str = f"{mem.used / 1024**3:.2f}G/{mem.total / 1024**3:.2f}G"
+    lines.append(f"Mem  [{_bar(mem.percent)}] {mem_str}")
+    swap_str = f"{swap.used / 1024**3:.2f}G/{swap.total / 1024**3:.2f}G"
+    lines.append(f"Swp  [{_bar(swap.percent)}] {swap_str}")
+    lines.append(f"Disk [{_bar(disk.percent)}] {disk.percent}%")
+    lines.append("")
+    lines.append(f"Tasks: {tasks}  Load: {load1:.2f} {load5:.2f} {load15:.2f}")
+    lines.append(f"Uptime: {up_str}  CPU: {cpu_total}%")
+    lines.append("```")
+
+    # DB + token counts (single session)
+    try:
+        async with get_session() as session:
+            active_users = (await session.execute(text("SELECT count(*) FROM users WHERE is_active = true"))).scalar()
+            mcp_tokens = (
+                await session.execute(text("SELECT count(*) FROM users WHERE mcp_token IS NOT NULL"))
+            ).scalar()
+            api_keys = (
+                await session.execute(text("SELECT count(*) FROM users WHERE api_key_encrypted IS NOT NULL"))
+            ).scalar()
+        lines.append(f"✅ *DB*: ok | {active_users} active users")
+        lines.append(f"🔑 *Tokens*: {mcp_tokens} MCP | {api_keys} API keys")
+    except Exception as e:
+        lines.append(f"❌ *DB*: {e}")
+
+    # Redis + Dramatiq queues
+    try:
+        r = get_redis()
+        await r.ping()
+        info = await r.info("memory")
+        used = info.get("used_memory_human", "?")
+        db_size = await r.dbsize()
+
+        queue_info = []
+        keys = await r.keys("dramatiq:*")
+        for key in keys:
+            key_str = key.decode() if isinstance(key, bytes) else key
+            key_type = await r.type(key)
+            key_type_str = key_type.decode() if isinstance(key_type, bytes) else key_type
+            if key_type_str == "list":
+                size = await r.llen(key)
+            elif key_type_str == "zset":
+                size = await r.zcard(key)
+            elif key_type_str == "set":
+                size = await r.scard(key)
+            else:
+                continue
+            if size > 0:
+                queue_info.append(f"{key_str.replace('dramatiq:', '')}={size}")
+
+        redis_line = f"✅ *Redis*: ok | {used} | {db_size} keys"
+        if queue_info:
+            redis_line += f"\n📬 *Queues*: {', '.join(queue_info)}"
+        else:
+            redis_line += "\n📬 *Queues*: empty"
+        lines.append(redis_line)
+    except Exception as e:
+        lines.append(f"❌ *Redis*: {e}")
+
+    # Intervals.icu API (generic check, no real credentials)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            resp = await http.get("https://intervals.icu/api/v1/athlete/0", auth=("x", "x"))
+            if resp.status_code in (200, 401, 403):
+                lines.append("✅ *Intervals.icu*: reachable")
+            else:
+                lines.append(f"⚠️ *Intervals.icu*: HTTP {resp.status_code}")
+    except Exception as e:
+        lines.append(f"❌ *Intervals.icu*: {e}")
+
+    # Anthropic API (model list — no token cost)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            resp = await http.get(
+                "https://api.anthropic.com/v1/models",
+                headers={
+                    "x-api-key": settings.ANTHROPIC_API_KEY.get_secret_value(),
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+            if resp.status_code == 200:
+                lines.append("✅ *Anthropic*: ok")
+            else:
+                lines.append(f"⚠️ *Anthropic*: HTTP {resp.status_code}")
+    except Exception as e:
+        lines.append(f"❌ *Anthropic*: {str(e)[:50]}")
+
+    elapsed = round((time.monotonic() - start) * 1000)
+    lines.append(f"⏱ Response: {elapsed}ms")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+@athlete_required
 async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle free-form text messages — AI chat via tool-use."""
     user_text = update.message.text
@@ -500,6 +633,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))
+    app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("silent", silent))
     workout_conv = ConversationHandler(
         entry_points=[CommandHandler("workout", workout_start)],
