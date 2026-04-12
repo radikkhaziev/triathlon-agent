@@ -251,6 +251,7 @@ export interface ActivityDetailsResponse {
   duration: string | null
   icu_training_load: number | null
   average_hr: number | null
+  is_race?: boolean
   details: ActivityDetails | null
   hrv: ActivityHRV | null
 }
