@@ -545,3 +545,97 @@ class MCPTool:
         except Exception:
             logger.exception("Morning report generation failed for %s", _dt)
             return None
+
+    # Tools allowed in weekly report (no Garmin, no workout creation, no admin)
+    WEEKLY_TOOL_NAMES = {
+        "get_weekly_summary",
+        "get_personal_patterns",
+        "get_training_load",
+        "get_efficiency_trend",
+        "get_goal_progress",
+        "get_scheduled_workouts",
+        "get_mood_checkins_tool",
+        "get_iqos_sticks",
+        "get_wellness_range",
+        "get_hrv_analysis",
+        "get_rhr_analysis",
+        "get_recovery",
+    }
+
+    def _list_mcp_tools(self, *, _retry: bool = True) -> list[dict]:
+        """Fetch tool definitions from MCP server via tools/list."""
+        self._ensure_session()
+        payload = {"jsonrpc": "2.0", "method": "tools/list", "id": self._next_id()}
+        headers = {**self.headers}
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        resp = httpx.post(self.mcp_url, json=payload, headers=headers, timeout=30.0)
+
+        if resp.status_code in (401, 404, 408, 409) and _retry:
+            self._invalidate_session()
+            return self._list_mcp_tools(_retry=False)
+
+        resp.raise_for_status()
+        data = self._parse_response(resp)
+        tools = data.get("result", {}).get("tools", [])
+        # Convert MCP format to Anthropic format
+        return [
+            {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "input_schema": t.get("inputSchema", {"type": "object", "properties": {}}),
+            }
+            for t in tools
+        ]
+
+    def generate_weekly_report_via_mcp(self) -> str | None:
+        """Generate weekly report using sync Claude API + MCP tool calls."""
+        from bot.prompts import get_system_prompt_weekly
+
+        try:
+            client = anthropic.Anthropic(
+                api_key=settings.ANTHROPIC_API_KEY.get_secret_value(),
+                max_retries=5,
+            )
+
+            system = get_system_prompt_weekly(user_id=self.user_id)
+
+            all_tools = self._list_mcp_tools()
+            tools = [t for t in all_tools if t["name"] in self.WEEKLY_TOOL_NAMES]
+
+            messages: list[dict] = [{"role": "user", "content": "Сгенерируй недельный отчёт"}]
+
+            max_iterations = 12
+            for _ in range(max_iterations):
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=4096,
+                    system=system,
+                    messages=messages,
+                    tools=tools,
+                )
+
+                if response.stop_reason != "tool_use":
+                    break
+
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        result = self._call_mcp(block.name, block.input)
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps(result, default=str),
+                            }
+                        )
+
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": tool_results})
+
+            text_blocks = [b.text for b in response.content if b.type == "text"]
+            text = "\n".join(text_blocks)
+            return text or None
+        except Exception:
+            logger.exception("Weekly report generation failed for user %d", self.user_id)
+            return None

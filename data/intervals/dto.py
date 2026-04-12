@@ -261,10 +261,14 @@ class PlannedWorkoutDTO(BaseModel):
         """
         target = "PACE" if self.has_distance_steps and self.sport in ("Swim", "Run") else None
 
+        # Strip duplicate "AI: " prefix if Claude already added it
+        clean_name = self.name[4:] if self.name.startswith("AI: ") else self.name
+
         return EventExDTO(
             category="WORKOUT",
             type=self.sport,
-            name=f"AI: {self.name} ({self.suffix})",
+            name=f"AI: {clean_name} ({self.suffix})",
+            description=self.rationale or "",
             start_date_local=f"{self.target_date}T00:00:00",
             moving_time=self.duration_minutes * 60,
             external_id=self.external_id,

@@ -39,7 +39,10 @@ class TestChatTools:
 
 
 def _make_text_response(text):
-    return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
+    usage = SimpleNamespace(
+        input_tokens=100, output_tokens=50, cache_read_input_tokens=0, cache_creation_input_tokens=0
+    )
+    return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)], usage=usage)
 
 
 class TestClaudeAgentChat:
@@ -103,7 +106,10 @@ class TestClaudeAgentChat:
         agent.client = MagicMock()
 
         # Response with no text blocks
-        response = SimpleNamespace(stop_reason="end_turn", content=[])
+        usage = SimpleNamespace(
+            input_tokens=10, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=0
+        )
+        response = SimpleNamespace(stop_reason="end_turn", content=[], usage=usage)
         agent.client.messages.create = AsyncMock(return_value=response)
 
         with (

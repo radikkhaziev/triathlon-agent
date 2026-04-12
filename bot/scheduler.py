@@ -10,6 +10,7 @@ from data.db import UserDTO
 from tasks.actors import (
     actor_compose_user_evening_report,
     actor_compose_user_morning_report,
+    actor_compose_weekly_report,
     actor_fetch_user_activities,
     actor_sync_athlete_goals,
     actor_user_scheduled_workouts,
@@ -32,15 +33,23 @@ async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
 
 @with_athletes
 async def scheduler_wellness_and_reports_job(athletes: list[UserDTO]) -> None:
-    """Wellness sync + morning report generation (merged job)."""
+    """Wellness sync + morning report generation (staggered to avoid rate limits)."""
     group([actor_user_wellness.message(user=a) for a in athletes]).run()
-    group([actor_compose_user_morning_report.message(user=a) for a in athletes]).run()
+    for i, a in enumerate(athletes):
+        actor_compose_user_morning_report.send_with_options(kwargs={"user": a}, delay=60_000 + i * 20_000)
 
 
 @with_athletes
 async def scheduler_evening_report_job(athletes: list[UserDTO]) -> None:
     _group = group([actor_compose_user_evening_report.message(user=a) for a in athletes])
     _group.run()
+
+
+@with_athletes
+async def scheduler_weekly_report_job(athletes: list[UserDTO]) -> None:
+    for i, a in enumerate(athletes):
+        actor_compose_weekly_report.send_with_options(kwargs={"user": a}, delay=i * 30_000)
+    logger.info("Dispatched weekly report for %d athletes", len(athletes))
 
 
 @with_athletes
@@ -89,8 +98,14 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_evening_report_job,
         trigger="cron",
         hour=19,
-        minute=00,
+        minute=0,
         id="scheduler_evening_report_job",
+    )
+
+    scheduler.add_job(
+        scheduler_weekly_report_job,
+        trigger=CronTrigger(day_of_week="sun", hour=18, minute=0, timezone=settings.TIMEZONE),
+        id="scheduler_weekly_report_job",
     )
 
     scheduler.add_job(

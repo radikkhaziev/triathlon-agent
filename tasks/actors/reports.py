@@ -215,6 +215,28 @@ def actor_compose_user_morning_report(
 
 
 # ---------------------------------------------------------------------------
+#  Weekly Report
+# ---------------------------------------------------------------------------
+
+
+@dramatiq.actor(queue_name="default", time_limit=600_000)
+@validate_call
+def actor_compose_weekly_report(user: UserDTO):
+    """Generate weekly training summary via Claude + MCP tools."""
+    mcp = MCPTool(token=user.mcp_token, user_id=user.id)
+    text = mcp.generate_weekly_report_via_mcp()
+
+    if not text:
+        logger.warning("Weekly report empty for user %d", user.id)
+        return
+
+    tg = TelegramTool(user=user)
+    if not user.is_silent:
+        tg.send_message(text=text)
+    logger.info("Weekly report sent for user %d", user.id)
+
+
+# ---------------------------------------------------------------------------
 #  Evening Report
 # ---------------------------------------------------------------------------
 

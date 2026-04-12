@@ -1,17 +1,21 @@
 """MCP tool for weekly training summary."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from data.db import Activity, IqosDaily, ScheduledWorkout, Wellness, get_session
+from data.db import Activity, IqosDaily, MoodCheckin, ScheduledWorkout, Wellness, get_session
+from data.utils import extract_sport_ctl
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+
+# Recovery category thresholds (same as data/metrics.py)
+_RECOVERY_CATEGORIES = {"excellent": "green", "good": "green", "moderate": "yellow", "low": "red"}
 
 
 @mcp.tool()
 async def get_weekly_summary(week_start_date: str = "") -> dict:
-    """Get weekly summary: training sessions/TSS/hours by sport, wellness averages, IQOS, CTL delta."""
+    """Get weekly summary: training/wellness/mood/recovery/IQOS/per-sport CTL delta."""
     user_id = get_current_user_id()
 
     if week_start_date:
@@ -24,7 +28,7 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
     start_str, end_str = str(start), str(end)
 
     async with get_session() as session:
-        # Activities
+        # Activities (include sport type for compliance matching)
         activities = (
             await session.execute(
                 select(Activity.type, Activity.moving_time, Activity.icu_training_load).where(
@@ -35,7 +39,7 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
             )
         ).all()
 
-        # Scheduled workouts
+        # Scheduled workouts (include sport type for per-sport compliance)
         planned = (
             await session.execute(
                 select(ScheduledWorkout.type).where(
@@ -46,10 +50,20 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
             )
         ).all()
 
-        # Wellness
+        # Wellness (full row for recovery + weight + sport_info)
         wellness_rows = (
             await session.execute(
-                select(Wellness.hrv, Wellness.resting_hr, Wellness.sleep_score, Wellness.sleep_seconds, Wellness.ctl)
+                select(
+                    Wellness.hrv,
+                    Wellness.resting_hr,
+                    Wellness.sleep_score,
+                    Wellness.sleep_secs,
+                    Wellness.ctl,
+                    Wellness.recovery_score,
+                    Wellness.recovery_category,
+                    Wellness.weight,
+                    Wellness.sport_info,
+                )
                 .where(Wellness.user_id == user_id, Wellness.date >= start_str, Wellness.date <= end_str)
                 .order_by(Wellness.date.asc())
             )
@@ -64,12 +78,27 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
             )
         ).all()
 
-    # Training by sport
+        # Mood check-ins
+        start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+        end_dt = datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc)
+        mood_rows = (
+            await session.execute(
+                select(MoodCheckin.energy, MoodCheckin.mood, MoodCheckin.anxiety).where(
+                    MoodCheckin.user_id == user_id,
+                    MoodCheckin.timestamp >= start_dt,
+                    MoodCheckin.timestamp <= end_dt,
+                )
+            )
+        ).all()
+
+    # --- Training by sport ---
     by_sport: dict[str, dict] = {}
     total_tss = 0.0
     total_secs = 0
+    actual_types: list[str] = []
     for sport, moving_time, tss in activities:
         s = (sport or "Other").lower()
+        actual_types.append(s)
         if s not in by_sport:
             by_sport[s] = {"sessions": 0, "tss": 0.0, "hours": 0.0}
         by_sport[s]["sessions"] += 1
@@ -82,16 +111,30 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
         s["tss"] = round(s["tss"], 1)
         s["hours"] = round(s["hours"], 1)
 
-    sessions_planned = len(planned)
+    # --- Compliance (by sport type, not just count) ---
+    planned_types = [(r[0] or "Other").lower() for r in planned]
+    sessions_planned = len(planned_types)
     sessions_completed = len(activities)
-    compliance_pct = round(sessions_completed / sessions_planned * 100) if sessions_planned else 0
 
-    # Wellness averages
+    # Per-sport compliance: count matched pairs
+    unmatched_planned = list(planned_types)
+    matched = 0
+    for act_type in actual_types:
+        if act_type in unmatched_planned:
+            unmatched_planned.remove(act_type)
+            matched += 1
+    compliance_pct = round(matched / sessions_planned * 100) if sessions_planned else 0
+
+    # --- Wellness averages ---
     hrvs = [r[0] for r in wellness_rows if r[0] is not None]
     rhrs = [r[1] for r in wellness_rows if r[1] is not None]
     sleep_scores = [r[2] for r in wellness_rows if r[2] is not None]
     sleep_secs = [r[3] for r in wellness_rows if r[3] is not None]
     ctls = [r[4] for r in wellness_rows if r[4] is not None]
+    recovery_scores = [r[5] for r in wellness_rows if r[5] is not None]
+    recovery_cats = [r[6] for r in wellness_rows if r[6] is not None]
+    weights = [r[7] for r in wellness_rows if r[7] is not None]
+    sport_infos = [r[8] for r in wellness_rows if r[8] is not None]
 
     hrv_avg = round(sum(hrvs) / len(hrvs), 1) if hrvs else None
     hrv_cv = (
@@ -111,7 +154,38 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
         "sleep_7h_days": sum(1 for s in sleep_secs if s >= 25200) if sleep_secs else 0,
     }
 
-    # IQOS
+    # --- Recovery ---
+    recovery: dict = {}
+    if recovery_scores:
+        recovery["avg_score"] = round(sum(recovery_scores) / len(recovery_scores), 1)
+        # Count days by color
+        color_counts = {"green": 0, "yellow": 0, "red": 0}
+        for cat in recovery_cats:
+            color = _RECOVERY_CATEGORIES.get(cat, "yellow")
+            color_counts[color] += 1
+        recovery["days_by_color"] = color_counts
+
+    # --- Weight ---
+    weight: dict = {}
+    if weights:
+        weight["start"] = weights[0]
+        weight["end"] = weights[-1]
+        weight["delta"] = round(weights[-1] - weights[0], 1)
+
+    # --- Mood ---
+    mood: dict = {}
+    if mood_rows:
+        energies = [r[0] for r in mood_rows if r[0] is not None]
+        moods = [r[1] for r in mood_rows if r[1] is not None]
+        anxieties = [r[2] for r in mood_rows if r[2] is not None]
+        mood = {
+            "checkins": len(mood_rows),
+            "energy_avg": round(sum(energies) / len(energies), 1) if energies else None,
+            "mood_avg": round(sum(moods) / len(moods), 1) if moods else None,
+            "anxiety_avg": round(sum(anxieties) / len(anxieties), 1) if anxieties else None,
+        }
+
+    # --- IQOS ---
     iqos_counts = [r[0] for r in iqos_rows]
     iqos_total = sum(iqos_counts)
     iqos = {
@@ -120,14 +194,29 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
         "avg_per_day": round(iqos_total / len(iqos_counts), 1) if iqos_counts else 0,
     }
 
-    # CTL delta
-    load = {}
+    # --- CTL delta (total + per-sport) ---
+    load: dict = {}
     if len(ctls) >= 2:
-        load = {
-            "ctl_start": round(ctls[0], 1),
-            "ctl_end": round(ctls[-1], 1),
-            "ctl_delta": round(ctls[-1] - ctls[0], 1),
-        }
+        load["ctl_start"] = round(ctls[0], 1)
+        load["ctl_end"] = round(ctls[-1], 1)
+        load["ctl_delta"] = round(ctls[-1] - ctls[0], 1)
+
+    # Per-sport CTL from first and last day's sport_info
+    if len(sport_infos) >= 2:
+        first_sport_ctl = extract_sport_ctl(sport_infos[0])
+        last_sport_ctl = extract_sport_ctl(sport_infos[-1])
+        per_sport_ctl: dict = {}
+        for sport_key in ("swim", "ride", "run"):
+            s_start = first_sport_ctl.get(sport_key)
+            s_end = last_sport_ctl.get(sport_key)
+            if s_start is not None and s_end is not None:
+                per_sport_ctl[sport_key] = {
+                    "start": s_start,
+                    "end": s_end,
+                    "delta": round(s_end - s_start, 1),
+                }
+        if per_sport_ctl:
+            load["per_sport_ctl"] = per_sport_ctl
 
     return {
         "week": f"{start_str} to {end_str}",
@@ -140,6 +229,9 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
             "by_sport": by_sport,
         },
         "wellness": wellness,
+        "recovery": recovery,
+        "weight": weight,
+        "mood": mood,
         "iqos": iqos,
         "load": load,
     }
