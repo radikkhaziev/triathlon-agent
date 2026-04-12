@@ -1,5 +1,3 @@
-from datetime import date
-
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,12 +11,8 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
-    TELEGRAM_CHAT_ID: str = ""
-    TELEGRAM_WEBHOOK_URL: str = ""  # base URL, e.g. "https://your-api.example.com"; empty = polling mode
-
-    # Intervals.icu
-    INTERVALS_API_KEY: SecretStr = SecretStr("")
-    INTERVALS_ATHLETE_ID: str = ""
+    TELEGRAM_CHAT_ID: str = ""  # Owner chat ID for service notifications
+    TELEGRAM_WEBHOOK_URL: str = ""  # empty = polling mode
 
     # Anthropic
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
@@ -27,23 +21,6 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "https://your-api.railway.app"
     WEBAPP_URL: str = "https://your-app.vercel.app"
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
-
-    # Athlete thresholds (from HumanGo tests, Nov-Dec 2025 + Mar 2026)
-    ATHLETE_LTHR_RUN: int = 153  # bpm, from HumanGo ramp test
-    ATHLETE_LTHR_BIKE: int = 153  # bpm, from HumanGo ramp test
-    ATHLETE_MAX_HR: int = 179  # bpm
-    ATHLETE_FTP: float = 233  # watts, from HumanGo ramp test, Mar 2026
-    ATHLETE_CSS: float = 141  # 2:21/100m from HumanGo, Mar 2026
-    ATHLETE_THRESHOLD_PACE_RUN: float = 295  # sec/km, 4:55/km
-    ATHLETE_AGE: int = 43
-
-    # Race goal
-    GOAL_EVENT_NAME: str = "Ironman 70.3"
-    GOAL_EVENT_DATE: date = date(2026, 9, 15)
-    GOAL_CTL_TARGET: float = 75
-    GOAL_SWIM_CTL_TARGET: float = 15
-    GOAL_BIKE_CTL_TARGET: float = 35
-    GOAL_RUN_CTL_TARGET: float = 25
 
     TIMEZONE: str = "Europe/Belgrade"
 
