@@ -138,6 +138,7 @@ def _mock_user(chat_id: str = "12345"):
     u.athlete_id = "i001"
     u.mcp_token = "test_token"
     u.role = "owner"
+    u.language = "ru"
     return u
 
 

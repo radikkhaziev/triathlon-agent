@@ -1,4 +1,4 @@
-from .activity import Activity, ActivityDetail, ActivityHrv  # noqa
+from .activity import Activity, ActivityDetail, ActivityHrv, Race  # noqa
 from .athlete import AthleteGoal, AthleteSettings  # noqa
 from .common import get_session, get_sync_session  # noqa
 from .dto import (  # noqa

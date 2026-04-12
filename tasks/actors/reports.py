@@ -168,7 +168,7 @@ def _actor_send_user_morning_report(
         )
 
     tg = TelegramTool(user=user)
-    tg.send_message(text=summary, reply_markup=keyboard)
+    tg.send_message(text=summary, reply_markup=keyboard, markdown=True)
     logger.info("Morning report sent for user %d", user.id)
 
 
@@ -232,7 +232,7 @@ def actor_compose_weekly_report(user: UserDTO):
 
     tg = TelegramTool(user=user)
     if not user.is_silent:
-        tg.send_message(text=text)
+        tg.send_message(text=text, markdown=True)
     logger.info("Weekly report sent for user %d", user.id)
 
 

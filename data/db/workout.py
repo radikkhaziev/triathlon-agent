@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -345,6 +346,7 @@ class TrainingLog(Base):
     actual_tss: Mapped[float | None] = mapped_column(Float, nullable=True)
     actual_max_zone_time: Mapped[str | None] = mapped_column(String(10), nullable=True)
     compliance: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_race: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     # Post-outcome (filled next morning)
     post_recovery_score: Mapped[float | None] = mapped_column(Float, nullable=True)

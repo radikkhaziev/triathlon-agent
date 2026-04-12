@@ -11,11 +11,13 @@ from data.db import (
     ActivityHrv,
     AiWorkout,
     HrvAnalysis,
+    Race,
     RhrAnalysis,
     ScheduledWorkout,
     TrainingLog,
     UserDTO,
     Wellness,
+    get_sync_session,
 )
 from tasks.dto import DateDTO
 from tasks.utils import compute_max_zone_sync, detect_compliance
@@ -133,6 +135,7 @@ def actor_fill_training_log(user: UserDTO, dt: DateDTO):
             user_id=user.id,
             date=dt.isoformat(),
             sport=activity.type,
+            is_race=getattr(activity, "is_race", False),
             **plan_kwargs,
             **pre_kwargs,
         )
@@ -154,7 +157,52 @@ def actor_fill_training_log(user: UserDTO, dt: DateDTO):
             compliance=compliance,
         )
 
+        # Auto-create Race record if activity is flagged as race
+        if getattr(activity, "is_race", False) is True:
+            _ensure_race_record(user, activity, wellness_row)
+
     logger.info("Training log PRE+ACTUAL for user %d on %s: %d entries", user.id, dt, len(new_activities))
+
+
+def _ensure_race_record(user: UserDTO, activity, wellness_row) -> None:
+    """Create Race record if not exists for a race activity."""
+    from data.db import ActivityDetail
+
+    existing = Race.get_by_activity(user.id, activity.id)
+    if existing:
+        return
+
+    with get_sync_session() as session:
+        detail = session.get(ActivityDetail, activity.id)
+
+    distance = detail.distance if detail else None
+    avg_pace = None
+    if distance and activity.moving_time and distance > 0:
+        avg_pace = round(activity.moving_time / (distance / 1000), 1)
+
+    tsb = None
+    if wellness_row and wellness_row.ctl is not None and wellness_row.atl is not None:
+        tsb = round(wellness_row.ctl - wellness_row.atl, 1)
+
+    with get_sync_session() as session:
+        race = Race(
+            user_id=user.id,
+            activity_id=activity.id,
+            name=activity.type or "Race",
+            race_type="C",
+            distance_m=distance,
+            finish_time_sec=activity.moving_time,
+            avg_pace_sec_km=avg_pace,
+            race_day_ctl=wellness_row.ctl if wellness_row else None,
+            race_day_atl=wellness_row.atl if wellness_row else None,
+            race_day_tsb=tsb,
+            race_day_recovery_score=wellness_row.recovery_score if wellness_row else None,
+            race_day_weight=wellness_row.weight if wellness_row else None,
+        )
+        session.add(race)
+        session.commit()
+
+    logger.info("Race auto-created for user %d activity %s", user.id, activity.id)
 
 
 @dramatiq.actor(queue_name="default")

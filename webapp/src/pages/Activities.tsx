@@ -120,6 +120,7 @@ function ActivityRow({ activity: a }: { activity: ActivityItem }) {
         onClick={toggleDetail}
       >
         <span className="text-lg shrink-0 w-6 text-center">{icon}</span>
+        {a.is_race && <span className="text-xs">🏁</span>}
         <div className="flex-1 min-w-0">
           <div className="text-[13px] font-semibold truncate">{label}</div>
           {meta && <div className="text-xs text-text-dim mt-px">{meta}</div>}

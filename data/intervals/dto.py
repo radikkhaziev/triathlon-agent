@@ -148,6 +148,8 @@ class ActivityDTO(BaseModel):
     icu_training_load: float | None = None
     moving_time: int | None = None  # seconds
     average_hr: float | None = None  # average heart rate (from average_heartrate API field)
+    is_race: bool = Field(False, alias="race")
+    sub_type: str | None = None
 
     @field_validator("type", mode="before")
     @classmethod

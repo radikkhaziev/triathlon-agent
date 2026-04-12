@@ -39,7 +39,7 @@ export default function Activity() {
     <Layout backTo="/activities" backLabel={t('activities.back_to_list')} hideBottomTabs>
       {/* Header */}
       <div className="py-4 pb-3">
-        <div className="text-xl font-bold flex items-center gap-2">{icon} {sportLabel(data.type)}</div>
+        <div className="text-xl font-bold flex items-center gap-2">{icon} {sportLabel(data.type)} {data.is_race && <span className="text-sm">🏁</span>}</div>
         <div className="text-[13px] text-text-dim mt-1">{subParts.join(' \u00B7 ')}</div>
       </div>
 
