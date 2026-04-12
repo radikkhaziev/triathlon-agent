@@ -115,10 +115,26 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User
 
 @athlete_required
 async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
-    """Handle /lang command — set language (ru/en)."""
-    lang = context.args[0] if context.args else None
+    """Handle /lang command — show language picker inline buttons."""
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🇷🇺 Русский", callback_data="lang:ru"),
+                InlineKeyboardButton("🇬🇧 English", callback_data="lang:en"),
+            ]
+        ]
+    )
+    await update.message.reply_text("🌐 Choose language:", reply_markup=keyboard)
+
+
+@athlete_required
+async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle language selection callback."""
+    query = update.callback_query
+    await query.answer()
+
+    lang = query.data.split(":")[1]
     if lang not in ("ru", "en"):
-        await update.message.reply_text(_("Доступные языки: ru, en"))
         return
 
     async with get_session() as session:
@@ -127,7 +143,8 @@ async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, user: Use
         await session.commit()
 
     _set_lang(lang)
-    await update.message.reply_text(_("Язык изменён."))
+    label = "🇷🇺 Русский" if lang == "ru" else "🇬🇧 English"
+    await query.edit_message_text(f"✅ {label}")
 
 
 @athlete_required
@@ -664,6 +681,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_adapt_callback, pattern=r"^adapt:"))
     app.add_handler(CallbackQueryHandler(handle_ramp_callback, pattern=r"^ramp_test:"))
     app.add_handler(CallbackQueryHandler(handle_update_zones_callback, pattern=r"^update_zones$"))
+    app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     # Photo handler — download, save, pass to AI chat with vision
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))
