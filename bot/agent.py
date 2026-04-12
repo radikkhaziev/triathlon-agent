@@ -95,6 +95,7 @@ class ClaudeAgent:
         user_message: str,
         mcp_token: str | None = None,
         user_id: int = 1,
+        language: str = "ru",
         image_data: bytes | None = None,
         image_media_type: str = "image/jpeg",
         image_url: str | None = None,
@@ -105,7 +106,7 @@ class ClaudeAgent:
         mcp_token: per-user MCP Bearer token. Falls back to global MCP_AUTH_TOKEN.
         """
         mcp = MCPClient(token=mcp_token)
-        system = await get_system_prompt_chat(user_id=user_id)
+        system = await get_system_prompt_chat(user_id=user_id, language=language)
         all_tools = await mcp.list_tools()
         sentry_sdk.set_tag("user_id", user_id)
 

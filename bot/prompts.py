@@ -74,7 +74,7 @@ get_garmin_abnormal_hr_events — если были аномальные HR со
 - Use Garmin tools for: trend analysis, pattern detection, historical correlations.
 - Check `data_freshness` in every Garmin tool response. Always mention data coverage: "По данным Garmin до 3 апреля..."
 - If days_stale > 14 — warn: "⚠️ Garmin данные устарели. Запроси новый экспорт."
-- Respond in Russian
+- Respond in {response_language}
 """
 
 
@@ -114,11 +114,15 @@ Athlete profile:
 - Если compliance < 70% — отметить что пропущено
 - Если ramp rate > 7 — предупредить
 - Если IQOS > 15/день — отметить корреляцию с recovery
-- Respond in Russian
+- Respond in {response_language}
 """
 
 
-def get_system_prompt_weekly(user_id: int) -> str:
+def _lang_name(code: str) -> str:
+    return "English" if code == "en" else "Russian"
+
+
+def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
@@ -133,11 +137,11 @@ def get_system_prompt_weekly(user_id: int) -> str:
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",
         css=t.css or "—",
+        response_language=_lang_name(language),
     )
 
 
-def get_system_prompt_v2(user_id: int) -> str:
-
+def get_system_prompt_v2(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
     return SYSTEM_PROMPT_V2.format(
@@ -148,6 +152,7 @@ def get_system_prompt_v2(user_id: int) -> str:
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",
         css=t.css or "—",
+        response_language=_lang_name(language),
     )
 
 
@@ -172,7 +177,7 @@ Important:
 - Use tools to get actual data — don't guess or assume values.
 - If the question doesn't require data (e.g. general training advice), answer directly without tools.
 - Keep answers short: 2-5 sentences for simple questions, up to 10 for analysis.
-- Respond in Russian.
+- Respond in {response_language}.
 - Format for Telegram: use Markdown (bold, italic), no headers, no long lists.
 
 ## Garmin Data Usage Rules
@@ -188,8 +193,7 @@ call save_mood_checkin autonomously — don't ask, just record what you observe.
 """
 
 
-async def get_system_prompt_chat(user_id: int) -> str:
-
+async def get_system_prompt_chat(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
@@ -204,4 +208,5 @@ async def get_system_prompt_chat(user_id: int) -> str:
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",
         css=t.css or "—",
+        response_language=_lang_name(language),
     )

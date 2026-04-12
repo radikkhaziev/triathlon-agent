@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import create_jwt, verify_code
 from api.deps import get_current_user
-from data.db import User
+from data.db import User, get_session
 
 router = APIRouter()
 
@@ -30,4 +30,22 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     """Check current auth status."""
     if not user:
         return {"role": "anonymous", "authenticated": False}
-    return {"role": user.role, "authenticated": True}
+    return {"role": user.role, "authenticated": True, "language": user.language}
+
+
+@router.put("/api/auth/language")
+async def set_language(body: dict, user: User | None = Depends(get_current_user)) -> dict:
+    """Update user language preference."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    lang = body.get("language", "")
+    if lang not in ("ru", "en"):
+        raise HTTPException(status_code=400, detail="Language must be 'ru' or 'en'")
+
+    async with get_session() as session:
+        db_user = await session.get(User, user.id)
+        db_user.language = lang
+        await session.commit()
+
+    return {"language": lang}

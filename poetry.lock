@@ -201,6 +201,21 @@ files = [
 ]
 
 [[package]]
+name = "babel"
+version = "2.18.0"
+description = "Internationalization utilities"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "babel-2.18.0-py3-none-any.whl", hash = "sha256:e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae9081c92f1aeba35"},
+    {file = "babel-2.18.0.tar.gz", hash = "sha256:b80b99a14bd085fcacfa15c9165f651fbb3406e66cc603abf11c5750937c992d"},
+]
+
+[package.extras]
+dev = ["backports.zoneinfo ; python_version < \"3.9\"", "freezegun (>=1.0,<2.0)", "jinja2 (>=3.0)", "pytest (>=6.0)", "pytest-cov", "pytz", "setuptools", "tzdata ; sys_platform == \"win32\""]
+
+[[package]]
 name = "black"
 version = "26.3.1"
 description = "The uncompromising code formatter."
@@ -2927,4 +2942,4 @@ dev = ["black", "flake8", "flake8-pyproject", "isort", "pre-commit", "pytest", "
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12"
-content-hash = "a3342ee308699250c8c579bb991007eef4e8718857369793dc045e50410bcbf1"
+content-hash = "fd2f6b8dc6cf06c5e647600b6c5d266893be410d2fe22c7bc60948566dcb7503"

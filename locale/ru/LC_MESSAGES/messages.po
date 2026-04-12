@@ -1,0 +1,5 @@
+# Russian translations (identity — msgid is already Russian)
+msgid ""
+msgstr ""
+"Language: ru\n"
+"Content-Type: text/plain; charset=UTF-8\n"

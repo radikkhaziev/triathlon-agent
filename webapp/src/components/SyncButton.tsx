@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { apiFetch } from '../api/client'
 import type { SyncResponse } from '../api/types'
 import { relativeTime } from '../lib/formatters'
@@ -12,6 +13,7 @@ interface SyncButtonProps {
 export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncButtonProps) {
   const [syncing, setSyncing] = useState(false)
   const [queued, setQueued] = useState(false)
+  const { t } = useTranslation()
 
   useEffect(() => {
     setQueued(false)
@@ -24,7 +26,7 @@ export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncBut
       setQueued(true)
       onSynced(result)
     } catch (err) {
-      const msg = 'Ошибка синхронизации. Проверьте соединение.'
+      const msg = t('common.error')
       if (window.Telegram?.WebApp?.showAlert) {
         window.Telegram.WebApp.showAlert(msg)
       } else {
@@ -43,13 +45,13 @@ export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncBut
         className="bg-accent text-white border-none rounded-lg px-4 py-2 text-[13px] font-semibold cursor-pointer transition-all hover:bg-[#2563eb] active:scale-[0.97] disabled:opacity-60 disabled:cursor-not-allowed font-sans flex items-center gap-1.5"
       >
         {queued ? (
-          <><span>&#x2705;</span> В очереди</>
+          <><span>&#x2705;</span> {t('common.queued')}</>
         ) : (
-          <><span className={syncing ? 'animate-spin inline-block' : ''}>&#x1f504;</span> Синхронизировать</>
+          <><span className={syncing ? 'animate-spin inline-block' : ''}>&#x1f504;</span> {t('common.sync')}</>
         )}
       </button>
       <span className="text-xs text-text-dim">
-        {lastSyncedAt ? `Обновлено: ${relativeTime(lastSyncedAt)}` : 'Не синхронизировано'}
+        {lastSyncedAt ? t('common.updated_at', { time: relativeTime(lastSyncedAt) }) : t('common.not_synced')}
       </span>
     </div>
   )

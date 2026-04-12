@@ -1,0 +1,66 @@
+{
+  "nav": {
+    "today": "Today",
+    "plan": "Plan",
+    "activities": "Activities",
+    "wellness": "Wellness",
+    "more": "More",
+    "progress": "Progress",
+    "dashboard": "Dashboard",
+    "settings": "Settings"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "no_data": "No data",
+    "back": "Back",
+    "sync": "Sync",
+    "syncing": "Syncing...",
+    "queued": "Queued",
+    "updated_at": "Updated: {{time}}",
+    "not_synced": "Not synced",
+    "kg": "kg"
+  },
+  "today": {
+    "title": "Today",
+    "load_error": "Could not load data.",
+    "no_data": "No data for today."
+  },
+  "wellness": {
+    "title": "Wellness",
+    "load_error": "Could not load data.",
+    "no_data": "No data for this date",
+    "recovery": "Recovery",
+    "sleep": "Sleep",
+    "duration": "Duration",
+    "quality": "Quality",
+    "rhr": "Resting Heart Rate",
+    "today_value": "Today",
+    "avg_7d": "Avg 7d",
+    "avg_30d": "Avg 30d",
+    "avg_60d": "Avg 60d",
+    "trend": "Trend",
+    "training_load": "Training Load",
+    "body": "Body",
+    "weight": "Weight",
+    "steps": "Steps"
+  },
+  "activities": {
+    "title": "Activities",
+    "load_error": "Could not load activities.",
+    "back_to_list": "Back to activities",
+    "load_activity_error": "Could not load activity.",
+    "no_details": "No detailed data for this activity."
+  },
+  "plan": {
+    "title": "Training Plan",
+    "load_error": "Could not load plan."
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "russian": "Русский",
+    "english": "English",
+    "logout": "Log out"
+  }
+}

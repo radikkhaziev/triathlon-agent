@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -16,6 +17,7 @@ import type {
 } from '../api/types'
 
 export default function Today() {
+  const { t } = useTranslation()
   const [report, setReport] = useState<WellnessResponse | null>(null)
   const [workouts, setWorkouts] = useState<ScheduledWorkoutsResponse | null>(null)
   const [activities, setActivities] = useState<ActivitiesWeekResponse | null>(null)
@@ -37,8 +39,8 @@ export default function Today() {
   }, [])
 
   if (loading) return <Layout maxWidth="480px"><LoadingSpinner /></Layout>
-  if (error) return <Layout maxWidth="480px"><ErrorMessage message="Не удалось загрузить данные." /></Layout>
-  if (!report?.has_data) return <Layout maxWidth="480px"><ErrorMessage message="Нет данных на сегодня." /></Layout>
+  if (error) return <Layout maxWidth="480px"><ErrorMessage message={t('today.load_error')} /></Layout>
+  if (!report?.has_data) return <Layout maxWidth="480px"><ErrorMessage message={t('today.no_data')} /></Layout>
 
   const rec = report.recovery
   const cat = rec?.category || 'moderate'

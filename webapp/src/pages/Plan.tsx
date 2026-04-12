@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
@@ -11,6 +12,7 @@ import { SPORT_ICONS } from '../lib/constants'
 import type { ScheduledWorkoutsResponse, SyncResponse, ScheduledWorkout } from '../api/types'
 
 export default function Plan() {
+  const { t } = useTranslation()
   const { offset, prev, next } = useWeekNav()
   const { data, loading, error, reload } = useApi<ScheduledWorkoutsResponse>(`/api/scheduled-workouts?week_offset=${offset}`)
 
@@ -19,7 +21,7 @@ export default function Plan() {
   }
 
   return (
-    <Layout title="План тренировок">
+    <Layout title={t('plan.title')}>
       {data && (
         <WeekNav
           weekStart={data.week_start}
@@ -40,7 +42,7 @@ export default function Plan() {
       )}
 
       {loading && <LoadingSpinner />}
-      {error && <ErrorMessage message="Не удалось загрузить план." />}
+      {error && <ErrorMessage message={t('plan.load_error')} />}
 
       {!loading && !error && data && (
         <div>

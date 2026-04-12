@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
@@ -15,6 +16,7 @@ import { num } from '../lib/formatters'
 import type { WellnessResponse, HRVBlock } from '../api/types'
 
 export default function Wellness() {
+  const { t } = useTranslation()
   const { currentDate, dateStr, isToday, prev, next } = useDayNav()
   const { data, loading, error, reload } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
   const [hrvTab, setHrvTab] = useState('flatt_esco')
@@ -39,16 +41,16 @@ export default function Wellness() {
       )}
 
       {loading && <LoadingSpinner />}
-      {error && <ErrorMessage message="Не удалось загрузить данные." />}
+      {error && <ErrorMessage message={t('wellness.load_error')} />}
 
       {!loading && !error && data && !data.has_data && (
-        <ErrorMessage message="Нет данных за эту дату" />
+        <ErrorMessage message={t('wellness.no_data')} />
       )}
 
       {!loading && !error && data?.has_data && (
         <>
           {/* Recovery */}
-          <Section icon={data.recovery?.emoji || '⚪'} title="Восстановление">
+          <Section icon={data.recovery?.emoji || '⚪'} title={t('wellness.recovery')}>
             <div className="flex items-center gap-3 mb-3">
               <div className="text-4xl font-bold leading-none" style={{ color: gaugeColor(data.recovery?.score || 0) }}>
                 {data.recovery?.score != null ? Math.round(data.recovery.score) : '--'}
@@ -67,10 +69,10 @@ export default function Wellness() {
           </Section>
 
           {/* Sleep */}
-          <Section icon="😴" title="Сон">
+          <Section icon="😴" title={t('wellness.sleep')}>
             <div className="grid grid-cols-2 gap-2">
               <MetricCard label="Sleep Score" value={data.sleep?.score != null ? String(data.sleep.score) : '--'} />
-              <MetricCard label="Длительность" value={data.sleep?.duration || '--'} sub={data.sleep?.quality != null ? `Качество: ${data.sleep.quality}` : undefined} />
+              <MetricCard label={t('wellness.duration')} value={data.sleep?.duration || '--'} sub={data.sleep?.quality != null ? `${t('wellness.quality')}: ${data.sleep.quality}` : undefined} />
             </div>
           </Section>
 
@@ -89,10 +91,10 @@ export default function Wellness() {
           </Section>
 
           {/* RHR */}
-          <Section icon="❤️" title="Пульс в покое">
+          <Section icon="❤️" title={t('wellness.rhr')}>
             <div className="grid grid-cols-2 gap-2 mb-2">
               <MetricCard
-                label="Сегодня"
+                label={t('wellness.today_value')}
                 value={data.rhr?.today != null ? `${num(data.rhr.today, 0)} bpm` : '--'}
                 sub={data.rhr?.delta_30d != null ? `\u03B4 ${data.rhr.delta_30d > 0 ? '+' : ''}${num(data.rhr.delta_30d)}` : undefined}
                 subClass={data.rhr?.delta_30d != null ? (data.rhr.delta_30d > 0 ? 'text-red' : data.rhr.delta_30d < 0 ? 'text-green' : '') : undefined}
@@ -104,18 +106,18 @@ export default function Wellness() {
             </div>
             {data.rhr && (
               <div className="[&>div:last-child]:border-b-0">
-                <MetricRow label="Среднее 7д" value={data.rhr.mean_7d != null ? `${num(data.rhr.mean_7d, 0)} \u00B1 ${num(data.rhr.sd_7d)}` : '--'} />
-                <MetricRow label="Среднее 30д" value={data.rhr.mean_30d != null ? `${num(data.rhr.mean_30d, 0)} \u00B1 ${num(data.rhr.sd_30d)}` : '--'} />
-                <MetricRow label="Среднее 60д" value={data.rhr.mean_60d != null ? `${num(data.rhr.mean_60d, 0)} \u00B1 ${num(data.rhr.sd_60d)}` : '--'} />
+                <MetricRow label={t('wellness.avg_7d')} value={data.rhr.mean_7d != null ? `${num(data.rhr.mean_7d, 0)} \u00B1 ${num(data.rhr.sd_7d)}` : '--'} />
+                <MetricRow label={t('wellness.avg_30d')} value={data.rhr.mean_30d != null ? `${num(data.rhr.mean_30d, 0)} \u00B1 ${num(data.rhr.sd_30d)}` : '--'} />
+                <MetricRow label={t('wellness.avg_60d')} value={data.rhr.mean_60d != null ? `${num(data.rhr.mean_60d, 0)} \u00B1 ${num(data.rhr.sd_60d)}` : '--'} />
                 <MetricRow label="Bounds" value={data.rhr.lower_bound != null ? `${num(data.rhr.lower_bound, 0)} \u2014 ${num(data.rhr.upper_bound, 0)}` : '--'} />
                 <MetricRow label="CV 7д" value={data.rhr.cv_7d != null ? `${num(data.rhr.cv_7d)}% ${data.rhr.cv_verdict || ''}` : '--'} />
-                {data.rhr.trend && <MetricRow label="Тренд" value={data.rhr.trend.direction || '--'} />}
+                {data.rhr.trend && <MetricRow label={t('wellness.trend')} value={data.rhr.trend.direction || '--'} />}
               </div>
             )}
           </Section>
 
           {/* Training Load */}
-          <Section icon="📈" title="Тренировочная нагрузка">
+          <Section icon="📈" title={t('wellness.training_load')}>
             <div className="grid grid-cols-2 gap-2 mb-2">
               <MetricCard label="CTL (фитнес)" value={data.training_load?.ctl != null ? num(data.training_load.ctl) : '--'} />
               <MetricCard label="ATL (усталость)" value={data.training_load?.atl != null ? num(data.training_load.atl) : '--'} />
@@ -129,12 +131,12 @@ export default function Wellness() {
 
           {/* Body */}
           {data.body && (data.body.weight != null || data.body.body_fat != null || data.body.vo2max != null || data.body.steps != null) && (
-            <Section icon="🏋️" title="Тело">
+            <Section icon="🏋️" title={t('wellness.body')}>
               <div className="grid grid-cols-2 gap-2">
-                {data.body.weight != null && <MetricCard label="Вес" value={`${num(data.body.weight)} кг`} />}
+                {data.body.weight != null && <MetricCard label={t('wellness.weight')} value={`${num(data.body.weight)} ${t('common.kg')}`} />}
                 {data.body.body_fat != null && <MetricCard label="Body Fat" value={`${num(data.body.body_fat)}%`} />}
                 {data.body.vo2max != null && <MetricCard label="VO2max" value={num(data.body.vo2max)} />}
-                {data.body.steps != null && <MetricCard label="Шаги" value={data.body.steps.toLocaleString()} />}
+                {data.body.steps != null && <MetricCard label={t('wellness.steps')} value={data.body.steps.toLocaleString()} />}
               </div>
             </Section>
           )}
@@ -169,11 +171,12 @@ function MetricRow({ label, value }: { label: string; value: React.ReactNode }) 
 }
 
 function HRVBlockView({ block }: { block: HRVBlock }) {
+  const { t } = useTranslation()
   return (
     <>
       <div className="grid grid-cols-2 gap-2 mb-2">
         <MetricCard
-          label="Сегодня"
+          label={t('wellness.today_value')}
           value={block.today != null ? `${num(block.today, 0)} мс` : '--'}
           sub={block.delta_pct != null ? `${block.delta_pct > 0 ? '+' : ''}${num(block.delta_pct)}%` : undefined}
           subClass={block.delta_pct != null ? (block.delta_pct > 0 ? 'text-green' : block.delta_pct < 0 ? 'text-red' : '') : undefined}
@@ -183,12 +186,12 @@ function HRVBlockView({ block }: { block: HRVBlock }) {
           <div className="mt-0.5"><StatusBadge status={block.status} /></div>
         </div>
       </div>
-      <MetricRow label="Среднее 7д" value={block.mean_7d != null ? `${num(block.mean_7d, 0)} \u00B1 ${num(block.sd_7d)}` : '--'} />
-      <MetricRow label="Среднее 60д" value={block.mean_60d != null ? `${num(block.mean_60d, 0)} \u00B1 ${num(block.sd_60d)}` : '--'} />
+      <MetricRow label={t('wellness.avg_7d')} value={block.mean_7d != null ? `${num(block.mean_7d, 0)} \u00B1 ${num(block.sd_7d)}` : '--'} />
+      <MetricRow label={t('wellness.avg_60d')} value={block.mean_60d != null ? `${num(block.mean_60d, 0)} \u00B1 ${num(block.sd_60d)}` : '--'} />
       <MetricRow label="Bounds" value={block.lower_bound != null ? `${num(block.lower_bound, 0)} \u2014 ${num(block.upper_bound, 0)}` : '--'} />
       <MetricRow label="CV 7д" value={block.cv_7d != null ? `${num(block.cv_7d)}% ${block.cv_verdict || ''}` : '--'} />
       <MetricRow label="SWC" value={block.swc_verdict || '--'} />
-      {block.trend && <MetricRow label="Тренд" value={block.trend.direction || '--'} />}
+      {block.trend && <MetricRow label={t('wellness.trend')} value={block.trend.direction || '--'} />}
     </>
   )
 }

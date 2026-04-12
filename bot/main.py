@@ -1,10 +1,15 @@
+import asyncio
 import logging
 import os
+import time
 import uuid
 import zoneinfo
 from datetime import datetime
 
+import httpx
+import psutil
 import sentry_sdk
+from sqlalchemy import text
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import (
     Application,
@@ -20,12 +25,15 @@ from telegram.ext import (
 from api.auth import generate_code
 from bot.agent import ClaudeAgent
 from bot.decorator import athlete_required
+from bot.i18n import _
+from bot.i18n import set_language as _set_lang
 from bot.scheduler import create_scheduler
 from config import settings
-from data.db import IqosDaily, User, UserDTO, Wellness
-from data.redis_client import close_redis, init_redis
+from data.db import IqosDaily, User, UserDTO, Wellness, get_session
+from data.redis_client import close_redis, get_redis, init_redis
 from sentry_config import init_sentry
-from tasks.actors import actor_compose_user_morning_report
+from tasks.actors import actor_compose_user_morning_report, actor_update_zones
+from tasks.utils import RampTrainingSuggestion
 
 logger = logging.getLogger(__name__)
 
@@ -89,20 +97,37 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User
     dt = datetime.now(TZ).date()
     row = await Wellness.get(user.id, dt)
     webapp_url = settings.API_BASE_URL
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть отчёт", web_app=WebAppInfo(url=webapp_url))]])
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(_("Открыть отчёт"), web_app=WebAppInfo(url=webapp_url))]])
 
     if not row:
-        await update.message.reply_text("Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут.")
+        await update.message.reply_text(_("Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут."))
         return
 
     if row.ai_recommendation:
-        await update.message.reply_text("Утренний отчёт готов.", reply_markup=keyboard)
+        await update.message.reply_text(_("Утренний отчёт готов."), reply_markup=keyboard)
         return
 
     # Report not generated yet — dispatch dramatiq task
     actor_compose_user_morning_report.send(user=UserDTO.model_validate(user).model_dump())
 
-    await update.message.reply_text("Отчёт формируется, подождите пару минут.", reply_markup=keyboard)
+    await update.message.reply_text(_("Отчёт формируется, подождите пару минут."), reply_markup=keyboard)
+
+
+@athlete_required
+async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle /lang command — set language (ru/en)."""
+    lang = context.args[0] if context.args else None
+    if lang not in ("ru", "en"):
+        await update.message.reply_text(_("Доступные языки: ru, en"))
+        return
+
+    async with get_session() as session:
+        db_user = await session.get(User, user.id)
+        db_user.language = lang
+        await session.commit()
+
+    _set_lang(lang)
+    await update.message.reply_text(_("Язык изменён."))
 
 
 @athlete_required
@@ -119,15 +144,13 @@ async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE, user: Us
 @athlete_required
 async def silent(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle /silent command — toggle silent mode."""
-    from data.db import get_session
-
     async with get_session() as session:
         db_user = await session.get(User, user.id)
         db_user.is_silent = not db_user.is_silent
         await session.commit()
-        status = "включён" if db_user.is_silent else "выключен"
+        status = _("включён") if db_user.is_silent else _("выключен")
 
-    await update.message.reply_text(f"🔇 Тихий режим {status}")
+    await update.message.reply_text(f"🔇 {_('Тихий режим')} {status}")
 
 
 @athlete_required
@@ -148,16 +171,6 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
     if user.role != "owner":
         await update.message.reply_text("Нет доступа.")
         return
-
-    import asyncio
-    import time
-
-    import httpx
-    import psutil
-    from sqlalchemy import text
-
-    from data.db import get_session
-    from data.redis_client import get_redis
 
     lines = []
     start = time.monotonic()
@@ -290,7 +303,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        response = await agent.chat(user_text, mcp_token=user.mcp_token, user_id=user.id)
+        response = await agent.chat(user_text, mcp_token=user.mcp_token, user_id=user.id, language=user.language)
 
         # Telegram Markdown is fragile — fallback to plain text on parse error
         try:
@@ -300,7 +313,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.error("Chat error: %s", e, exc_info=True)
-        await update.message.reply_text("Ошибка при обработке. Попробуй ещё раз.")
+        await update.message.reply_text(_("Ошибка при обработке. Попробуй ещё раз."))
 
 
 @athlete_required
@@ -316,7 +329,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         # Download photo from Telegram
         file = await photo.get_file()
         if file.file_size and file.file_size > 5 * 1024 * 1024:  # 5 MB limit
-            await update.message.reply_text("Фото слишком большое (макс 5 МБ).")
+            await update.message.reply_text(_("Фото слишком большое (макс 5 МБ)."))
             return
         photo_bytes = await file.download_as_bytearray()
 
@@ -334,6 +347,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
             user_message=caption,
             mcp_token=user.mcp_token,
             user_id=user.id,
+            language=user.language,
             image_data=bytes(photo_bytes),
             image_url=image_url,
         )
@@ -345,7 +359,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.error("Photo chat error: %s", e, exc_info=True)
-        await update.message.reply_text("Ошибка при обработке фото. Попробуй ещё раз.")
+        await update.message.reply_text(_("Ошибка при обработке фото. Попробуй ещё раз."))
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +384,7 @@ async def workout_start(update: Update, context: ContextTypes.DEFAULT_TYPE, user
             ],
         ]
     )
-    await update.message.reply_text("Выбери вид тренировки:", reply_markup=keyboard)
+    await update.message.reply_text(_("Выбери вид тренировки:"), reply_markup=keyboard)
     return WORKOUT_CHOOSE_SPORT
 
 
@@ -491,7 +505,7 @@ async def workout_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     query = update.callback_query
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("Отменено.")
+    await query.message.reply_text(_("Отменено."))
 
     context.user_data.pop("workout_sport", None)
     context.user_data.pop("workout_messages", None)
@@ -500,7 +514,7 @@ async def workout_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, use
 
 async def workout_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel via /cancel command."""
-    await update.message.reply_text("Создание тренировки отменено.")
+    await update.message.reply_text(_("Создание тренировки отменено."))
     context.user_data.pop("workout_sport", None)
     context.user_data.pop("workout_messages", None)
     return ConversationHandler.END
@@ -550,8 +564,6 @@ async def handle_adapt_callback(update: Update, context: ContextTypes.DEFAULT_TY
 @athlete_required
 async def handle_ramp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle 'Создать Ramp Test' inline button press."""
-    from tasks.utils import RampTrainingSuggestion
-
     query = update.callback_query
     await query.answer()
 
@@ -566,8 +578,6 @@ async def handle_ramp_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 @athlete_required
 async def handle_update_zones_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle 'Обновить зоны' inline button press — dispatch actor."""
-    from tasks.actors import actor_update_zones
-
     query = update.callback_query
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=None)
@@ -634,6 +644,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))
     app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("lang", set_lang))
     app.add_handler(CommandHandler("silent", silent))
     workout_conv = ConversationHandler(
         entry_points=[CommandHandler("workout", workout_start)],

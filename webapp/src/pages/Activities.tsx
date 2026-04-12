@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -14,6 +15,7 @@ import { SPORT_ICONS } from '../lib/constants'
 import type { ActivitiesWeekResponse, ActivityItem, ActivityDetailsResponse, SyncResponse } from '../api/types'
 
 export default function Activities() {
+  const { t } = useTranslation()
   const { offset, prev, next } = useWeekNav()
   const { data, loading, error, reload } = useApi<ActivitiesWeekResponse>(`/api/activities-week?week_offset=${offset}`)
 
@@ -22,7 +24,7 @@ export default function Activities() {
   }
 
   return (
-    <Layout title="Активности">
+    <Layout title={t('activities.title')}>
       {data && (
         <WeekNav
           weekStart={data.week_start}
@@ -43,7 +45,7 @@ export default function Activities() {
       )}
 
       {loading && <LoadingSpinner />}
-      {error && <ErrorMessage message="Не удалось загрузить активности." />}
+      {error && <ErrorMessage message={t('activities.load_error')} />}
 
       {!loading && !error && data && (
         <div>

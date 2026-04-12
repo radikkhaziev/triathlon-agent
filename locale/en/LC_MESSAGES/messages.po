@@ -1,0 +1,56 @@
+# English translations
+msgid ""
+msgstr ""
+"Language: en\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут."
+msgstr "No data for today. Data updates automatically every 10 minutes."
+
+msgid "Утренний отчёт готов."
+msgstr "Morning report is ready."
+
+msgid "Открыть отчёт"
+msgstr "Open report"
+
+msgid "Отчёт формируется, подождите пару минут."
+msgstr "Report is being generated, please wait."
+
+msgid "Нет доступа."
+msgstr "Access denied."
+
+msgid "Доступные языки: ru, en"
+msgstr "Available languages: ru, en"
+
+msgid "Язык изменён."
+msgstr "Language changed."
+
+msgid "Тихий режим"
+msgstr "Silent mode"
+
+msgid "включён"
+msgstr "on"
+
+msgid "выключен"
+msgstr "off"
+
+msgid "Ошибка при обработке. Попробуй ещё раз."
+msgstr "Error processing. Please try again."
+
+msgid "Фото слишком большое (макс 5 МБ)."
+msgstr "Photo too large (max 5 MB)."
+
+msgid "Ошибка при обработке фото. Попробуй ещё раз."
+msgstr "Error processing photo. Please try again."
+
+msgid "Выбери вид тренировки:"
+msgstr "Choose workout type:"
+
+msgid "Отменено."
+msgstr "Cancelled."
+
+msgid "Создание тренировки отменено."
+msgstr "Workout creation cancelled."
+
+msgid "Не удалось обработать запрос."
+msgstr "Could not process the request."

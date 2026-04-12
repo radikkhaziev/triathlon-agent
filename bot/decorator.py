@@ -2,6 +2,7 @@ import functools
 
 from pydantic import TypeAdapter
 
+from bot.i18n import _, set_language
 from data.db import User, UserDTO
 
 _UserListAdapter = TypeAdapter(list[UserDTO])
@@ -25,11 +26,13 @@ def athlete_required(fn):
     @functools.wraps(fn)
     async def wrapper(update, context, *args, **kwargs):
         user = await User.get_by_chat_id(str(update.effective_user.id))
+        if user:
+            set_language(user.language or "ru")
         if not user or not user.athlete_id or not user.is_active:
             if update.callback_query:
-                await update.callback_query.answer("Нет доступа.", show_alert=True)
+                await update.callback_query.answer(_("Нет доступа."), show_alert=True)
             elif update.message:
-                await update.message.reply_text("Нет доступа.")
+                await update.message.reply_text(_("Нет доступа."))
             return
         return await fn(update, context, *args, user=user, **kwargs)
 
