@@ -91,7 +91,7 @@ triathlon-agent/
 │       ├── user.py                  # User ORM + get_threshold_freshness, detect_threshold_drift
 │       ├── athlete.py               # AthleteSettings, AthleteGoal ORM (get_thresholds, get_goal_dto)
 │       ├── wellness.py              # Wellness ORM + HRV/RHR history
-│       ├── activity.py              # Activity, ActivityHrv, ActivityDetail ORM
+│       ├── activity.py              # Activity, ActivityHrv, ActivityDetail, Race ORM
 │       ├── hrv.py                   # HrvAnalysis, RhrAnalysis, PaBaseline ORM
 │       ├── workout.py               # ScheduledWorkout, AiWorkout, TrainingLog, ExerciseCard, WorkoutCard
 │       ├── tracking.py              # MoodCheckin, IqosDaily, ApiUsageDaily
@@ -113,7 +113,7 @@ triathlon-agent/
 │   ├── server.py                    # MCP server with all tools + resources imported
 │   ├── context.py                   # contextvars: set/get_current_user_id (from MCPAuthMiddleware)
 │   ├── sentry.py                    # @sentry_tool decorator (spans + error capture for MCP tools)
-│   ├── tools/                       # 46 tools (all use get_current_user_id() for tenant isolation)
+│   ├── tools/                       # 49 tools (all use get_current_user_id() for tenant isolation)
 │   └── resources/                   # athlete profile, goal, thresholds
 ├── webapp/                          # React SPA (Vite + TypeScript + Tailwind)
 ├── locale/                          # gettext translations: ru/en .po/.mo (backend i18n)
@@ -130,7 +130,7 @@ triathlon-agent/
 
 ## Database Schema
 
-Twenty-five tables. Full column specs in `data/db/`.
+Twenty-six tables. Full column specs in `data/db/`.
 
 | Table                 | PK                         | Purpose                                                                                         |
 | --------------------- | -------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -141,7 +141,7 @@ Twenty-five tables. Full column specs in `data/db/`.
 | `hrv_analysis`        | (user_id, date, algorithm) | Dual-algorithm HRV baselines: flatt_esco + ai_endurance. Status, bounds, CV, SWC, trend         |
 | `rhr_analysis`        | (user_id, date)            | RHR baselines: 7d/30d/60d means, bounds (±0.5 SD of 30d), trend. Inverted: high RHR = red       |
 | `scheduled_workouts`  | event ID                   | Planned workouts from Intervals.icu calendar. Synced hourly                                     |
-| `activities`          | activity ID                | Completed activities. Synced hourly at :30                                                      |
+| `activities`          | activity ID                | Completed activities. Synced hourly. Fields: is_race, sub_type from Intervals.icu               |
 | `activity_details`    | activity_id FK             | Extended stats: HR/power/pace zones, zone times, intervals, EF, decoupling, pool_length         |
 | `activity_hrv`        | activity_id FK             | Post-activity DFA a1: quality, thresholds (HRVT1/HRVT2), Ra, Da. Processed every 5 min          |
 | `pa_baseline`         | autoincrement              | Pa values for Readiness (Ra) calculation. 14-day rolling baseline                               |
@@ -161,6 +161,7 @@ Twenty-five tables. Full column specs in `data/db/`.
 | `garmin_race_predictions`| (user_id, calendar_date)| Race time predictions: 5K/10K/half/marathon (seconds)                                           |
 | `garmin_bio_metrics`  | (user_id, calendar_date)   | Weight, height, lactate threshold HR/speed. Sparse (~1/week)                                    |
 | `garmin_abnormal_hr_events`| (user_id, timestamp)  | Abnormal HR events: high HR value + threshold                                                   |
+| `races`               | (user_id, activity_id)     | Race details: name, distance, finish/goal time, placement, conditions, fitness snapshot          |
 
 ---
 
@@ -174,7 +175,7 @@ Twenty-five tables. Full column specs in `data/db/`.
 | `bot/*`                | Done              | ClaudeAgent (thin MCP client), MCPClient (Streamable HTTP), per-user mcp_token, @athlete_required decorator                           |
 | `tasks/*`              | Done              | Dramatiq actors: wellness/RHR/HRV/recovery pipelines, FIT processing, training log lifecycle, workout push                             |
 | `api/*`                | Done              | REST endpoints, auth (User-based, not role string), require_viewer/athlete/owner, jobs → dramatiq direct dispatch                      |
-| `mcp_server/`          | Done              | 46 tools + 3 resources. All tools use `get_current_user_id()` from contextvars. Per-user Bearer token auth                             |
+| `mcp_server/`          | Done              | 49 tools + 3 resources. All tools use `get_current_user_id()` from contextvars. Per-user Bearer token auth                             |
 | `webapp/` (React SPA)  | Done              | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme                                                           |
 | Adaptive Training Plan | Phase 4 done      | Write API, HumanGo adaptation, training log (pre/actual/post via actors), ramp tests + threshold drift                                 |
 | Sentry                 | Done              | Error monitoring, performance tracing, data scrubbing (incl. stackframe vars), user context, `@sentry_tool` for MCP                   |
@@ -390,6 +391,7 @@ python -m cli sync-wellness <user_id> [period]                   # force re-sync
 python -m cli sync-activities <user_id> [period] [--force]       # force re-sync activities day by day
 python -m cli sync-training-log <user_id> [period]               # recalculate training log from existing activities
 python -m cli import-garmin <user_id> <source> [--types] [--period] [--force] [--dry-run]  # import Garmin GDPR export
+python -m cli backfill-races <user_id> [period]                  # create Race records for historical race activities
 ```
 
 ### Period formats for `sync-wellness` and `sync-activities`
@@ -544,13 +546,13 @@ User sends /morning → @athlete_required resolves User from chat_id
 
 ---
 
-## MCP Server (46 tools + 3 resources)
+## MCP Server (49 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per-user Bearer auth via `User.mcp_token`).
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards, get_efficiency_trend, create_github_issue, get_github_issues, get_animation_guidelines, get_api_usage, get_garmin_sleep, get_garmin_readiness, get_garmin_daily_metrics, get_garmin_race_predictions, get_garmin_vo2max_trend, get_garmin_abnormal_hr_events, get_zones, get_weight_trend, get_workout_compliance, predict_ctl, update_zones, get_weekly_summary.
+**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards, get_efficiency_trend, create_github_issue, get_github_issues, get_animation_guidelines, get_api_usage, get_garmin_sleep, get_garmin_readiness, get_garmin_daily_metrics, get_garmin_race_predictions, get_garmin_vo2max_trend, get_garmin_abnormal_hr_events, get_zones, get_weight_trend, get_workout_compliance, predict_ctl, update_zones, get_weekly_summary, get_races, tag_race, update_race.
 
 **Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 

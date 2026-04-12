@@ -166,7 +166,7 @@ class IntervalsClientBase:
         params = {
             "oldest": oldest.strftime("%Y-%m-%d"),
             "newest": newest.strftime("%Y-%m-%d"),
-            "fields": "id,start_date_local,type,icu_training_load,moving_time,average_heartrate",
+            "fields": "id,start_date_local,type,icu_training_load,moving_time,average_heartrate,race,sub_type",
         }
         return RequestSpec(
             "GET",

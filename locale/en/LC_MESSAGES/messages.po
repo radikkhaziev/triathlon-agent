@@ -54,3 +54,27 @@ msgstr "Workout creation cancelled."
 
 msgid "Не удалось обработать запрос."
 msgstr "Could not process the request."
+
+msgid "ОТЛИЧНОЕ ВОССТАНОВЛЕНИЕ"
+msgstr "EXCELLENT RECOVERY"
+
+msgid "ГОТОВ К НАГРУЗКЕ"
+msgstr "READY FOR LOAD"
+
+msgid "УМЕРЕННАЯ НАГРУЗКА"
+msgstr "MODERATE LOAD"
+
+msgid "РЕКОМЕНДОВАН ОТДЫХ"
+msgstr "REST RECOMMENDED"
+
+msgid "тренировка Z2 — полный объём"
+msgstr "Z2 training — full volume"
+
+msgid "только аэробная база, Z1-Z2"
+msgstr "aerobic base only, Z1-Z2"
+
+msgid "лёгкая активность, 30-45 мин"
+msgstr "light activity, 30-45 min"
+
+msgid "отдых — не тренироваться"
+msgstr "rest — no training"

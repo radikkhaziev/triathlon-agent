@@ -58,6 +58,12 @@ def main() -> None:
     p_gi.add_argument("--force", action="store_true", help="Overwrite existing records")
     p_gi.add_argument("--dry-run", action="store_true", help="Parse and validate only, don't write to DB")
 
+    p_br = sub.add_parser("backfill-races", help="Create Race records for historical race activities")
+    p_br.add_argument("user_id", type=int)
+    p_br.add_argument(
+        "period", nargs="?", default=None, help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -72,6 +78,8 @@ def main() -> None:
         _sync_training_log(args.user_id, args.period)
     elif args.command == "import-garmin":
         _import_garmin(args.user_id, args.source, args.types, args.period, args.force, args.dry_run)
+    elif args.command == "backfill-races":
+        _backfill_races(args.user_id, args.period)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -332,6 +340,71 @@ def _import_garmin(user_id: int, source: str, types: str, period: str | None, fo
         force=force,
     )
     print(f"Imported: {', '.join(f'{k}: {v}' for k, v in counts.items())}")
+
+
+def _backfill_races(user_id: int, period: str | None) -> None:
+    """Create Race records for historical activities where is_race=True."""
+    from sqlalchemy import select
+
+    from data.db import Activity, ActivityDetail, Race, Wellness, get_sync_session
+
+    _resolve_user(user_id)
+    start, end = _parse_period(period)
+
+    with get_sync_session() as s:
+        race_activities = (
+            s.execute(
+                select(Activity)
+                .where(
+                    Activity.user_id == user_id,
+                    Activity.is_race.is_(True),
+                    Activity.start_date_local >= str(start),
+                    Activity.start_date_local <= str(end),
+                )
+                .order_by(Activity.start_date_local)
+            )
+            .scalars()
+            .all()
+        )
+
+        existing_ids = set(s.execute(select(Race.activity_id).where(Race.user_id == user_id)).scalars().all())
+
+        created = 0
+        for a in race_activities:
+            if a.id in existing_ids:
+                continue
+
+            w = s.execute(
+                select(Wellness).where(Wellness.user_id == user_id, Wellness.date == a.start_date_local)
+            ).scalar_one_or_none()
+
+            tsb = round(w.ctl - w.atl, 1) if w and w.ctl is not None and w.atl is not None else None
+            detail = s.get(ActivityDetail, a.id)
+            distance = detail.distance if detail else None
+            avg_pace = (
+                round(a.moving_time / (distance / 1000), 1) if distance and a.moving_time and distance > 0 else None
+            )
+
+            race = Race(
+                user_id=user_id,
+                activity_id=a.id,
+                name=a.type or "Race",
+                race_type="C",
+                distance_m=distance,
+                finish_time_sec=a.moving_time,
+                avg_pace_sec_km=avg_pace,
+                race_day_ctl=w.ctl if w else None,
+                race_day_atl=w.atl if w else None,
+                race_day_tsb=tsb,
+                race_day_recovery_score=w.recovery_score if w else None,
+                race_day_weight=w.weight if w else None,
+            )
+            s.add(race)
+            created += 1
+
+        s.commit()
+
+    print(f"backfill-races user {user_id}: {len(race_activities)} race activities, {created} new Race records")
 
 
 def _shell() -> None:

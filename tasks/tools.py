@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING
@@ -333,6 +335,59 @@ CREATE_GITHUB_ISSUE_TOOL = {
 CHAT_TOOLS = [*MORNING_TOOLS, SAVE_MOOD_CHECKIN_TOOL, GET_GITHUB_ISSUES_TOOL, CREATE_GITHUB_ISSUE_TOOL]
 
 
+_BOLD_RE = re.compile(r"\*\*([^\n*][^\n]*?)\*\*")
+_BOLD_UNDERSCORE_RE = re.compile(r"__([^\n_][^\n]*?)__")
+_CODE_RE = re.compile(r"`([^`\n]+)`")
+_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.*?)\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:|-]+\|?\s*$")
+_TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_LIST_BULLET_RE = re.compile(r"^(\s*)[-*]\s+")
+
+
+def markdown_to_telegram_html(text: str) -> str:
+    """Convert Claude-style markdown to Telegram-compatible HTML.
+
+    Handles the pieces Telegram cannot render natively:
+    - ``### heading`` → ``<b>heading</b>``
+    - pipe tables → plain " — "-separated rows (separator rows dropped)
+    - ``**bold**`` / ``__bold__`` → ``<b>...</b>``
+    - ``` `code` ``` → ``<code>...</code>``
+    - ``- item`` list bullets → ``• item``
+    """
+    out_lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw
+        heading = _HEADING_RE.match(line)
+        if heading:
+            inner = heading.group(1).replace("**", "").replace("__", "")
+            out_lines.append(f"**{inner}**")
+            continue
+        if _TABLE_SEP_RE.match(line) and "|" in line and "-" in line:
+            continue
+        table_row = _TABLE_ROW_RE.match(line)
+        if table_row:
+            cells = [c.strip() for c in table_row.group(1).split("|")]
+            line = " — ".join(c for c in cells if c)
+        bullet = _LIST_BULLET_RE.match(line)
+        if bullet:
+            line = f"{bullet.group(1)}• {line[bullet.end():]}"
+        out_lines.append(line)
+
+    text = "\n".join(out_lines)
+
+    # Protect already-formed bold/code tokens before escaping.
+    text = _BOLD_RE.sub(lambda m: f"\x00B\x00{m.group(1)}\x00/B\x00", text)
+    text = _BOLD_UNDERSCORE_RE.sub(lambda m: f"\x00B\x00{m.group(1)}\x00/B\x00", text)
+    text = _CODE_RE.sub(lambda m: f"\x00C\x00{m.group(1)}\x00/C\x00", text)
+
+    text = html.escape(text)
+
+    text = text.replace("\x00B\x00", "<b>").replace("\x00/B\x00", "</b>")
+    text = text.replace("\x00C\x00", "<code>").replace("\x00/C\x00", "</code>")
+    # Strip any stray NUL sentinels — Telegram rejects raw \x00 in messages.
+    return text.replace("\x00", "")
+
+
 @dataclass
 class TelegramTool:
     """Sync Telegram Bot API client via HTTP."""
@@ -349,8 +404,14 @@ class TelegramTool:
         text: str,
         reply_markup: dict | None = None,
         chat_id: int | str | None = None,
+        markdown: bool = False,
     ) -> dict | None:
-        """Send a message via Telegram Bot API. Skips if user is_silent."""
+        """Send a message via Telegram Bot API. Skips if user is_silent.
+
+        If ``markdown`` is True, ``text`` is converted from common Claude-style
+        markdown (``**bold**``, ``### headings``, pipe tables) to Telegram HTML
+        and sent with ``parse_mode=HTML``.
+        """
         if self.user and self.user.is_silent:
             return None
 
@@ -360,8 +421,10 @@ class TelegramTool:
 
         payload: dict = {
             "chat_id": _chat_id,
-            "text": text,
+            "text": markdown_to_telegram_html(text) if markdown else text,
         }
+        if markdown:
+            payload["parse_mode"] = "HTML"
         if reply_markup:
             payload["reply_markup"] = json.dumps(reply_markup)
 

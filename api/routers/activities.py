@@ -47,6 +47,7 @@ async def activities_week(
                     "duration": format_duration(a.moving_time),
                     "icu_training_load": round(a.icu_training_load, 1) if a.icu_training_load is not None else None,
                     "average_hr": round(a.average_hr) if a.average_hr is not None else None,
+                    "is_race": a.is_race,
                 }
             )
         days.append({"date": d_str, "weekday": _WEEKDAYS[i], "activities": day_activities})
@@ -95,6 +96,7 @@ async def activity_details(
         "duration": format_duration(activity.moving_time),
         "icu_training_load": round(activity.icu_training_load, 1) if activity.icu_training_load is not None else None,
         "average_hr": round(activity.average_hr) if activity.average_hr is not None else None,
+        "is_race": activity.is_race,
         "details": serialize_activity_details(detail) if detail else None,
         "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
     }

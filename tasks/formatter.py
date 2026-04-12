@@ -5,13 +5,35 @@ from __future__ import annotations
 from datetime import date
 from typing import TYPE_CHECKING
 
+from bot.i18n import _
+
 if TYPE_CHECKING:
     from data.db import Activity, ActivityHrv, Wellness
 
 # ---------------------------------------------------------------------------
-# Shared constants
+# Shared constants (language-aware via _())
 # ---------------------------------------------------------------------------
 
+
+def _category_display() -> dict:
+    return {
+        "excellent": ("🟢", _("ОТЛИЧНОЕ ВОССТАНОВЛЕНИЕ")),
+        "good": ("🟢", _("ГОТОВ К НАГРУЗКЕ")),
+        "moderate": ("🟡", _("УМЕРЕННАЯ НАГРУЗКА")),
+        "low": ("🔴", _("РЕКОМЕНДОВАН ОТДЫХ")),
+    }
+
+
+def _recommendation_text() -> dict:
+    return {
+        "zone2_ok": _("тренировка Z2 — полный объём"),
+        "zone1_long": _("только аэробная база, Z1-Z2"),
+        "zone1_short": _("лёгкая активность, 30-45 мин"),
+        "skip": _("отдых — не тренироваться"),
+    }
+
+
+# Keep static refs for code that doesn't need i18n (e.g. MCP tools)
 CATEGORY_DISPLAY = {
     "excellent": ("🟢", "ОТЛИЧНОЕ ВОССТАНОВЛЕНИЕ"),
     "good": ("🟢", "ГОТОВ К НАГРУЗКЕ"),
@@ -27,6 +49,44 @@ RECOMMENDATION_TEXT = {
 }
 
 STATUS_EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴", "insufficient_data": "⚪"}
+
+
+_MONTHS = {
+    "ru": {
+        1: "января",
+        2: "февраля",
+        3: "марта",
+        4: "апреля",
+        5: "мая",
+        6: "июня",
+        7: "июля",
+        8: "августа",
+        9: "сентября",
+        10: "октября",
+        11: "ноября",
+        12: "декабря",
+    },
+    "en": {
+        1: "Jan",
+        2: "Feb",
+        3: "Mar",
+        4: "Apr",
+        5: "May",
+        6: "Jun",
+        7: "Jul",
+        8: "Aug",
+        9: "Sep",
+        10: "Oct",
+        11: "Nov",
+        12: "Dec",
+    },
+}
+
+
+def _get_months() -> dict:
+    from bot.i18n import get_language
+
+    return _MONTHS.get(get_language(), _MONTHS["ru"])
 
 
 def format_duration(seconds: int | None) -> str:
@@ -46,22 +106,6 @@ def sport_emoji(activity_type: str | None) -> str:
         return "🏋️"
     _EMOJI = {"Ride": "🚴", "Run": "🏃", "Swim": "🏊"}
     return _EMOJI.get(activity_type, "🏋️")
-
-
-_MONTHS_RU = {
-    1: "января",
-    2: "февраля",
-    3: "марта",
-    4: "апреля",
-    5: "мая",
-    6: "июня",
-    7: "июля",
-    8: "августа",
-    9: "сентября",
-    10: "октября",
-    11: "ноября",
-    12: "декабря",
-}
 
 
 def build_post_activity_message(activity: Activity, hrv: ActivityHrv) -> str:
@@ -123,7 +167,7 @@ def build_evening_message(
 ) -> str:
     """Build evening report message."""
     today = date.today()
-    date_str = f"{today.day} {_MONTHS_RU.get(today.month, '')}"
+    date_str = f"{today.day} {_get_months().get(today.month, '')}"
 
     lines: list[str] = [f"📊 Итог дня — {date_str}", ""]
 
@@ -142,7 +186,7 @@ def build_evening_message(
 
     if row:
         if row.recovery_score is not None:
-            emoji, title = CATEGORY_DISPLAY.get(row.recovery_category or "", ("⚪", "—"))
+            emoji, title = _category_display().get(row.recovery_category or "", ("⚪", "—"))
             lines.append(f"Recovery: {row.recovery_score:.0f}/100 ({title.lower()})")
 
         ess_banister_parts = []
@@ -189,7 +233,7 @@ def build_morning_message(
 
     score = row.recovery_score or 0
     cat = row.recovery_category or "moderate"
-    cat_display = CATEGORY_DISPLAY.get(cat, ("", cat))[1]
+    cat_display = _category_display().get(cat, ("", cat))[1]
     hrv_emoji = STATUS_EMOJI.get(row.readiness_level or "", "⚪")
     lines.append(f"Recovery {score:.0f} ({cat_display}), HRV {hrv_emoji}")
 

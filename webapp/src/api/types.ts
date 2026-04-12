@@ -171,6 +171,7 @@ export interface ActivityItem {
   duration: string | null
   icu_training_load: number | null
   average_hr: number | null
+  is_race?: boolean
 }
 
 export interface ActivitiesDay {

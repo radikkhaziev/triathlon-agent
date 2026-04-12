@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .user import UserDTO
 
-from sqlalchemy import JSON, ColumnElement, DateTime, Float, ForeignKey, Integer, String, func, select
+from sqlalchemy import JSON, Boolean, ColumnElement, DateTime, Float, ForeignKey, Integer, String, Text, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -34,6 +34,8 @@ class Activity(Base):
     icu_training_load: Mapped[float | None] = mapped_column(Float, nullable=True)
     moving_time: Mapped[int | None] = mapped_column(Integer, nullable=True)  # seconds
     average_hr: Mapped[float | None] = mapped_column(Float, nullable=True)  # avg heart rate
+    is_race: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    sub_type: Mapped[str | None] = mapped_column(String, nullable=True)  # NONE|RACE|COMMUTE|WARMUP|COOLDOWN
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fit_file_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -63,6 +65,8 @@ class Activity(Base):
                 "icu_training_load": a.icu_training_load,
                 "moving_time": a.moving_time,
                 "average_hr": a.average_hr,
+                "is_race": getattr(a, "is_race", False),
+                "sub_type": getattr(a, "sub_type", None),
                 "last_synced_at": now,
             }
             for a in activities
@@ -80,6 +84,8 @@ class Activity(Base):
                 "icu_training_load": stmt.excluded.icu_training_load,
                 "moving_time": stmt.excluded.moving_time,
                 "average_hr": stmt.excluded.average_hr,
+                "is_race": stmt.excluded.is_race,
+                "sub_type": stmt.excluded.sub_type,
                 "last_synced_at": stmt.excluded.last_synced_at,
             },
         )
@@ -349,3 +355,60 @@ class ActivityDetail(Base):
             return {}
         result = await session.execute(select(cls).where(cls.activity_id.in_(activity_ids)))
         return {r.activity_id: r for r in result.scalars().all()}
+
+
+class Race(Base):
+    """Extended race data — enriches Activity with race-specific context."""
+
+    __tablename__ = "races"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    activity_id: Mapped[str] = mapped_column(String, ForeignKey("activities.id"), nullable=False, unique=True)
+
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    race_type: Mapped[str] = mapped_column(String, default="C")  # A / B / C
+    goal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    distance_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    finish_time_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    goal_time_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    placement: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    placement_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    placement_ag: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    surface: Mapped[str | None] = mapped_column(String, nullable=True)
+    weather: Mapped[str | None] = mapped_column(String, nullable=True)
+    elevation_gain_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    race_day_ctl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    race_day_atl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    race_day_tsb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    race_day_hrv_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    race_day_recovery_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    race_day_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    avg_pace_sec_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    splits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    rpe: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    @dual
+    def get_by_activity(cls, user_id: int, activity_id: str, *, session: Session) -> Race | None:
+        result = session.execute(select(cls).where(cls.user_id == user_id, cls.activity_id == activity_id))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    def get_range(cls, user_id: int, start: str, end: str, *, session: Session) -> list[Race]:
+        result = session.execute(
+            select(cls)
+            .join(Activity, Activity.id == cls.activity_id)
+            .where(cls.user_id == user_id, Activity.start_date_local >= start, Activity.start_date_local <= end)
+            .order_by(Activity.start_date_local.desc())
+        )
+        return list(result.scalars().all())
