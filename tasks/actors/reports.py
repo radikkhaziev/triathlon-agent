@@ -192,7 +192,7 @@ def actor_compose_user_morning_report(
 
         # Generate morning report: sync Claude API + MCP tools (per-user token)
         try:
-            mcp = MCPTool(token=user.mcp_token, user_id=user.id)
+            mcp = MCPTool(token=user.mcp_token, user_id=user.id, language=user.language)
             text = mcp.generate_morning_report_via_mcp(_dt)
         except Exception as e:
             sentry_sdk.capture_exception(e)
@@ -223,7 +223,7 @@ def actor_compose_user_morning_report(
 @validate_call
 def actor_compose_weekly_report(user: UserDTO):
     """Generate weekly training summary via Claude + MCP tools."""
-    mcp = MCPTool(token=user.mcp_token, user_id=user.id)
+    mcp = MCPTool(token=user.mcp_token, user_id=user.id, language=user.language)
     text = mcp.generate_weekly_report_via_mcp()
 
     if not text:

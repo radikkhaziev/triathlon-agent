@@ -1,4 +1,5 @@
 import { useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
@@ -9,17 +10,18 @@ import { SPORT_ICONS } from '../lib/constants'
 import type { ActivityDetailsResponse } from '../api/types'
 
 export default function Activity() {
+  const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const { data, loading, error } = useApi<ActivityDetailsResponse>(
     id && /^i\d+$/.test(id) ? `/api/activity/${id}/details` : null
   )
 
   if (!id || !/^i\d+$/.test(id)) {
-    return <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs><ErrorMessage message="Invalid or missing activity ID." /></Layout>
+    return <Layout backTo="/activities" backLabel={t('activities.back_to_list')} hideBottomTabs><ErrorMessage message="Invalid or missing activity ID." /></Layout>
   }
 
-  if (loading) return <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs><LoadingSpinner /></Layout>
-  if (error || !data) return <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs><ErrorMessage message="Не удалось загрузить активность." /></Layout>
+  if (loading) return <Layout backTo="/activities" backLabel={t('activities.back_to_list')} hideBottomTabs><LoadingSpinner /></Layout>
+  if (error || !data) return <Layout backTo="/activities" backLabel={t('activities.back_to_list')} hideBottomTabs><ErrorMessage message={t('activities.load_activity_error')} /></Layout>
 
   const d = data.details
   const hrv = data.hrv
@@ -34,7 +36,7 @@ export default function Activity() {
   const subParts = [fmtDateShort(data.date), data.duration, data.icu_training_load != null ? `TSS ${data.icu_training_load}` : null, data.average_hr != null ? `\u2764\uFE0F ${data.average_hr} bpm` : null].filter(Boolean)
 
   return (
-    <Layout backTo="/activities" backLabel="Назад к активностям" hideBottomTabs>
+    <Layout backTo="/activities" backLabel={t('activities.back_to_list')} hideBottomTabs>
       {/* Header */}
       <div className="py-4 pb-3">
         <div className="text-xl font-bold flex items-center gap-2">{icon} {sportLabel(data.type)}</div>
@@ -42,7 +44,7 @@ export default function Activity() {
       </div>
 
       {!d ? (
-        <ErrorMessage message="Нет детальных данных для этой активности." />
+        <ErrorMessage message={t('activities.no_details')} />
       ) : (
         <>
           {/* Summary Cards */}

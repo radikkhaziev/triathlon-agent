@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { apiFetch } from './api/client'
 import { getTelegramWebApp } from './auth/telegram'
 import { useAuth } from './auth/useAuth'
 import Landing from './pages/Landing'
@@ -23,6 +25,18 @@ export default function App() {
   }, [])
 
   const { isAuthenticated } = useAuth()
+  const { i18n } = useTranslation()
+
+  useEffect(() => {
+    if (!isAuthenticated) return
+    apiFetch<{ language?: string }>('/api/auth/me')
+      .then(data => {
+        if (data.language && data.language !== i18n.language) {
+          i18n.changeLanguage(data.language)
+        }
+      })
+      .catch(() => {})
+  }, [isAuthenticated])
 
   return (
     <Routes>

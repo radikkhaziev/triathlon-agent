@@ -17,6 +17,7 @@ class UserDTO(BaseModel):
     athlete_id: str | None = None
     api_key: str | None = None
     mcp_token: str | None = None
+    language: str = "ru"
     is_silent: bool = False
 
 

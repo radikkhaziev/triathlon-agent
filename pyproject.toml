@@ -31,6 +31,7 @@ dependencies = [
     "dramatiq[redis]>=1.17.0",
     "sentry-sdk[fastapi,dramatiq]>=2.19.0",
     "psutil (>=7.2.2,<8.0.0)",
+    "babel (>=2.18.0,<3.0.0)",
 ]
 
 [project.optional-dependencies]

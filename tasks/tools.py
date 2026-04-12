@@ -386,6 +386,7 @@ class MCPTool:
     mcp_url: str = field(default_factory=lambda: f"{(settings.MCP_BASE_URL or settings.API_BASE_URL).rstrip('/')}/mcp/")
     token: str = field(default_factory=lambda: settings.MCP_AUTH_TOKEN.get_secret_value())
     user_id: int = 1
+    language: str = "ru"
     headers: dict = field(init=False)
     _session_id: str | None = field(init=False, default=None)
     _request_id: int = field(init=False, default=0)
@@ -506,7 +507,7 @@ class MCPTool:
                 max_retries=5,
             )
 
-            system = get_system_prompt_v2(user_id=self.user_id)
+            system = get_system_prompt_v2(user_id=self.user_id, language=self.language)
             prompt = f"Сгенерируй утренний отчёт за {_dt}"
 
             messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -598,7 +599,7 @@ class MCPTool:
                 max_retries=5,
             )
 
-            system = get_system_prompt_weekly(user_id=self.user_id)
+            system = get_system_prompt_weekly(user_id=self.user_id, language=self.language)
 
             all_tools = self._list_mcp_tools()
             tools = [t for t in all_tools if t["name"] in self.WEEKLY_TOOL_NAMES]

@@ -1,11 +1,49 @@
+import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import { useAuth } from '../auth/useAuth'
+import { apiFetch } from '../api/client'
 
 export default function Settings() {
+  const { t, i18n } = useTranslation()
   const { logout, isAuthenticated } = useAuth()
 
+  const changeLanguage = (lng: string) => {
+    i18n.changeLanguage(lng)
+    apiFetch('/api/auth/language', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: lng }),
+    }).catch(() => {})
+  }
+
   return (
-    <Layout title="Settings" maxWidth="480px">
+    <Layout title={t('settings.title')} maxWidth="480px">
+      {/* Language */}
+      <Section title={t('settings.language')} icon="🌐">
+        <div className="flex gap-2">
+          <button
+            onClick={() => changeLanguage('ru')}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border cursor-pointer transition-colors font-sans ${
+              i18n.language === 'ru'
+                ? 'bg-accent text-white border-accent'
+                : 'bg-surface border-border text-text hover:bg-surface-2'
+            }`}
+          >
+            {t('settings.russian')}
+          </button>
+          <button
+            onClick={() => changeLanguage('en')}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border cursor-pointer transition-colors font-sans ${
+              i18n.language === 'en'
+                ? 'bg-accent text-white border-accent'
+                : 'bg-surface border-border text-text hover:bg-surface-2'
+            }`}
+          >
+            {t('settings.english')}
+          </button>
+        </div>
+      </Section>
+
       {/* Athlete Profile */}
       <Section title="Athlete Profile" icon="🏊‍♂️">
         <Row label="Age" value="43" />
@@ -38,7 +76,7 @@ export default function Settings() {
             onClick={logout}
             className="w-full py-3 bg-surface border border-border rounded-xl text-sm font-semibold text-red cursor-pointer hover:bg-surface-2 transition-colors font-sans"
           >
-            Выйти
+            {t('settings.logout')}
           </button>
         </div>
       )}

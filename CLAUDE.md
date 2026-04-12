@@ -46,6 +46,7 @@ triathlon-agent/
 │   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
 │   ├── tools.py                     # MCPClient — async MCP Streamable HTTP client (list_tools, call_tool)
 │   ├── prompts.py                   # system prompts for chat + morning analysis
+│   ├── i18n.py                      # gettext i18n: contextvars _(), set_language()
 │   ├── tool_filter.py               # keyword → tool group filtering for chat (reduces token footprint)
 │   ├── scheduler.py                 # APScheduler cron jobs → dramatiq group dispatch
 │   ├── decorator.py                 # @athlete_required — resolves User from Telegram update
@@ -115,6 +116,8 @@ triathlon-agent/
 │   ├── tools/                       # 46 tools (all use get_current_user_id() for tenant isolation)
 │   └── resources/                   # athlete profile, goal, thresholds
 ├── webapp/                          # React SPA (Vite + TypeScript + Tailwind)
+├── locale/                          # gettext translations: ru/en .po/.mo (backend i18n)
+├── babel.cfg                        # Babel extraction config
 ├── templates/                       # Jinja2 templates for exercise/workout cards
 ├── static/                          # Generated HTML files (exercises, workouts, uploads)
 ├── migrations/
@@ -176,6 +179,7 @@ Twenty-five tables. Full column specs in `data/db/`.
 | Adaptive Training Plan | Phase 4 done      | Write API, HumanGo adaptation, training log (pre/actual/post via actors), ramp tests + threshold drift                                 |
 | Sentry                 | Done              | Error monitoring, performance tracing, data scrubbing (incl. stackframe vars), user context, `@sentry_tool` for MCP                   |
 | Garmin Import          | Phase 2 done      | 9 tables, parser, importer, CLI `import-garmin`, 6 MCP tools, morning report enrichment                                                |
+| i18n                   | Done              | ru/en: backend gettext (.po/.mo) + frontend react-i18next (.json). User.language, /lang, Settings toggle                               |
 
 **Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
 
@@ -288,6 +292,7 @@ All commands use `@athlete_required` decorator — resolves `User` from Telegram
 /web        — one-time code for desktop login (5 min TTL)
 /stick      — increment IQOS stick counter for today (owner only)
 /health     — server diagnostics: DB, Redis, queues, Intervals.icu, Anthropic (owner only)
+/lang       — set language: /lang ru or /lang en
 /silent     — toggle silent mode (suppress Telegram notifications)
 /whoami     — show current user info (chat_id, role)
 <text>      — free-form AI chat (stateless, tool-use via MCP, per-user token)
@@ -309,7 +314,8 @@ GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA
 GET  /api/progress?sport=bike&days=90   — aerobic efficiency trend (EF/SWOLF/pace)
 POST /api/auth/verify-code              — verify one-time code → JWT
-GET  /api/auth/me                       — auth status
+GET  /api/auth/me                       — auth status + language
+PUT  /api/auth/language                 — update user language (ru/en)
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
@@ -514,6 +520,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 - **All timestamps** UTC in DB, local timezone for display
 - **Telegram bot** — polling (local dev, `TELEGRAM_WEBHOOK_URL` empty) or webhook (production)
 - **Frontend** — React SPA via Vite; dev proxies /api to FastAPI; production serves from webapp/dist/
+- **i18n** — Backend: gettext (contextvars `_()`, `locale/` .po/.mo). Frontend: react-i18next (`webapp/src/i18n/` .json). User.language field, `"Respond in {response_language}"` in Claude prompts
 - **Task queue** — Dramatiq + Redis. Scheduler dispatches groups per-user. Jobs endpoints dispatch directly. Actor time limits (30 min for FIT processing). `--force` flag for re-processing unchanged data
 - **ORM** — `@dual` decorator creates `DualMethod` descriptor: auto-dispatches sync/async by detecting event loop. One method name works in both contexts: `Activity.get_for_date()` (sync) and `await Activity.get_for_date()` (async)
 - **DTOs** — organized by domain: `data/dto.py` (metrics), `data/db/dto.py` (DB models), `data/intervals/dto.py` (API), `tasks/dto.py` (processing)
@@ -649,5 +656,6 @@ Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly s
 - New data tools: add only to MCP, not to `TOOL_HANDLERS` (deprecated)
 - Write deterministic tests for metric calculations
 - Keep prompts in `bot/prompts.py`
+- i18n: wrap user-facing bot strings in `_()` from `bot.i18n`. Add translations to `locale/en/LC_MESSAGES/messages.po`, run `pybabel compile -d locale`. Webapp: add keys to `webapp/src/i18n/ru.json` + `en.json`
 - Document new env vars in `.env.example`
 - When closing GitHub issues, follow the workflow in `~/.claude/skills/github-workflow/SKILL.md` — add a closing comment with "What was done" + "How to verify" before closing

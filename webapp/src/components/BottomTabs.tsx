@@ -1,28 +1,30 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link, useLocation } from 'react-router-dom'
 
 interface Tab {
   path: string
-  label: string
+  labelKey: string
   icon: string
 }
 
 const TABS: Tab[] = [
-  { path: '/', label: 'Today', icon: '🏠' },
-  { path: '/plan', label: 'Plan', icon: '📋' },
-  { path: '/activities', label: 'Activities', icon: '🏃' },
-  { path: '/wellness', label: 'Wellness', icon: '💚' },
+  { path: '/', labelKey: 'nav.today', icon: '🏠' },
+  { path: '/plan', labelKey: 'nav.plan', icon: '📋' },
+  { path: '/activities', labelKey: 'nav.activities', icon: '🏃' },
+  { path: '/wellness', labelKey: 'nav.wellness', icon: '💚' },
 ]
 
 const MORE_ITEMS: Tab[] = [
-  { path: '/progress', label: 'Progress', icon: '📈' },
-  { path: '/dashboard', label: 'Dashboard', icon: '📊' },
-  { path: '/settings', label: 'Settings', icon: '⚙️' },
+  { path: '/progress', labelKey: 'nav.progress', icon: '📈' },
+  { path: '/dashboard', labelKey: 'nav.dashboard', icon: '📊' },
+  { path: '/settings', labelKey: 'nav.settings', icon: '⚙️' },
 ]
 
 export default function BottomTabs() {
   const location = useLocation()
   const [moreOpen, setMoreOpen] = useState(false)
+  const { t } = useTranslation()
 
   const isActive = (path: string) => {
     if (path === '/') return location.pathname === '/'
@@ -47,7 +49,7 @@ export default function BottomTabs() {
                 }`}
               >
                 <span className="text-lg">{item.icon}</span>
-                {item.label}
+                {t(item.labelKey)}
               </Link>
             ))}
           </div>
@@ -65,7 +67,7 @@ export default function BottomTabs() {
             }`}
           >
             <span className="text-xl leading-none">{tab.icon}</span>
-            <span className="text-[10px] font-medium">{tab.label}</span>
+            <span className="text-[10px] font-medium">{t(tab.labelKey)}</span>
           </Link>
         ))}
         <button
@@ -75,7 +77,7 @@ export default function BottomTabs() {
           }`}
         >
           <span className="text-xl leading-none">⚙️</span>
-          <span className="text-[10px] font-medium">More</span>
+          <span className="text-[10px] font-medium">{t('nav.more')}</span>
         </button>
       </nav>
     </>
