@@ -14,17 +14,48 @@
     "error": "Error",
     "no_data": "No data",
     "back": "Back",
+    "home": "Home",
     "sync": "Sync",
     "syncing": "Syncing...",
     "queued": "Queued",
     "updated_at": "Updated: {{time}}",
     "not_synced": "Not synced",
-    "kg": "kg"
+    "kg": "kg",
+    "today_badge": "TODAY",
+    "today_lower": "today",
+    "prev": "Prev",
+    "next": "Next"
+  },
+  "login": {
+    "enter_code": "Enter 6-digit code",
+    "auth_error": "Authorization error",
+    "success": "Success! Redirecting...",
+    "checking": "Checking...",
+    "submit": "Log in",
+    "instructions": "Send /web to the bot in Telegram, then enter the code",
+    "step1": "1. Open the Telegram bot",
+    "step2": "2. Send the /web command",
+    "step3": "3. Enter the 6-digit code above",
+    "code_expires": "Code expires in 5 minutes",
+    "already_auth": "You are already logged in.",
+    "go_home": "Go to home"
+  },
+  "dashboard": {
+    "tsb_zone": "TSB Zone",
+    "undertraining": "Undertraining",
+    "optimal": "Optimal",
+    "productive_overreach": "Productive overreach",
+    "overtraining_risk": "Overtraining risk"
   },
   "today": {
     "title": "Today",
     "load_error": "Could not load data.",
-    "no_data": "No data for today."
+    "no_data": "No data for today.",
+    "plan_today": "Today's Plan",
+    "workout": "Workout",
+    "last_activity": "Last Activity",
+    "ai_recommendation": "AI Recommendation",
+    "details": "Details"
   },
   "wellness": {
     "title": "Wellness",
@@ -41,6 +72,13 @@
     "avg_60d": "Avg 60d",
     "trend": "Trend",
     "training_load": "Training Load",
+    "status": "Status",
+    "cv_7d": "CV 7d",
+    "ctl": "CTL (fitness)",
+    "atl": "ATL (fatigue)",
+    "tsb": "TSB (form)",
+    "tss_week": "TSS/wk",
+    "ms": "ms",
     "body": "Body",
     "weight": "Weight",
     "steps": "Steps"
@@ -50,11 +88,13 @@
     "load_error": "Could not load activities.",
     "back_to_list": "Back to activities",
     "load_activity_error": "Could not load activity.",
-    "no_details": "No detailed data for this activity."
+    "no_details": "No detailed data for this activity.",
+    "rest_day": "Rest day"
   },
   "plan": {
     "title": "Training Plan",
-    "load_error": "Could not load plan."
+    "load_error": "Could not load plan.",
+    "rest_day": "Rest day"
   },
   "settings": {
     "title": "Settings",

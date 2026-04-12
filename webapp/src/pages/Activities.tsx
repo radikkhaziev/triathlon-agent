@@ -56,10 +56,10 @@ export default function Activities() {
               <div key={day.date} className={`bg-surface border rounded-[14px] mb-2.5 overflow-hidden ${isToday ? 'border-accent' : 'border-border'}`}>
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm font-semibold">{formatDayDate(day.date, day.weekday)}</span>
-                  {isToday && <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-lg tracking-wide">СЕГОДНЯ</span>}
+                  {isToday && <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-lg tracking-wide">{t('common.today_badge')}</span>}
                 </div>
                 {day.activities.length === 0 && !isFuture && (
-                  <div className="px-4 pb-3.5 text-[13px] text-text-dim italic">День отдыха</div>
+                  <div className="px-4 pb-3.5 text-[13px] text-text-dim italic">{t('activities.rest_day')}</div>
                 )}
                 {day.activities.map(a => (
                   <ActivityRow key={a.id} activity={a} />
@@ -74,6 +74,7 @@ export default function Activities() {
 }
 
 function ActivityRow({ activity: a }: { activity: ActivityItem }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [detail, setDetail] = useState<ActivityDetailsResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -128,9 +129,9 @@ function ActivityRow({ activity: a }: { activity: ActivityItem }) {
 
       {expanded && (
         <div className="px-4 pb-3.5 animate-fadeIn">
-          {detailLoading && <div className="text-xs text-text-dim py-2">Загрузка...</div>}
+          {detailLoading && <div className="text-xs text-text-dim py-2">{t('common.loading')}</div>}
           {!detailLoading && detail && <InlineDetail data={detail} />}
-          {!detailLoading && !detail && <div className="text-xs text-text-dim">Нет детальных данных</div>}
+          {!detailLoading && !detail && <div className="text-xs text-text-dim">{t('activities.no_details')}</div>}
         </div>
       )}
     </div>
@@ -149,9 +150,10 @@ function DetailLine({ parts }: { parts: React.ReactNode[] }) {
 }
 
 function InlineDetail({ data }: { data: ActivityDetailsResponse }) {
+  const { t } = useTranslation()
   const d = data.details
   const type = data.type || ''
-  if (!d) return <div className="text-xs text-text-dim">Нет детальных данных</div>
+  if (!d) return <div className="text-xs text-text-dim">{t('activities.no_details')}</div>
   const hrZones = d.hr_zone_times ?? d.hr_zones
   const powerZones = d.power_zone_times ?? d.power_zones
   const paceZones = d.pace_zone_times ?? d.pace_zones

@@ -1,7 +1,9 @@
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/useAuth'
 
 export default function Landing() {
+  const { t } = useTranslation()
   const { isAuthenticated, logout } = useAuth()
   const hasTg = !!window.Telegram?.WebApp?.initData
   const hasJwt = !!localStorage.getItem('auth_token')
@@ -34,12 +36,12 @@ export default function Landing() {
               <Link to="/wellness" className="btn-secondary">💚 Wellness</Link>
               <a href="https://t.me/radikrunbot" className="btn-secondary">💬 Open in Telegram</a>
               {hasJwt && !hasTg && (
-                <button onClick={logout} className="btn-secondary opacity-60">Выйти</button>
+                <button onClick={logout} className="btn-secondary opacity-60">{t('settings.logout')}</button>
               )}
             </>
           ) : (
             <>
-              <Link to="/login" className="btn-primary">Войти</Link>
+              <Link to="/login" className="btn-primary">{t('login.submit')}</Link>
               <a href="https://t.me/radikrunbot" className="btn-primary">💬 Open in Telegram</a>
             </>
           )}

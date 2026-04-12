@@ -52,10 +52,10 @@ export default function Plan() {
               <div key={day.date} className={`bg-surface border rounded-[14px] mb-2.5 overflow-hidden ${isToday ? 'border-accent' : 'border-border'}`}>
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm font-semibold">{formatDayDate(day.date, day.weekday)}</span>
-                  {isToday && <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-lg tracking-wide">СЕГОДНЯ</span>}
+                  {isToday && <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-lg tracking-wide">{t('common.today_badge')}</span>}
                 </div>
                 {day.workouts.length === 0 ? (
-                  <div className="px-4 pb-3.5 text-[13px] text-text-dim italic">День отдыха</div>
+                  <div className="px-4 pb-3.5 text-[13px] text-text-dim italic">{t('plan.rest_day')}</div>
                 ) : (
                   day.workouts.map(w => <WorkoutItem key={w.id} workout={w} />)
                 )}

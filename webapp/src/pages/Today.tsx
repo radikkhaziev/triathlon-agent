@@ -93,11 +93,11 @@ export default function Today() {
         <div className="bg-surface rounded-2xl p-4 mb-3">
           <div className="flex items-center gap-2 mb-3">
             <span className="text-lg">📋</span>
-            <span className="text-sm font-bold">План на сегодня</span>
+            <span className="text-sm font-bold">{t('today.plan_today')}</span>
           </div>
           {todayWorkouts.map(w => {
             const icon = SPORT_ICONS[w.type || ''] || '🏆'
-            const name = w.name?.replace(/^[A-Z]+:/, '').trim() || 'Тренировка'
+            const name = w.name?.replace(/^[A-Z]+:/, '').trim() || t('today.workout')
             return (
               <div key={w.id} className="flex items-center gap-2.5 py-1.5">
                 <span className="text-base">{icon}</span>
@@ -114,7 +114,7 @@ export default function Today() {
         <div className="bg-surface rounded-2xl p-4 mb-3">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-lg">🏃</span>
-            <span className="text-sm font-bold">Последняя активность</span>
+            <span className="text-sm font-bold">{t('today.last_activity')}</span>
           </div>
           <div className="flex items-center gap-2.5">
             <span className="text-base">{SPORT_ICONS[lastActivity.type || ''] || '🏆'}</span>
@@ -127,7 +127,7 @@ export default function Today() {
               </div>
             </div>
             <Link to={`/activity/${lastActivity.id}`} className="text-xs text-accent no-underline">
-              Details &rarr;
+              {t('today.details')} &rarr;
             </Link>
           </div>
         </div>
@@ -164,6 +164,7 @@ function QuickStat({ label, value, valueClass }: { label: string; value: string;
 }
 
 function AiCollapsible({ claude }: { claude: string | null }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
 
   if (!claude) return null
@@ -175,7 +176,7 @@ function AiCollapsible({ claude }: { claude: string | null }) {
         className="flex items-center gap-2 w-full bg-transparent border-none cursor-pointer text-left font-sans p-0"
       >
         <span className="text-lg">🤖</span>
-        <span className="text-sm font-bold flex-1">AI Рекомендация</span>
+        <span className="text-sm font-bold flex-1">{t('today.ai_recommendation')}</span>
         <span className={`text-xs text-text-dim transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
       </button>
       {expanded && (
