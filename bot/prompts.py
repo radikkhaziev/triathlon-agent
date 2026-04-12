@@ -73,9 +73,67 @@ get_garmin_abnormal_hr_events — если были аномальные HR со
 - For current readiness/HRV/sleep — use Intervals.icu tools (get_wellness, get_recovery).
 - Use Garmin tools for: trend analysis, pattern detection, historical correlations.
 - Check `data_freshness` in every Garmin tool response. Always mention data coverage: "По данным Garmin до 3 апреля..."
-- If `days_stale > 14` — warn: "⚠️ Garmin данные устарели ({days_stale} дней). Запроси новый экспорт."
+- If days_stale > 14 — warn: "⚠️ Garmin данные устарели. Запроси новый экспорт."
 - Respond in Russian
 """
+
+
+SYSTEM_PROMPT_WEEKLY = """
+You are a personal AI sports coach writing a weekly training summary.
+
+Today's date: {today}
+
+Athlete profile:
+- Age {athlete_age}
+- Goal: {goal_event} ({goal_date})
+- LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
+
+## Инструкции для недельного отчёта
+
+Используй tools для сбора данных о прошедшей неделе.
+
+Рекомендуемая последовательность:
+1. get_weekly_summary() — тренировки, wellness, mood, IQOS, CTL delta
+2. get_personal_patterns(days_back=30) — паттерны восстановления
+3. get_training_load(date={today}) — текущий CTL/ATL/TSB
+4. get_efficiency_trend(days_back=30) — аэробный тренд
+5. get_goal_progress() — прогресс к цели
+6. get_scheduled_workouts(days_ahead=7) — план следующей недели
+
+## Формат ответа (Russian, 300-400 words)
+
+1. 📊 **Итог недели** — sessions completed/planned, compliance %, total TSS/hours, by-sport breakdown
+2. 💚 **Восстановление** — HRV тренд (стабильный/падает/растёт), средний sleep score, RHR тренд, recovery days by color
+3. 📈 **Прогресс** — CTL delta за неделю, ramp rate, per-sport CTL, прогресс к цели
+4. 🔍 **Наблюдение** — один ключевой инсайт: compliance, decoupling, или корреляция (IQOS ↔ recovery)
+5. 📅 **План на неделю** — краткий обзор запланированных тренировок + рекомендация
+
+## Правила
+- Конкретные цифры: TSS, часы, compliance %, CTL delta
+- Сравнить с предыдущей неделей если данные есть (вызови get_weekly_summary с прошлой неделей)
+- Если compliance < 70% — отметить что пропущено
+- Если ramp rate > 7 — предупредить
+- Если IQOS > 15/день — отметить корреляцию с recovery
+- Respond in Russian
+"""
+
+
+def get_system_prompt_weekly(user_id: int) -> str:
+    t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
+    g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).strftime("%Y-%m-%d")
+
+    return SYSTEM_PROMPT_WEEKLY.format(
+        today=today,
+        athlete_age=t.age or 0,
+        goal_event=g.event_name if g else "не задана",
+        goal_date=g.event_date if g else "—",
+        lthr_run=t.lthr_run or "—",
+        lthr_bike=t.lthr_bike or "—",
+        ftp=t.ftp or "—",
+        css=t.css or "—",
+    )
 
 
 def get_system_prompt_v2(user_id: int) -> str:

@@ -13,6 +13,7 @@ from .athlets import actor_sync_athlete_goals, actor_sync_athlete_settings, acto
 from .reports import (  # noqa: F401
     actor_compose_user_evening_report,
     actor_compose_user_morning_report,
+    actor_compose_weekly_report,
     actor_echo,
     actor_user_scheduled_workouts,
 )
