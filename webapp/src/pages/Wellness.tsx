@@ -100,7 +100,7 @@ export default function Wellness() {
                 subClass={data.rhr?.delta_30d != null ? (data.rhr.delta_30d > 0 ? 'text-red' : data.rhr.delta_30d < 0 ? 'text-green' : '') : undefined}
               />
               <div className="bg-[var(--bg)] border border-border rounded-[10px] px-3 py-2.5">
-                <div className="text-[11px] text-text-dim uppercase">Статус</div>
+                <div className="text-[11px] text-text-dim uppercase">{t('wellness.status')}</div>
                 <div className="mt-0.5">{data.rhr ? <StatusBadge status={data.rhr.status} /> : '--'}</div>
               </div>
             </div>
@@ -110,7 +110,7 @@ export default function Wellness() {
                 <MetricRow label={t('wellness.avg_30d')} value={data.rhr.mean_30d != null ? `${num(data.rhr.mean_30d, 0)} \u00B1 ${num(data.rhr.sd_30d)}` : '--'} />
                 <MetricRow label={t('wellness.avg_60d')} value={data.rhr.mean_60d != null ? `${num(data.rhr.mean_60d, 0)} \u00B1 ${num(data.rhr.sd_60d)}` : '--'} />
                 <MetricRow label="Bounds" value={data.rhr.lower_bound != null ? `${num(data.rhr.lower_bound, 0)} \u2014 ${num(data.rhr.upper_bound, 0)}` : '--'} />
-                <MetricRow label="CV 7д" value={data.rhr.cv_7d != null ? `${num(data.rhr.cv_7d)}% ${data.rhr.cv_verdict || ''}` : '--'} />
+                <MetricRow label={t('wellness.cv_7d')} value={data.rhr.cv_7d != null ? `${num(data.rhr.cv_7d)}% ${data.rhr.cv_verdict || ''}` : '--'} />
                 {data.rhr.trend && <MetricRow label={t('wellness.trend')} value={data.rhr.trend.direction || '--'} />}
               </div>
             )}
@@ -119,10 +119,10 @@ export default function Wellness() {
           {/* Training Load */}
           <Section icon="📈" title={t('wellness.training_load')}>
             <div className="grid grid-cols-2 gap-2 mb-2">
-              <MetricCard label="CTL (фитнес)" value={data.training_load?.ctl != null ? num(data.training_load.ctl) : '--'} />
-              <MetricCard label="ATL (усталость)" value={data.training_load?.atl != null ? num(data.training_load.atl) : '--'} />
-              <MetricCard label="TSB (форма)" value={data.training_load?.tsb != null ? `${data.training_load.tsb > 0 ? '+' : ''}${num(data.training_load.tsb)}` : '--'} />
-              <MetricCard label="Ramp Rate" value={data.training_load?.ramp_rate != null ? `${num(data.training_load.ramp_rate)} TSS/нед` : '--'} />
+              <MetricCard label={t('wellness.ctl')} value={data.training_load?.ctl != null ? num(data.training_load.ctl) : '--'} />
+              <MetricCard label={t('wellness.atl')} value={data.training_load?.atl != null ? num(data.training_load.atl) : '--'} />
+              <MetricCard label={t('wellness.tsb')} value={data.training_load?.tsb != null ? `${data.training_load.tsb > 0 ? '+' : ''}${num(data.training_load.tsb)}` : '--'} />
+              <MetricCard label="Ramp Rate" value={data.training_load?.ramp_rate != null ? `${num(data.training_load.ramp_rate)} ${t('wellness.tss_week')}` : '--'} />
             </div>
             {data.training_load?.sport_ctl && (data.training_load.sport_ctl.swim != null || data.training_load.sport_ctl.ride != null || data.training_load.sport_ctl.run != null) && (
               <SportCtlBars {...data.training_load.sport_ctl} />
@@ -177,19 +177,19 @@ function HRVBlockView({ block }: { block: HRVBlock }) {
       <div className="grid grid-cols-2 gap-2 mb-2">
         <MetricCard
           label={t('wellness.today_value')}
-          value={block.today != null ? `${num(block.today, 0)} мс` : '--'}
+          value={block.today != null ? `${num(block.today, 0)} ${t('wellness.ms')}` : '--'}
           sub={block.delta_pct != null ? `${block.delta_pct > 0 ? '+' : ''}${num(block.delta_pct)}%` : undefined}
           subClass={block.delta_pct != null ? (block.delta_pct > 0 ? 'text-green' : block.delta_pct < 0 ? 'text-red' : '') : undefined}
         />
         <div className="bg-[var(--bg)] border border-border rounded-[10px] px-3 py-2.5">
-          <div className="text-[11px] text-text-dim uppercase">Статус</div>
+          <div className="text-[11px] text-text-dim uppercase">{t('wellness.status')}</div>
           <div className="mt-0.5"><StatusBadge status={block.status} /></div>
         </div>
       </div>
       <MetricRow label={t('wellness.avg_7d')} value={block.mean_7d != null ? `${num(block.mean_7d, 0)} \u00B1 ${num(block.sd_7d)}` : '--'} />
       <MetricRow label={t('wellness.avg_60d')} value={block.mean_60d != null ? `${num(block.mean_60d, 0)} \u00B1 ${num(block.sd_60d)}` : '--'} />
       <MetricRow label="Bounds" value={block.lower_bound != null ? `${num(block.lower_bound, 0)} \u2014 ${num(block.upper_bound, 0)}` : '--'} />
-      <MetricRow label="CV 7д" value={block.cv_7d != null ? `${num(block.cv_7d)}% ${block.cv_verdict || ''}` : '--'} />
+      <MetricRow label={t('wellness.cv_7d')} value={block.cv_7d != null ? `${num(block.cv_7d)}% ${block.cv_verdict || ''}` : '--'} />
       <MetricRow label="SWC" value={block.swc_verdict || '--'} />
       {block.trend && <MetricRow label={t('wellness.trend')} value={block.trend.direction || '--'} />}
     </>

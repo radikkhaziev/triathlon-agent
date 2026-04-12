@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Chart, registerables } from 'chart.js'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -48,17 +49,18 @@ export default function Dashboard() {
 }
 
 function TsbZoneBadge({ tsb }: { tsb: number | null }) {
+  const { t } = useTranslation()
   if (tsb === null) return null
   let label: string, color: string
-  if (tsb > 10) { label = 'Недогрузка'; color = '#3b82f6' }
-  else if (tsb >= -10) { label = 'Оптимум'; color = '#22c55e' }
-  else if (tsb >= -25) { label = 'Продуктивная перегрузка'; color = '#f59e0b' }
-  else { label = 'Риск перетренированности'; color = '#ef4444' }
+  if (tsb > 10) { label = t('dashboard.undertraining'); color = '#3b82f6' }
+  else if (tsb >= -10) { label = t('dashboard.optimal'); color = '#22c55e' }
+  else if (tsb >= -25) { label = t('dashboard.productive_overreach'); color = '#f59e0b' }
+  else { label = t('dashboard.overtraining_risk'); color = '#ef4444' }
 
   const tsbStr = tsb > 0 ? `+${tsb.toFixed(0)}` : tsb.toFixed(0)
   return (
     <div className="bg-[var(--surface)] rounded-xl p-3 mb-3 flex justify-between items-center">
-      <span className="text-[13px] text-text-dim">Зона TSB</span>
+      <span className="text-[13px] text-text-dim">{t('dashboard.tsb_zone')}</span>
       <div className="flex items-center gap-2">
         <span className="text-[13px] font-mono font-semibold" style={{ color }}>{tsbStr}</span>
         <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style={{ background: color }}>{label}</span>

@@ -1,4 +1,5 @@
 import { type ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import BottomTabs from './BottomTabs'
 
@@ -15,16 +16,18 @@ export default function Layout({
   children,
   title,
   backTo,
-  backLabel = 'Главная',
+  backLabel,
   maxWidth = '540px',
   hideBottomTabs = false,
 }: LayoutProps) {
+  const { t } = useTranslation()
+  const label = backLabel || t('common.home')
   return (
     <>
       <div className={`px-4 mx-auto ${hideBottomTabs ? 'pb-8' : 'pb-20'}`} style={{ maxWidth }}>
         {backTo && (
           <Link to={backTo} className="inline-flex items-center gap-1 text-[13px] text-accent no-underline pt-3">
-            &larr; {backLabel}
+            &larr; {label}
           </Link>
         )}
         {title && (

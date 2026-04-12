@@ -1,10 +1,12 @@
 import { useState, useEffect, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../api/client'
 import type { AuthMeResponse } from '../api/types'
 
 export default function Login() {
+  const { t } = useTranslation()
   const { isAuthenticated, setJwt } = useAuth()
   const navigate = useNavigate()
   const [code, setCode] = useState('')
@@ -26,7 +28,7 @@ export default function Login() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     if (code.length !== 6) {
-      setMessage('Введите 6-значный код')
+      setMessage(t('login.enter_code'))
       setMsgType('error')
       return
     }
@@ -43,16 +45,16 @@ export default function Login() {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || 'Ошибка авторизации')
+        throw new Error(err.detail || t('login.auth_error'))
       }
 
       const data = await res.json()
       setJwt(data.token)
-      setMessage('Успешно! Перенаправляю...')
+      setMessage(t('login.success'))
       setMsgType('success')
       setTimeout(() => navigate('/'), 500)
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Ошибка')
+      setMessage(err instanceof Error ? err.message : t('common.error'))
       setMsgType('error')
       setSubmitting(false)
       setCode('')
@@ -65,8 +67,7 @@ export default function Login() {
         <div className="text-5xl mb-4">🏊‍♂️🚴‍♂️🏃‍♂️</div>
         <h1 className="text-xl font-semibold mb-2">TriCoach AI</h1>
         <p className="text-text-dim text-sm mb-8 leading-relaxed">
-          Отправьте <code className="bg-surface-2 px-1.5 py-0.5 rounded text-[13px] text-accent">/web</code> боту в Telegram,
-          <br />затем введите полученный код
+          {t('login.instructions')}
         </p>
 
         <form onSubmit={handleSubmit}>
@@ -89,7 +90,7 @@ export default function Login() {
             disabled={submitting}
             className="w-full py-3.5 mt-4 text-[15px] font-semibold bg-accent text-white border-none rounded-xl cursor-pointer transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed font-sans"
           >
-            {submitting ? 'Проверяю...' : 'Войти'}
+            {submitting ? t('login.checking') : t('login.submit')}
           </button>
         </form>
 
@@ -100,18 +101,16 @@ export default function Login() {
         )}
 
         <div className="mt-8 pt-6 border-t border-border text-left">
-          <p className="text-text-dim text-[13px] mb-2">1. Откройте Telegram-бота</p>
-          <p className="text-text-dim text-[13px] mb-2">
-            2. Отправьте команду <code className="bg-surface-2 px-1.5 py-0.5 rounded text-[13px] text-accent">/web</code>
-          </p>
-          <p className="text-text-dim text-[13px] mb-2">3. Введите 6-значный код выше</p>
-          <p className="text-text-dim text-[13px]">Код действует 5 минут</p>
+          <p className="text-text-dim text-[13px] mb-2">{t('login.step1')}</p>
+          <p className="text-text-dim text-[13px] mb-2">{t('login.step2')}</p>
+          <p className="text-text-dim text-[13px] mb-2">{t('login.step3')}</p>
+          <p className="text-text-dim text-[13px]">{t('login.code_expires')}</p>
         </div>
 
         {alreadyAuth && (
           <div className="mt-4 text-[13px] text-text-dim">
-            Вы уже авторизованы.{' '}
-            <a href="/" className="text-accent no-underline">Перейти на главную</a>
+            {t('login.already_auth')}{' '}
+            <a href="/" className="text-accent no-underline">{t('login.go_home')}</a>
           </div>
         )}
 
