@@ -77,6 +77,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  landing:
+    build: ./landing
+    ports:
+      - "127.0.0.1:8080:80"
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:

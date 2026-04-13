@@ -15,15 +15,15 @@ jobs:
           git checkout --force "$GITHUB_SHA"
 
       - name: Sync to deploy directory
-        run: rsync -a --delete --exclude='.env' --exclude='.git' --exclude='webapp/node_modules' --exclude='webapp/dist' --exclude='webapp_old' ./ /opt/triatlon-bot/src/
+        run: rsync -a --delete --exclude='.env' --exclude='.git' --exclude='webapp/node_modules' --exclude='webapp/dist' --exclude='webapp_old' --exclude='landing/node_modules' --exclude='landing/dist' ./ /opt/triatlon-bot/src/
 
       - name: Copy .env
         run: cp /opt/triatlon-bot/.env.triathlon /opt/triatlon-bot/src/.env
 
       - name: Stop services
         working-directory: /opt/triatlon-bot/src
-        run: docker compose stop migrate api worker
+        run: docker compose stop migrate api worker landing
 
       - name: Deploy
         working-directory: /opt/triatlon-bot/src
-        run: docker compose up -d --build --no-deps --remove-orphans migrate api worker
+        run: docker compose up -d --build --no-deps --remove-orphans migrate api worker landing
