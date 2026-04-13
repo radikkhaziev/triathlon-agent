@@ -107,7 +107,7 @@ export default function Landing() {
 
       {/* Footer */}
       <footer className="text-center px-6 py-8 text-text-dim text-[13px] border-t border-border">
-        EndurAI &copy; 2026 &middot; <a href="https://t.me/radikrunbot" className="text-accent no-underline">@radikrunbot</a>
+        EndurAI &copy; {new Date().getFullYear()} &middot; <a href="https://t.me/radikrunbot" className="text-accent no-underline">@radikrunbot</a>
       </footer>
 
       <style>{`

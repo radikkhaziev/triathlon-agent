@@ -45,8 +45,7 @@ export default function Login() {
   }, [isAuthenticated])
 
   useEffect(() => {
-    fetch('/api/auth/telegram-widget-config')
-      .then(r => r.json())
+    apiFetch<{ bot_username?: string }>('/api/auth/telegram-widget-config')
       .then(data => {
         if (data.bot_username) setBotUsername(data.bot_username)
       })
@@ -58,16 +57,11 @@ export default function Login() {
       setSubmitting(true)
       setMessage('')
       try {
-        const res = await fetch('/api/auth/telegram-widget', {
+        const data = await apiFetch<{ token: string }>('/api/auth/telegram-widget', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(user),
         })
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}))
-          throw new Error(err.detail || t('login.auth_error'))
-        }
-        const data = await res.json()
         setJwt(data.token)
         setMessage(t('login.success'))
         setMsgType('success')
@@ -75,6 +69,7 @@ export default function Login() {
       } catch (err) {
         setMessage(err instanceof Error ? err.message : t('common.error'))
         setMsgType('error')
+      } finally {
         setSubmitting(false)
       }
     }
@@ -94,7 +89,6 @@ export default function Login() {
     script.setAttribute('data-size', 'large')
     script.setAttribute('data-radius', '12')
     script.setAttribute('data-onauth', 'onTelegramAuth(user)')
-    script.setAttribute('data-request-access', 'write')
     container.appendChild(script)
     return () => {
       container.innerHTML = ''
@@ -113,18 +107,11 @@ export default function Login() {
     setMessage('')
 
     try {
-      const res = await fetch('/api/auth/verify-code', {
+      const data = await apiFetch<{ token: string }>('/api/auth/verify-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
       })
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || t('login.auth_error'))
-      }
-
-      const data = await res.json()
       setJwt(data.token)
       setMessage(t('login.success'))
       setMsgType('success')
@@ -132,8 +119,9 @@ export default function Login() {
     } catch (err) {
       setMessage(err instanceof Error ? err.message : t('common.error'))
       setMsgType('error')
-      setSubmitting(false)
       setCode('')
+    } finally {
+      setSubmitting(false)
     }
   }
 
