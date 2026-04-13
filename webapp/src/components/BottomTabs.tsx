@@ -34,7 +34,7 @@ export default function BottomTabs() {
   const moreActive = MORE_ITEMS.some(item => isActive(item.path))
 
   return (
-    <>
+    <div className="md:hidden">
       {/* More menu overlay */}
       {moreOpen && (
         <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)}>
@@ -80,6 +80,6 @@ export default function BottomTabs() {
           <span className="text-[10px] font-medium">{t('nav.more')}</span>
         </button>
       </nav>
-    </>
+    </div>
   )
 }
