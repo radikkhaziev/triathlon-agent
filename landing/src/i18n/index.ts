@@ -7,7 +7,7 @@ const dict = {
     hero_cta_telegram: 'Открыть в Telegram',
     hero_subline: 'Прокрути вниз — покажу пример утреннего отчёта',
 
-    preview_title: 'Твоё утро с первого взгляда',
+    preview_title: 'Как выглядит утро атлета',
     preview_subtitle: 'Пример утреннего отчёта',
     preview_recovery: 'Recovery',
     preview_good: 'Хорошее восстановление',
@@ -35,15 +35,15 @@ const dict = {
     features_evening_body: 'Итог дня, тренировка vs план, план на завтра — в 21:00.',
 
     howitworks_title: 'Как это работает',
-    howitworks_step1: 'Intervals.icu отдаёт wellness, HRV, тренировки',
-    howitworks_step2: 'PostgreSQL + Dramatiq считают recovery score, DFA, тренды',
-    howitworks_step3: 'Claude получает данные через MCP и формирует рекомендацию',
+    howitworks_step1: 'Система собирает wellness, HRV и данные о тренировках',
+    howitworks_step2: 'Recovery engine считает метрики, статусы и тренды',
+    howitworks_step3: 'Claude анализирует всё через MCP и формирует рекомендацию',
     howitworks_step4: 'Утренний отчёт приходит в Telegram',
 
     deepdive_title: 'Утренний отчёт — разбор',
     deepdive_recovery_title: 'Recovery Analysis',
     deepdive_recovery_body:
-      'Взвешенная комбинация четырёх сигналов: HRV, тренировочная нагрузка, пульс покоя, сон. Точные веса — в `data/metrics.py` и могут меняться.',
+      'Взвешенная комбинация четырёх сигналов: HRV, тренировочная нагрузка, пульс покоя, сон.',
     deepdive_hrv_title: 'Двойной HRV-алгоритм',
     deepdive_hrv_body:
       'Один алгоритм реагирует быстро на дневные колебания. Второй ловит хроническую усталость через недельные тренды. Вместе — устойчивая оценка восстановления.',
@@ -57,8 +57,6 @@ const dict = {
     opensource_title: 'Open Source',
     opensource_body: 'Проект открыт на GitHub. Репозиторий, код, история миграций — всё публично.',
     opensource_metric_tools: 'MCP-инструментов',
-    opensource_metric_tables: 'таблиц в БД',
-    opensource_metric_lang: 'Python + TypeScript',
     opensource_cta: 'Смотреть на GitHub',
 
     footer_built_by: 'Сделано',
@@ -99,15 +97,15 @@ const dict = {
     features_evening_body: 'Day summary, workout vs plan, next-day plan — every evening at 9 PM.',
 
     howitworks_title: 'How it works',
-    howitworks_step1: 'Intervals.icu supplies wellness, HRV and activity data',
-    howitworks_step2: 'PostgreSQL + Dramatiq compute recovery score, DFA, trends',
-    howitworks_step3: 'Claude receives the data via MCP and builds a recommendation',
-    howitworks_step4: 'Morning report arrives in Telegram',
+    howitworks_step1: 'The system gathers wellness, HRV and training data',
+    howitworks_step2: 'Recovery engine computes metrics, states and trends',
+    howitworks_step3: 'Claude reviews everything via MCP and builds a recommendation',
+    howitworks_step4: 'The morning report arrives in Telegram',
 
     deepdive_title: 'Morning report — deep dive',
     deepdive_recovery_title: 'Recovery Analysis',
     deepdive_recovery_body:
-      'A weighted combination of four signals: HRV, training load, resting HR, sleep. The exact weights live in `data/metrics.py` and can change.',
+      'A weighted combination of four signals: HRV, training load, resting HR, sleep.',
     deepdive_hrv_title: 'Dual HRV algorithm',
     deepdive_hrv_body:
       'One algorithm reacts quickly to day-to-day swings. The other catches chronic fatigue through weekly trends. Together — a stable recovery signal.',
@@ -121,8 +119,6 @@ const dict = {
     opensource_title: 'Open Source',
     opensource_body: 'The project is open on GitHub. Repository, code, migration history — all public.',
     opensource_metric_tools: 'MCP tools',
-    opensource_metric_tables: 'DB tables',
-    opensource_metric_lang: 'Python + TypeScript',
     opensource_cta: 'View on GitHub',
 
     footer_built_by: 'Built by',
