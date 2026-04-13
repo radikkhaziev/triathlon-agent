@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 
 from sqlalchemy import Boolean, DateTime, Integer, String, Text, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -254,3 +255,41 @@ class User(Base):
         await session.refresh(user)
 
         return user
+
+    @classmethod
+    async def get_or_create_from_telegram(
+        cls,
+        chat_id: str,
+        *,
+        username: str | None = None,
+        display_name: str | None = None,
+    ) -> User:
+        """Fetch an existing user or create a new `viewer` from Telegram identity.
+
+        Used by every entry point that authenticates via Telegram: `/start`
+        command, Mini App initData, and Telegram Login Widget. Race-safe: if
+        a concurrent caller inserts the row between our SELECT and INSERT we
+        catch the `IntegrityError` and re-fetch. Any other failure in
+        `create()` propagates untouched.
+
+        New users are always pinned to `role="viewer"` here — promotion to
+        `athlete` stays manual via `cli shell`. We intentionally don't rely
+        on `create()`'s default role, so a future change to that default
+        cannot silently widen the widget-auth security posture.
+        """
+        user = await cls.get_by_chat_id(chat_id)
+        if user:
+            return user
+        try:
+            return await cls.create(
+                chat_id=chat_id,
+                role="viewer",
+                username=username,
+                display_name=display_name,
+            )
+        except IntegrityError:
+            # Concurrent insert: another request created the row first.
+            refetched = await cls.get_by_chat_id(chat_id)
+            if refetched:
+                return refetched
+            raise

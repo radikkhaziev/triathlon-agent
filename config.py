@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
+    TELEGRAM_BOT_USERNAME: str = ""  # without @, used by Telegram Login Widget
     TELEGRAM_CHAT_ID: str = ""  # Owner chat ID for service notifications
     TELEGRAM_WEBHOOK_URL: str = ""  # empty = polling mode
 

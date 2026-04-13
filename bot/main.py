@@ -54,18 +54,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tg_user = update.effective_user
     chat_id = str(tg_user.id)
 
-    user = await User.get_by_chat_id(chat_id)
-    if not user:
-        try:
-            user = await User.create(
-                chat_id=chat_id,
-                username=tg_user.username,
-                display_name=tg_user.full_name,
-            )
-            logger.info("New user registered: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
-        except Exception:
-            # Race condition: another /start created the user between check and insert
-            user = await User.get_by_chat_id(chat_id)
+    user = await User.get_or_create_from_telegram(
+        chat_id=chat_id,
+        username=tg_user.username,
+        display_name=tg_user.full_name,
+    )
+    logger.info("User resolved via /start: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
 
     webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup(

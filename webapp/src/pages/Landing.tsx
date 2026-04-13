@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../auth/useAuth'
+import EnduraiLogo from '../components/EnduraiLogo'
 
 export default function Landing() {
   const { t } = useTranslation()
@@ -19,10 +20,9 @@ export default function Landing() {
           Syncing with Intervals.icu
         </div>
 
-        <div className="text-[56px] mb-6 tracking-[8px]">🏊‍♂️ 🚴‍♂️ 🏃‍♂️</div>
-        <h1 className="text-[clamp(32px,6vw,48px)] font-bold mb-3 -tracking-wide">
-          Tri<span className="bg-gradient-to-br from-accent to-[#818cf8] bg-clip-text text-transparent">Coach</span> AI
-        </h1>
+        <div className="mb-6 flex justify-center">
+          <EnduraiLogo height={72} />
+        </div>
         <p className="text-[clamp(16px,3vw,20px)] text-text-dim max-w-[480px] mb-10">
           Personal AI coach for triathletes. Analyzes HRV, training load and recovery — delivers actionable recommendations every morning.
         </p>
@@ -107,7 +107,7 @@ export default function Landing() {
 
       {/* Footer */}
       <footer className="text-center px-6 py-8 text-text-dim text-[13px] border-t border-border">
-        TriCoach AI &copy; 2026 &middot; <a href="https://t.me/radikrunbot" className="text-accent no-underline">@radikrunbot</a>
+        EndurAI &copy; 2026 &middot; <a href="https://t.me/radikrunbot" className="text-accent no-underline">@radikrunbot</a>
       </footer>
 
       <style>{`

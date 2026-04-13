@@ -17,6 +17,7 @@
 | #40   | Integrate Sentry for error monitoring                          | open             | Phase 4 (observability)                                              |
 | #50   | Add i18n support for multi-language interface                  | open, needs-spec | Phase 5 (per-user `language` in users table)                         |
 | #51   | Switch LLM model for Telegram chat                             | open             | Phase 5 (per-user `preferred_model` in users table, API key routing) |
+| #132  | Реализовать web login через Telegram                           | **done**         | Threat T12 (Telegram Login Widget)                                   |
 
 ---
 
@@ -139,6 +140,21 @@
 - **Где:** `api/deps.py` — `_verify_and_parse_init_data()`
 - **Severity:** Medium
 - **Mitigation:** Проверять `auth_date` < 15 минут, reject stale initData. 15 мин а не 5 — Mini App может быть открыто до первого API-вызова дольше 5 минут
+
+#### T12. Telegram Login Widget Replay / Forgery (Spoofing)
+
+- **Что:** Подделка или реплей payload от Telegram Login Widget → выпуск JWT на чужого юзера
+- **Где:** `api/auth.py:verify_telegram_widget_auth()`, эндпоинт `POST /api/auth/telegram-widget`
+- **Severity:** High (auth path, ведёт к выпуску сессионного JWT)
+- **Mitigation (реализовано):**
+  - HMAC-SHA256 над data-check-string (все поля кроме `hash`, sorted by key, `\n`-разделители), secret_key = `SHA256(bot_token)` — по спеке https://core.telegram.org/widgets/login
+  - Constant-time сравнение (`hmac.compare_digest`)
+  - Replay window: `auth_date` старше 24ч → reject (лимит самой спеки Telegram)
+  - Clock skew: `auth_date` в будущем >60с → reject
+  - Пустой `TELEGRAM_BOT_TOKEN` → reject (никакой fallback на статический секрет)
+  - **Auto-provisioning с default role `viewer`**: если юзера нет → создаём row в `users` с `chat_id`, `username`, `display_name` из Telegram payload. Это тот же паттерн, что у бота в `/start` (`bot/main.py:start`). Upgrade до `athlete` (с `athlete_id`, `api_key`, и т.д.) остаётся ручным через `cli shell` — никакого auto-promote на основе HMAC-подписи. То есть widget открывает только read-only доступ viewer'а к общим данным
+- **Operator setup:** `/setdomain` в `@BotFather` → `bot.endurai.me` (иначе виджет не рендерится). `TELEGRAM_BOT_USERNAME` в `.env` для фронта через `GET /api/auth/telegram-widget-config`
+- **Тесты:** `tests/api/test_telegram_widget_auth.py` — 18 кейсов, включая valid/tampered/missing-fields/stale/future/wrong-token/empty-token/null-optional/extra-fields-signed-through
 
 ---
 
