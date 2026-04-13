@@ -1,8 +1,18 @@
 """MCP tools for Training Log (ATP Phase 3)."""
 
-from data.db import TrainingLog
+from sqlalchemy import select
+
+from data.db import Race, TrainingLog, get_session
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+
+
+def _format_finish_time(sec: int | None) -> str | None:
+    if not sec:
+        return None
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
 @mcp.tool()
@@ -10,6 +20,13 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
     """Get training log: planned vs actual, pre-workout state, compliance, and recovery outcome."""
     user_id = get_current_user_id()
     rows = await TrainingLog.get_range(user_id=user_id, days_back=days_back)
+
+    race_ids = [r.race_id for r in rows if r.race_id]
+    races_map: dict[int, Race] = {}
+    if race_ids:
+        async with get_session() as session:
+            result = await session.execute(select(Race).where(Race.user_id == user_id, Race.id.in_(race_ids)))
+            races_map = {race.id: race for race in result.scalars().all()}
 
     entries = []
     for r in rows:
@@ -43,6 +60,22 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
                 else None
             ),
             "compliance": r.compliance,
+            "is_race": bool(r.is_race),
+            "race": (
+                {
+                    "name": races_map[r.race_id].name,
+                    "race_type": races_map[r.race_id].race_type,
+                    "distance_km": (
+                        round(races_map[r.race_id].distance_m / 1000, 2) if races_map[r.race_id].distance_m else None
+                    ),
+                    "finish_time": _format_finish_time(races_map[r.race_id].finish_time_sec),
+                    "goal_time": _format_finish_time(races_map[r.race_id].goal_time_sec),
+                    "placement": races_map[r.race_id].placement,
+                    "rpe": races_map[r.race_id].rpe,
+                }
+                if r.race_id and r.race_id in races_map
+                else None
+            ),
             "post": (
                 {
                     "recovery": r.post_recovery_score,

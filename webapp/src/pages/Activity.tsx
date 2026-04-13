@@ -7,7 +7,7 @@ import ZoneChart from '../components/ZoneChart'
 import { useApi } from '../hooks/useApi'
 import { fmtDateShort, sportLabel, fmtPace, fmtSpeed, fmtDuration } from '../lib/formatters'
 import { SPORT_ICONS } from '../lib/constants'
-import type { ActivityDetailsResponse } from '../api/types'
+import type { ActivityDetailsResponse, RaceInfo } from '../api/types'
 
 export default function Activity() {
   const { t } = useTranslation()
@@ -42,6 +42,8 @@ export default function Activity() {
         <div className="text-xl font-bold flex items-center gap-2">{icon} {sportLabel(data.type)} {data.is_race && <span className="text-sm">🏁</span>}</div>
         <div className="text-[13px] text-text-dim mt-1">{subParts.join(' \u00B7 ')}</div>
       </div>
+
+      {data.is_race && data.race && <RaceSection race={data.race} />}
 
       {!d ? (
         <ErrorMessage message={t('activities.no_details')} />
@@ -144,6 +146,101 @@ export default function Activity() {
         </>
       )}
     </Layout>
+  )
+}
+
+function fmtHMS(sec: number | null): string | null {
+  if (!sec) return null
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
+}
+
+function fmtPaceKm(sec: number | null): string | null {
+  if (!sec || sec <= 0) return null
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  return `${m}:${String(s).padStart(2, '0')}/km`
+}
+
+function RaceSection({ race }: { race: RaceInfo }) {
+  const finish = fmtHMS(race.finish_time_sec)
+  const goal = fmtHMS(race.goal_time_sec)
+  const pace = fmtPaceKm(race.avg_pace_sec_km)
+  const place = race.placement
+    ? `${race.placement}${race.placement_total ? `/${race.placement_total}` : ''}`
+    : null
+
+  return (
+    <div className="bg-surface border border-border rounded-xl px-4 py-3 mb-4">
+      <div className="text-sm font-bold flex items-center gap-2">
+        🏁 {race.name}
+        {race.race_type && <span className="text-xs text-text-dim">({race.race_type})</span>}
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px]">
+        {finish && (
+          <div>
+            <span className="text-text-dim">Финиш</span>{' '}
+            <span className="font-semibold">{finish}</span>
+            {goal && <span className="text-text-dim"> (цель {goal})</span>}
+          </div>
+        )}
+        {race.distance_km != null && (
+          <div>
+            <span className="text-text-dim">Дистанция</span>{' '}
+            <span className="font-semibold">{race.distance_km} km</span>
+          </div>
+        )}
+        {pace && (
+          <div>
+            <span className="text-text-dim">Темп</span> <span className="font-semibold">{pace}</span>
+          </div>
+        )}
+        {place && (
+          <div>
+            <span className="text-text-dim">Место</span> <span className="font-semibold">{place}</span>
+            {race.placement_ag && <span className="text-text-dim"> · AG {race.placement_ag}</span>}
+          </div>
+        )}
+        {race.surface && (
+          <div>
+            <span className="text-text-dim">Покрытие</span>{' '}
+            <span className="font-semibold">{race.surface}</span>
+          </div>
+        )}
+        {race.weather && (
+          <div>
+            <span className="text-text-dim">Погода</span>{' '}
+            <span className="font-semibold">{race.weather}</span>
+          </div>
+        )}
+        {race.rpe != null && (
+          <div>
+            <span className="text-text-dim">RPE</span>{' '}
+            <span className="font-semibold">{race.rpe}/10</span>
+          </div>
+        )}
+      </div>
+      {(race.race_day_ctl != null || race.race_day_tsb != null || race.race_day_recovery_score != null) && (
+        <div className="mt-2 pt-2 border-t border-border text-[12px] text-text-dim">
+          📊 Fitness:{' '}
+          {[
+            race.race_day_ctl != null ? `CTL ${race.race_day_ctl.toFixed(0)}` : null,
+            race.race_day_tsb != null
+              ? `TSB ${race.race_day_tsb > 0 ? '+' : ''}${race.race_day_tsb.toFixed(0)}`
+              : null,
+            race.race_day_recovery_score != null ? `Recovery ${race.race_day_recovery_score.toFixed(0)}` : null,
+            race.race_day_hrv_status ? `HRV ${race.race_day_hrv_status}` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </div>
+      )}
+      {race.notes && (
+        <div className="mt-2 pt-2 border-t border-border text-[13px] italic">{race.notes}</div>
+      )}
+    </div>
   )
 }
 

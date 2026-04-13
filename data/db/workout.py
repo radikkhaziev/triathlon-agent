@@ -347,6 +347,7 @@ class TrainingLog(Base):
     actual_max_zone_time: Mapped[str | None] = mapped_column(String(10), nullable=True)
     compliance: Mapped[str | None] = mapped_column(String(20), nullable=True)
     is_race: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    race_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("races.id"), nullable=True)
 
     # Post-outcome (filled next morning)
     post_recovery_score: Mapped[float | None] = mapped_column(Float, nullable=True)

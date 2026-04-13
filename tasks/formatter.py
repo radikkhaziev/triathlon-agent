@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from bot.i18n import _
 
 if TYPE_CHECKING:
-    from data.db import Activity, ActivityHrv, Wellness
+    from data.db import Activity, ActivityHrv, Race, Wellness
 
 # ---------------------------------------------------------------------------
 # Shared constants (language-aware via _())
@@ -108,8 +108,30 @@ def sport_emoji(activity_type: str | None) -> str:
     return _EMOJI.get(activity_type, "🏋️")
 
 
-def build_post_activity_message(activity: Activity, hrv: ActivityHrv) -> str:
-    """Build short post-activity DFA notification (3-4 lines max)."""
+def _format_pace(sec_per_km: float | None) -> str | None:
+    if not sec_per_km or sec_per_km <= 0:
+        return None
+    m, s = divmod(int(sec_per_km), 60)
+    return f"{m}:{s:02d}/km"
+
+
+def _format_hms(seconds: int | None) -> str | None:
+    if not seconds:
+        return None
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def build_post_activity_message(
+    activity: Activity,
+    hrv: ActivityHrv,
+    race: Race | None = None,
+) -> str:
+    """Build short post-activity notification. Race-specific format when `race` is given."""
+    if race is not None:
+        return _build_post_race_message(activity, race)
+
     emoji = sport_emoji(activity.type)
     dur = format_duration(activity.moving_time)
     tss = f" | TSS {activity.icu_training_load:.0f}" if activity.icu_training_load else ""
@@ -138,6 +160,61 @@ def build_post_activity_message(activity: Activity, hrv: ActivityHrv) -> str:
 
     if hrv.da_pct is not None and activity.moving_time and activity.moving_time >= 2400:
         lines.append(f"Da: {hrv.da_pct:+.1f}%")
+
+    return "\n".join(lines)
+
+
+def _build_post_race_message(activity: Activity, race: Race) -> str:
+    """Race finish notification with distance, time, pace, fitness context."""
+    sport = sport_emoji(activity.type)
+    name = race.name or (activity.type or "Race")
+    header = f"🏁 {sport} Гонка завершена: {name}"
+    if race.race_type:
+        header += f" ({race.race_type})"
+
+    lines: list[str] = [header]
+
+    finish = _format_hms(race.finish_time_sec) or _format_hms(activity.moving_time)
+    goal = _format_hms(race.goal_time_sec)
+    dist_km = round(race.distance_m / 1000, 2) if race.distance_m else None
+
+    time_parts: list[str] = []
+    if finish:
+        time_parts.append(f"⏱ {finish}" + (f" (цель: {goal})" if goal else ""))
+    if dist_km is not None:
+        time_parts.append(f"📏 {dist_km} km")
+    pace = _format_pace(race.avg_pace_sec_km)
+    if pace:
+        time_parts.append(f"⚡ {pace}")
+    if time_parts:
+        lines.append(" | ".join(time_parts))
+
+    hr_parts: list[str] = []
+    if activity.average_hr:
+        hr_parts.append(f"💓 avg {activity.average_hr:.0f}")
+    if activity.icu_training_load:
+        hr_parts.append(f"TSS {activity.icu_training_load:.0f}")
+    if hr_parts:
+        lines.append(" | ".join(hr_parts))
+
+    ctx_parts: list[str] = []
+    if race.race_day_ctl is not None:
+        ctx_parts.append(f"CTL {race.race_day_ctl:.0f}")
+    if race.race_day_tsb is not None:
+        ctx_parts.append(f"TSB {race.race_day_tsb:+.0f}")
+    if race.race_day_recovery_score is not None:
+        ctx_parts.append(f"Recovery {race.race_day_recovery_score:.0f}")
+    if ctx_parts:
+        lines.append("📊 " + " | ".join(ctx_parts))
+
+    if race.placement:
+        place = f"{race.placement}"
+        if race.placement_total:
+            place += f"/{race.placement_total}"
+        lines.append(f"🏆 Место: {place}")
+
+    lines.append("")
+    lines.append("Заполни детали (RPE, погода, заметки) — запомню для анализа.")
 
     return "\n".join(lines)
 

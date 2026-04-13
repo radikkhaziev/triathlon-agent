@@ -57,6 +57,8 @@ async def get_activities(target_date: str = "", days_back: int = 7) -> dict:
             "training_load": r.icu_training_load,
             "duration": duration,
             "duration_secs": r.moving_time,
+            "is_race": bool(r.is_race),
+            "sub_type": r.sub_type,
         }
 
         hrv = hrv_map.get(r.id)

@@ -243,6 +243,27 @@ export interface ActivityHRV {
   processing_status: string
 }
 
+export interface RaceInfo {
+  name: string
+  race_type: string | null
+  distance_km: number | null
+  finish_time_sec: number | null
+  goal_time_sec: number | null
+  placement: number | null
+  placement_total: number | null
+  placement_ag: string | null
+  surface: string | null
+  weather: string | null
+  avg_pace_sec_km: number | null
+  rpe: number | null
+  notes: string | null
+  race_day_ctl: number | null
+  race_day_atl: number | null
+  race_day_tsb: number | null
+  race_day_recovery_score: number | null
+  race_day_hrv_status: string | null
+}
+
 export interface ActivityDetailsResponse {
   activity_id: string
   type: string | null
@@ -252,6 +273,7 @@ export interface ActivityDetailsResponse {
   icu_training_load: number | null
   average_hr: number | null
   is_race?: boolean
+  race?: RaceInfo | null
   details: ActivityDetails | null
   hrv: ActivityHRV | null
 }
