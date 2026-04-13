@@ -25,7 +25,7 @@ from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
 from data.utils import HRV_ELIGIBLE_TYPES
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO
-from tasks.formatter import build_post_activity_message
+from tasks.formatter import build_post_activity_message, build_rpe_keyboard
 from tasks.tools import TelegramTool
 
 from .common import actor_after_activity_update
@@ -326,7 +326,11 @@ def _actor_send_activity_notification(
 
     tg = TelegramTool(user=user)
     summary = build_post_activity_message(activity_row, hrv_row, race=race_row)
-    tg.send_message(text=summary)
+    # Show the RPE rating keyboard only when the value is still unset.
+    # After the first tap the bot handler clears the markup on the message;
+    # we don't re-attach it here.
+    reply_markup = build_rpe_keyboard(activity_id) if activity_row.rpe is None else None
+    tg.send_message(text=summary, reply_markup=reply_markup)
 
 
 @dramatiq.actor(queue_name="default")

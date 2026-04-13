@@ -272,6 +272,7 @@ export interface ActivityDetailsResponse {
   duration: string | null
   icu_training_load: number | null
   average_hr: number | null
+  rpe: number | null
   is_race?: boolean
   race?: RaceInfo | null
   details: ActivityDetails | null

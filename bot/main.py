@@ -12,7 +12,9 @@ import httpx
 import psutil
 import sentry_sdk
 from sqlalchemy import text
+from sqlalchemy import update as sa_update
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -32,10 +34,11 @@ from bot.i18n import set_language as _set_lang
 from bot.scheduler import create_scheduler
 from bot.tools import MCPClient
 from config import settings
-from data.db import IqosDaily, User, UserDTO, Wellness, get_session
+from data.db import Activity, IqosDaily, User, UserDTO, Wellness, get_session
 from data.redis_client import close_redis, get_redis, init_redis
 from sentry_config import init_sentry
 from tasks.actors import actor_compose_user_morning_report, actor_update_zones
+from tasks.formatter import rpe_label_with_emoji
 from tasks.utils import RampTrainingSuggestion
 
 logger = logging.getLogger(__name__)
@@ -142,6 +145,80 @@ async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     _set_lang(lang)
     label = "🇷🇺 Русский" if lang == "ru" else "🇬🇧 English"
     await query.edit_message_text(f"✅ {label}")
+
+
+@athlete_required
+async def handle_rpe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle Borg CR-10 RPE rating from post-activity notification.
+
+    Single-shot: the first successful tap writes the value, removes the
+    inline keyboard, and appends ``RPE: N 🔥`` to the message text. Any
+    subsequent callback for the same activity gets a silent ``Уже оценено``
+    answer with no DB change. See docs/RPE_SPEC.md.
+    """
+    query = update.callback_query
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer()
+        return
+    _prefix, activity_id, raw_value = parts
+    try:
+        value = int(raw_value)
+    except ValueError:
+        await query.answer()
+        return
+    if not 1 <= value <= 10:
+        await query.answer()
+        return
+
+    # Atomic compare-and-swap: the single UPDATE combines three checks into
+    # one statement — activity exists, belongs to this user, and is still
+    # unrated. Two tenants / two concurrent taps / race-between-read-and-
+    # write all collapse into a single winner (the row that matches all three
+    # predicates). If rowcount is 0, we can't tell which check failed, but
+    # from the user's perspective the answer is always "already rated" —
+    # non-ownership is impossible in practice because notifications only go
+    # to the activity owner.
+    async with get_session() as session:
+        result = await session.execute(
+            sa_update(Activity)
+            .where(
+                Activity.id == activity_id,
+                Activity.user_id == user.id,
+                Activity.rpe.is_(None),
+            )
+            .values(rpe=value)
+        )
+        await session.commit()
+
+    if result.rowcount == 0:
+        await query.answer(_("Уже оценено"))
+        # Best-effort: clear the stale keyboard on this message too. If a
+        # previous tap succeeded in writing the DB but failed mid-edit, or
+        # if the user is tapping on an older duplicate notification, the
+        # message still has clickable buttons that generate noisy callbacks.
+        # Clearing them turns this into a one-shot no-op.
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except TelegramError:
+            pass
+        return
+
+    await query.answer()
+    # Prefer a single round-trip: update the text AND drop the keyboard in
+    # one call. Fall back to `edit_message_reply_markup` only when there's
+    # no text to update (shouldn't happen — the notification always has a
+    # body — but defensive).
+    new_text = None
+    if query.message and query.message.text:
+        new_text = f"{query.message.text}\nRPE: {rpe_label_with_emoji(value)}"
+    try:
+        if new_text is not None:
+            await query.edit_message_text(new_text, reply_markup=None)
+        else:
+            await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        logger.warning("handle_rpe_callback: failed to update message", exc_info=True)
 
 
 @athlete_required
@@ -816,6 +893,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_ramp_callback, pattern=r"^ramp_test:"))
     app.add_handler(CallbackQueryHandler(handle_update_zones_callback, pattern=r"^update_zones$"))
     app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
+    app.add_handler(CallbackQueryHandler(handle_rpe_callback, pattern=r"^rpe:"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     # Photo handler — download, save, pass to AI chat with vision
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))

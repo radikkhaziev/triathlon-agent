@@ -2,7 +2,7 @@
 
 from sqlalchemy import select
 
-from data.db import Race, TrainingLog, get_session
+from data.db import Activity, Race, TrainingLog, get_session
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
 
@@ -23,10 +23,26 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
 
     race_ids = [r.race_id for r in rows if r.race_id]
     races_map: dict[int, Race] = {}
-    if race_ids:
+    activity_ids = [r.actual_activity_id for r in rows if r.actual_activity_id]
+    rpe_by_activity: dict[str, int | None] = {}
+    if race_ids or activity_ids:
         async with get_session() as session:
-            result = await session.execute(select(Race).where(Race.user_id == user_id, Race.id.in_(race_ids)))
-            races_map = {race.id: race for race in result.scalars().all()}
+            if race_ids:
+                result = await session.execute(select(Race).where(Race.user_id == user_id, Race.id.in_(race_ids)))
+                races_map = {race.id: race for race in result.scalars().all()}
+            if activity_ids:
+                # RPE source of truth lives only on Activity (see docs/RPE_SPEC.md).
+                # Pull it via the existing actual_activity_id link. We include
+                # NULL rows too and let `rpe_by_activity.get()` return None for
+                # unrated — fewer predicates in SQL, one source of truth for
+                # the "missing" semantics at the Python layer.
+                rpe_rows = await session.execute(
+                    select(Activity.id, Activity.rpe).where(
+                        Activity.user_id == user_id,
+                        Activity.id.in_(activity_ids),
+                    )
+                )
+                rpe_by_activity = {aid: rpe for aid, rpe in rpe_rows.all()}
 
     entries = []
     for r in rows:
@@ -55,6 +71,7 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
                     "avg_hr": r.actual_avg_hr,
                     "tss": r.actual_tss,
                     "max_zone": r.actual_max_zone_time,
+                    "rpe": rpe_by_activity.get(r.actual_activity_id),
                 }
                 if r.compliance
                 else None

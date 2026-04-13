@@ -28,6 +28,7 @@ async def get_activity_details(activity_id: str) -> dict:
         "duration": format_duration(activity.moving_time),
         "icu_training_load": round(activity.icu_training_load, 1) if activity.icu_training_load is not None else None,
         "average_hr": round(activity.average_hr) if activity.average_hr is not None else None,
+        "rpe": activity.rpe,
         "details": serialize_activity_details(detail) if detail else None,
         "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
     }

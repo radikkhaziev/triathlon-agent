@@ -104,6 +104,13 @@ export default function Activity() {
               <Card label="Heart Rate" value={`${data.average_hr || '-'} bpm`}
                 sub={d.max_hr ? `Max ${d.max_hr} bpm` : undefined} />
             )}
+            {data.rpe != null && (
+              <Card
+                label={t('rpe.label')}
+                value={`${data.rpe}/10`}
+                sub={t(`rpe.scale.${data.rpe}`)}
+              />
+            )}
             {(d.efficiency_factor || d.power_hr || d.decoupling != null) && (
               <Card label="Efficiency"
                 value={d.efficiency_factor ? d.efficiency_factor.toFixed(2) : d.power_hr ? d.power_hr.toFixed(2) : '-'}
