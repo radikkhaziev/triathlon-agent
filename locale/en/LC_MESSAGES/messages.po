@@ -78,3 +78,9 @@ msgstr "light activity, 30-45 min"
 
 msgid "отдых — не тренироваться"
 msgstr "rest — no training"
+
+msgid "Нет доступа"
+msgstr "No access"
+
+msgid "Уже оценено"
+msgstr "Already rated"

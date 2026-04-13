@@ -9,6 +9,21 @@
     "dashboard": "Dashboard",
     "settings": "Settings"
   },
+  "rpe": {
+    "label": "RPE",
+    "scale": {
+      "1": "very easy",
+      "2": "easy",
+      "3": "conversational",
+      "4": "slightly hard",
+      "5": "noticeable work",
+      "6": "hard",
+      "7": "very hard",
+      "8": "max for long intervals",
+      "9": "almost max",
+      "10": "max"
+    }
+  },
   "common": {
     "loading": "Loading...",
     "error": "Error",

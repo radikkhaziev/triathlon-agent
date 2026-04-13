@@ -7,7 +7,20 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .user import UserDTO
 
-from sqlalchemy import JSON, Boolean, ColumnElement, DateTime, Float, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    ColumnElement,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+    select,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,6 +39,7 @@ class Activity(Base):
     """Completed activity synced from Intervals.icu."""
 
     __tablename__ = "activities"
+    __table_args__ = (CheckConstraint("rpe IS NULL OR (rpe BETWEEN 1 AND 10)", name="ck_activities_rpe_range"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)  # Intervals.icu activity ID (e.g. "i12345")
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
@@ -36,6 +50,7 @@ class Activity(Base):
     average_hr: Mapped[float | None] = mapped_column(Float, nullable=True)  # avg heart rate
     is_race: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     sub_type: Mapped[str | None] = mapped_column(String, nullable=True)  # NONE|RACE|COMMUTE|WARMUP|COOLDOWN
+    rpe: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Borg CR-10 (1-10), see docs/RPE_SPEC.md
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fit_file_path: Mapped[str | None] = mapped_column(String, nullable=True)
 

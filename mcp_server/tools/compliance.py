@@ -31,6 +31,7 @@ async def get_workout_compliance(activity_id: str) -> dict:
         act_moving_time = activity.moving_time
         act_avg_hr = activity.average_hr
         act_tss = activity.icu_training_load
+        act_rpe = activity.rpe
         det_avg_power = detail.avg_power if detail else None
         det_hr_zone_times = detail.hr_zone_times if detail else None
         det_power_zone_times = detail.power_zone_times if detail else None
@@ -57,6 +58,7 @@ async def get_workout_compliance(activity_id: str) -> dict:
         "avg_hr": act_avg_hr,
         "avg_power": det_avg_power,
         "tss": act_tss,
+        "rpe": act_rpe,
         "max_zone": log_entry.actual_max_zone_time if log_entry else None,
     }
 

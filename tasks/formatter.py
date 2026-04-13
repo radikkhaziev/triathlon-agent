@@ -164,6 +164,68 @@ def build_post_activity_message(
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# RPE inline keyboard (Borg CR-10, see docs/RPE_SPEC.md)
+# ---------------------------------------------------------------------------
+
+# Anchor labels: emoji only on 1, 3, 5, 7, 10 — keeps mobile rows readable.
+_RPE_BUTTON_LABELS: dict[int, str] = {
+    1: "1 😴",
+    2: "2",
+    3: "3 😌",
+    4: "4",
+    5: "5 💪",
+    6: "6",
+    7: "7 🔥",
+    8: "8",
+    9: "9",
+    10: "10 🤯",
+}
+
+# Public mapping for places that render the value back to the user (e.g. the
+# "RPE: 7 🔥" suffix appended to the message after a successful tap).
+RPE_EMOJI_BY_VALUE: dict[int, str] = {
+    1: "😴",
+    2: "",
+    3: "😌",
+    4: "",
+    5: "💪",
+    6: "",
+    7: "🔥",
+    8: "",
+    9: "",
+    10: "🤯",
+}
+
+
+def rpe_label_with_emoji(value: int) -> str:
+    """Format ``"7 🔥"`` for in-message rendering. Bare number when no anchor emoji."""
+    emoji = RPE_EMOJI_BY_VALUE.get(value, "")
+    return f"{value} {emoji}".strip()
+
+
+def build_rpe_keyboard(activity_id: str) -> dict:
+    """Two-row inline keyboard for Borg CR-10 RPE rating, raw Telegram Bot API format.
+
+    Returns a dict matching the ``inline_keyboard`` markup schema so it can
+    be passed directly to :meth:`tasks.tools.TelegramTool.send_message`.
+
+    Callback data: ``rpe:{activity_id}:{value}`` — handled by
+    :func:`bot.main.handle_rpe_callback`. Single-shot semantics: handler
+    edits the message to remove this keyboard after the first successful tap.
+    """
+
+    def _btn(value: int) -> dict:
+        return {"text": _RPE_BUTTON_LABELS[value], "callback_data": f"rpe:{activity_id}:{value}"}
+
+    return {
+        "inline_keyboard": [
+            [_btn(v) for v in (1, 2, 3, 4, 5)],
+            [_btn(v) for v in (6, 7, 8, 9, 10)],
+        ]
+    }
+
+
 def _build_post_race_message(activity: Activity, race: Race) -> str:
     """Race finish notification with distance, time, pace, fitness context."""
     sport = sport_emoji(activity.type)

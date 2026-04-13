@@ -82,6 +82,7 @@ Synced every 1 hour (at :00, hours 4-23) via scheduler. Upserted by Intervals.ic
 | `average_hr` | Float, nullable | average heart rate during activity |
 | `is_race` | Boolean, default false | sticky race flag — once set to true (via `tag_race` MCP tool or Intervals.icu `race=true`) it cannot be cleared by re-sync |
 | `sub_type` | String, nullable | `NONE` / `COMMUTE` / `WARMUP` / `COOLDOWN` / `RACE` — kept across re-syncs via `COALESCE` |
+| `rpe` | Integer, nullable | Borg CR-10 (1-10) post-workout subjective effort rating. `CHECK (rpe IS NULL OR (rpe BETWEEN 1 AND 10))`. Single source of truth — `training_log` reads via JOIN on `actual_activity_id`. Written via single-shot Telegram inline-keyboard callback (`rpe:{activity_id}:{value}`), never from MCP tools. See `docs/RPE_SPEC.md`. |
 | `last_synced_at` | DateTime(tz), nullable | set to `now(UTC)` on every upsert in `save_activities()` |
 
 Synced every hour at :30 via scheduler. Used for per-sport CTL calculation (EMA τ=42d).

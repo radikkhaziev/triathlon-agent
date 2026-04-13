@@ -28,10 +28,15 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
     start_str, end_str = str(start), str(end)
 
     async with get_session() as session:
-        # Activities (include sport type for compliance matching)
+        # Activities (include sport type for compliance matching, RPE for subjective load)
         activities = (
             await session.execute(
-                select(Activity.type, Activity.moving_time, Activity.icu_training_load).where(
+                select(
+                    Activity.type,
+                    Activity.moving_time,
+                    Activity.icu_training_load,
+                    Activity.rpe,
+                ).where(
                     Activity.user_id == user_id,
                     Activity.start_date_local >= start_str,
                     Activity.start_date_local <= end_str,
@@ -96,7 +101,8 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
     total_tss = 0.0
     total_secs = 0
     actual_types: list[str] = []
-    for sport, moving_time, tss in activities:
+    rpe_values: list[int] = []
+    for sport, moving_time, tss, rpe in activities:
         s = (sport or "Other").lower()
         actual_types.append(s)
         if s not in by_sport:
@@ -106,6 +112,8 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
         by_sport[s]["hours"] += (moving_time or 0) / 3600
         total_tss += tss or 0
         total_secs += moving_time or 0
+        if rpe is not None:
+            rpe_values.append(rpe)
 
     for s in by_sport.values():
         s["tss"] = round(s["tss"], 1)
@@ -218,6 +226,23 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
         if per_sport_ctl:
             load["per_sport_ctl"] = per_sport_ctl
 
+    # --- RPE (Borg CR-10 subjective load) ---
+    # Null-aware aggregates: avg/min/max/distribution computed only over rated
+    # sessions; `missing` reports the unrated count separately so Claude knows
+    # how complete the data is. See docs/RPE_SPEC.md.
+    rpe: dict = {
+        "count": len(rpe_values),
+        "missing": sessions_completed - len(rpe_values),
+    }
+    if rpe_values:
+        distribution: dict[str, int] = {}
+        for v in rpe_values:
+            distribution[str(v)] = distribution.get(str(v), 0) + 1
+        rpe["avg"] = round(sum(rpe_values) / len(rpe_values), 1)
+        rpe["min"] = min(rpe_values)
+        rpe["max"] = max(rpe_values)
+        rpe["distribution"] = distribution
+
     return {
         "week": f"{start_str} to {end_str}",
         "training": {
@@ -234,4 +259,5 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
         "mood": mood,
         "iqos": iqos,
         "load": load,
+        "rpe": rpe,
     }
