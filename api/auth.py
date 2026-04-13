@@ -93,6 +93,72 @@ def create_jwt(chat_id: str) -> str:
     return f"{h}.{p}.{_b64(sig)}"
 
 
+TELEGRAM_AUTH_MAX_AGE_SECONDS = 24 * 3600  # Our replay window; Telegram docs show 24h as the recommended cap
+
+
+def verify_telegram_widget_auth(data: dict, *, now: float | None = None) -> str | None:
+    """Verify Telegram Login Widget callback payload.
+
+    Per https://core.telegram.org/widgets/login#checking-authorization:
+      1. Build a data-check-string: all fields except `hash`, sorted by key,
+         joined as "key=value" with \\n separators.
+      2. secret_key = SHA256(bot_token).
+      3. Expected hash = HMAC-SHA256(secret_key, data-check-string).
+      4. Reject if auth_date is older than our replay window (24h, see
+         TELEGRAM_AUTH_MAX_AGE_SECONDS).
+
+    Returns the Telegram user id (as string — maps to User.chat_id) on success,
+    None on any failure. Never raises.
+
+    `now` is an override for tests; defaults to time.time().
+    """
+    try:
+        received_hash = data.get("hash")
+        if not received_hash or not isinstance(received_hash, str):
+            return None
+
+        auth_date_raw = data.get("auth_date")
+        if auth_date_raw is None:
+            return None
+        try:
+            auth_date = int(auth_date_raw)
+        except (TypeError, ValueError):
+            return None
+
+        user_id = data.get("id")
+        if user_id is None:
+            return None
+
+        current_time = now if now is not None else time.time()
+        if current_time - auth_date > TELEGRAM_AUTH_MAX_AGE_SECONDS:
+            return None
+        if auth_date - current_time > 60:  # future-dated, clock skew tolerance
+            return None
+
+        # Telegram never emits `null` for optional fields — it omits them.
+        # Drop `None` values here so that a payload carrying a stray JSON
+        # `null` (e.g. from a client library that serializes `undefined` as
+        # `null`) still matches Telegram's signed data-check-string.
+        fields = {k: v for k, v in data.items() if k != "hash" and v is not None}
+        data_check_string = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+
+        bot_token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
+        if not bot_token:
+            logger.warning("TELEGRAM_BOT_TOKEN is not configured, cannot verify widget auth")
+            return None
+
+        secret_key = hashlib.sha256(bot_token.encode()).digest()
+        expected = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(expected, received_hash):
+            return None
+
+        return str(user_id)
+    except Exception:
+        logger.debug("Telegram widget verification failed", exc_info=True)
+        return None
+
+
 def verify_jwt(token: str) -> str | None:
     """Verify JWT and return chat_id (sub claim), or None if invalid/expired."""
     try:

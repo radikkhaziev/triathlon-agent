@@ -17,12 +17,19 @@ from data.db import User
 async def get_current_user(authorization: str | None = Header(default=None)) -> User | None:
     """Resolve current user from Telegram initData or JWT Bearer token.
 
+    On a successful Telegram initData handshake for an unknown chat_id we
+    auto-create a `viewer` row — same behaviour as `/start` and the Login
+    Widget. This makes Mini App deep-links self-onboarding.
+
     Returns User object or None (anonymous).
     """
     if not authorization:
         return None
 
     chat_id: str | None = None
+    tg_username: str | None = None
+    tg_display_name: str | None = None
+    from_init_data = False
 
     if authorization.startswith("Bearer "):
         jwt_token = authorization[7:]
@@ -36,14 +43,29 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
                 if user_json:
                     try:
                         user_data = json.loads(user_json)
-                        chat_id = str(user_data.get("id", ""))
+                        raw_id = user_data.get("id")
+                        if raw_id is not None:
+                            chat_id = str(raw_id)
+                            tg_username = user_data.get("username")
+                            first = user_data.get("first_name") or ""
+                            last = user_data.get("last_name") or ""
+                            tg_display_name = f"{first} {last}".strip() or None
+                            from_init_data = True
                     except (json.JSONDecodeError, TypeError):
                         pass
 
     if not chat_id:
         return None
 
-    user = await User.get_by_chat_id(chat_id)
+    if from_init_data:
+        user = await User.get_or_create_from_telegram(
+            chat_id=chat_id,
+            username=tg_username,
+            display_name=tg_display_name,
+        )
+    else:
+        user = await User.get_by_chat_id(chat_id)
+
     if user:
         sentry_sdk.set_user(
             {
