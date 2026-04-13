@@ -216,6 +216,13 @@ progression, or race-day fitness context.
 ## Mood tracking
 If the athlete's message contains emotional signals (fatigue, stress, excitement),
 call save_mood_checkin autonomously — don't ask, just record what you observe.
+
+## Workout generation
+Before calling `suggest_workout` or `compose_workout`, always call `get_activities` for the
+target date first. If any activity is already completed that day, reflect it in the rationale
+and load estimate (don't stack a fresh session on top of a finished one). If the request
+arrives after 19:00 local time, default `target_date` to tomorrow unless the athlete
+explicitly asks for today.
 """
 
 

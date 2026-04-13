@@ -1,13 +1,14 @@
 """MCP tools for AI-generated workout management (Phase 1: Adaptive Training Plan)."""
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
+from sqlalchemy import select
 
 from bot.formatter import build_workout_pushed_message
 from config import settings
-from data.db import AiWorkout, User
+from data.db import Activity, AiWorkout, User, get_session
 from data.intervals.client import IntervalsAsyncClient
 from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
 from mcp_server.app import mcp
@@ -15,6 +16,33 @@ from mcp_server.context import get_current_user_id
 from mcp_server.sentry import sentry_tool
 
 logger = logging.getLogger(__name__)
+
+
+async def _completed_activities_note(user_id: int, target_date: date) -> str:
+    """Belt-and-suspenders: even if the model forgot to call get_activities,
+    surface completed sessions for `target_date` directly in the dry-run preview.
+    Prevents stacking a fresh workout on top of one that already happened today.
+    """
+    # Activity.start_date_local is a VARCHAR storing ISO8601 ("YYYY-MM-DDTHH:MM:SS").
+    # Half-open range on the string boundary is lexicographically correct for ISO
+    # format and matches the pattern used elsewhere in mcp_server/tools/activities.py.
+    day_start = target_date.isoformat()
+    day_end = (target_date + timedelta(days=1)).isoformat()
+    async with get_session() as session:
+        query = select(Activity).where(
+            Activity.user_id == user_id,
+            Activity.start_date_local >= day_start,
+            Activity.start_date_local < day_end,
+        )
+        rows = (await session.execute(query)).scalars().all()
+    if not rows:
+        return ""
+    parts = []
+    for r in rows:
+        load = f", {int(r.icu_training_load)} TL" if r.icu_training_load else ""
+        mins = (r.moving_time or 0) // 60
+        parts.append(f"{r.type} {mins}min{load}")
+    return f"\n⚠️ Уже выполнено {target_date}: " + "; ".join(parts) + "."
 
 
 async def _send_workout_notification(
@@ -96,10 +124,11 @@ async def suggest_workout(
     tss_part = f", ~{target_tss} TSS" if target_tss else ""
 
     if dry_run:
+        completed_note = await _completed_activities_note(get_current_user_id(), dt)
         return (
             f"Preview: AI: {name} ({sport}, {duration_minutes} min{tss_part}).\n"
             f"Rationale: {rationale}\n"
-            f"Steps: {len(steps)} step(s). "
+            f"Steps: {len(steps)} step(s).{completed_note} "
             f"Use suggest_workout with dry_run=False or press 'Отправить' to push."
         )
 
