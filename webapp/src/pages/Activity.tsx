@@ -5,7 +5,14 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import ZoneChart from '../components/ZoneChart'
 import { useApi } from '../hooks/useApi'
-import { fmtDateShort, sportLabel, fmtPace, fmtSpeed, fmtDuration } from '../lib/formatters'
+import {
+  fmtDateShort,
+  fmtDuration,
+  fmtPace,
+  fmtSpeed,
+  normalizePaceSecPerKm,
+  sportLabel,
+} from '../lib/formatters'
 import { SPORT_ICONS } from '../lib/constants'
 import type { ActivityDetailsResponse, RaceInfo } from '../api/types'
 
@@ -33,6 +40,30 @@ export default function Activity() {
   const paceZones = d?.pace_zone_times ?? d?.pace_zones
   const icon = SPORT_ICONS[data.type || ''] || '\u{1F3C6}'
 
+  // Pace derivation (issue #44):
+  //
+  // Primary path — compute from `moving_time / distance`. This is unit-safe
+  // because both fields have documented units (sec, meters) and Intervals.icu
+  // returns them reliably for runs/swims.
+  //
+  // Fallback — normalize `d.pace` via `normalizePaceSecPerKm`. That field's
+  // unit is ambiguous across activity types (sometimes sec/km, sometimes m/s
+  // — same value as `average_speed`), so the normalizer auto-detects by
+  // magnitude. Used when `distance` is missing in historical or edge-case
+  // data so the Pace card still renders.
+  const distanceMeters = d?.distance ?? null
+  const derivedRunPaceSecPerKm =
+    data.moving_time && distanceMeters && distanceMeters > 0
+      ? data.moving_time / (distanceMeters / 1000)
+      : null
+  const runPaceSecPerKm = derivedRunPaceSecPerKm ?? normalizePaceSecPerKm(d?.pace)
+  const swimPaceSecPerKm =
+    data.moving_time && distanceMeters && distanceMeters > 0
+      ? data.moving_time / (distanceMeters / 1000)
+      : normalizePaceSecPerKm(d?.pace)
+  const swimPaceSecPer100m = swimPaceSecPerKm ? swimPaceSecPerKm / 10 : null
+  const gapSecPerKm = normalizePaceSecPerKm(d?.gap)
+
   const subParts = [fmtDateShort(data.date), data.duration, data.icu_training_load != null ? `TSS ${data.icu_training_load}` : null, data.average_hr != null ? `\u2764\uFE0F ${data.average_hr} bpm` : null].filter(Boolean)
 
   return (
@@ -59,14 +90,16 @@ export default function Activity() {
               <Card label="Speed" value={`${fmtSpeed(d.avg_speed)} km/h`}
                 sub={d.max_speed ? `Max ${fmtSpeed(d.max_speed)}` : undefined} />
             )}
-            {isRun && d.pace && (
-              <Card label="Pace" value={`${fmtPace(d.pace)}/km`}
-                sub={d.gap ? `GAP ${fmtPace(d.gap)}/km` : undefined} />
+            {isRun && runPaceSecPerKm && (
+              <Card
+                label="Pace"
+                value={`${fmtPace(runPaceSecPerKm)}/km`}
+                sub={gapSecPerKm ? `GAP ${fmtPace(gapSecPerKm)}/km` : undefined}
+              />
             )}
-            {isSwim && d.pace && (() => {
-              const p100 = d.pace / 10
-              return <Card label="Pace" value={`${fmtPace(p100)}/100m`} />
-            })()}
+            {isSwim && swimPaceSecPer100m && (
+              <Card label="Pace" value={`${fmtPace(swimPaceSecPer100m)}/100m`} />
+            )}
             {(data.average_hr || d.max_hr) && (
               <Card label="Heart Rate" value={`${data.average_hr || '-'} bpm`}
                 sub={d.max_hr ? `Max ${d.max_hr} bpm` : undefined} />

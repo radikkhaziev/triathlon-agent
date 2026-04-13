@@ -54,6 +54,32 @@ export function fmtPace(secPerKm: number | null): string | null {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+/**
+ * Intervals.icu's `pace` / `gap` fields arrive with an ambiguous unit —
+ * sometimes seconds-per-km (as the name suggests), sometimes meters-per-second
+ * (same value as `average_speed`). See issue #44 for the observed case where
+ * a 1.98 m/s run rendered as `0:02/km` because the field was treated as
+ * already being sec/km.
+ *
+ * We disambiguate by magnitude using a range that has no overlap for humans:
+ *   - real running speed tops out at ~12 m/s (world sprint records)
+ *   - real running pace is ~95 sec/km at best (sprint) and ~500 sec/km typical
+ *
+ * Anything below PACE_UNIT_THRESHOLD is treated as m/s and converted;
+ * anything at or above is treated as already-normalized sec/km.
+ *
+ * Prefer deriving pace directly from `moving_time / distance` when those
+ * fields are available — this function exists for values like `gap`
+ * (grade-adjusted pace) that cannot be trivially recomputed on the client.
+ */
+const PACE_UNIT_THRESHOLD_SEC_PER_KM = 30
+
+export function normalizePaceSecPerKm(value: number | null | undefined): number | null {
+  if (!value || value <= 0) return null
+  if (value < PACE_UNIT_THRESHOLD_SEC_PER_KM) return 1000 / value
+  return value
+}
+
 export function fmtSpeed(ms: number | null): string | null {
   if (!ms || ms <= 0) return null
   return (ms * 3.6).toFixed(1)
