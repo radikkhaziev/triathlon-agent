@@ -439,10 +439,19 @@ def _extract_pending_workout(tool_calls: list[dict]) -> dict | None:
 
 
 def _apply_push_flag(pending: dict) -> None:
-    """Flip the preview flag in place so the tool executes as a real push."""
-    tool_cfg = _PREVIEWABLE_TOOLS.get(pending["name"])
+    """Flip the preview flag in place so the tool executes as a real push.
+
+    Raises KeyError if the pending draft references a tool we don't know how
+    to push. This should not happen in practice because
+    :func:`_extract_pending_workout` only stores tools from
+    ``_PREVIEWABLE_TOOLS``, but the guard prevents a silent no-op in which
+    the caller would re-run the tool still in preview mode and show a
+    misleading success message to the user.
+    """
+    name = pending["name"]
+    tool_cfg = _PREVIEWABLE_TOOLS.get(name)
     if tool_cfg is None:
-        return
+        raise KeyError(f"No push flag config for tool {name!r}")
     tool_cfg.apply_push(pending["input"])
 
 
@@ -493,7 +502,13 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
 
     tool_calls: list[dict] = []
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id, tool_calls_out=tool_calls)
+        response = await agent.chat(
+            prompt,
+            mcp_token=user.mcp_token,
+            user_id=user.id,
+            tool_calls_out=tool_calls,
+            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()),
+        )
         context.user_data["workout_messages"].append({"role": "assistant", "content": response})
     except Exception:
         logger.exception("Workout generation failed")
@@ -530,7 +545,13 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     tool_calls: list[dict] = []
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id, tool_calls_out=tool_calls)
+        response = await agent.chat(
+            prompt,
+            mcp_token=user.mcp_token,
+            user_id=user.id,
+            tool_calls_out=tool_calls,
+            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()),
+        )
         context.user_data["workout_messages"].append({"role": "assistant", "content": response})
     except Exception:
         logger.exception("Workout dialog error")
@@ -578,7 +599,16 @@ async def workout_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user:
     await query.message.chat.send_action("typing")
 
     tool_name = pending["name"]
-    _apply_push_flag(pending)  # flip dry_run / push_to_intervals in place
+    try:
+        _apply_push_flag(pending)  # flip dry_run / push_to_intervals in place
+    except KeyError:
+        logger.error("workout_push: unknown tool %s cached in pending_workout", tool_name)
+        await query.message.reply_text(
+            "Не могу отправить: внутренняя ошибка (неизвестный тип тренировки). " "Сгенерируй заново через /workout."
+        )
+        context.user_data.pop("workout_sport", None)
+        context.user_data.pop("workout_messages", None)
+        return ConversationHandler.END
 
     try:
         mcp = MCPClient(token=user.mcp_token)
@@ -596,10 +626,11 @@ async def workout_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user:
         logger.exception("Workout push failed (tool=%s)", tool_name)
         response = "Ошибка при отправке в Intervals.icu. Попробуй ещё раз или /cancel."
 
-    try:
-        await query.message.reply_text(response, parse_mode="Markdown")
-    except Exception:
-        await query.message.reply_text(response)
+    # No parse_mode: the response comes straight from an MCP tool and may
+    # contain user-controlled strings (workout name, rationale, upstream
+    # error payloads) with Markdown special chars like _ * [ ] ( ). Sending
+    # as plain text avoids broken formatting and fake clickable links.
+    await query.message.reply_text(response)
 
     context.user_data.pop("workout_sport", None)
     context.user_data.pop("workout_messages", None)
