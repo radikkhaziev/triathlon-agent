@@ -167,8 +167,8 @@ def build_post_activity_message(
 def _build_post_race_message(activity: Activity, race: Race) -> str:
     """Race finish notification with distance, time, pace, fitness context."""
     sport = sport_emoji(activity.type)
-    name = race.name or (activity.type or "Race")
-    header = f"🏁 {sport} Гонка завершена: {name}"
+    name = race.name or (activity.type or _("Гонка"))
+    header = f"🏁 {sport} {_('Гонка завершена')}: {name}"
     if race.race_type:
         header += f" ({race.race_type})"
 
@@ -180,7 +180,7 @@ def _build_post_race_message(activity: Activity, race: Race) -> str:
 
     time_parts: list[str] = []
     if finish:
-        time_parts.append(f"⏱ {finish}" + (f" (цель: {goal})" if goal else ""))
+        time_parts.append(f"⏱ {finish}" + (f" ({_('цель')}: {goal})" if goal else ""))
     if dist_km is not None:
         time_parts.append(f"📏 {dist_km} km")
     pace = _format_pace(race.avg_pace_sec_km)
@@ -211,10 +211,10 @@ def _build_post_race_message(activity: Activity, race: Race) -> str:
         place = f"{race.placement}"
         if race.placement_total:
             place += f"/{race.placement_total}"
-        lines.append(f"🏆 Место: {place}")
+        lines.append(f"🏆 {_('Место')}: {place}")
 
     lines.append("")
-    lines.append("Заполни детали (RPE, погода, заметки) — запомню для анализа.")
+    lines.append(_("Заполни детали (RPE, погода, заметки) — запомню для анализа."))
 
     return "\n".join(lines)
 

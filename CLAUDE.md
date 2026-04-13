@@ -56,7 +56,7 @@ triathlon-agent/
 
 **Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling).
 
-**Training:** `scheduled_workouts`, `activities`, `ai_workouts`, `training_log` (pre/actual/post + compliance), `exercise_cards`, `workout_cards`, `races`.
+**Training:** `scheduled_workouts`, `activities` (incl. `is_race`/`sub_type`), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot). See `docs/RACE_TAGGING.md`.
 
 **Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`.
 
@@ -361,7 +361,7 @@ Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**49 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, goal progress, zones, races, GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**49 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, goal progress, zones, races (`get_races`/`tag_race`/`update_race`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 

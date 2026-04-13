@@ -87,7 +87,11 @@ async def activity_details(
 
         detail = await session.get(ActivityDetail, activity_id)
         hrv = await session.get(ActivityHrv, activity_id)
-        race = await Race.get_by_activity(uid, activity_id) if activity.is_race else None
+        race = None
+        if activity.is_race:
+            race = (
+                await session.execute(select(Race).where(Race.user_id == uid, Race.activity_id == activity_id))
+            ).scalar_one_or_none()
 
     return {
         "activity_id": activity.id,

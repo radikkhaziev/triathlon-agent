@@ -253,7 +253,7 @@ class PlannedWorkoutDTO(BaseModel):
                 if s.reps and s.steps:
                     total += s.reps * _sum_seconds(s.steps)
                 else:
-                    total += s.duration
+                    total += s.duration or 0
             return total
 
         expected = self.duration_minutes * 60
