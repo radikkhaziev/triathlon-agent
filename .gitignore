@@ -25,6 +25,10 @@ webapp/node_modules/
 webapp/dist/
 webapp_old/
 
+# Landing
+landing/node_modules/
+landing/dist/
+
 backups/
 
 .DS_Store
