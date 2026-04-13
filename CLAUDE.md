@@ -152,6 +152,7 @@ All commands use `@athlete_required` decorator — resolves `User` from Telegram
 /start      — welcome message + create User in DB + Mini App button
 /morning    — trigger morning report via dramatiq actor
 /dashboard  — dashboard link (Mini App)
+/workout    — interactive workout generation: sport picker → dry-run preview → "Отправить в Intervals" button
 /web        — one-time code for desktop login (5 min TTL)
 /stick      — increment IQOS stick counter for today (owner only)
 /health     — server diagnostics: DB, Redis, queues, Intervals.icu, Anthropic (owner only)
@@ -163,7 +164,9 @@ All commands use `@athlete_required` decorator — resolves `User` from Telegram
 <reply>     — reply context included as "[В ответ на: ...]"
 ```
 
-**Callback handlers:** `ramp_test:{sport}` — create ramp test, `update_zones` — update HR zones.
+**Callback handlers:** `ramp_test:{sport}` — create ramp test, `update_zones` — update HR zones, `workout:{sport}` / `workout_push` / `workout_cancel` — `/workout` ConversationHandler states.
+
+**`/workout` two-phase flow:** generation calls `suggest_workout` (or `compose_workout` for fitness) with `dry_run=True` / `push_to_intervals=False`. `bot/agent.py:chat()` accepts `tool_calls_out: list[dict] | None` — when provided, every tool invocation is appended as `{"name", "input"}`. The handler stashes the last previewable call in `context.user_data["pending_workout"]`. On "✅ Отправить в Intervals" tap, `workout_push` pops the draft, flips the preview flag, and calls `MCPClient.call_tool` directly **without** re-invoking Claude — so what lands in Intervals.icu is bit-for-bit identical to the preview. Prevents prompt-injection on the state-mutating step and saves one inference round per push. See `bot/main.py:_PREVIEWABLE_TOOLS` for the flag-name mapping.
 
 ---
 
