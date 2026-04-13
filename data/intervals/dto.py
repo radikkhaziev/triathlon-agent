@@ -236,6 +236,35 @@ class PlannedWorkoutDTO(BaseModel):
     slot: str = "morning"  # "morning" | "evening"
     suffix: str = "generated"  # "generated" | "adapted"
 
+    @model_validator(mode="after")
+    def _check_steps_duration_consistency(self) -> "PlannedWorkoutDTO":
+        """Guard against unit-mismatch where Claude passes step durations in minutes.
+
+        If all steps are time-based, the sum of step seconds (accounting for repeat groups)
+        must be at least 30% of duration_minutes * 60. A gross shortfall almost always means
+        the caller confused minutes with seconds (a 60-min ride collapsing to ~60 seconds).
+        """
+        if self.has_distance_steps:
+            return self
+
+        def _sum_seconds(steps: list[WorkoutStepDTO]) -> int:
+            total = 0
+            for s in steps:
+                if s.reps and s.steps:
+                    total += s.reps * _sum_seconds(s.steps)
+                else:
+                    total += s.duration or 0
+            return total
+
+        expected = self.duration_minutes * 60
+        actual = _sum_seconds(self.steps)
+        if expected > 0 and actual > 0 and actual < expected * 0.3:
+            raise ValueError(
+                f"Workout steps total only {actual}s but duration_minutes={self.duration_minutes} "
+                f"(expected ~{expected}s). Step `duration` must be in SECONDS, not minutes."
+            )
+        return self
+
     @property
     def external_id(self) -> str:
         return f"tricoach:{self.target_date}:{self.sport.lower()}:{self.slot}"

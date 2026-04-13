@@ -33,190 +33,50 @@ Personal AI agent for a triathlete: syncs wellness/HRV/training from Intervals.i
 
 ```
 triathlon-agent/
-├── CLAUDE.md
-├── .env / .env.example
-├── pyproject.toml / poetry.lock
-├── Dockerfile / docker-compose.yml
-├── alembic.ini
-├── config.py                        # pydantic-settings
-├── sentry_config.py                 # Sentry SDK init, data scrubbing, traces sampler
-├── cli.py                           # shell, sync-settings, sync-wellness, sync-activities, sync-training-log, import-garmin
-├── bot/
-│   ├── main.py                      # bot entry (polling + webhook), handlers, ClaudeAgent instance
-│   ├── agent.py                     # ClaudeAgent — thin async client over MCP (tool-use loop)
-│   ├── tools.py                     # MCPClient — async MCP Streamable HTTP client (list_tools, call_tool)
-│   ├── prompts.py                   # system prompts for chat + morning analysis
-│   ├── i18n.py                      # gettext i18n: contextvars _(), set_language()
-│   ├── tool_filter.py               # keyword → tool group filtering for chat (reduces token footprint)
-│   ├── scheduler.py                 # APScheduler cron jobs → dramatiq group dispatch
-│   ├── decorator.py                 # @athlete_required — resolves User from Telegram update
-│   └── formatter.py                 # report formatting (re-exports from tasks.formatter)
-├── tasks/
-│   ├── broker.py                    # Dramatiq RedisBroker configuration
-│   ├── middleware.py                # Pydantic auto-serialization for actor kwargs
-│   ├── worker.py                    # dramatiq worker entry point
-│   ├── tools.py                     # TelegramTool (sync HTTP) + MCPTool (sync, for morning report)
-│   ├── formatter.py                 # Message builders: morning, evening, post-activity
-│   ├── utils.py                     # RampTrainingSuggestion, detect_compliance
-│   ├── dto.py                       # DateDTO, ORMDTO, FitProcessingResultDTO, ThresholdsDTO
-│   └── actors/
-│       ├── common.py                # Shared: CATEGORY_TO_READINESS, actor_after_activity_update, sport CTL enrichment
-│       ├── wellness.py              # Wellness sync + RHR/HRV/recovery pipelines
-│       ├── activities.py            # Activity sync + FIT processing + DFA a1
-│       ├── training_log.py          # Training log lifecycle: PRE+ACTUAL (same day), POST (next day)
-│       ├── reports.py               # Morning/evening report composition + workout adaptation
-│       ├── workout.py               # actor_push_workout → Intervals.icu + DB + Telegram
-│       └── athlets.py               # Athlete settings sync from Intervals.icu
-├── data/
-│   ├── dto.py                       # Domain DTOs: TrendResult, RmssdStatus, RhrStatus, RecoveryScore
-│   ├── metrics.py                   # HRV, RHR, recovery, per-sport CTL, ESS/Banister calculations
-│   ├── hrv_activity.py              # DFA a1 pipeline (FIT → RR → DFA → thresholds → Ra/Da)
-│   ├── workout_adapter.py           # HumanGo parser + adaptation engine
-│   ├── ramp_tests.py                # Ramp test protocol generation
-│   ├── utils.py                     # normalize_sport, is_bike/run/swim, CANONICAL_TYPES, extract_sport_ctl
-│   ├── crypto.py                    # Fernet encryption for per-user secrets
-│   ├── redis_client.py              # Redis init/close
-│   ├── github.py                    # GitHub issue creation
-│   ├── intervals/
-│   │   ├── client.py                # IntervalsAsyncClient + IntervalsSyncClient (per-user factory)
-│   │   └── dto.py                   # Intervals.icu API DTOs: Wellness, Activity, Workout, EventEx
-│   ├── garmin/
-│   │   ├── parser.py                # GarminExportParser — chunked JSON discovery + period filter
-│   │   ├── dto.py                   # Pydantic DTOs for sleep, daily, readiness, health
-│   │   └── importer.py              # Bulk upsert to DB (ON CONFLICT DO NOTHING/UPDATE)
-│   └── db/
-│       ├── common.py                # Engine, session factories, @dual DualMethod descriptor
-│       ├── decorator.py             # @with_session, @with_sync_session, @dual
-│       ├── dto.py                   # DB DTOs: UserDTO, WellnessPostDTO, AthleteThresholdsDTO
-│       ├── user.py                  # User ORM + get_threshold_freshness, detect_threshold_drift
-│       ├── athlete.py               # AthleteSettings, AthleteGoal ORM (get_thresholds, get_goal_dto)
-│       ├── wellness.py              # Wellness ORM + HRV/RHR history
-│       ├── activity.py              # Activity, ActivityHrv, ActivityDetail, Race ORM
-│       ├── hrv.py                   # HrvAnalysis, RhrAnalysis, PaBaseline ORM
-│       ├── workout.py               # ScheduledWorkout, AiWorkout, TrainingLog, ExerciseCard, WorkoutCard
-│       ├── tracking.py              # MoodCheckin, IqosDaily, ApiUsageDaily
-│       └── garmin.py                # 9 Garmin ORM models (sleep, daily, readiness, health, load, fitness, race, bio, abnormal_hr)
-├── api/
-│   ├── server.py                    # FastAPI + MCPAuthMiddleware (per-user token) + webhook
-│   ├── deps.py                      # Auth dependencies: get_current_user, require_viewer/athlete/owner
-│   ├── auth.py                      # One-time codes + JWT
-│   ├── routes.py                    # Router aggregation
-│   └── routers/
-│       ├── wellness.py              # /api/report, /api/wellness-day
-│       ├── activities.py            # /api/activities-week, /api/activity/{id}/details, /api/progress
-│       ├── workouts.py              # /api/scheduled-workouts
-│       ├── jobs.py                  # /api/jobs/sync-* → dramatiq actors (require_athlete)
-│       ├── auth.py                  # /api/auth/verify-code, /api/auth/me
-│       └── system.py                # /health
-├── mcp_server/
-│   ├── app.py                       # FastMCP instance
-│   ├── server.py                    # MCP server with all tools + resources imported
-│   ├── context.py                   # contextvars: set/get_current_user_id (from MCPAuthMiddleware)
-│   ├── sentry.py                    # @sentry_tool decorator (spans + error capture for MCP tools)
-│   ├── tools/                       # 49 tools (all use get_current_user_id() for tenant isolation)
-│   └── resources/                   # athlete profile, goal, thresholds
-├── webapp/                          # React SPA (Vite + TypeScript + Tailwind)
-├── locale/                          # gettext translations: ru/en .po/.mo (backend i18n)
-├── babel.cfg                        # Babel extraction config
-├── templates/                       # Jinja2 templates for exercise/workout cards
-├── static/                          # Generated HTML files (exercises, workouts, uploads)
-├── migrations/
-├── docs/
-│   └── knowledge/                   # Training methodology & theory
-└── tests/
+├── config.py / sentry_config.py / cli.py
+├── bot/          # Telegram bot: main.py (handlers), agent.py (ClaudeAgent), tools.py (MCPClient), prompts.py, scheduler.py
+├── tasks/        # Dramatiq actors: broker.py, actors/ (wellness, activities, training_log, reports, workout)
+├── data/         # Domain: metrics.py, hrv_activity.py, workout_adapter.py, ramp_tests.py, crypto.py
+│   ├── intervals/  # Intervals.icu client + DTOs
+│   ├── garmin/     # Garmin GDPR parser + importer
+│   └── db/         # SQLAlchemy ORM (@dual sync/async), all models, decorators
+├── api/          # FastAPI: server.py, auth.py, deps.py, routers/ (wellness, activities, workouts, jobs, auth)
+├── mcp_server/   # 49 MCP tools + 3 resources, context.py (user_id contextvars), sentry.py
+├── webapp/       # React 18 SPA (Vite + TypeScript + Tailwind)
+├── migrations/ / templates/ / static/ / locale/ / docs/ / tests/
 ```
 
 ---
 
 ## Database Schema
 
-Twenty-six tables. Full column specs in `data/db/`.
+28 tables. Full column specs in `data/db/`. Key tables:
 
-| Table                 | PK                         | Purpose                                                                                         |
-| --------------------- | -------------------------- | ----------------------------------------------------------------------------------------------- |
-| `users`               | autoincrement              | Multi-tenant: chat_id, role, athlete_id, api_key_encrypted, mcp_token                          |
-| `athlete_settings`    | (user_id, sport_type)      | Per-user per-sport thresholds from Intervals.icu (LTHR, FTP, zones)                             |
-| `athlete_goals`       | (user_id)                  | Per-user race goal (event, date, CTL targets)                                                   |
-| `wellness`            | autoincrement              | Daily Intervals.icu data: CTL/ATL, HRV, sleep, body metrics, recovery score, AI recommendations |
-| `hrv_analysis`        | (user_id, date, algorithm) | Dual-algorithm HRV baselines: flatt_esco + ai_endurance. Status, bounds, CV, SWC, trend         |
-| `rhr_analysis`        | (user_id, date)            | RHR baselines: 7d/30d/60d means, bounds (±0.5 SD of 30d), trend. Inverted: high RHR = red       |
-| `scheduled_workouts`  | event ID                   | Planned workouts from Intervals.icu calendar. Synced hourly                                     |
-| `activities`          | activity ID                | Completed activities. Synced hourly. Fields: is_race, sub_type from Intervals.icu               |
-| `activity_details`    | activity_id FK             | Extended stats: HR/power/pace zones, zone times, intervals, EF, decoupling, pool_length         |
-| `activity_hrv`        | activity_id FK             | Post-activity DFA a1: quality, thresholds (HRVT1/HRVT2), Ra, Da. Processed every 5 min          |
-| `pa_baseline`         | autoincrement              | Pa values for Readiness (Ra) calculation. 14-day rolling baseline                               |
-| `ai_workouts`         | autoincrement              | AI-generated/adapted workouts pushed to Intervals.icu. External ID for dedup                    |
-| `training_log`        | autoincrement              | Training log: pre-context, actual, post-outcome. Compliance detection + personal patterns       |
-| `mood_checkins`       | autoincrement              | Emotional state: energy/mood/anxiety/social (1-5) + note. Via MCP only                          |
-| `iqos_daily`          | autoincrement              | Daily IQOS stick counter. Incremented via /stick bot command. Queried via MCP                   |
-| `exercise_cards`      | id string                  | Exercise library: animation HTML/CSS, metadata, steps, focus (shared, no user_id)               |
-| `workout_cards`       | autoincrement              | Composed workouts from exercise cards with custom sets/reps. Sport type (Swim/Ride/Run/Other)   |
-| `api_usage_daily`     | (user_id, date)            | Daily API token usage: input/output/cache tokens, request count. Atomic upsert                  |
-| `garmin_sleep`        | (user_id, calendar_date)   | Garmin sleep phases (deep/light/REM), 7 scores, respiration, stress. GDPR export                |
-| `garmin_daily_summary`| (user_id, calendar_date)   | Garmin UDS: steps, calories, stress breakdown, body battery, RHR                                |
-| `garmin_training_readiness` | (user_id, date, ctx) | Garmin Training Readiness: score, level, factor breakdown (HRV/sleep/ACWR/stress)               |
-| `garmin_health_status`| (user_id, calendar_date)   | Garmin Health Status: HRV/HR/SpO2/skin temp/respiration with baselines                          |
-| `garmin_training_load`| (user_id, calendar_date)   | Garmin ACWR: acute/chronic load, ratio, status                                                  |
-| `garmin_fitness_metrics`| (user_id, calendar_date) | Combined VO2max (run/bike) + Endurance Score + Max MET. Sparse (~1/week)                        |
-| `garmin_race_predictions`| (user_id, calendar_date)| Race time predictions: 5K/10K/half/marathon (seconds)                                           |
-| `garmin_bio_metrics`  | (user_id, calendar_date)   | Weight, height, lactate threshold HR/speed. Sparse (~1/week)                                    |
-| `garmin_abnormal_hr_events`| (user_id, timestamp)  | Abnormal HR events: high HR value + threshold                                                   |
-| `races`               | (user_id, activity_id)     | Race details: name, distance, finish/goal time, placement, conditions, fitness snapshot          |
+**Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
+
+**Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling).
+
+**Training:** `scheduled_workouts`, `activities` (incl. `is_race`/`sub_type`), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot). See `docs/RACE_TAGGING.md`.
+
+**Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`.
+
+**Garmin (9 tables):** `garmin_sleep`, `garmin_daily_summary`, `garmin_training_readiness`, `garmin_health_status`, `garmin_training_load`, `garmin_fitness_metrics`, `garmin_race_predictions`, `garmin_bio_metrics`, `garmin_abnormal_hr_events`.
 
 ---
 
-## Current Implementation Status
+## Implementation Status
 
-| Module                 | Status            | Notes                                                                                                                                  |
-| ---------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `data/*`               | Done              | Intervals.icu client (per-user factory), metrics pipeline, DFA a1, ORM (dual sync/async), crypto (Fernet)                              |
-| `data/db/`             | Done              | SQLAlchemy ORM with `@dual` DualMethod (auto-dispatches sync/async by context), `@with_session`/`@with_sync_session` decorators. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()` (no AthleteConfig wrapper) |
-| Multi-tenant           | Phase 1.3 done    | `users` table, `user_id` FK on all tables, per-user MCP auth (token → contextvars), per-user scheduler, API auth returns User object   |
-| `bot/*`                | Done              | ClaudeAgent (thin MCP client), MCPClient (Streamable HTTP), per-user mcp_token, @athlete_required decorator                           |
-| `tasks/*`              | Done              | Dramatiq actors: wellness/RHR/HRV/recovery pipelines, FIT processing, training log lifecycle, workout push                             |
-| `api/*`                | Done              | REST endpoints, auth (User-based, not role string), require_viewer/athlete/owner, jobs → dramatiq direct dispatch                      |
-| `mcp_server/`          | Done              | 49 tools + 3 resources. All tools use `get_current_user_id()` from contextvars. Per-user Bearer token auth                             |
-| `webapp/` (React SPA)  | Done              | React 18 + TypeScript + Vite + Tailwind. Bottom tabs, Today hub, light theme                                                           |
-| Adaptive Training Plan | Phase 4 done      | Write API, HumanGo adaptation, training log (pre/actual/post via actors), ramp tests + threshold drift                                 |
-| Sentry                 | Done              | Error monitoring, performance tracing, data scrubbing (incl. stackframe vars), user context, `@sentry_tool` for MCP                   |
-| Garmin Import          | Phase 2 done      | 9 tables, parser, importer, CLI `import-garmin`, 6 MCP tools, morning report enrichment                                                |
-| i18n                   | Done              | ru/en: backend gettext (.po/.mo) + frontend react-i18next (.json). User.language, /lang, Settings toggle                               |
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Pending: personal patterns cron, MT Phase 2 (JWT upgrade).
 
-**Webapp pages:** Today (hub), Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs navigation. `/report` redirects to `/wellness`.
+**Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP.
+
+**Webapp pages:** Today, Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs. `/report` → `/wellness`.
 
 ---
 
 ## Environment Variables (.env)
 
-```env
-TELEGRAM_BOT_TOKEN=...            # Telegram
-TELEGRAM_CHAT_ID=123456789        # Owner chat ID (legacy, used in some places)
-TELEGRAM_WEBHOOK_URL=             # empty = polling mode
-ANTHROPIC_API_KEY=sk-ant-...
-API_BASE_URL=https://...
-WEBAPP_URL=https://...
-DATABASE_URL=postgresql+asyncpg://...
-REDIS_URL=redis://localhost:6379/0
-
-# Per-user credentials (legacy, for owner user_id=1; new users use DB)
-INTERVALS_API_KEY=...             # Intervals.icu
-INTERVALS_ATHLETE_ID=i12345
-ATHLETE_MAX_HR=179
-
-TIMEZONE=Europe/Belgrade
-HRV_ALGORITHM=flatt_esco          # or "ai_endurance"
-JWT_SECRET=                       # if empty, uses TELEGRAM_BOT_TOKEN
-JWT_EXPIRY_DAYS=7
-MCP_AUTH_TOKEN=...                # Owner MCP token (per-user tokens in DB)
-FIELD_ENCRYPTION_KEY=...          # Fernet key for per-user secrets
-
-# Sentry (empty DSN = disabled)
-SENTRY_DSN=https://...@o0.ingest.sentry.io/0
-SENTRY_ENVIRONMENT=production     # production / development / staging
-SENTRY_TRACES_SAMPLE_RATE=0.1    # 10% of transactions
-SENTRY_RELEASE=                   # optional, auto-detect from git
-
-```
+See `.env.example` for full list. Key vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_URL` (empty=polling), `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `API_BASE_URL`, `WEBAPP_URL`, `INTERVALS_API_KEY`/`INTERVALS_ATHLETE_ID` (legacy owner), `TIMEZONE=Europe/Belgrade`, `HRV_ALGORITHM=flatt_esco`, `MCP_AUTH_TOKEN`, `FIELD_ENCRYPTION_KEY` (Fernet), `SENTRY_DSN` (empty=disabled).
 
 ---
 
@@ -335,50 +195,13 @@ GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles
 
 ## Webapp (webapp/) — React SPA
 
-> Full migration plan: `docs/REACT_MIGRATION_PLAN.md`
+React 18 + TypeScript + Vite 6 + React Router v7 + Tailwind CSS v3 + Chart.js v4 + React Context. Light theme, Inter font, mobile-first, Telegram Mini App compatible.
 
-React 18 + TypeScript + Vite SPA. Light theme, Inter font, mobile-first. Telegram Mini App compatible.
+**Routes:** `/` (Today/Landing), `/wellness`, `/plan`, `/activities`, `/activity/:id`, `/dashboard` (3 tabs), `/settings`, `/login`. Bottom tabs navigation.
 
-**Stack:** React 18 + TypeScript, Vite 6, React Router v7, Tailwind CSS v3 (JIT), Chart.js v4, React Context (no Redux).
+**Auth:** `AuthProvider` (React Context): Telegram initData → JWT fallback → anonymous. `useAuth()` hook. Desktop: `/web` → 6-digit code → JWT.
 
-### Pages
-
-| Route           | Component       | API Source                                |
-| --------------- | --------------- | ----------------------------------------- | -------------------------------- |
-| `/`             | Today / Landing | `/api/report` + `/api/scheduled-workouts` | Auth → Today hub, anon → Landing |
-| `/login`        | Login           | `POST /api/auth/verify-code`              | Desktop auth                     |
-| `/wellness`     | Wellness        | `GET /api/wellness-day`                   | Full day analytics with DayNav   |
-| `/plan`         | Plan            | `GET /api/scheduled-workouts`             | Weekly plan with WeekNav         |
-| `/activities`   | Activities      | `GET /api/activities-week`                | Weekly activities with WeekNav   |
-| `/activity/:id` | Activity        | `GET /api/activity/{id}/details`          | Detail page, bottom tabs hidden  |
-| `/dashboard`    | Dashboard       | Multiple endpoints                        | 3 tabs: Load, Goal, Week         |
-| `/settings`     | Settings        | —                                         | Read-only profile + logout       |
-| `/report`       | redirect        | —                                         | Redirects to `/wellness`         |
-
-### Navigation
-
-Bottom tabs: Today, Plan, Activities, Wellness, More (→ Dashboard, Settings). Hidden on `/activity/:id` and `/login`.
-
-### Shared Components
-
-Layout (with BottomTabs), MetricCard, Gauge, TabSwitcher, WeekNav, DayNav, ZoneChart, ZoneBar, SportCtlBars, AiRecommendation, SyncButton, StatusBadge, LoadingSpinner, ErrorMessage.
-
-### Auth
-
-Centralized `AuthProvider` (React Context): Telegram initData → JWT fallback → anonymous.
-`useAuth()` hook: `{ role, isAuthenticated, authHeader, logout }`.
-`apiClient.ts` attaches auth + handles 401 → redirect.
-
-Desktop auth: `/web` bot command → 6-digit code → `/login` → JWT (7-day expiry).
-
-### Telegram Mini App
-
-SDK via `<script>` in index.html. Theme: CSS vars `--tg-theme-*` with dark fallbacks. Lifecycle: `tg.ready()` + `tg.expand()`.
-
-### Build
-
-Dev: `cd webapp && npm run dev` (Vite :5173, proxies /api → :8000).
-Production: Docker multi-stage — Node 20 builds SPA → Python 3.12 serves `webapp/dist/` with SPA fallback.
+**Build:** Dev: `cd webapp && npm run dev` (:5173, proxies /api → :8000). Prod: Docker multi-stage Node 20 → Python 3.12.
 
 ---
 
@@ -474,29 +297,15 @@ python -m cli sync-activities 2             # 2. activities + training log PRE/A
 
 For each day: fetches wellness data (HRV, CTL, sleep) and activities from Intervals.icu, computes HRV/RHR baselines, Banister/ESS, recovery scores, and syncs activity details.
 
-### Step 5 (optional): Set CTL targets for goals
+### Step 5 (optional): Set CTL targets for goals via shell
 
-```python
-from data.db import AthleteGoal
-from data.db.common import get_sync_session
-
-with get_sync_session() as s:
-    goal = s.query(AthleteGoal).filter_by(user_id=2, category="RACE_A").first()
-    goal.ctl_target = 75
-    goal.per_sport_targets = {"swim": 15, "ride": 35, "run": 25}
-    s.commit()
-```
-
-### Onboarding нового пользователя
+### Quick onboard (alternative to Steps 3-4)
 
 ```bash
-# 1. User отправляет /start боту → UserRow создаётся с role=viewer
-# 2. Owner через shell: меняет role, прописывает athlete_id, api_key, mcp_token
-# 3. Запуск onboard:
 python -m bot.cli onboard <user_id> --days 180
 ```
 
-Команда `onboard` выполняет последовательно: sync wellness → sync activities → sync details → sync workouts. Использует per-user Intervals.icu credentials из таблицы `users`.
+Runs sequentially: sync wellness → sync activities → sync details → sync workouts.
 
 ---
 
@@ -552,100 +361,31 @@ Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**Tools:** get_wellness, get_wellness_range, get_activities, get_activity_details, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_goal_progress, get_scheduled_workouts, get_activity_hrv, get_thresholds_history, get_readiness_history, suggest_workout, remove_ai_workout, list_ai_workouts, get_training_log, get_personal_patterns, get_threshold_freshness, create_ramp_test_tool, save_mood_checkin_tool, get_mood_checkins_tool, get_iqos_sticks, create_exercise_card, update_exercise_card, list_exercise_cards, compose_workout, remove_workout_card, list_workout_cards, get_efficiency_trend, create_github_issue, get_github_issues, get_animation_guidelines, get_api_usage, get_garmin_sleep, get_garmin_readiness, get_garmin_daily_metrics, get_garmin_race_predictions, get_garmin_vo2max_trend, get_garmin_abnormal_hr_events, get_zones, get_weight_trend, get_workout_compliance, predict_ctl, update_zones, get_weekly_summary, get_races, tag_race, update_race.
+**49 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, goal progress, zones, races (`get_races`/`tag_race`/`update_race`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
-**Resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
-
-**Key constraint:** All tools document that CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
+**Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 
 ---
 
-## Mood Tracking
+## Mood & IQOS Tracking
 
-Via MCP only (no Telegram command). Claude notices emotional context → proposes check-in → user confirms → `save_mood_checkin`. Scales 1-5: energy, mood, anxiety, social + free text note. Multiple check-ins per day OK. No stored summaries — Claude generates on demand.
-
----
-
-## IQOS Stick Tracking
-
-Telegram command `/stick` increments daily counter (one row per date in `iqos_daily` table). Uses PostgreSQL `ON CONFLICT DO UPDATE` for atomic upsert. Bot replies with current count for today (e.g. "🚬 Стик #5 за 27.03").
-
-MCP tool `get_iqos_sticks(target_date, days_back)`: `days_back=0` returns single-day count, `days_back>0` returns range with totals, daily breakdown, and average per day. Useful for trend analysis and correlating with training/recovery data.
+**Mood:** Via MCP only. Claude notices emotional context → `save_mood_checkin`. Scales 1-5: energy, mood, anxiety, social + note.
+**IQOS:** `/stick` command increments daily counter. MCP tool `get_iqos_sticks(target_date, days_back)` for trends.
 
 ---
 
-## Activity Details (#6 — Done)
+---
 
-Extended per-activity stats (HR, power, pace, zones, intervals, efficiency). Table `activity_details` + `activity_hrv`. Sync job fetches details for new activities. React page `/activity/:id` with zones, intervals, DFA a1. MCP tool `get_activity_details`. Full spec: `docs/ACTIVITY_DETAILS_PHASE1.md`, `docs/ACTIVITY_DETAILS_PHASE2.md`.
+## Documentation
+
+Specs and plans in `docs/`. Key: `ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECURITY.md`, `intervals_icu_openapi.json` (API ref), `knowledge/` (training methodology).
 
 ---
 
-## Web Dashboard (#9 — Done)
+## Next Steps
 
-Three tabs: Load (CTL/ATL/TSB charts), Goal (per-sport progress), Week (weekly summary). Manual job triggers (sync workouts, sync activities). Implemented as React components. Full spec: `docs/WEB_DASHBOARD.md`.
-
----
-
-## Documentation (docs/)
-
-| Document                       | Description                                                                         |
-| ------------------------------ | ----------------------------------------------------------------------------------- |
-| `REACT_MIGRATION_PLAN.md`      | React migration — stack, structure, migration order, Docker                         |
-| `WEBAPP_RESTRUCTURE.md`        | Webapp restructure — bottom tabs, Today hub, merged Wellness, Settings              |
-| `WEB_DASHBOARD.md`             | Web Dashboard — 3 tabs: Load, Goal, Week                                            |
-| `WEB_AUTH_MODEL.md`            | Auth: 3 roles, Telegram initData, JWT                                               |
-| `HRV_MODULE_SPEC.md`           | HRV architecture — Level 1 (RMSSD) + Level 2 (DFA a1)                               |
-| `HRV_IMPLEMENTATION_PLAN.md`   | Level 1 implementation steps                                                        |
-| `DFA_ALPHA1_PLAN.md`           | DFA a1 pipeline — FIT → RR → thresholds → Ra/Da                                     |
-| `PROCESS_FIT_JOB.md`           | FIT processing pipeline + quality testing                                           |
-| `ESS_BANISTER_PLAN.md`         | ESS/Banister pipeline                                                               |
-| `MCP_INTEGRATION_PLAN.md`      | MCP roadmap — Phase 1-3 (all done)                                                  |
-| `ACTIVITY_DETAILS_PHASE1.md`   | Activity Details — fetch & store                                                    |
-| `ACTIVITY_DETAILS_PHASE2.md`   | Activity Details — web + MCP display                                                |
-| `SCHEDULED_WORKOUTS_PAGE.md`   | Workouts page architecture                                                          |
-| `ACTIVITIES_PAGE.md`           | Activities page architecture                                                        |
-| `ADAPTIVE_TRAINING_PLAN.md`    | Adaptive Training Plan — 4 phases: Write API, adaptation, training log, ramp tests  |
-| `GEMINI_ROLE_SPEC.md`          | ~~Gemini role~~ — removed, dependencies dropped                                    |
-| `PROGRESS_TRACKING_PLAN.md`    | EF + SWOLF + pace trends. MCP tool + API done. Webapp chart pending                 |
-| `MOOD_TRACKING.md`             | Mood tracking via MCP — scales, workflow                                            |
-| `WORKOUT_CARDS.md`             | Workout Cards — exercise library + workout composition from cards                   |
-| `MCP_PHASE2.md`                | MCP Phase 2 — tool-use для утреннего анализа, tool definitions, fallback            |
-| `MCP_PHASE3.md`                | MCP Phase 3 — free-form Telegram chat, stateless, owner-only, two-tier architecture |
-| `ACTUAL_MAX_ZONE_TIME_SPEC.md` | Спека заполнения actual_max_zone_time — реализовано                                 |
-| `TODO_WORKOUT_DISTANCE.md`     | Distance-based workouts — реализовано, Этап 0 (API верификация) pending             |
-| `intervals_icu_openapi.json`   | Intervals.icu OpenAPI 3.0 spec (official, full API reference)                       |
-
----
-
-## Next Steps (Priority Order)
-
-1. ~~ESS/Banister~~ — Done
-2. ~~DFA Alpha 1~~ — Done
-3. ~~Post-activity notification~~ — Done
-4. ~~Evening report~~ — Done
-5. ~~Morning prompt + DFA~~ — Done
-6. ~~Activity Details~~ — Done (table, API, MCP tool, React page, sync job, CLI sync-activities)
-7. ~~Scheduled Workouts page~~ — Done
-8. ~~React Migration~~ — Done (React 18 + TypeScript + Vite + Tailwind)
-9. ~~Web Dashboard~~ — Done (3 tabs: Load, Goal, Week)
-10. ~~Bot commands~~ — Done (/start with description + webapp link)
-11. ~~Web Auth~~ — Done
-12. ~~Mood Tracking~~ — Done
-13. ~~IQOS Tracking~~ — Done (/stick command + MCP tool)
-14. ~~Adaptive Training Plan Phase 1~~ — Done (Write API, AI workout generation, MCP tools, `ai_workouts` table)
-15. ~~Webapp Restructure~~ — Done (Bottom tabs, Today hub, merge Report→Wellness, Settings stub)
-16. ~~Adaptive Training Plan Phase 2~~ — Done (HumanGo parser, adaptation rules, clamp engine, scheduler integration, 33 unit tests)
-17. ~~Adaptive Training Plan Phase 3~~ — Done (training_log table, pre/actual/post lifecycle, compliance detection, MCP tools, 10 tests)
-18. ~~Adaptive Training Plan Phase 4~~ — Done (Ramp protocols, threshold freshness check, drift detection, MCP tools, compact morning message, 15 tests)
-19. ~~MCP Phase 2~~ — Done (Tool-use for morning analysis via MCP HTTP)
-20. ~~MCP Phase 3~~ — Done (Free-form Telegram chat: stateless, per-user MCP token, tool-use via MCP)
-21. ~~Gemini Role Spec~~ — Removed (Gemini dependencies dropped)
-22. ~~Workout Cards~~ — Done (Exercise library with HTML cards + SVG animations, Jinja templates, 6 MCP tools incl. guidelines)
-23. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log (~30 дней после деплоя)
-24. ~~Multi-Tenant Phase 1~~ — Done (users table, user_id on 13 tables, crypto, onboarding CLI)
-25. ~~Multi-Tenant Phase 1.3~~ — Done (per-user MCP auth, contextvars user_id, API auth returns User, per-user scheduler via dramatiq, jobs dispatch per-user actors)
-26. ~~Sentry Integration~~ — Done (error monitoring, performance tracing, data scrubbing, user context, `@sentry_tool`, 19 tests)
-27. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant), initData freshness check. See `docs/MULTI_TENANT_SECURITY.md`
+1. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
+2. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant), initData freshness check. See `docs/MULTI_TENANT_SECURITY.md`
 
 ---
 

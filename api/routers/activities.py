@@ -6,7 +6,7 @@ from sqlalchemy import exists, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, ActivityHrv, User, get_session
+from data.db import Activity, ActivityDetail, ActivityHrv, Race, User, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.tools.progress import compute_efficiency_trend
 
@@ -87,6 +87,11 @@ async def activity_details(
 
         detail = await session.get(ActivityDetail, activity_id)
         hrv = await session.get(ActivityHrv, activity_id)
+        race = None
+        if activity.is_race:
+            race = (
+                await session.execute(select(Race).where(Race.user_id == uid, Race.activity_id == activity_id))
+            ).scalar_one_or_none()
 
     return {
         "activity_id": activity.id,
@@ -97,6 +102,30 @@ async def activity_details(
         "icu_training_load": round(activity.icu_training_load, 1) if activity.icu_training_load is not None else None,
         "average_hr": round(activity.average_hr) if activity.average_hr is not None else None,
         "is_race": activity.is_race,
+        "race": (
+            {
+                "name": race.name,
+                "race_type": race.race_type,
+                "distance_km": round(race.distance_m / 1000, 2) if race.distance_m else None,
+                "finish_time_sec": race.finish_time_sec,
+                "goal_time_sec": race.goal_time_sec,
+                "placement": race.placement,
+                "placement_total": race.placement_total,
+                "placement_ag": race.placement_ag,
+                "surface": race.surface,
+                "weather": race.weather,
+                "avg_pace_sec_km": race.avg_pace_sec_km,
+                "rpe": race.rpe,
+                "notes": race.notes,
+                "race_day_ctl": race.race_day_ctl,
+                "race_day_atl": race.race_day_atl,
+                "race_day_tsb": race.race_day_tsb,
+                "race_day_recovery_score": race.race_day_recovery_score,
+                "race_day_hrv_status": race.race_day_hrv_status,
+            }
+            if race
+            else None
+        ),
         "details": serialize_activity_details(detail) if detail else None,
         "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
     }

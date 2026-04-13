@@ -76,6 +76,9 @@ class Activity(Base):
         existing_ids = set(row[0] for row in session.execute(select(cls.id).where(cls.id.in_(incoming_ids))))
 
         stmt = insert(cls).values(values)
+        # is_race / sub_type: locally tagged races (via bot tag_race) must survive re-sync.
+        # Intervals.icu is not the source of truth for race tagging, so we OR-merge the flag
+        # and keep the existing sub_type when it was already set locally.
         stmt = stmt.on_conflict_do_update(
             index_elements=["id"],
             set_={
@@ -84,8 +87,8 @@ class Activity(Base):
                 "icu_training_load": stmt.excluded.icu_training_load,
                 "moving_time": stmt.excluded.moving_time,
                 "average_hr": stmt.excluded.average_hr,
-                "is_race": stmt.excluded.is_race,
-                "sub_type": stmt.excluded.sub_type,
+                "is_race": cls.is_race | stmt.excluded.is_race,
+                "sub_type": func.coalesce(cls.sub_type, stmt.excluded.sub_type),
                 "last_synced_at": stmt.excluded.last_synced_at,
             },
         )
@@ -389,12 +392,18 @@ class Race(Base):
     race_day_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     avg_pace_sec_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    normalized_pace_sec_km: Mapped[float | None] = mapped_column(Float, nullable=True)
     splits: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     rpe: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
     @classmethod
     @dual

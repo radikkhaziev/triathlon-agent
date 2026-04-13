@@ -149,6 +149,10 @@ Interpretation:
 
 **FIT file requirement:** RR intervals are embedded in the `HRV` message type of ANT+/FIT files. Activities imported from Strava (without original FIT) or recorded with wrist HRM will have `no_rr_data` status.
 
+**Indoor trainer caveat:** Rouvy, Zwift, and TrainerRoad record HR/power/cadence but **do not write HRV messages** to FIT. To get DFA α1 on indoor rides, record in parallel with a Garmin Edge (or similar head unit with HRM-Dual over ANT+). Rouvy-only FITs end up as `no_rr_data`.
+
+**BLE fragmentation (Garmin watch + HRM-Dual):** Empirically (March 2026 athlete data), Garmin watches receiving HRM-Dual over BLE fragment single heartbeat RR intervals into 2–3 sub-packets (e.g. a real 662 ms beat becomes 373 + 289 ms), producing 17–25% of samples under 200 ms. Artifact correction then flags the file as `low_quality` (>10% artifacts) and DFA is skipped. **Always pair HRM-Dual over ANT+ to the watch** — ANT+ recordings show <0.25% artifacts on the same hardware.
+
 ---
 
 ## References

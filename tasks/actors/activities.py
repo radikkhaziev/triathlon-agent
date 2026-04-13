@@ -13,7 +13,7 @@ from fitparse import FitFile
 from pydantic import validate_call
 from sqlalchemy import select
 
-from data.db import Activity, ActivityDetail, ActivityHrv, PaBaseline, UserDTO, get_sync_session
+from data.db import Activity, ActivityDetail, ActivityHrv, PaBaseline, Race, UserDTO, get_sync_session
 from data.hrv_activity import (
     calculate_dfa_timeseries,
     calculate_durability_da,
@@ -319,12 +319,13 @@ def _actor_send_activity_notification(
     with get_sync_session() as session:
         activity_row: Activity = session.get(Activity, activity_id)
         hrv_row: ActivityHrv = session.get(ActivityHrv, activity_id)
+        race_row = Race.get_by_activity(user.id, activity_id) if activity_row.is_race else None
 
     if activity_row.start_date_local != DateDTO.today().isoformat():
         return  # only notify for today's activities
 
     tg = TelegramTool(user=user)
-    summary = build_post_activity_message(activity_row, hrv_row)
+    summary = build_post_activity_message(activity_row, hrv_row, race=race_row)
     tg.send_message(text=summary)
 
 

@@ -80,10 +80,34 @@ Synced every 1 hour (at :00, hours 4-23) via scheduler. Upserted by Intervals.ic
 | `icu_training_load` | Float, nullable | TSS/hrTSS/ssTSS from Intervals.icu |
 | `moving_time` | Integer, nullable | duration in seconds |
 | `average_hr` | Float, nullable | average heart rate during activity |
+| `is_race` | Boolean, default false | sticky race flag — once set to true (via `tag_race` MCP tool or Intervals.icu `race=true`) it cannot be cleared by re-sync |
+| `sub_type` | String, nullable | `NONE` / `COMMUTE` / `WARMUP` / `COOLDOWN` / `RACE` — kept across re-syncs via `COALESCE` |
 | `last_synced_at` | DateTime(tz), nullable | set to `now(UTC)` on every upsert in `save_activities()` |
 
 Synced every hour at :30 via scheduler. Used for per-sport CTL calculation (EMA τ=42d).
 Indexed on `start_date_local` for range queries.
+
+**Save merge semantics** (`Activity.save_bulk`): on `ON CONFLICT`, `is_race` uses `OR` and `sub_type` uses `COALESCE(existing, excluded)`. Locally tagged races survive Intervals.icu re-syncs where `race=false` — Intervals.icu is not the source of truth for race tagging.
+
+## `races` — extended race context (see `docs/RACE_TAGGING.md`)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Integer PK | autoincrement |
+| `user_id` | Integer FK → users | tenant scope |
+| `activity_id` | String FK → activities, UNIQUE | one race per activity |
+| `name` | String | "Novi Sad Marathon 25K" |
+| `race_type` | String, default "C" | A / B / C |
+| `goal_id` | Integer FK → athlete_goals, nullable | link to goal event |
+| `distance_m`, `finish_time_sec`, `goal_time_sec` | nullable | result vs goal |
+| `placement`, `placement_total`, `placement_ag` | nullable | rank |
+| `surface`, `weather`, `elevation_gain_m` | nullable | conditions |
+| `race_day_ctl`, `race_day_atl`, `race_day_tsb`, `race_day_hrv_status`, `race_day_recovery_score`, `race_day_weight` | nullable | wellness snapshot on race day (auto-filled) |
+| `avg_pace_sec_km`, `normalized_pace_sec_km` | nullable | computed pace metrics |
+| `splits` | JSON, nullable | per-km splits |
+| `rpe`, `notes` | nullable | subjective |
+| `created_at`, `updated_at` | DateTime(tz) | |
+
+Auto-created by `actor_fill_training_log._ensure_race_record` when `activity.is_race=true`, or manually via MCP `tag_race`. Linked from `training_log.race_id` FK.
 
 ## `activity_hrv` — post-activity DFA alpha 1 analysis (Level 2)
 | Column | Type | Notes |

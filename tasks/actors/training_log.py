@@ -159,18 +159,20 @@ def actor_fill_training_log(user: UserDTO, dt: DateDTO):
 
         # Auto-create Race record if activity is flagged as race
         if getattr(activity, "is_race", False) is True:
-            _ensure_race_record(user, activity, wellness_row)
+            race_id = _ensure_race_record(user, activity, wellness_row)
+            if race_id:
+                TrainingLog.update(user.id, log_obj.id, race_id=race_id)
 
     logger.info("Training log PRE+ACTUAL for user %d on %s: %d entries", user.id, dt, len(new_activities))
 
 
-def _ensure_race_record(user: UserDTO, activity, wellness_row) -> None:
-    """Create Race record if not exists for a race activity."""
+def _ensure_race_record(user: UserDTO, activity, wellness_row) -> int | None:
+    """Create Race record if not exists for a race activity. Returns race id."""
     from data.db import ActivityDetail
 
     existing = Race.get_by_activity(user.id, activity.id)
     if existing:
-        return
+        return existing.id
 
     with get_sync_session() as session:
         detail = session.get(ActivityDetail, activity.id)
@@ -201,8 +203,10 @@ def _ensure_race_record(user: UserDTO, activity, wellness_row) -> None:
         )
         session.add(race)
         session.commit()
+        race_id = race.id
 
     logger.info("Race auto-created for user %d activity %s", user.id, activity.id)
+    return race_id
 
 
 @dramatiq.actor(queue_name="default")
