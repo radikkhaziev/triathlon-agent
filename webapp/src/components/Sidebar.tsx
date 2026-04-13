@@ -1,22 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { Link, useLocation } from 'react-router-dom'
+import { ALL_NAV_ITEMS } from '../lib/navItems'
 import EnduraiLogo from './EnduraiLogo'
-
-interface NavItem {
-  path: string
-  labelKey: string
-  icon: string
-}
-
-const NAV: NavItem[] = [
-  { path: '/', labelKey: 'nav.today', icon: '🏠' },
-  { path: '/plan', labelKey: 'nav.plan', icon: '📋' },
-  { path: '/activities', labelKey: 'nav.activities', icon: '🏃' },
-  { path: '/wellness', labelKey: 'nav.wellness', icon: '💚' },
-  { path: '/progress', labelKey: 'nav.progress', icon: '📈' },
-  { path: '/dashboard', labelKey: 'nav.dashboard', icon: '📊' },
-  { path: '/settings', labelKey: 'nav.settings', icon: '⚙️' },
-]
 
 export default function Sidebar() {
   const location = useLocation()
@@ -35,7 +20,7 @@ export default function Sidebar() {
         </Link>
       </div>
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-        {NAV.map(item => {
+        {ALL_NAV_ITEMS.map(item => {
           const active = isActive(item.path)
           return (
             <Link
@@ -47,7 +32,9 @@ export default function Sidebar() {
                   : 'text-text hover:bg-surface-2'
               }`}
             >
-              <span className="text-lg leading-none">{item.icon}</span>
+              <span className="text-lg leading-none" aria-hidden="true">
+                {item.icon}
+              </span>
               <span>{t(item.labelKey)}</span>
             </Link>
           )
