@@ -167,8 +167,8 @@ Ra baseline = average Pa over last 14 days (≥3 data points required).
 | `normalized_power` | Integer, nullable | NP watts (bike) |
 | `avg_speed` | Float, nullable | m/s |
 | `max_speed` | Float, nullable | m/s |
-| `pace` | Float, nullable | sec/km (run) |
-| `gap` | Float, nullable | grade adjusted pace sec/km (run) |
+| `pace` | Float, nullable | **⚠ Ambiguous unit from Intervals.icu** — observed as m/s for runs (same value as `avg_speed`), not sec/km as the field name suggests. Don't read directly in UI — derive pace from `moving_time / distance` instead (see `webapp/src/pages/Activity.tsx`, issue #44). |
+| `gap` | Float, nullable | grade-adjusted pace, presumed sec/km (run). Guard UI reads with `> 60` in case upstream ever ships m/s here too. |
 | `distance` | Float, nullable | meters |
 | `elevation_gain` | Float, nullable | meters |
 | `avg_cadence` | Float, nullable | rpm (bike) or spm (run) |
