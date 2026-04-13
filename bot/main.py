@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 import zoneinfo
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, NamedTuple
 
 import httpx
@@ -488,16 +488,27 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await query.message.chat.send_action("typing")
 
+    now_local = datetime.now(TZ)
+    target_date = now_local.date() + timedelta(days=1) if now_local.hour >= 19 else now_local.date()
+    target_date_iso = target_date.isoformat()
+    day_label = "завтра" if target_date != now_local.date() else "сегодня"
+    context.user_data["workout_target_date"] = target_date_iso
+
     prompt = (
-        f"Сгенерируй тренировку на сегодня. Вид спорта: {sport}. "
-        f"Используй suggest_workout tool с dry_run=True (только превью, не отправляй)."
+        f"Сгенерируй тренировку на {day_label} ({target_date_iso}). Вид спорта: {sport}. "
+        f"Перед генерацией вызови get_activities для target_date={target_date_iso}, "
+        f"чтобы учесть активности, уже выполненные в этот день, в rationale и оценке нагрузки. "
+        f"Затем используй suggest_workout с target_date={target_date_iso} и dry_run=True "
+        f"(только превью, не отправляй)."
     )
     if sport == "WeightTraining":
         prompt = (
-            "Сгенерируй фитнес-тренировку на сегодня. "
-            "Сначала вызови get_animation_guidelines, затем list_exercise_cards, "
-            "и собери тренировку через compose_workout с push_to_intervals=False "
-            "(это preview-режим, не пушим сразу — пользователь подтвердит через кнопку)."
+            f"Сгенерируй фитнес-тренировку на {day_label} ({target_date_iso}). "
+            f"Сначала вызови get_activities для target_date={target_date_iso}, чтобы учесть "
+            "активности, уже выполненные в этот день. Затем get_animation_guidelines и "
+            f"list_exercise_cards, и собери тренировку через compose_workout с "
+            f"target_date={target_date_iso} и push_to_intervals=False "
+            "(preview-режим, пользователь подтвердит через кнопку)."
         )
 
     tool_calls: list[dict] = []
