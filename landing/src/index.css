@@ -9,12 +9,12 @@
   --border: #d4d4dc;
   --text: #1a1a2e;
   --text-dim: #6b6b80;
-  --accent: #3b82f6;
-  --accent-glow: #3b82f618;
-  --green: #16a34a;
-  --yellow: #d97706;
-  --orange: #ea580c;
-  --red: #dc2626;
+  --accent: #2563eb;
+  --accent-glow: #2563eb18;
+  --green: #166534;
+  --yellow: #92400e;
+  --orange: #9a3412;
+  --red: #991b1b;
 }
 
 * {

@@ -3,11 +3,7 @@ import { t } from '../i18n'
 const GITHUB_URL = 'https://github.com/radikkhaziev/triathlon-agent'
 
 // Approximate, hardcoded — exact counts rot with every PR.
-const METRICS = [
-  { value: '50+', labelKey: 'opensource_metric_tools' as const },
-  { value: '25+', labelKey: 'opensource_metric_tables' as const },
-  { value: '2', labelKey: 'opensource_metric_lang' as const },
-]
+const METRICS = [{ value: '50+', labelKey: 'opensource_metric_tools' as const }]
 
 export default function OpenSource() {
   return (

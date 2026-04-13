@@ -1,6 +1,6 @@
 export default function TypingAnimation() {
   return (
-    <span className="inline-flex items-center gap-1" aria-label="Typing">
+    <span className="inline-flex items-center gap-1" role="img" aria-label="Typing">
       <Dot delay="0s" />
       <Dot delay="0.15s" />
       <Dot delay="0.3s" />
