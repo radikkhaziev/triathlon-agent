@@ -1,10 +1,12 @@
 import asyncio
+import copy
 import logging
 import os
 import time
 import uuid
 import zoneinfo
 from datetime import datetime
+from typing import Callable, NamedTuple
 
 import httpx
 import psutil
@@ -28,6 +30,7 @@ from bot.decorator import athlete_required
 from bot.i18n import _
 from bot.i18n import set_language as _set_lang
 from bot.scheduler import create_scheduler
+from bot.tools import MCPClient
 from config import settings
 from data.db import IqosDaily, User, UserDTO, Wellness, get_session
 from data.redis_client import close_redis, get_redis, init_redis
@@ -380,6 +383,69 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
 WORKOUT_CHOOSE_SPORT, WORKOUT_DIALOG = range(2)
 
 
+class PreviewableTool(NamedTuple):
+    """Contract for tools that support a two-phase preview/push flow.
+
+    is_preview(input) returns True if the tool invocation was a preview
+    (safe to replay as a push). apply_push(input) mutates the input dict
+    in place to flip whichever boolean flag turns preview into a real push.
+    """
+
+    is_preview: Callable[[dict], bool]
+    apply_push: Callable[[dict], None]
+
+
+def _suggest_workout_is_preview(inp: dict) -> bool:
+    # suggest_workout: dry_run=True means preview, default False pushes.
+    return inp.get("dry_run") is True
+
+
+def _suggest_workout_apply_push(inp: dict) -> None:
+    inp["dry_run"] = False
+
+
+def _compose_workout_is_preview(inp: dict) -> bool:
+    # compose_workout: push_to_intervals=False (or absent) means preview,
+    # True pushes. Default in the tool signature is False.
+    return inp.get("push_to_intervals") is not True
+
+
+def _compose_workout_apply_push(inp: dict) -> None:
+    inp["push_to_intervals"] = True
+
+
+_PREVIEWABLE_TOOLS: dict[str, PreviewableTool] = {
+    "suggest_workout": PreviewableTool(_suggest_workout_is_preview, _suggest_workout_apply_push),
+    "compose_workout": PreviewableTool(_compose_workout_is_preview, _compose_workout_apply_push),
+}
+
+
+def _extract_pending_workout(tool_calls: list[dict]) -> dict | None:
+    """Find the most recent previewed workout tool call that can be replayed as a push.
+
+    Scans in reverse order so that if Claude revised the workout twice in one
+    turn, we pick the final version. Returns ``{"name", "input"}`` where
+    ``input`` is a fresh deep copy — safe to mutate without touching the
+    agent's tool-use history.
+    """
+    for call in reversed(tool_calls):
+        name = call.get("name")
+        tool_cfg = _PREVIEWABLE_TOOLS.get(name) if isinstance(name, str) else None
+        if tool_cfg is None:
+            continue
+        if tool_cfg.is_preview(call.get("input", {})):
+            return {"name": name, "input": copy.deepcopy(call.get("input", {}))}
+    return None
+
+
+def _apply_push_flag(pending: dict) -> None:
+    """Flip the preview flag in place so the tool executes as a real push."""
+    tool_cfg = _PREVIEWABLE_TOOLS.get(pending["name"])
+    if tool_cfg is None:
+        return
+    tool_cfg.apply_push(pending["input"])
+
+
 @athlete_required
 async def workout_start(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> int:
     """Entry point: /workout → show sport selection."""
@@ -421,15 +487,20 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
         prompt = (
             "Сгенерируй фитнес-тренировку на сегодня. "
             "Сначала вызови get_animation_guidelines, затем list_exercise_cards, "
-            "и собери тренировку через compose_workout с dry_run=True."
+            "и собери тренировку через compose_workout с push_to_intervals=False "
+            "(это preview-режим, не пушим сразу — пользователь подтвердит через кнопку)."
         )
 
+    tool_calls: list[dict] = []
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id, tool_calls_out=tool_calls)
         context.user_data["workout_messages"].append({"role": "assistant", "content": response})
     except Exception:
         logger.exception("Workout generation failed")
         response = "Ошибка при генерации. Попробуй ещё раз или /cancel."
+
+    # Always replace so a previous draft can't linger if the new turn produced none.
+    context.user_data["pending_workout"] = _extract_pending_workout(tool_calls)
 
     keyboard = InlineKeyboardMarkup(
         [
@@ -457,12 +528,16 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.chat.send_action("typing")
 
+    tool_calls: list[dict] = []
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id, tool_calls_out=tool_calls)
         context.user_data["workout_messages"].append({"role": "assistant", "content": response})
     except Exception:
         logger.exception("Workout dialog error")
         response = "Ошибка. Попробуй ещё раз или /cancel."
+
+    # Always replace so a previous draft can't linger if the new turn produced none.
+    context.user_data["pending_workout"] = _extract_pending_workout(tool_calls)
 
     keyboard = InlineKeyboardMarkup(
         [
@@ -481,24 +556,45 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @athlete_required
 async def workout_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> int:
-    """Push the generated workout to Intervals.icu via Claude tool-use."""
+    """Push the cached dry-run workout to Intervals.icu via direct MCP call.
+
+    Replays the exact tool invocation Claude made during the dry-run with
+    ``dry_run=False`` — no second Claude inference pass, so the workout that
+    reaches Intervals.icu is bit-for-bit what the user saw in the preview.
+    """
     query = update.callback_query
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=None)
 
-    sport = context.user_data.get("workout_sport", "Run")
+    # Consume-on-read: pop immediately so a duplicate tap (or a follow-up
+    # tap from an older message's inline button) cannot replay the draft.
+    pending = context.user_data.pop("pending_workout", None)
+    if not pending:
+        await query.message.reply_text("Не нашёл черновик тренировки — сгенерируй её заново через /workout.")
+        context.user_data.pop("workout_sport", None)
+        context.user_data.pop("workout_messages", None)
+        return ConversationHandler.END
+
     await query.message.chat.send_action("typing")
 
-    prompt = (
-        f"Отправь последнюю сгенерированную тренировку ({sport}) в Intervals. "
-        f"Вызови suggest_workout с теми же параметрами но dry_run=False."
-    )
+    tool_name = pending["name"]
+    _apply_push_flag(pending)  # flip dry_run / push_to_intervals in place
 
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+        mcp = MCPClient(token=user.mcp_token)
+        result = await mcp.call_tool(tool_name, pending["input"])
+        # MCPClient.call_tool returns a dict. Tools that respond with plain
+        # text get wrapped as {"text": "..."}. JSON-RPC errors → {"error": "..."}.
+        if isinstance(result, dict) and result.get("error"):
+            logger.warning("MCP tool %s returned error: %s", tool_name, result["error"])
+            response = f"Ошибка при отправке: {result['error']}"
+        elif isinstance(result, dict) and result.get("text"):
+            response = result["text"]
+        else:
+            response = "Тренировка отправлена в Intervals.icu."
     except Exception:
-        logger.exception("Workout push failed")
-        response = "Ошибка при отправке."
+        logger.exception("Workout push failed (tool=%s)", tool_name)
+        response = "Ошибка при отправке в Intervals.icu. Попробуй ещё раз или /cancel."
 
     try:
         await query.message.reply_text(response, parse_mode="Markdown")
@@ -520,6 +616,7 @@ async def workout_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, use
 
     context.user_data.pop("workout_sport", None)
     context.user_data.pop("workout_messages", None)
+    context.user_data.pop("pending_workout", None)
     return ConversationHandler.END
 
 
@@ -528,6 +625,7 @@ async def workout_cancel_command(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(_("Создание тренировки отменено."))
     context.user_data.pop("workout_sport", None)
     context.user_data.pop("workout_messages", None)
+    context.user_data.pop("pending_workout", None)
     return ConversationHandler.END
 
 

@@ -4,6 +4,7 @@ Tools are fetched dynamically from MCP server and tool calls are proxied via HTT
 """
 
 import base64
+import copy
 import json
 import logging
 
@@ -35,10 +36,16 @@ class ClaudeAgent:
         tools: list[dict],
         max_tokens: int = 4096,
         max_iterations: int = 10,
+        tool_calls_out: list[dict] | None = None,
     ) -> tuple[str, dict]:
         """Run Claude API with tool-use loop. Returns (text, usage_totals).
 
         Tool calls are proxied to MCP server via HTTP.
+
+        If ``tool_calls_out`` is provided, every tool invocation is appended as
+        ``{"name": str, "input": dict}`` in order. Callers use this to recover
+        the exact args Claude passed, e.g. to replay a dry-run as a real push
+        without re-inference.
         """
         total_usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0}
 
@@ -58,6 +65,11 @@ class ClaudeAgent:
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
+                    if tool_calls_out is not None:
+                        # Deep copy so later tool-side or caller-side mutations
+                        # of either `block.input` or the recorded snapshot can't
+                        # cause drift between what we saw and what we replay.
+                        tool_calls_out.append({"name": block.name, "input": copy.deepcopy(block.input)})
                     result = await mcp.call_tool(block.name, block.input)
                     tool_results.append(
                         {
@@ -99,11 +111,14 @@ class ClaudeAgent:
         image_data: bytes | None = None,
         image_media_type: str = "image/jpeg",
         image_url: str | None = None,
+        tool_calls_out: list[dict] | None = None,
     ) -> str:
         """Handle a free-form chat message. Stateless: no conversation history.
 
         Tools are fetched dynamically from MCP server.
         mcp_token: per-user MCP Bearer token. Falls back to global MCP_AUTH_TOKEN.
+        tool_calls_out: if provided, each tool invocation is appended as
+            ``{"name": str, "input": dict}`` in call order.
         """
         mcp = MCPClient(token=mcp_token)
         system = await get_system_prompt_chat(user_id=user_id, language=language)
@@ -138,7 +153,9 @@ class ClaudeAgent:
         else:
             messages = [{"role": "user", "content": user_message}]
 
-        text, usage = await self._run_tool_use_loop(mcp, system, messages, tools, max_tokens=2048)
+        text, usage = await self._run_tool_use_loop(
+            mcp, system, messages, tools, max_tokens=2048, tool_calls_out=tool_calls_out
+        )
 
         try:
             await ApiUsageDaily.increment(user_id=user_id, **usage)
