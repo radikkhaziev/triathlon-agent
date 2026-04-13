@@ -63,7 +63,23 @@ async def suggest_workout(
     target_date: str = "",
     dry_run: bool = False,
 ) -> str:
-    """Generate an AI workout and push to athlete's Intervals.icu calendar. Syncs to Garmin/Wahoo."""
+    """Generate an AI workout and push to athlete's Intervals.icu calendar. Syncs to Garmin/Wahoo.
+
+    IMPORTANT — units in `steps`:
+      - `duration` is in **SECONDS**, not minutes. 5 minutes = 300, 1 hour = 3600.
+      - `distance` is in **METERS** (Swim/Run only). Mutually exclusive with `duration`.
+      - `reps` is repeat count for a repeat group (group has `steps` sub-list, no own `duration`).
+
+    Example step (10-minute Z2): {"text": "Z2", "duration": 600, "power": {"units": "%ftp", "value": 70}}
+    Example repeat (3x5min tempo w/ 2min rest):
+      {"reps": 3, "text": "Tempo", "steps": [
+         {"text": "On",  "duration": 300, "power": {"units": "%ftp", "value": 88}},
+         {"text": "Off", "duration": 120, "power": {"units": "%ftp", "value": 55}}
+      ]}
+
+    Total step seconds must approximately match `duration_minutes * 60`, otherwise the workout
+    will be rejected as a unit-mismatch (common failure mode: passing minutes where seconds are expected).
+    """
 
     dt = date.fromisoformat(target_date) if target_date else date.today()
 
