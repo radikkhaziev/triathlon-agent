@@ -2,6 +2,9 @@
 
 from datetime import date
 
+import pytest
+from pydantic import ValidationError
+
 from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
 
 # ---------------------------------------------------------------------------
@@ -126,11 +129,49 @@ class TestPlannedWorkout:
         event = w.to_intervals_event()
         assert event.description is None
 
+    def test_rejects_step_without_target(self):
+        """Targetless terminal steps leave watches unable to alert — must raise."""
+        with pytest.raises(ValidationError, match="no intensity target"):
+            PlannedWorkoutDTO(
+                sport="Run",
+                name="Test",
+                steps=[WorkoutStepDTO(text="Z2", duration=1200)],
+                duration_minutes=20,
+            )
+
+    def test_rejects_repeat_substep_without_target(self):
+        """Sub-steps of a repeat group must also carry targets."""
+        with pytest.raises(ValidationError, match="no intensity target"):
+            PlannedWorkoutDTO(
+                sport="Run",
+                name="Test",
+                steps=[
+                    WorkoutStepDTO(
+                        text="Intervals",
+                        reps=3,
+                        steps=[
+                            WorkoutStepDTO(duration=300),  # missing target
+                            WorkoutStepDTO(duration=120, hr={"units": "%lthr", "value": 60}),
+                        ],
+                    ),
+                ],
+                duration_minutes=20,
+            )
+
+    def test_accepts_pace_target(self):
+        """Swim steps with pace target are valid."""
+        PlannedWorkoutDTO(
+            sport="Swim",
+            name="Test",
+            steps=[WorkoutStepDTO(text="Main", distance=400, pace={"units": "%pace", "value": 95})],
+            duration_minutes=15,
+        )
+
     def test_default_date_is_today(self):
         w = PlannedWorkoutDTO(
             sport="Run",
             name="Test",
-            steps=[WorkoutStepDTO(text="Run", duration=1200)],
+            steps=[WorkoutStepDTO(text="Run", duration=1200, hr={"units": "%lthr", "value": 72, "end": 82})],
             duration_minutes=20,
         )
         assert w.target_date == date.today()

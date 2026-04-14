@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from data.db.user import UserDTO
+from data.intervals.dto import ActivityDTO
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -31,10 +32,9 @@ def _activity_dto(
     dt: date = date(2026, 4, 1),
     type: str = "Run",
     moving_time: int = 3600,
-) -> MagicMock:
-    """Create a minimal ActivityDTO mock."""
-    from data.intervals.dto import ActivityDTO
-
+    source: str | None = "GARMIN_CONNECT",
+) -> ActivityDTO:
+    """Create a minimal ActivityDTO."""
     return ActivityDTO(
         id=id,
         start_date_local=dt,
@@ -42,6 +42,7 @@ def _activity_dto(
         icu_training_load=80.0,
         moving_time=moving_time,
         average_hr=145.0,
+        source=source,
     )
 
 
@@ -189,6 +190,31 @@ class TestActorFetchUserActivities:
         messages = mock_group_cls.call_args[0][0]
         assert len(messages) == 1
         mock_group.run.assert_called_once()
+
+    def test_filters_strava_activities(self):
+        """Strava-sourced activities must be dropped before save_bulk — Intervals.icu API
+        rejects /intervals reads for them, which would crash the downstream actor."""
+        from tasks.actors import actor_fetch_user_activities
+
+        user = _user()
+        activities = [
+            _activity_dto(id="a001", source="GARMIN_CONNECT"),
+            _activity_dto(id="a002", source="STRAVA"),
+            _activity_dto(id="a003", source="strava"),  # case-insensitive
+            _activity_dto(id="a004", source=None),
+        ]
+        mock_client = _mock_client()
+        mock_client.get_activities.return_value = activities
+
+        with (
+            patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
+            patch("tasks.actors.activities.Activity.save_bulk", return_value=[]) as mock_save,
+        ):
+            actor_fetch_user_activities(user.model_dump())
+
+        saved = mock_save.call_args[1]["activities"]
+        saved_ids = [a.id for a in saved]
+        assert saved_ids == ["a001", "a004"]
 
     def test_default_range_is_30_days(self):
         """Default oldest is today - 30 days when not specified."""

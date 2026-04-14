@@ -150,6 +150,7 @@ class ActivityDTO(BaseModel):
     average_hr: float | None = None  # average heart rate (from average_heartrate API field)
     is_race: bool = Field(False, alias="race")
     sub_type: str | None = None
+    source: str | None = None  # e.g. "GARMIN_CONNECT", "OAUTH_CLIENT", "STRAVA"
 
     @field_validator("type", mode="before")
     @classmethod
@@ -235,6 +236,37 @@ class PlannedWorkoutDTO(BaseModel):
     target_date: date = Field(default_factory=date.today)
     slot: str = "morning"  # "morning" | "evening"
     suffix: str = "generated"  # "generated" | "adapted"
+
+    @model_validator(mode="after")
+    def _check_steps_have_targets(self) -> "PlannedWorkoutDTO":
+        """Every terminal step must carry at least one intensity target.
+
+        Garmin/Wahoo watches alert on HR/power/pace corridors only when the step
+        defines them. Text-only steps ('Z2' label + duration) leave the athlete
+        running blind, so we reject them here rather than silently pushing a
+        useless workout to Intervals.icu.
+        """
+
+        def _walk(steps: list[WorkoutStepDTO], trail: str) -> None:
+            for i, s in enumerate(steps):
+                label = f"{trail}[{i}]{' ' + s.text if s.text else ''}"
+                if s.reps:
+                    if not s.steps:
+                        raise ValueError(
+                            f"Step {label!r} sets reps={s.reps} but has no sub-steps. "
+                            f"Repeat groups must contain a non-empty steps list."
+                        )
+                    _walk(s.steps, label)
+                    continue
+                if not (s.hr or s.power or s.pace):
+                    raise ValueError(
+                        f"Step {label!r} has no intensity target. Every non-repeat "
+                        f"step must include hr/power/pace so watches can alert the "
+                        f"athlete on the target corridor."
+                    )
+
+        _walk(self.steps, "steps")
+        return self
 
     @model_validator(mode="after")
     def _check_steps_duration_consistency(self) -> "PlannedWorkoutDTO":
