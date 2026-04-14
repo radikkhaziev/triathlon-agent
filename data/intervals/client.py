@@ -265,10 +265,15 @@ class IntervalsAsyncClient(IntervalsClientBase):
     @classmethod
     @asynccontextmanager
     async def for_user(cls, user: int | User | UserDTO):
-        """Create a session with per-user credentials from the DB."""
-        if isinstance(user, int):
+        """Create a session with per-user credentials from the DB.
+
+        UserDTO no longer carries credentials (issue #147), so it's re-fetched
+        from the DB to get the decrypted api_key — same path as passing an int.
+        """
+        if isinstance(user, (int, UserDTO)):
+            user_id = user if isinstance(user, int) else user.id
             async with get_session() as session:
-                user = await session.get(User, user)
+                user = await session.get(User, user_id)
         async with cls(api_key=user.api_key, athlete_id=user.athlete_id) as session:
             yield session
 
@@ -355,10 +360,15 @@ class IntervalsSyncClient(IntervalsClientBase):
     @classmethod
     @contextmanager
     def for_user(cls, user: int | User | UserDTO):
-        """Create a session with per-user credentials from the DB."""
-        if isinstance(user, int):
+        """Create a session with per-user credentials from the DB.
+
+        UserDTO no longer carries credentials (issue #147), so it's re-fetched
+        from the DB to get the decrypted api_key — same path as passing an int.
+        """
+        if isinstance(user, (int, UserDTO)):
+            user_id = user if isinstance(user, int) else user.id
             with get_sync_session() as session:
-                user = session.get(User, user)
+                user = session.get(User, user_id)
         with cls(api_key=user.api_key, athlete_id=user.athlete_id) as session:
             yield session
 

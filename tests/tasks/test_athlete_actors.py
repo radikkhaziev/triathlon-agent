@@ -9,7 +9,7 @@ from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
 
 
 def _user(id: int = 1, chat_id: str = "test_user") -> UserDTO:
-    return UserDTO(id=id, chat_id=chat_id, athlete_id="i123", api_key="key123")
+    return UserDTO(id=id, chat_id=chat_id, athlete_id="i123")
 
 
 # ---------------------------------------------------------------------------

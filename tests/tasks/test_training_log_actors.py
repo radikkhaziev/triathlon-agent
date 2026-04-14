@@ -11,7 +11,7 @@ _MODULE = "tasks.actors.training_log"
 
 
 def _user(*, id: int = 1) -> UserDTO:
-    return UserDTO(id=id, chat_id="111", username="tester", athlete_id="i001", api_key="key1")
+    return UserDTO(id=id, chat_id="111", username="tester", athlete_id="i001")
 
 
 def _wellness_row(**overrides):

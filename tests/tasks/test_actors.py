@@ -69,7 +69,6 @@ class TestSyncUserWellness:
             chat_id=os.environ["TELEGRAM_CHAT_ID"],
             username=os.environ.get("TELEGRAM_USERNAME", "test"),
             athlete_id=os.environ["INTERVALS_ATHLETE_ID"],
-            api_key=os.environ["INTERVALS_API_KEY"],
         )
         result = actor_user_wellness(user)
         assert result is None
@@ -84,7 +83,7 @@ _DT_STR = "2026-04-06"
 
 
 def _user(*, id: int = 1) -> UserDTO:
-    return UserDTO(id=id, chat_id="111", username="tester", athlete_id="i001", api_key="key1")
+    return UserDTO(id=id, chat_id="111", username="tester", athlete_id="i001")
 
 
 def _trend(direction: str = "stable") -> TrendResultDTO:

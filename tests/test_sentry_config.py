@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from sentry_config import _before_send, _scrub_dict, _traces_sampler, init_sentry
+from sentry_config import _before_send, _scrub_dict, _scrub_text, _traces_sampler, init_sentry
 
 
 class TestScrubDict:
@@ -103,6 +103,112 @@ class TestBeforeSend:
         event = {}
         result = _before_send(event, {})
         assert result == {}
+
+
+class TestScrubText:
+    """Defence-in-depth regex scrubbing for issue #147.
+
+    Dramatiq serializes actor args via repr() into exception messages. The
+    structured-dict scrubber doesn't see those strings, so regex catches them.
+    """
+
+    def test_redacts_api_key_dict_repr(self):
+        text = "_actor_foo(user={'id': 1, 'api_key': '1h545g8e229f27ewxdv23z8h'})"
+        scrubbed = _scrub_text(text)
+        assert "1h545g8e229f27ewxdv23z8h" not in scrubbed
+        assert "[REDACTED]" in scrubbed
+        assert "'id': 1" in scrubbed
+
+    def test_redacts_mcp_token_dict_repr(self):
+        text = "args: {'mcp_token': 'WGcaMeXA35bfNvSrg4v7sWl-1jebW2Ne'}"
+        assert "WGcaMeXA35bfNvSrg4v7sWl-1jebW2Ne" not in _scrub_text(text)
+
+    def test_redacts_equals_form(self):
+        text = "foo(api_key=abc123, count=5)"
+        scrubbed = _scrub_text(text)
+        assert "abc123" not in scrubbed
+        assert "count=5" in scrubbed
+
+    def test_redacts_bearer_token(self):
+        text = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.xyz"
+        scrubbed = _scrub_text(text)
+        assert "eyJhbGciOiJIUzI1NiJ9.xyz" not in scrubbed
+        assert "Authorization" in scrubbed
+
+    def test_redacts_secretstr_literal(self):
+        text = "SecretStr('leaked-value')"
+        assert "leaked-value" not in _scrub_text(text)
+
+    def test_preserves_non_sensitive_text(self):
+        text = "Normal error message with no secrets"
+        assert _scrub_text(text) == text
+
+    def test_handles_none(self):
+        assert _scrub_text(None) is None
+
+    def test_handles_empty(self):
+        assert _scrub_text("") == ""
+
+
+class TestBeforeSendTextScrubbing:
+    """Issue #147: the actual leak in #146 was the exception.value string."""
+
+    def test_scrubs_exception_value(self):
+        event = {
+            "exception": {
+                "values": [
+                    {
+                        "value": "Failed to process message _actor_foo("
+                        "user={'id': 1, 'api_key': 'real-secret-key-123'})",
+                    }
+                ]
+            }
+        }
+        result = _before_send(event, {})
+        assert "real-secret-key-123" not in result["exception"]["values"][0]["value"]
+
+    def test_scrubs_event_message(self):
+        event = {"message": "Login with mcp_token='tok-abcdef'"}
+        result = _before_send(event, {})
+        assert "tok-abcdef" not in result["message"]
+
+    def test_scrubs_breadcrumb_message(self):
+        event = {"breadcrumbs": {"values": [{"message": "Calling API with api_key='xyz999'"}]}}
+        result = _before_send(event, {})
+        assert "xyz999" not in result["breadcrumbs"]["values"][0]["message"]
+
+    def test_scrubs_extra_string_values(self):
+        """String values under non-sensitive keys are still scrubbed by the tree walker."""
+        event = {"extra": {"context": "called foo(api_key='leaked-123')"}}
+        result = _before_send(event, {})
+        assert "leaked-123" not in result["extra"]["context"]
+
+    def test_scrubs_threads_frames(self):
+        """Non-exception threads stacktraces also get their vars scrubbed."""
+        event = {
+            "threads": {
+                "values": [
+                    {
+                        "stacktrace": {
+                            "frames": [
+                                {"vars": {"mcp_token": "real-thread-tok"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+        result = _before_send(event, {})
+        assert result["threads"]["values"][0]["stacktrace"]["frames"][0]["vars"]["mcp_token"] == "[REDACTED]"
+
+    def test_scrubs_quoted_value_with_spaces(self):
+        """Quoted value containing spaces must be fully redacted, not truncated at first space."""
+        text = "password='hunter 2 with spaces'"
+        event = {"exception": {"values": [{"value": text}]}}
+        result = _before_send(event, {})
+        scrubbed = result["exception"]["values"][0]["value"]
+        assert "hunter" not in scrubbed
+        assert "spaces" not in scrubbed
 
 
 class TestTracesSampler:

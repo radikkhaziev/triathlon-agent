@@ -9,14 +9,22 @@ from pydantic import BaseModel, ConfigDict
 
 
 class UserDTO(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    """Lightweight user snapshot for cross-boundary transport (dramatiq, logs).
+
+    Credentials (api_key, mcp_token) are deliberately excluded — they must NOT
+    cross the dramatiq broker or Sentry boundary. Issue #147: leaked secrets
+    in #146 came from dramatiq serializing `repr(UserDTO)` into an exception
+    message. Callers that need credentials re-fetch the ORM `User` by `id`.
+    """
+
+    # `extra="forbid"` hard-rejects any attempt to reintroduce credentials
+    # (api_key, mcp_token, etc.) via the constructor — regression guard for #147.
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: int
     chat_id: str
     username: str | None = None
     athlete_id: str | None = None
-    api_key: str | None = None
-    mcp_token: str | None = None
     language: str = "ru"
     is_silent: bool = False
 
