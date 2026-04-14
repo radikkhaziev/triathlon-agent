@@ -274,6 +274,8 @@ class IntervalsAsyncClient(IntervalsClientBase):
             user_id = user if isinstance(user, int) else user.id
             async with get_session() as session:
                 user = await session.get(User, user_id)
+            if user is None:
+                raise LookupError(f"User {user_id} not found")
         async with cls(api_key=user.api_key, athlete_id=user.athlete_id) as session:
             yield session
 
@@ -369,6 +371,8 @@ class IntervalsSyncClient(IntervalsClientBase):
             user_id = user if isinstance(user, int) else user.id
             with get_sync_session() as session:
                 user = session.get(User, user_id)
+            if user is None:
+                raise LookupError(f"User {user_id} not found")
         with cls(api_key=user.api_key, athlete_id=user.athlete_id) as session:
             yield session
 

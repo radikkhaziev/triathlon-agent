@@ -7,6 +7,7 @@ out of UserDTO entirely — actors re-fetch the ORM User when they need them.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from data.db import UserDTO
 
@@ -22,12 +23,18 @@ class TestUserDTOExcludesCredentials:
     def test_construction_rejects_api_key(self):
         """Passing api_key to constructor must fail — protects against regressions
         where someone re-adds the field without thinking about the leak path."""
-        with pytest.raises(ValueError):
-            UserDTO.model_validate(
-                {"id": 1, "chat_id": "x", "api_key": "leaked"},
-                strict=False,
-                context=None,
-            )
+        with pytest.raises(ValidationError) as exc_info:
+            UserDTO(id=1, chat_id="x", api_key="leaked")
+        # Assert the failure is specifically about the forbidden extra field,
+        # not some other incidental validation error.
+        errors = exc_info.value.errors()
+        assert any(e["type"] == "extra_forbidden" and "api_key" in e["loc"] for e in errors)
+
+    def test_construction_rejects_mcp_token(self):
+        with pytest.raises(ValidationError) as exc_info:
+            UserDTO(id=1, chat_id="x", mcp_token="leaked")
+        errors = exc_info.value.errors()
+        assert any(e["type"] == "extra_forbidden" and "mcp_token" in e["loc"] for e in errors)
 
     def test_repr_contains_no_credential_keys(self):
         u = UserDTO(id=1, chat_id="111", username="tester")

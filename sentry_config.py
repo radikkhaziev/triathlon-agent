@@ -47,6 +47,36 @@ _SENSITIVE_BEARER = re.compile(
 # custom repr or manual unwrap leaking a SecretStr('realvalue') literal.
 _SENSITIVE_SECRETSTR = re.compile(r"SecretStr\(\s*['\"][^'\"]+['\"]\s*\)")
 
+# Cheap pre-check: if none of these markers appear anywhere in the serialized
+# event, there is no credential-shaped substring to redact and we can skip the
+# recursive walk entirely. Markers mirror the key-name alternation in
+# `_SENSITIVE_KV` plus `bearer` / `secretstr` literals. Case-insensitive via
+# lowercasing the haystack before the `in` checks.
+_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "api_key",
+    "apikey",
+    "api-key",
+    "mcp_token",
+    "mcptoken",
+    "mcp-token",
+    "access_token",
+    "accesstoken",
+    "access-token",
+    "refresh_token",
+    "refreshtoken",
+    "refresh-token",
+    "bearer",
+    "secret",
+    "password",
+    "passwd",
+    "encryption_key",
+    "encryptionkey",
+    "encryption-key",
+    "fernet",
+    "jwt",
+    "secretstr(",
+)
+
 
 def _scrub_text(text):
     """Redact credential-shaped substrings. Passes through non-strings untouched."""
@@ -67,8 +97,13 @@ def _before_send(event, hint):
          value shape (e.g. `api_key='real'`). Catches secrets embedded inside
          exception messages, log strings, and free-form text fields where
          the key-based pass can't see.
+
+    Performance: the regex walk is skipped entirely when a cheap substring
+    probe over a serialized event finds no credential markers — the common
+    case for application errors that carry no secrets.
     """
-    _walk_strings(event)
+    if _event_has_credential_markers(event):
+        _walk_strings(event)
 
     for section in ("extra", "contexts"):
         data = event.get(section, {})
@@ -95,6 +130,21 @@ def _before_send(event, hint):
                 _scrub_dict(frame["vars"])
 
     return event
+
+
+def _event_has_credential_markers(event) -> bool:
+    """Cheap gate before running the recursive regex walk.
+
+    `repr(event)` over a Sentry event dict is a single C-level string build;
+    scanning the result for a handful of literal substrings is O(n) with a
+    tiny constant. If none match, there is nothing the regex could redact and
+    we skip the walk entirely — the hot path for errors that carry no secrets.
+    """
+    try:
+        blob = repr(event).lower()
+    except Exception:
+        return True  # if repr fails for some reason, err on the safe side
+    return any(marker in blob for marker in _CREDENTIAL_MARKERS)
 
 
 def _walk_strings(node) -> None:

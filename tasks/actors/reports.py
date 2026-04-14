@@ -194,6 +194,9 @@ def actor_compose_user_morning_report(
         # UserDTO no longer carries credentials (issue #147), so we re-fetch
         # the ORM User inside the worker to get the plaintext mcp_token.
         _user_orm = session.get(User, user.id)
+        if _user_orm is None:
+            logger.warning("Morning report skipped: user %d no longer exists", user.id)
+            return
         try:
             mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
             text = mcp.generate_morning_report_via_mcp(_dt)
@@ -229,8 +232,10 @@ def actor_compose_weekly_report(user: UserDTO):
     # UserDTO carries no credentials (issue #147) — re-fetch ORM for mcp_token.
     with get_sync_session() as session:
         _user_orm = session.get(User, user.id)
-        mcp_token = _user_orm.mcp_token if _user_orm else None
-    mcp = MCPTool(token=mcp_token, user_id=user.id, language=user.language)
+    if _user_orm is None:
+        logger.warning("Weekly report skipped: user %d no longer exists", user.id)
+        return
+    mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
     text = mcp.generate_weekly_report_via_mcp()
 
     if not text:
