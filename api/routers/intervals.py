@@ -15,6 +15,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/intervals", tags=["intervals"])
 
 
+@router.get("/auth/callback")
+async def intervals_oauth_callback(request: Request) -> dict:
+    """OAuth callback stub — logs `code`, `state`, and any error params.
+
+    Intervals.icu redirects the user here after they authorize the app. Real
+    flow should: exchange `code` for access_token via POST to Intervals.icu
+    token endpoint, store the token against the user, and redirect them to
+    a friendly success page. For now we just log what arrives so we can see
+    the shape before wiring up the exchange.
+    """
+    logger.info(
+        "Intervals OAuth callback headers=%s query=%s",
+        dict(request.headers),
+        dict(request.query_params),
+    )
+    return {"status": "ok", "received": dict(request.query_params)}
+
+
 @router.post("/hook/{external_id}")
 async def intervals_hook(external_id: str, request: Request) -> dict:
     """Stub receiver — logs method, headers, query params, and JSON body.
