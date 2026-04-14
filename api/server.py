@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from telegram import Update
 
 from api.dashboard_routes import router as dashboard_router
 from api.routes import router
@@ -104,6 +105,7 @@ async def lifespan(app):
             await tg_app.bot.set_webhook(
                 url=webhook_url,
                 secret_token=hashlib.sha256(settings.TELEGRAM_BOT_TOKEN.get_secret_value().encode()).hexdigest()[:32],
+                allowed_updates=Update.ALL_TYPES,
             )
             app.state.tg_app = tg_app
             logger.info("Telegram webhook set: %s", webhook_url)

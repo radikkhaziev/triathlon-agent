@@ -4,7 +4,7 @@ import secrets
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, select
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -90,7 +90,12 @@ class User(Base):
     @classmethod
     @dual
     def get_active_athletes(cls, *, session: Session) -> list[User]:
-        result = session.execute(select(cls).where(cls.is_active.is_(True), cls.athlete_id.isnot(None)))
+        result = session.execute(
+            select(cls).where(
+                cls.is_active.is_(True),
+                cls.athlete_id.isnot(None),
+            )
+        )
         return list(result.scalars().all())
 
     @classmethod
@@ -101,9 +106,25 @@ class User(Base):
 
     @classmethod
     @with_session
-    async def get_by_chat_id(cls, chat_id: str, *, session: AsyncSession) -> User | None:
-        result = await session.execute(select(cls).where(cls.chat_id == chat_id, cls.is_active.is_(True)))
+    async def get_by_chat_id(
+        cls,
+        chat_id: int | str,
+        include_inactive: bool = False,
+        *,
+        session: AsyncSession,
+    ) -> User | None:
+        query = select(cls).where(cls.chat_id == str(chat_id))
+        if not include_inactive:
+            query = query.where(cls.is_active.is_(True))
+        result = await session.execute(query)
         return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    def set_active_by_chat_id(cls, chat_id: int | str, active: bool, *, session: Session) -> None:
+        """Toggle `is_active` by chat_id. Called from `my_chat_member` handler and 403 fallbacks."""
+        session.execute(update(cls).where(cls.chat_id == str(chat_id)).values(is_active=active))
+        session.commit()
 
     @classmethod
     @dual
@@ -277,7 +298,13 @@ class User(Base):
         on `create()`'s default role, so a future change to that default
         cannot silently widen the widget-auth security posture.
         """
-        user = await cls.get_by_chat_id(chat_id)
+        # `include_inactive=True` so a blocked user (is_active=False) is still
+        # findable — prevents `IntegrityError` on the UNIQUE `chat_id` if we
+        # tried to `create()` a fresh row. Reactivation is NOT done here: it
+        # belongs to explicit re-engagement paths (`/start` handler and
+        # `my_chat_member` MEMBER transition), not to webapp/Login Widget auth.
+        # See `docs/MULTI_TENANT_SECURITY.md` §T14 for rationale.
+        user = await cls.get_by_chat_id(chat_id, include_inactive=True)
         if user:
             return user
         try:
