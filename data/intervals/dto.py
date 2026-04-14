@@ -150,6 +150,7 @@ class ActivityDTO(BaseModel):
     average_hr: float | None = None  # average heart rate (from average_heartrate API field)
     is_race: bool = Field(False, alias="race")
     sub_type: str | None = None
+    source: str | None = None  # e.g. "STRAVA", "GARMIN", "ZWIFT"
 
     @field_validator("type", mode="before")
     @classmethod

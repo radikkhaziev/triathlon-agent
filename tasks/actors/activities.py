@@ -387,6 +387,10 @@ def actor_fetch_user_activities(
     with IntervalsSyncClient.for_user(user) as client:
         activities: list[ActivityDTO] = client.get_activities(oldest=_oldest, newest=_newest)
 
+    # Strava activities cannot be read via Intervals.icu API (licensing).
+    # Skip them entirely so they never enter the DB or trigger downstream fetches.
+    activities = [a for a in activities if (a.source or "").upper() != "STRAVA"]
+
     if not activities:
         return
 
