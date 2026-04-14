@@ -156,6 +156,20 @@
 - **Operator setup:** `/setdomain` в `@BotFather` → `bot.endurai.me` (иначе виджет не рендерится). `TELEGRAM_BOT_USERNAME` в `.env` для фронта через `GET /api/auth/telegram-widget-config`
 - **Тесты:** `tests/api/test_telegram_widget_auth.py` — 18 кейсов, включая valid/tampered/missing-fields/stale/future/wrong-token/empty-token/null-optional/extra-fields-signed-through
 
+#### T14. Silent Re-Activation of Blocked Users (Tampering / Availability)
+
+- **Что:** Пользователь блокирует бота в Telegram → `users.is_active=False` (см. `bot/main.py:handle_my_chat_member` и 403-fallback в `tasks/tools.py:TelegramTool.send_message`). Но у заблокированного юзера может оставаться открытая вкладка Mini App или старая ссылка с валидным `initData`. Если auth-путь автоматически реактивирует юзера при первом же API-запросе, scheduler снова начнёт дёргать Telegram API, ловить 403, снова выключать — пинг-понг, лишние Sentry-события, лишние Telegram calls.
+- **Где:** `data/db/user.py:get_or_create_from_telegram()`, вызывается из `api/deps.py:get_current_user` (initData), `api/routers/auth.py` (Login Widget) и `bot/main.py:start` (`/start` handler)
+- **Severity:** Medium (availability degradation + auth policy leak, не ведёт к data disclosure)
+- **Mitigation (реализовано):**
+  - `get_or_create_from_telegram` ищет юзера через `get_by_chat_id(..., include_inactive=True)` — предотвращает `IntegrityError` на UNIQUE `chat_id` если row существует как `is_active=False`. Но **реактивацию не делает**: возвращает юзера "как есть", auth-код дальше сам решает что с ним.
+  - Реактивация (`set_active_by_chat_id(..., True)`) происходит **только** в двух явных сигналах re-engagement:
+    1. `bot/main.py:start` — юзер явно пишет `/start`
+    2. `bot/main.py:handle_my_chat_member` — Telegram прислал `my_chat_member` с `status=MEMBER`
+  - Webapp auth (initData) и Login Widget **не реактивируют** — они читают `is_active` через существующий фильтр в `get_by_chat_id(chat_id)` (без `include_inactive`), т.е. заблокированный юзер для webapp просто "не найден" и получает anonymous flow.
+- **Семантика `users.is_active`:** флаг перегружен двумя смыслами — "админ-деактивация через CLI" ∪ "Telegram-канал недоступен". Оба состояния = полная потеря доступа (webapp, MCP, рассылки), потому что auth-запросы (`get_by_mcp_token`, `get_by_chat_id`) фильтруют по `is_active=True`. Это **намеренное решение**: блокировка бота = явный сигнал "не хочу пользоваться сервисом", и даёт юзеру единую kill-switch.
+- **Граничный случай:** юзер блокирует бота, но webapp-вкладка открыта. Первый API-запрос вернёт 401 (юзер не найден через `get_by_chat_id`). Frontend должен показать баннер "переподключите бота через /start" (TODO в `webapp/src/auth/`). Пока баннер не реализован — юзер увидит generic "требуется авторизация".
+
 #### T13. RPE Callback Cross-Tenant Write (Tampering)
 
 - **Что:** Подделка `callback_data` вида `rpe:{activity_id}:{value}` → запись RPE на чужую activity

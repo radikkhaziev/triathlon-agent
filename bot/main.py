@@ -13,12 +13,13 @@ import psutil
 import sentry_sdk
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -65,6 +66,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         username=tg_user.username,
         display_name=tg_user.full_name,
     )
+    # Explicit reactivation: /start is an unambiguous re-engagement signal.
+    # Webapp/Login Widget auth paths intentionally do NOT reactivate — see
+    # `docs/MULTI_TENANT_SECURITY.md` §T14.
+    if not user.is_active:
+        await User.set_active_by_chat_id(chat_id, True)
+        user.is_active = True
     logger.info("User resolved via /start: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
 
     webapp_url = settings.API_BASE_URL
@@ -828,6 +835,27 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Track user block/unblock of the bot via `my_chat_member` updates.
+
+    `kicked` = blocked the bot, `member` = (re)started it. Flips `users.is_active`
+    so scheduled broadcasts (which go through `User.get_active_athletes`) skip
+    blocked users without hitting the Telegram API. Reactivation is explicit:
+    this handler on `MEMBER` transitions, and `bot/main.py:start` when the
+    user sends `/start`. Webapp/Login Widget auth paths deliberately do not
+    reactivate — see `docs/MULTI_TENANT_SECURITY.md` §T14.
+    """
+    cmu = update.my_chat_member
+    if cmu is None or cmu.chat.type != "private":
+        return
+    new_status = cmu.new_chat_member.status
+    if new_status not in (ChatMember.BANNED, ChatMember.MEMBER):
+        return
+    active = new_status == ChatMember.MEMBER
+    await User.set_active_by_chat_id(cmu.chat.id, active)
+    logger.info("User %s is_active=%s (my_chat_member=%s)", cmu.chat.id, active, new_status)
+
+
 # ---------------------------------------------------------------------------
 # App builder (shared between polling and webhook modes)
 # ---------------------------------------------------------------------------
@@ -866,6 +894,7 @@ def build_application() -> Application:
     if settings.TELEGRAM_WEBHOOK_URL:
         builder = builder.updater(None)
     app = builder.build()
+    app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("morning", morning))
     app.add_handler(CommandHandler("dashboard", dashboard))
@@ -913,7 +942,7 @@ def start_bot() -> None:
         raise RuntimeError("TELEGRAM_WEBHOOK_URL is set — bot runs via webhook in api service, not polling")
     app = build_application()
     logger.info("Bot started (polling mode)")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":

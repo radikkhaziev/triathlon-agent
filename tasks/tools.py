@@ -16,6 +16,7 @@ import httpx
 
 from bot.prompts import get_system_prompt_v2
 from config import settings
+from data.db import User
 from tasks.dto import DateDTO
 
 logger = logging.getLogger(__name__)
@@ -436,6 +437,14 @@ class TelegramTool:
                     json=payload,
                     timeout=15.0,
                 )
+                if resp.status_code == 403:
+                    # User blocked the bot (or deactivated). `my_chat_member` is
+                    # the primary signal, but scheduled actors may fire between
+                    # the block and the webhook — flip the flag here too so the
+                    # next scheduled run skips this user.
+                    logger.info("Telegram 403 for chat_id=%s — marking inactive", _chat_id)
+                    User.set_active_by_chat_id(_chat_id, False)
+                    return None
                 resp.raise_for_status()
                 return resp.json()
             except (httpx.TimeoutException, httpx.ConnectError) as e:
