@@ -1,5 +1,7 @@
 """Sentry SDK initialization — single entry point for all components."""
 
+import re
+
 import sentry_sdk
 from sentry_sdk.integrations.dramatiq import DramatiqIntegration
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -21,9 +23,88 @@ SENSITIVE_KEYS = {
     "cookie",
 }
 
+# Defence-in-depth for issue #147: scrub credential-shaped substrings inside
+# free-form text fields (exception values, log messages, breadcrumb messages).
+# These fire even if the structured-dict scrubber misses — e.g. when dramatiq
+# serializes actor args via repr() into an exception string.
+_REDACT = "[REDACTED]"
+# Group 1 = key name + separator (preserved), group 2 = value (redacted).
+# Matches quoted values with spaces via `'[^']*'` / `"[^"]*"`, and bare values
+# via `[^'"\s,}\)\]]+`. Key alternation covers the credential shapes used in
+# this repo — extend when adding new ones.
+_SENSITIVE_KV = re.compile(
+    r"""(['"]?(?:api[_-]?key|mcp[_-]?token|access[_-]?token|refresh[_-]?token|"""
+    r"""bearer[_-]?token|auth[_-]?token|secret|password|passwd|"""
+    r"""encryption[_-]?key|fernet[_-]?key|jwt)['"]?\s*[:=]\s*)"""
+    r"""(?:'[^']*'|"[^"]*"|[^'"\s,}\)\]]+)""",
+    re.IGNORECASE,
+)
+_SENSITIVE_BEARER = re.compile(
+    r"(Authorization\s*:\s*Bearer\s+)[\w\-\.=+/]+",
+    re.IGNORECASE,
+)
+# Pydantic's SecretStr already masks via repr(), but catch the rare case of a
+# custom repr or manual unwrap leaking a SecretStr('realvalue') literal.
+_SENSITIVE_SECRETSTR = re.compile(r"SecretStr\(\s*['\"][^'\"]+['\"]\s*\)")
+
+# Cheap pre-check: if none of these markers appear anywhere in the serialized
+# event, there is no credential-shaped substring to redact and we can skip the
+# recursive walk entirely. Markers mirror the key-name alternation in
+# `_SENSITIVE_KV` plus `bearer` / `secretstr` literals. Case-insensitive via
+# lowercasing the haystack before the `in` checks.
+_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "api_key",
+    "apikey",
+    "api-key",
+    "mcp_token",
+    "mcptoken",
+    "mcp-token",
+    "access_token",
+    "accesstoken",
+    "access-token",
+    "refresh_token",
+    "refreshtoken",
+    "refresh-token",
+    "bearer",
+    "secret",
+    "password",
+    "passwd",
+    "encryption_key",
+    "encryptionkey",
+    "encryption-key",
+    "fernet",
+    "jwt",
+    "secretstr(",
+)
+
+
+def _scrub_text(text):
+    """Redact credential-shaped substrings. Passes through non-strings untouched."""
+    if not isinstance(text, str) or not text:
+        return text
+    text = _SENSITIVE_KV.sub(rf"\1{_REDACT}", text)
+    text = _SENSITIVE_BEARER.sub(rf"\1{_REDACT}", text)
+    text = _SENSITIVE_SECRETSTR.sub(f"SecretStr({_REDACT})", text)
+    return text
+
 
 def _before_send(event, hint):
-    """Scrub sensitive data from Sentry events."""
+    """Scrub sensitive data from Sentry events.
+
+    Two complementary passes:
+      1. Key-based dict scrubber (`_scrub_dict`) — redacts by key name.
+      2. Regex string scrubber (`_walk_strings` + `_scrub_text`) — redacts by
+         value shape (e.g. `api_key='real'`). Catches secrets embedded inside
+         exception messages, log strings, and free-form text fields where
+         the key-based pass can't see.
+
+    Performance: the regex walk is skipped entirely when a cheap substring
+    probe over a serialized event finds no credential markers — the common
+    case for application errors that carry no secrets.
+    """
+    if _event_has_credential_markers(event):
+        _walk_strings(event)
+
     for section in ("extra", "contexts"):
         data = event.get(section, {})
         if isinstance(data, dict):
@@ -37,13 +118,54 @@ def _before_send(event, hint):
     for crumb in event.get("breadcrumbs", {}).get("values", []):
         _scrub_dict(crumb.get("data", {}))
 
-    # Scrub local variables in exception stackframes
+    # Stackframe vars — keyed dict scrub (plus the string walk above already
+    # rewrote any sensitive values that appeared as raw strings).
     for exc_info in event.get("exception", {}).get("values", []):
         for frame in exc_info.get("stacktrace", {}).get("frames", []):
             if frame.get("vars"):
                 _scrub_dict(frame["vars"])
+    for thread in event.get("threads", {}).get("values", []):
+        for frame in thread.get("stacktrace", {}).get("frames", []):
+            if frame.get("vars"):
+                _scrub_dict(frame["vars"])
 
     return event
+
+
+def _event_has_credential_markers(event) -> bool:
+    """Cheap gate before running the recursive regex walk.
+
+    `repr(event)` over a Sentry event dict is a single C-level string build;
+    scanning the result for a handful of literal substrings is O(n) with a
+    tiny constant. If none match, there is nothing the regex could redact and
+    we skip the walk entirely — the hot path for errors that carry no secrets.
+    """
+    try:
+        blob = repr(event).lower()
+    except Exception:
+        return True  # if repr fails for some reason, err on the safe side
+    return any(marker in blob for marker in _CREDENTIAL_MARKERS)
+
+
+def _walk_strings(node) -> None:
+    """Recursively rewrite every string leaf in the event tree through `_scrub_text`.
+
+    Covers exception.values[*].value, event.message, logentry.message,
+    breadcrumb messages, extra dict values, threads frames — every leak path
+    at once, instead of hand-listing known keys that decay as Sentry evolves.
+    """
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if isinstance(v, str):
+                node[k] = _scrub_text(v)
+            elif isinstance(v, (dict, list)):
+                _walk_strings(v)
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            if isinstance(v, str):
+                node[i] = _scrub_text(v)
+            elif isinstance(v, (dict, list)):
+                _walk_strings(v)
 
 
 def _scrub_dict(d: dict):

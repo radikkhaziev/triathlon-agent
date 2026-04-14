@@ -26,7 +26,6 @@ def _user(*, id: int = 1) -> UserDTO:
         chat_id="111",
         username="tester",
         athlete_id="i001",
-        api_key="key1",
     )
 
 

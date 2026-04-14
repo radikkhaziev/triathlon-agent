@@ -31,7 +31,7 @@ def _make_activity(
 
 
 def _user_dto(*, id: int = 1) -> UserDTO:
-    return UserDTO(id=id, chat_id="111", username="tester", athlete_id="i001", api_key="key1")
+    return UserDTO(id=id, chat_id="111", username="tester", athlete_id="i001")
 
 
 # ---------------------------------------------------------------------------

@@ -190,9 +190,15 @@ def actor_compose_user_morning_report(
         if not _wellness_row or not _wellness_row.sleep_score or _wellness_row.ai_recommendation:
             return
 
-        # Generate morning report: sync Claude API + MCP tools (per-user token)
+        # Generate morning report: sync Claude API + MCP tools (per-user token).
+        # UserDTO no longer carries credentials (issue #147), so we re-fetch
+        # the ORM User inside the worker to get the plaintext mcp_token.
+        _user_orm = session.get(User, user.id)
+        if _user_orm is None:
+            logger.warning("Morning report skipped: user %d no longer exists", user.id)
+            return
         try:
-            mcp = MCPTool(token=user.mcp_token, user_id=user.id, language=user.language)
+            mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
             text = mcp.generate_morning_report_via_mcp(_dt)
         except Exception as e:
             sentry_sdk.capture_exception(e)
@@ -223,7 +229,13 @@ def actor_compose_user_morning_report(
 @validate_call
 def actor_compose_weekly_report(user: UserDTO):
     """Generate weekly training summary via Claude + MCP tools."""
-    mcp = MCPTool(token=user.mcp_token, user_id=user.id, language=user.language)
+    # UserDTO carries no credentials (issue #147) — re-fetch ORM for mcp_token.
+    with get_sync_session() as session:
+        _user_orm = session.get(User, user.id)
+    if _user_orm is None:
+        logger.warning("Weekly report skipped: user %d no longer exists", user.id)
+        return
+    mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
     text = mcp.generate_weekly_report_via_mcp()
 
     if not text:

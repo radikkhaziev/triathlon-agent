@@ -19,7 +19,7 @@ from data.intervals.dto import ScheduledWorkoutDTO
 # ---------------------------------------------------------------------------
 
 
-def _make_user(*, id: int = 1, chat_id: str = "111", athlete_id: str = "i001", api_key: str = "key1"):
+def _make_user(*, id: int = 1, chat_id: str = "111", athlete_id: str = "i001"):
     """Create a mock User-like object that TypeAdapter(list[UserDTO]).validate_python can handle."""
     from unittest.mock import MagicMock
 
@@ -28,8 +28,8 @@ def _make_user(*, id: int = 1, chat_id: str = "111", athlete_id: str = "i001", a
     user.chat_id = chat_id
     user.username = "tester"
     user.athlete_id = athlete_id
-    user.api_key = api_key
-    user.mcp_token = f"token-{id}"
+    user.language = "ru"
+    user.is_silent = False
     user.role = "athlete"
     user.is_active = True
     return user
@@ -57,7 +57,7 @@ class TestSchedulerDispatch:
     @pytest.mark.asyncio
     async def test_dispatches_group_for_active_users(self):
         """Should create a dramatiq group with one message per active user."""
-        users = [_make_user(id=1), _make_user(id=2, chat_id="222", athlete_id="i002", api_key="key2")]
+        users = [_make_user(id=1), _make_user(id=2, chat_id="222", athlete_id="i002")]
 
         mock_group_instance = MagicMock()
 
@@ -105,7 +105,7 @@ class TestActorUserScheduledWorkouts:
         """Actor calls IntervalsSyncClient.get_events and ScheduledWorkout.save_bulk."""
         from data.db.user import UserDTO
 
-        user = UserDTO(id=1, chat_id="111", athlete_id="i001", api_key="key1")
+        user = UserDTO(id=1, chat_id="111", athlete_id="i001")
 
         workouts = [_make_dto(id=9001), _make_dto(id=9002, name="Swim")]
 
@@ -133,7 +133,7 @@ class TestActorUserScheduledWorkouts:
         """Actor passes today → today+14 as oldest/newest."""
         from data.db.user import UserDTO
 
-        user = UserDTO(id=1, chat_id="111", athlete_id="i001", api_key="key1")
+        user = UserDTO(id=1, chat_id="111", athlete_id="i001")
 
         workouts = [_make_dto(id=9001)]
         mock_client = MagicMock()
