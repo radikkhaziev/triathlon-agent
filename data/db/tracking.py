@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -255,3 +255,86 @@ class IqosDaily(Base):
             .order_by(cls.date.asc())
         )
         return list(result.scalars().all())
+
+
+class StarTransaction(Base):
+    """Telegram Stars (XTR) donation ledger. See docs/DONATE_SPEC.md.
+
+    `charge_id` is the idempotency key — `successful_payment` webhook may
+    be retried by Telegram, so `create()` relies on the UNIQUE constraint
+    to drop duplicates. `refunded_at` is set manually via shell when the
+    operator issues `bot.refund_star_payment()`.
+    """
+
+    __tablename__ = "star_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    charge_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    payload: Mapped[str] = mapped_column(String, nullable=False)
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    @classmethod
+    @with_session
+    async def create(
+        cls,
+        user_id: int,
+        amount: int,
+        charge_id: str,
+        payload: str,
+        *,
+        session: AsyncSession,
+    ) -> StarTransaction | None:
+        """Idempotent insert via `ON CONFLICT (charge_id) DO NOTHING`.
+
+        Returns the new row on first insert, `None` if a row with the same
+        `charge_id` already exists (Telegram webhook retry). Single statement —
+        no rollback/reselect dance, and any real error (FK violation,
+        connection loss) propagates untouched.
+        """
+        stmt = (
+            insert(cls)
+            .values(user_id=user_id, amount=amount, charge_id=charge_id, payload=payload)
+            .on_conflict_do_nothing(index_elements=["charge_id"])
+            .returning(cls)
+        )
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+        await session.commit()
+        return row
+
+    @classmethod
+    @with_session
+    async def get_by_charge_id(cls, charge_id: str, *, session: AsyncSession) -> StarTransaction | None:
+        result = await session.execute(select(cls).where(cls.charge_id == charge_id))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @with_session
+    async def get_by_user(
+        cls,
+        user_id: int,
+        days_back: int = 30,
+        *,
+        session: AsyncSession,
+    ) -> list[StarTransaction]:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.refunded_at.is_(None), cls.created_at >= cutoff)
+            .order_by(cls.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    @classmethod
+    @with_session
+    async def mark_refunded(cls, charge_id: str, *, session: AsyncSession) -> None:
+        await session.execute(update(cls).where(cls.charge_id == charge_id).values(refunded_at=func.now()))
+        await session.commit()

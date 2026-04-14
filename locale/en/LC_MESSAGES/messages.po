@@ -4,6 +4,30 @@ msgstr ""
 "Language: en\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 
+msgid "Сначала отправьте /start"
+msgstr "Please send /start first"
+
+msgid "Поддержать проект EndurAI 💪\n\nБот бесплатный, но если хочешь поддержать разработку — можно отправить Stars прямо здесь."
+msgstr "Support EndurAI 💪\n\nThe bot is free, but if you'd like to support development — you can send Stars right here."
+
+msgid "Недопустимая сумма"
+msgstr "Invalid amount"
+
+msgid "Поддержать EndurAI"
+msgstr "Support EndurAI"
+
+msgid "Спасибо за поддержку проекта!"
+msgstr "Thank you for supporting the project!"
+
+msgid "Поддержка"
+msgstr "Support"
+
+msgid "Спасибо за поддержку! 🙏"
+msgstr "Thank you for your support! 🙏"
+
+msgid "Неизвестный тип платежа. Попробуйте снова через /donate"
+msgstr "Unknown payment type. Please retry via /donate"
+
 msgid "Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут."
 msgstr "No data for today. Data updates automatically every 10 minutes."
 
