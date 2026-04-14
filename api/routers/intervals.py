@@ -15,22 +15,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/intervals", tags=["intervals"])
 
 
-@router.get("/auth/callback")
+@router.api_route("/auth/callback", methods=["GET", "POST"])
 async def intervals_oauth_callback(request: Request) -> dict:
-    """OAuth callback stub — logs `code`, `state`, and any error params.
+    """OAuth callback stub — accepts both GET (browser redirect) and POST
+    (Intervals.icu reachability check during app registration).
 
-    Intervals.icu redirects the user here after they authorize the app. Real
-    flow should: exchange `code` for access_token via POST to Intervals.icu
-    token endpoint, store the token against the user, and redirect them to
-    a friendly success page. For now we just log what arrives so we can see
-    the shape before wiring up the exchange.
+    Real OAuth flow should: exchange `code` for access_token via POST to
+    Intervals.icu token endpoint, store the token against the user, and
+    redirect them to a friendly success page. For now we just log what
+    arrives so we can see the shape before wiring up the exchange.
     """
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+        raw = await request.body()
+        if raw:
+            logger.info("Intervals OAuth callback non-JSON body: %r", raw[:2000])
+
     logger.info(
-        "Intervals OAuth callback headers=%s query=%s",
+        "Intervals OAuth callback method=%s headers=%s query=%s body=%s",
+        request.method,
         dict(request.headers),
         dict(request.query_params),
+        body,
     )
-    return {"status": "ok", "received": dict(request.query_params)}
+    return {"status": "ok", "method": request.method, "received": dict(request.query_params)}
 
 
 @router.post("/hook/{external_id}")
