@@ -2,7 +2,7 @@
 
 Covers:
 - ClaudeAgent._accumulate_usage: sums tokens including cache fields across calls
-- ClaudeAgent._run_tool_use_loop: returns (text, usage_dict), accumulates across iterations
+- ClaudeAgent._run_tool_use_loop: returns (text, usage_dict, tool_calls), accumulates across iterations
 - ClaudeAgent.chat: calls ApiUsageDaily.increment with correct kwargs; still returns
   text when increment raises (fire-and-forget)
 """
@@ -169,10 +169,10 @@ class TestAccumulateUsage:
 
 
 class TestRunToolUseLoop:
-    """ClaudeAgent._run_tool_use_loop returns (text, usage_dict) and accumulates usage."""
+    """ClaudeAgent._run_tool_use_loop returns (text, usage_dict, tool_calls) and accumulates usage."""
 
     async def test_returns_tuple_of_text_and_usage(self):
-        """Single response with no tool use returns (text, dict) tuple."""
+        """Single response with no tool use returns (text, dict, list) tuple."""
         agent = _make_agent()
         usage = _make_usage(input_tokens=100, output_tokens=50)
         response = _make_response(stop_reason="end_turn", text="Answer", usage=usage)
@@ -189,9 +189,11 @@ class TestRunToolUseLoop:
         )
 
         assert isinstance(result, tuple)
-        text, usage_dict = result
+        assert len(result) == 3
+        text, usage_dict, tool_calls = result
         assert text == "Answer"
         assert isinstance(usage_dict, dict)
+        assert tool_calls == []
 
     def test_usage_dict_has_required_keys(self):
         """Returned usage_dict always contains the four canonical token keys."""
@@ -220,7 +222,7 @@ class TestRunToolUseLoop:
         mcp = AsyncMock()
         mcp.call_tool.return_value = {"data": "ok"}
 
-        text, usage_dict = await agent._run_tool_use_loop(
+        text, usage_dict, _ = await agent._run_tool_use_loop(
             mcp=mcp,
             system="sys",
             messages=[{"role": "user", "content": "hi"}],
@@ -299,7 +301,7 @@ class TestRunToolUseLoop:
         mcp = AsyncMock()
         mcp.call_tool.return_value = {}
 
-        text, usage_dict = await agent._run_tool_use_loop(
+        text, usage_dict, _ = await agent._run_tool_use_loop(
             mcp=mcp,
             system="sys",
             messages=[{"role": "user", "content": "question"}],
@@ -329,7 +331,7 @@ class TestRunToolUseLoop:
         mcp = AsyncMock()
         mcp.call_tool.return_value = {}
 
-        _, usage_dict = await agent._run_tool_use_loop(
+        _, usage_dict, _ = await agent._run_tool_use_loop(
             mcp=mcp, system="sys", messages=[{"role": "user", "content": "hi"}], tools=[]
         )
 
@@ -419,7 +421,7 @@ class TestChatUsageTracking:
 
             result = await agent.chat("hey", user_id=1)
 
-        assert result == "Hello!"
+        assert result.text == "Hello!"
 
     async def test_chat_returns_fallback_when_response_is_empty(self):
         """Empty text response → chat() returns the fallback string."""
@@ -449,7 +451,7 @@ class TestChatUsageTracking:
 
             result = await agent.chat("hi", user_id=1)
 
-        assert result == "Не удалось обработать запрос."
+        assert result.text == "Не удалось обработать запрос."
 
     async def test_chat_increment_called_once_per_chat_call(self):
         """ApiUsageDaily.increment is called exactly once per chat() invocation."""
@@ -498,7 +500,7 @@ class TestChatUsageTracking:
                 image_media_type="image/png",
             )
 
-        assert result == "I see an image"
+        assert result.text == "I see an image"
         mock_increment.assert_awaited_once()
         call_kwargs = mock_increment.call_args[1]
         assert call_kwargs["user_id"] == 3

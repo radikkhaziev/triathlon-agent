@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,12 @@ class Settings(BaseSettings):
 
     # HRV Algorithm
     HRV_ALGORITHM: str = "flatt_esco"  # "flatt_esco" | "ai_endurance"
+
+    # Donate nudge (see docs/DONATE_SPEC.md §11)
+    DONATE_NUDGE_EVERY_N: int = Field(default=5, gt=0)  # show nudge on every N-th chat request (must be > 0)
+    DONATE_NUDGE_SKIP_OWNER: bool = False  # True = suppress nudge for owner role
+    DONATE_NUDGE_MAX_PER_DAY: int = Field(default=2, ge=0)  # cap nudges per day to avoid over-prompting
+    DONATE_NUDGE_SUPPRESS_DAYS: int = Field(default=7, ge=0)  # suppress for N days after a recent donation
 
     # Web Auth (desktop login via one-time code)
     JWT_SECRET: SecretStr = SecretStr("")  # If empty, falls back to TELEGRAM_BOT_TOKEN

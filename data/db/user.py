@@ -54,6 +54,7 @@ class User(Base):
 
     is_silent: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_donation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -125,6 +126,15 @@ class User(Base):
         """Toggle `is_active` by chat_id. Called from `my_chat_member` handler and 403 fallbacks."""
         session.execute(update(cls).where(cls.chat_id == str(chat_id)).values(is_active=active))
         session.commit()
+
+    @classmethod
+    @with_session
+    async def mark_donation(cls, user_id: int, *, session: AsyncSession) -> None:
+        """Set `last_donation_at = now()`. Called from successful_payment_callback
+        to drive the donate-nudge suppression window (see DONATE_SPEC §11.2a).
+        """
+        await session.execute(update(cls).where(cls.id == user_id).values(last_donation_at=datetime.now(timezone.utc)))
+        await session.commit()
 
     @classmethod
     @dual

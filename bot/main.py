@@ -31,6 +31,7 @@ from telegram.ext import (
 from api.auth import generate_code
 from bot.agent import ClaudeAgent
 from bot.decorator import athlete_required
+from bot.donate_nudge import get_nudge_text, should_show_nudge
 from bot.i18n import _
 from bot.i18n import set_language as _set_lang
 from bot.scheduler import create_scheduler
@@ -402,13 +403,32 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        response = await agent.chat(user_text, mcp_token=user.mcp_token, user_id=user.id, language=user.language)
+        # Free-form chat does not replay tool calls — skip deep-copy via empty filter.
+        result = await agent.chat(
+            user_text,
+            mcp_token=user.mcp_token,
+            user_id=user.id,
+            language=user.language,
+            tool_calls_filter=set(),
+        )
 
         # Telegram Markdown is fragile — fallback to plain text on parse error
         try:
-            await update.message.reply_text(response, parse_mode="Markdown")
+            await update.message.reply_text(result.text, parse_mode="Markdown")
         except Exception:
-            await update.message.reply_text(response)
+            await update.message.reply_text(result.text)
+
+        if should_show_nudge(user, result.nudge_boundary, result.request_count):
+            # Nudge send is best-effort — never let it surface an outer error
+            # after the main response was already delivered.
+            nudge_text = get_nudge_text()
+            try:
+                await update.message.reply_text(nudge_text, parse_mode="Markdown")
+            except Exception:
+                try:
+                    await update.message.reply_text(nudge_text)
+                except Exception:
+                    logger.warning("Failed to send donate nudge", exc_info=True)
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.error("Chat error: %s", e, exc_info=True)
@@ -442,19 +462,30 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         image_url = f"{settings.API_BASE_URL}/static/uploads/{filename}"
 
-        response = await agent.chat(
+        result = await agent.chat(
             user_message=caption,
             mcp_token=user.mcp_token,
             user_id=user.id,
             language=user.language,
             image_data=bytes(photo_bytes),
             image_url=image_url,
+            tool_calls_filter=set(),
         )
 
         try:
-            await update.message.reply_text(response, parse_mode="Markdown")
+            await update.message.reply_text(result.text, parse_mode="Markdown")
         except Exception:
-            await update.message.reply_text(response)
+            await update.message.reply_text(result.text)
+
+        if should_show_nudge(user, result.nudge_boundary, result.request_count):
+            nudge_text = get_nudge_text()
+            try:
+                await update.message.reply_text(nudge_text, parse_mode="Markdown")
+            except Exception:
+                try:
+                    await update.message.reply_text(nudge_text)
+                except Exception:
+                    logger.warning("Failed to send donate nudge", exc_info=True)
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.error("Photo chat error: %s", e, exc_info=True)
@@ -596,19 +627,21 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
             "(preview-режим, пользователь подтвердит через кнопку)."
         )
 
+    response_text = ""
     tool_calls: list[dict] = []
     try:
-        response = await agent.chat(
+        result = await agent.chat(
             prompt,
             mcp_token=user.mcp_token,
             user_id=user.id,
-            tool_calls_out=tool_calls,
             tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()),
         )
-        context.user_data["workout_messages"].append({"role": "assistant", "content": response})
+        response_text = result.text
+        tool_calls = result.tool_calls
+        context.user_data["workout_messages"].append({"role": "assistant", "content": response_text})
     except Exception:
         logger.exception("Workout generation failed")
-        response = "Ошибка при генерации. Попробуй ещё раз или /cancel."
+        response_text = "Ошибка при генерации. Попробуй ещё раз или /cancel."
 
     # Always replace so a previous draft can't linger if the new turn produced none.
     context.user_data["pending_workout"] = _extract_pending_workout(tool_calls)
@@ -621,9 +654,9 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
     try:
-        await query.message.reply_text(response, reply_markup=keyboard, parse_mode="Markdown")
+        await query.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
     except Exception:
-        await query.message.reply_text(response, reply_markup=keyboard)
+        await query.message.reply_text(response_text, reply_markup=keyboard)
 
     return WORKOUT_DIALOG
 
@@ -639,19 +672,21 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.chat.send_action("typing")
 
+    response_text = ""
     tool_calls: list[dict] = []
     try:
-        response = await agent.chat(
+        result = await agent.chat(
             prompt,
             mcp_token=user.mcp_token,
             user_id=user.id,
-            tool_calls_out=tool_calls,
             tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()),
         )
-        context.user_data["workout_messages"].append({"role": "assistant", "content": response})
+        response_text = result.text
+        tool_calls = result.tool_calls
+        context.user_data["workout_messages"].append({"role": "assistant", "content": response_text})
     except Exception:
         logger.exception("Workout dialog error")
-        response = "Ошибка. Попробуй ещё раз или /cancel."
+        response_text = "Ошибка. Попробуй ещё раз или /cancel."
 
     # Always replace so a previous draft can't linger if the new turn produced none.
     context.user_data["pending_workout"] = _extract_pending_workout(tool_calls)
@@ -664,9 +699,9 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
     try:
-        await update.message.reply_text(response, reply_markup=keyboard, parse_mode="Markdown")
+        await update.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
     except Exception:
-        await update.message.reply_text(response, reply_markup=keyboard)
+        await update.message.reply_text(response_text, reply_markup=keyboard)
 
     return WORKOUT_DIALOG
 
@@ -774,7 +809,8 @@ async def handle_adapt_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     try:
-        response = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id)
+        result = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id, tool_calls_filter=set())
+        response = result.text
     except Exception:
         logger.exception("Adapt workout failed")
         response = "Ошибка при адаптации. Попробуй через /workout."
@@ -967,6 +1003,9 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
             # Duplicate webhook — already recorded, no second "thanks" message.
             logger.info("Duplicate successful_payment charge_id=%s", payment.telegram_payment_charge_id)
             return
+
+        # Drive the donate-nudge suppression window (DONATE_SPEC §11.2a).
+        await User.mark_donation(user.id)
 
         sentry_sdk.add_breadcrumb(
             category="donation",

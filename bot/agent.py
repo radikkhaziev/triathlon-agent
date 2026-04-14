@@ -7,6 +7,7 @@ import base64
 import copy
 import json
 import logging
+from dataclasses import dataclass, field
 
 import anthropic
 import sentry_sdk
@@ -18,6 +19,28 @@ from config import settings
 from data.db import ApiUsageDaily
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChatResult:
+    """Return type for `ClaudeAgent.chat()`.
+
+    - `text` — assistant response. Never empty: if Claude returned no text
+      blocks, `chat()` supplies the fallback `"Не удалось обработать запрос."`.
+    - `tool_calls` — every `tool_use` block the model emitted, in order. Replaces
+      the previous `tool_calls_out` out-param. Callers that need to replay a
+      dry-run (e.g. `/workout` preview → push) read from here.
+    - `nudge_boundary` — raw signal: today's request_count divides evenly by
+      `DONATE_NUDGE_EVERY_N`. Agent does NOT apply donate policy — the handler
+      gates this via `bot.donate_nudge.should_show_nudge`. See DONATE_SPEC §11.4.
+    - `request_count` — number of `chat()` calls by this user today (post-increment).
+      Exposed so the handler's nudge gate can enforce the daily cap.
+    """
+
+    text: str
+    tool_calls: list[dict] = field(default_factory=list)
+    nudge_boundary: bool = False
+    request_count: int = 0
 
 
 class ClaudeAgent:
@@ -36,24 +59,19 @@ class ClaudeAgent:
         tools: list[dict],
         max_tokens: int = 4096,
         max_iterations: int = 10,
-        tool_calls_out: list[dict] | None = None,
         tool_calls_filter: set[str] | None = None,
-    ) -> tuple[str, dict]:
-        """Run Claude API with tool-use loop. Returns (text, usage_totals).
+    ) -> tuple[str, dict, list[dict]]:
+        """Run Claude API with tool-use loop. Returns (text, usage_totals, tool_calls).
 
-        Tool calls are proxied to MCP server via HTTP.
-
-        If ``tool_calls_out`` is provided, each tool invocation is appended as
-        ``{"name": str, "input": dict}`` in order. Callers use this to recover
-        the exact args Claude passed, e.g. to replay a dry-run as a real push
-        without re-inference.
-
-        ``tool_calls_filter`` narrows which tool names are recorded — pass a
-        small set (e.g. ``{"suggest_workout", "compose_workout"}``) to avoid
-        deep-copying large unrelated inputs like ``list_exercise_cards``. When
-        ``None``, every tool call is recorded (legacy behaviour).
+        Tool calls are proxied to MCP server via HTTP. Every `tool_use` block
+        is recorded (deep-copied) into the returned list so callers can replay
+        a dry-run as a real push without re-inference — e.g. `/workout` preview
+        → "Отправить в Intervals" button. `tool_calls_filter` narrows which tool
+        names are recorded (pass `{"suggest_workout", "compose_workout"}` to
+        skip deep-copies of unrelated large inputs). `None` records everything.
         """
         total_usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0}
+        tool_calls: list[dict] = []
 
         cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
@@ -71,11 +89,11 @@ class ClaudeAgent:
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    if tool_calls_out is not None and (tool_calls_filter is None or block.name in tool_calls_filter):
+                    if tool_calls_filter is None or block.name in tool_calls_filter:
                         # Deep copy so later tool-side or caller-side mutations
                         # of either `block.input` or the recorded snapshot can't
                         # cause drift between what we saw and what we replay.
-                        tool_calls_out.append({"name": block.name, "input": copy.deepcopy(block.input)})
+                        tool_calls.append({"name": block.name, "input": copy.deepcopy(block.input)})
                     result = await mcp.call_tool(block.name, block.input)
                     tool_results.append(
                         {
@@ -99,7 +117,7 @@ class ClaudeAgent:
             iterations += 1
 
         text_blocks = [b.text for b in response.content if b.type == "text"]
-        return "\n".join(text_blocks), total_usage
+        return "\n".join(text_blocks), total_usage, tool_calls
 
     @staticmethod
     def _accumulate_usage(totals: dict, response) -> None:
@@ -117,15 +135,16 @@ class ClaudeAgent:
         image_data: bytes | None = None,
         image_media_type: str = "image/jpeg",
         image_url: str | None = None,
-        tool_calls_out: list[dict] | None = None,
         tool_calls_filter: set[str] | None = None,
-    ) -> str:
+    ) -> ChatResult:
         """Handle a free-form chat message. Stateless: no conversation history.
 
-        Tools are fetched dynamically from MCP server.
+        Returns `ChatResult`. Tool calls are accumulated internally and exposed
+        via `ChatResult.tool_calls` (replaces the previous `tool_calls_out`
+        out-param). Nudge policy lives in `bot.donate_nudge` — agent only
+        reports the raw boundary signal; see DONATE_SPEC §11.4.
+
         mcp_token: per-user MCP Bearer token. Falls back to global MCP_AUTH_TOKEN.
-        tool_calls_out: if provided, each tool invocation is appended as
-            ``{"name": str, "input": dict}`` in call order.
         tool_calls_filter: optional set of tool names — only matching calls
             are recorded. Use to avoid deep-copying unrelated large inputs.
         """
@@ -162,19 +181,30 @@ class ClaudeAgent:
         else:
             messages = [{"role": "user", "content": user_message}]
 
-        text, usage = await self._run_tool_use_loop(
+        text, usage, tool_calls = await self._run_tool_use_loop(
             mcp,
             system,
             messages,
             tools,
             max_tokens=2048,
-            tool_calls_out=tool_calls_out,
             tool_calls_filter=tool_calls_filter,
         )
 
+        nudge_boundary = False
+        request_count = 0
         try:
-            await ApiUsageDaily.increment(user_id=user_id, **usage)
+            row = await ApiUsageDaily.increment(user_id=user_id, **usage)
+            raw_count = getattr(row, "request_count", 0)
+            # Defensive: if a caller mocks `increment()` without a real integer
+            # (e.g. bare AsyncMock), don't let arithmetic blow up the chat flow.
+            request_count = raw_count if isinstance(raw_count, int) else 0
+            nudge_boundary = request_count > 0 and request_count % settings.DONATE_NUDGE_EVERY_N == 0
         except Exception:
             logger.warning("Failed to track token usage for user %s", user_id, exc_info=True)
 
-        return text or "Не удалось обработать запрос."
+        return ChatResult(
+            text=text or "Не удалось обработать запрос.",
+            tool_calls=tool_calls,
+            nudge_boundary=nudge_boundary,
+            request_count=request_count,
+        )

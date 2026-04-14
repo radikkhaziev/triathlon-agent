@@ -68,7 +68,7 @@ class TestClaudeAgentChat:
 
             result = await agent.chat("Как правильно бегать Z2?")
 
-        assert "Z2" in result
+        assert "Z2" in result.text
         assert agent.client.messages.create.call_count == 1
 
     @pytest.mark.asyncio
@@ -121,7 +121,7 @@ class TestClaudeAgentChat:
             mock_mcp_cls.return_value = mock_mcp
 
             result = await agent.chat("Вопрос")
-        assert result == "Не удалось обработать запрос."
+        assert result.text == "Не удалось обработать запрос."
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +169,9 @@ class TestHandleChatMessage:
             patch("bot.decorator.User.get_by_chat_id", new=AsyncMock(return_value=mock_db_user)),
             patch("bot.main.agent") as mock_agent,
         ):
-            mock_agent.chat = AsyncMock(return_value="Всё хорошо")
+            from bot.agent import ChatResult
+
+            mock_agent.chat = AsyncMock(return_value=ChatResult(text="Всё хорошо"))
             await handle_chat_message(update, None)
 
         update.message.reply_text.assert_called()
@@ -203,7 +205,9 @@ class TestHandleChatMessage:
             patch("bot.decorator.User.get_by_chat_id", new=AsyncMock(return_value=mock_db_user)),
             patch("bot.main.agent") as mock_agent,
         ):
-            mock_agent.chat = AsyncMock(return_value="*ответ*")
+            from bot.agent import ChatResult
+
+            mock_agent.chat = AsyncMock(return_value=ChatResult(text="*ответ*"))
             await handle_chat_message(update, None)
 
         assert update.message.reply_text.call_count == 2
@@ -316,4 +320,4 @@ class TestClaudeAgentMCPWiring:
         types = [b["type"] for b in user_msg["content"]]
         assert "image" in types
         assert "text" in types
-        assert "Вижу скриншот" in result
+        assert "Вижу скриншот" in result.text
