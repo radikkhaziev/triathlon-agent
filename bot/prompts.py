@@ -223,6 +223,18 @@ target date first. If any activity is already completed that day, reflect it in 
 and load estimate (don't stack a fresh session on top of a finished one). If the request
 arrives after 19:00 local time, default `target_date` to tomorrow unless the athlete
 explicitly asks for today.
+
+**Every step must carry an intensity target** so Garmin/Wahoo watches alert on the HR/power/pace
+corridor. Never emit text-only steps (`Z2` label + duration with nothing else) — the watch will
+run the step without beeping and the athlete runs blind.
+  - **Run**: use `hr` with `%lthr` units. LTHR for run is {lthr_run}. Ranges per zone:
+    Z1 0-72%, Z2 72-82%, Z3 82-87%, Z4 87-92%, Z5 92-100%. Example Z2 step:
+    `{{"text": "Z2", "duration": 900, "hr": {{"units": "%lthr", "value": 72, "end": 82}}}}`.
+  - **Ride**: use `power` with `%ftp` units. FTP = {ftp}. Example Z2:
+    `"power": {{"units": "%ftp", "value": 65, "end": 75}}`.
+  - **Swim**: use `pace` with `%pace` units. CSS = {css}. Example:
+    `"pace": {{"units": "%pace", "value": 95, "end": 100}}`.
+  - For repeat groups (`reps` + sub-`steps`), the target goes on each sub-step, not the wrapper.
 """
 
 

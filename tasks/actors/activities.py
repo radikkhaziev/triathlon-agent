@@ -389,7 +389,11 @@ def actor_fetch_user_activities(
 
     # Strava activities cannot be read via Intervals.icu API (licensing).
     # Skip them entirely so they never enter the DB or trigger downstream fetches.
+    before = len(activities)
     activities = [a for a in activities if (a.source or "").upper() != "STRAVA"]
+    skipped = before - len(activities)
+    if skipped:
+        logger.info("Skipped %d Strava activity(ies) for user %s — Intervals.icu API blocks them", skipped, user.id)
 
     if not activities:
         return
