@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from data.db.user import UserDTO
+from data.intervals.dto import ActivityDTO
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -32,10 +33,8 @@ def _activity_dto(
     type: str = "Run",
     moving_time: int = 3600,
     source: str | None = "GARMIN_CONNECT",
-) -> MagicMock:
-    """Create a minimal ActivityDTO mock."""
-    from data.intervals.dto import ActivityDTO
-
+) -> ActivityDTO:
+    """Create a minimal ActivityDTO."""
     return ActivityDTO(
         id=id,
         start_date_local=dt,
