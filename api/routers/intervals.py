@@ -2,12 +2,12 @@
 
 Two responsibilities:
 
-1. **OAuth flow** (`/auth/connect`, `/auth/callback`) — Phase 1 of the OAuth
+1. **OAuth flow** (`POST /auth/init`, `GET /auth/callback`) — Phase 1 of the OAuth
    migration. See `docs/INTERVALS_OAUTH_SPEC.md` for the full plan. Current
    scope is intentionally narrow: we want to observe the real token-exchange
    response shape before wiring the tokens into `IntervalsClient` (Phase 2).
 
-2. **Webhook receiver** (`/hook/{external_id}`) — still a logging-only stub.
+2. **Webhook receiver** (`POST /webhook`) — still a logging-only stub.
    Intervals.icu push events (ACTIVITY_UPLOADED, CALENDAR_UPDATED, etc.) come
    here once webhooks are configured in the OAuth app settings. Real dispatch
    is deferred until we see a live payload.
@@ -22,11 +22,21 @@ import jwt
 import sentry_sdk
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from api.auth import _get_jwt_secret
 from api.deps import require_viewer
 from config import settings
 from data.db import User, get_session
+
+
+class IntervalsAuthInitResponse(BaseModel):
+    """Response of `POST /api/intervals/auth/init` — the signed Intervals.icu
+    authorize URL that the frontend navigates to via `window.location.assign`.
+    """
+
+    authorize_url: str
+
 
 logger = logging.getLogger(__name__)
 
@@ -77,19 +87,25 @@ def _validate_oauth_state(state: str) -> int | None:
         return None
 
 
-@router.get("/auth/connect")
-async def intervals_oauth_connect(user: User = Depends(require_viewer)) -> RedirectResponse:
-    """Initiate the Intervals.icu OAuth flow.
+@router.post("/auth/init", response_model=IntervalsAuthInitResponse)
+async def intervals_oauth_init(user: User = Depends(require_viewer)) -> IntervalsAuthInitResponse:
+    """Initiate the Intervals.icu OAuth flow from an authenticated XHR.
 
-    Redirects the user to Intervals.icu authorization page. Any authenticated
-    user can start OAuth — athlete_id mismatch guard lives in the callback
-    (see `intervals_oauth_callback`), not here.
+    Why POST+JSON instead of a GET redirect: the frontend carries auth via the
+    `Authorization` header (Telegram initData or Bearer JWT from localStorage).
+    A full-page `<a href>` navigation would NOT send that header, so a GET
+    endpoint with `require_viewer` would 401. Instead the frontend calls this
+    over `apiFetch` (which attaches the header), receives the signed authorize
+    URL, and navigates the browser to it via `window.location.assign(...)`.
 
-    Returns 503 if `INTERVALS_OAUTH_CLIENT_ID` is not configured, so we don't
-    send the user into a broken Intervals.icu page.
+    Returns `{authorize_url}` — the Intervals.icu /oauth/authorize URL with our
+    `client_id`, `redirect_uri`, `scope`, and a short-lived signed `state` JWT
+    that binds the callback to this user.
+
+    Returns 503 if `INTERVALS_OAUTH_CLIENT_ID` is not configured.
     """
     if not settings.INTERVALS_OAUTH_CLIENT_ID:
-        logger.error("OAuth connect called but INTERVALS_OAUTH_CLIENT_ID is not set")
+        logger.error("OAuth init called but INTERVALS_OAUTH_CLIENT_ID is not set")
         from fastapi import HTTPException
 
         raise HTTPException(status_code=503, detail="Intervals.icu OAuth is not configured on this server")
@@ -102,8 +118,8 @@ async def intervals_oauth_connect(user: User = Depends(require_viewer)) -> Redir
         "state": state,
     }
     url = f"{_OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
-    logger.info("Intervals OAuth connect user_id=%s redirect_uri=%s", user.id, settings.INTERVALS_OAUTH_REDIRECT_URI)
-    return RedirectResponse(url, status_code=302)
+    logger.info("Intervals OAuth init user_id=%s redirect_uri=%s", user.id, settings.INTERVALS_OAUTH_REDIRECT_URI)
+    return IntervalsAuthInitResponse(authorize_url=url)
 
 
 @router.get("/auth/callback")
@@ -232,27 +248,43 @@ async def intervals_oauth_callback(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/hook/{external_id}")
-async def intervals_hook(external_id: str, request: Request) -> dict:
-    """Stub receiver — logs method, headers, query params, and JSON body.
+@router.post("/webhook")
+async def intervals_webhook(request: Request) -> dict:
+    """Observability stub for Intervals.icu push webhooks.
 
-    Responds 200 unconditionally so Intervals.icu does not retry while we
-    are still figuring out the contract. Once we know the payload shape,
-    this will dispatch a dramatiq actor per event type.
+    Register this URL in Intervals.icu → Manage App → Webhook URLs:
+        https://bot.endurai.me/api/intervals/webhook
+
+    Intervals.icu posts a single fixed URL (not per-resource) and carries
+    the event type + identifiers in the JSON body. Event types documented
+    in the cookbook: `ACTIVITY_UPLOADED`, `ACTIVITY_ANALYZED`,
+    `CALENDAR_UPDATED`, `CALENDAR_EVENT_UPDATED`, `CALENDAR_EVENT_DELETED`,
+    `SPORT_SETTINGS_UPDATED`.
+
+    Phase 1 behaviour: log the full request (method, headers, query, body)
+    and return 200 unconditionally. We want to see the real payload shape
+    before writing a dispatcher — headers likely include a signature header
+    for verification, and the body keys tell us which identifiers
+    (athlete_id? activity_id? event_id?) come in which event type.
+
+    Real event routing → Phase 4 per `docs/INTERVALS_OAUTH_SPEC.md §13`.
+
+    **Do NOT** 4xx / 5xx here while debugging: Intervals.icu will retry
+    and either drown the endpoint or disable the webhook entirely.
     """
     try:
         body = await request.json()
+        body_repr = body
     except Exception:
         body = None
         raw = await request.body()
-        logger.info("Intervals hook [%s] non-JSON body: %r", external_id, raw[:2000])
+        body_repr = f"<non-json {len(raw)}B>: {raw[:500]!r}"
 
     logger.info(
-        "Intervals hook [%s] headers=%s query=%s body=%s",
-        external_id,
+        "Intervals webhook received headers=%s query=%s body=%s",
         dict(request.headers),
         dict(request.query_params),
-        body,
+        body_repr,
     )
 
-    return {"status": "ok", "external_id": external_id}
+    return {"status": "ok"}

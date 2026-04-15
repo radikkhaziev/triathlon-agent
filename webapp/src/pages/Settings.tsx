@@ -50,6 +50,7 @@ export default function Settings() {
   const [copied, setCopied] = useState<string | null>(null)
   const [intervals, setIntervals] = useState<IntervalsStatus | null>(null)
   const [intervalsToast, setIntervalsToast] = useState<IntervalsToast | null>(null)
+  const [intervalsBusy, setIntervalsBusy] = useState(false)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -86,6 +87,30 @@ export default function Settings() {
     const timer = setTimeout(() => setIntervalsToast(null), 5000)
     return () => clearTimeout(timer)
   }, [])
+
+  // OAuth initiation: XHR POST (so apiFetch attaches auth header) → receive
+  // authorize URL → navigate browser. A plain <a href> would NOT send the
+  // Bearer/initData header and hit a 401. See INTERVALS_OAUTH_SPEC §6.2.
+  //
+  // `intervalsBusy` guards against double-click: a rapid second click while
+  // the first POST is in flight would generate a second state JWT and show
+  // two in-flight navigations competing for `window.location`.
+  const startIntervalsOAuth = async () => {
+    if (intervalsBusy) return
+    setIntervalsBusy(true)
+    try {
+      const { authorize_url } = await apiFetch<{ authorize_url: string }>(
+        '/api/intervals/auth/init',
+        { method: 'POST' },
+      )
+      window.location.assign(authorize_url)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'failed'
+      setIntervalsToast({ kind: 'error', key: 'settings.intervals.toast_error' })
+      setIntervalsBusy(false)
+      console.error('Intervals OAuth init failed:', msg)
+    }
+  }
 
   const copyToClipboard = async (text: string, label: string) => {
     try {
@@ -162,12 +187,14 @@ export default function Settings() {
               <p className="text-[12px] text-text-dim mb-3 leading-snug">
                 {t('settings.intervals.not_connected_desc')}
               </p>
-              <a
-                href="/api/intervals/auth/connect"
-                className="block w-full py-2.5 bg-accent text-white text-center rounded-xl text-sm font-semibold no-underline font-sans"
+              <button
+                type="button"
+                onClick={startIntervalsOAuth}
+                disabled={intervalsBusy}
+                className="block w-full py-2.5 bg-accent text-white text-center rounded-xl text-sm font-semibold border-none cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {t('settings.intervals.connect')}
-              </a>
+              </button>
             </>
           )}
           {intervals && intervals.athlete_id && intervals.method === 'oauth' && (
@@ -188,12 +215,14 @@ export default function Settings() {
               <div className="text-[13px] text-text-dim mb-2">✅ {t('settings.intervals.connected_legacy')}</div>
               <Row label={t('settings.intervals.athlete')} value={intervals.athlete_id} />
               <Row label={t('settings.intervals.method')} value={t('settings.intervals.method_api_key')} />
-              <a
-                href="/api/intervals/auth/connect"
-                className="block w-full mt-3 py-2.5 bg-surface border border-accent text-accent text-center rounded-xl text-sm font-semibold no-underline font-sans"
+              <button
+                type="button"
+                onClick={startIntervalsOAuth}
+                disabled={intervalsBusy}
+                className="block w-full mt-3 py-2.5 bg-surface border border-accent text-accent text-center rounded-xl text-sm font-semibold cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {t('settings.intervals.migrate_to_oauth')}
-              </a>
+              </button>
             </>
           )}
         </Section>

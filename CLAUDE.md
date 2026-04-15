@@ -190,9 +190,9 @@ POST /api/auth/verify-code              — verify one-time code → JWT
 GET  /api/auth/me                       — auth status + language + intervals connection info
 GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, audit-logged)
 PUT  /api/auth/language                 — update user language (ru/en)
-GET  /api/intervals/auth/connect         — initiate Intervals.icu OAuth (302 → authorize)
+POST /api/intervals/auth/init            — initiate OAuth (authenticated XHR) → {authorize_url}
 GET  /api/intervals/auth/callback        — OAuth callback: code → token → DB → redirect
-POST /api/intervals/hook/{external_id}   — webhook receiver stub (Phase 4)
+POST /api/intervals/webhook              — webhook receiver stub (Phase 4, logs payload)
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
@@ -400,7 +400,7 @@ Per-user Intervals.icu credentials support **two** authentication methods, track
 | `"oauth"` | `users.intervals_access_token_encrypted` (Fernet) + `intervals_oauth_scope` | New/migrated users via OAuth flow |
 | `"none"` | — | Revoked OAuth with no api_key fallback (user must reconnect) |
 
-**OAuth flow** (`api/routers/intervals.py`): `GET /api/intervals/auth/connect` → signed JWT state (`purpose='intervals_oauth'`, 15-min TTL) → 302 to `intervals.icu/oauth/authorize` → consent → `GET /api/intervals/auth/callback?code=&state=` → server-side POST to `intervals.icu/api/oauth/token` → response has `{access_token, token_type: "Bearer", scope, athlete: {id, name}}` (**no** refresh_token, **no** expires_in) → `User.set_oauth_tokens()` → redirect to `/settings?connected=intervals`.
+**OAuth flow** (`api/routers/intervals.py`): frontend XHR `POST /api/intervals/auth/init` (auth header attached by `apiFetch`) → signed JWT state (`purpose='intervals_oauth'`, 15-min TTL) → returns `{authorize_url}` → `window.location.assign(authorize_url)` → `intervals.icu/oauth/authorize` → consent → `GET /api/intervals/auth/callback?code=&state=` (validates state, no auth header needed) → server-side POST to `intervals.icu/api/oauth/token` → response has `{access_token, token_type: "Bearer", scope, athlete: {id, name}}` (**no** refresh_token, **no** expires_in) → `User.set_oauth_tokens()` → 302 redirect to `/settings?connected=intervals`. Why init is POST and not GET: a full-page `<a href>` doesn't send the Authorization header from localStorage, so a GET endpoint with `require_viewer` would 401. POST+XHR+JSON sidesteps that.
 
 **Scopes:** `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE` — `:WRITE` implies `:READ` per Intervals.icu docs, and listing the same area twice produces `"Duplicate scope"` error. `SETTINGS:WRITE` is required for `actor_update_zones` (ramp-test LTHR push).
 
