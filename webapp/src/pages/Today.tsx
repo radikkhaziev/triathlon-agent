@@ -6,10 +6,12 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import Gauge from '../components/Gauge'
 import AiRecommendation from '../components/AiRecommendation'
+import OnboardingPrompt from '../components/OnboardingPrompt'
 import { apiFetch } from '../api/client'
 import { num, fmtDateShort, sportLabel } from '../lib/formatters'
 import { CATEGORY_COLORS, SPORT_ICONS } from '../lib/constants'
 import type {
+  AuthMeResponse,
   WellnessResponse,
   ScheduledWorkoutsResponse,
   ActivitiesWeekResponse,
@@ -23,21 +25,49 @@ export default function Today() {
   const [activities, setActivities] = useState<ActivitiesWeekResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [needsOnboarding, setNeedsOnboarding] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
     const opts = { signal: controller.signal }
-    Promise.all([
-      apiFetch<WellnessResponse>('/api/report', opts),
-      apiFetch<ScheduledWorkoutsResponse>('/api/scheduled-workouts?week_offset=0', opts),
-      apiFetch<ActivitiesWeekResponse>('/api/activities-week?week_offset=0', opts),
-    ])
-      .then(([r, w, a]) => { setReport(r); setWorkouts(w); setActivities(a) })
-      .catch(err => { if (!controller.signal.aborted) setError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+
+    // Check onboarding state first — users without a linked Intervals.icu
+    // athlete get the OnboardingPrompt instead of a broken empty dashboard.
+    // We don't parallelize with the data fetches because if the user is new,
+    // the data endpoints would just 404/return empty anyway.
+    apiFetch<AuthMeResponse>('/api/auth/me', opts)
+      .then(me => {
+        if (!me.intervals?.athlete_id) {
+          if (!controller.signal.aborted) {
+            setNeedsOnboarding(true)
+            setLoading(false)
+          }
+          return null
+        }
+        return Promise.all([
+          apiFetch<WellnessResponse>('/api/report', opts),
+          apiFetch<ScheduledWorkoutsResponse>('/api/scheduled-workouts?week_offset=0', opts),
+          apiFetch<ActivitiesWeekResponse>('/api/activities-week?week_offset=0', opts),
+        ])
+      })
+      .then(result => {
+        if (!result || controller.signal.aborted) return
+        const [r, w, a] = result
+        setReport(r)
+        setWorkouts(w)
+        setActivities(a)
+        setLoading(false)
+      })
+      .catch(err => {
+        if (!controller.signal.aborted) {
+          setError(err.message)
+          setLoading(false)
+        }
+      })
     return () => controller.abort()
   }, [])
 
+  if (needsOnboarding) return <OnboardingPrompt />
   if (loading) return <Layout maxWidth="480px"><LoadingSpinner /></Layout>
   if (error) return <Layout maxWidth="480px"><ErrorMessage message={t('today.load_error')} /></Layout>
   if (!report?.has_data) return <Layout maxWidth="480px"><ErrorMessage message={t('today.no_data')} /></Layout>

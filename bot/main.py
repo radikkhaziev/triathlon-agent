@@ -76,19 +76,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user.is_active = True
     logger.info("User resolved via /start: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
 
+    # New users (no athlete_id) land in the onboarding flow — a button that
+    # opens the Settings page inside Telegram Mini App, where the "Подключить
+    # Intervals.icu" OAuth flow is one tap away. Existing athletes get the
+    # regular welcome + dashboard entry.
+    if not user.athlete_id:
+        settings_url = f"{settings.API_BASE_URL.rstrip('/')}/settings"
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        _("🔗 Подключить Intervals.icu"),
+                        web_app=WebAppInfo(url=settings_url),
+                    )
+                ],
+            ]
+        )
+        await update.message.reply_text(
+            _(
+                "Привет! Я AI-тренер для триатлетов.\n\n"
+                "Чтобы начать, подключи свой аккаунт Intervals.icu — "
+                "я буду синхронизировать wellness, активности и тренировки, "
+                "и давать персональные рекомендации на основе твоих данных.\n\n"
+                "Нажми кнопку ниже, откроется приложение с OAuth-подключением."
+            ),
+            reply_markup=keyboard,
+        )
+        return
+
     webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Открыть приложение", web_app=WebAppInfo(url=webapp_url))],
+            [InlineKeyboardButton(_("Открыть приложение"), web_app=WebAppInfo(url=webapp_url))],
         ]
     )
     await update.message.reply_text(
-        "AI Coach — персональный тренер на основе данных.\n\n"
-        "Что умеет бот:\n"
-        "• Утренний анализ готовности (HRV, recovery, sleep)\n"
-        "• AI-рекомендации по тренировкам\n"
-        "• Адаптация плана под текущее состояние\n"
-        "• Отслеживание прогресса к гонке\n\n",
+        _(
+            "AI Coach — персональный тренер на основе данных.\n\n"
+            "Что умеет бот:\n"
+            "• Утренний анализ готовности (HRV, recovery, sleep)\n"
+            "• AI-рекомендации по тренировкам\n"
+            "• Адаптация плана под текущее состояние\n"
+            "• Отслеживание прогресса к гонке\n\n"
+        ),
         reply_markup=keyboard,
     )
 

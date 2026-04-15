@@ -150,5 +150,11 @@
       "token_label": "Bearer Token",
       "json_config": "JSON config"
     }
+  },
+  "onboarding": {
+    "title": "Welcome to EndurAI!",
+    "description": "Connect your Intervals.icu account to start syncing data and get personal training recommendations.",
+    "cta": "🔗 Connect Intervals.icu",
+    "no_account_hint": "No account? Sign up for free at"
   }
 }

@@ -7,6 +7,18 @@ msgstr ""
 msgid "Сначала отправьте /start"
 msgstr "Please send /start first"
 
+msgid "🔗 Подключить Intervals.icu"
+msgstr "🔗 Connect Intervals.icu"
+
+msgid "Привет! Я AI-тренер для триатлетов.\n\nЧтобы начать, подключи свой аккаунт Intervals.icu — я буду синхронизировать wellness, активности и тренировки, и давать персональные рекомендации на основе твоих данных.\n\nНажми кнопку ниже, откроется приложение с OAuth-подключением."
+msgstr "Hi! I'm an AI coach for triathletes.\n\nTo get started, connect your Intervals.icu account — I'll sync your wellness, activities and workouts, and give personal recommendations based on your data.\n\nTap the button below to open the app and authorize via OAuth."
+
+msgid "Открыть приложение"
+msgstr "Open app"
+
+msgid "AI Coach — персональный тренер на основе данных.\n\nЧто умеет бот:\n• Утренний анализ готовности (HRV, recovery, sleep)\n• AI-рекомендации по тренировкам\n• Адаптация плана под текущее состояние\n• Отслеживание прогресса к гонке\n\n"
+msgstr "AI Coach — data-driven personal trainer.\n\nFeatures:\n• Morning readiness analysis (HRV, recovery, sleep)\n• AI workout recommendations\n• Plan adaptation based on current state\n• Race progress tracking\n\n"
+
 msgid "Поддержать проект EndurAI 💪\n\nБот бесплатный, но если хочешь поддержать разработку — можно отправить Stars прямо здесь."
 msgstr "Support EndurAI 💪\n\nThe bot is free, but if you'd like to support development — you can send Stars right here."
 

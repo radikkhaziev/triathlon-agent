@@ -52,6 +52,20 @@ export default function Login() {
       .catch(() => {})
   }, [])
 
+  // After a successful login, route new users (no athlete_id) straight to
+  // Settings so they immediately see the "Подключить Intervals.icu" section.
+  // Existing athletes go to the main dashboard as before. Called from both
+  // the Telegram widget callback and the one-time code form.
+  const routeAfterLogin = async () => {
+    try {
+      const me = await apiFetch<AuthMeResponse>('/api/auth/me')
+      const needsOnboarding = !me.intervals?.athlete_id
+      navigate(needsOnboarding ? '/settings' : '/')
+    } catch {
+      navigate('/')  // fall back to home on any auth/me failure
+    }
+  }
+
   useEffect(() => {
     window.onTelegramAuth = async (user: TelegramUser) => {
       setSubmitting(true)
@@ -65,7 +79,7 @@ export default function Login() {
         setJwt(data.token)
         setMessage(t('login.success'))
         setMsgType('success')
-        setTimeout(() => navigate('/'), 500)
+        setTimeout(routeAfterLogin, 500)
       } catch (err) {
         setMessage(err instanceof Error ? err.message : t('common.error'))
         setMsgType('error')
@@ -76,6 +90,7 @@ export default function Login() {
     return () => {
       delete window.onTelegramAuth
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate, setJwt, t])
 
   useEffect(() => {
@@ -115,7 +130,7 @@ export default function Login() {
       setJwt(data.token)
       setMessage(t('login.success'))
       setMsgType('success')
-      setTimeout(() => navigate('/'), 500)
+      setTimeout(routeAfterLogin, 500)
     } catch (err) {
       setMessage(err instanceof Error ? err.message : t('common.error'))
       setMsgType('error')

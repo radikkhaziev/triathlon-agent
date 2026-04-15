@@ -5,9 +5,17 @@ export interface AuthVerifyCodeResponse {
   expires_in_days: number
 }
 
+export interface IntervalsStatus {
+  method: 'oauth' | 'api_key' | 'none'
+  athlete_id: string | null
+  scope: string | null
+}
+
 export interface AuthMeResponse {
   role: 'owner' | 'viewer' | 'anonymous'
   authenticated: boolean
+  language?: string
+  intervals?: IntervalsStatus
 }
 
 // Recovery
