@@ -6,10 +6,12 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import Gauge from '../components/Gauge'
 import AiRecommendation from '../components/AiRecommendation'
+import OnboardingPrompt from '../components/OnboardingPrompt'
 import { apiFetch } from '../api/client'
 import { num, fmtDateShort, sportLabel } from '../lib/formatters'
 import { CATEGORY_COLORS, SPORT_ICONS } from '../lib/constants'
 import type {
+  AuthMeResponse,
   WellnessResponse,
   ScheduledWorkoutsResponse,
   ActivitiesWeekResponse,
@@ -23,21 +25,56 @@ export default function Today() {
   const [activities, setActivities] = useState<ActivitiesWeekResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [needsOnboarding, setNeedsOnboarding] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
     const opts = { signal: controller.signal }
-    Promise.all([
+
+    // Parallel fetch: auth/me + 3 data endpoints. If the user has no linked
+    // Intervals.icu athlete we discard the data responses and show the
+    // OnboardingPrompt. For existing users this avoids adding a round-trip
+    // of auth/me latency to time-to-content.
+    // `allSettled` so a failure in one data fetch doesn't kill the whole
+    // chain — we still need the auth/me result to decide onboarding vs error.
+    Promise.allSettled([
+      apiFetch<AuthMeResponse>('/api/auth/me', opts),
       apiFetch<WellnessResponse>('/api/report', opts),
       apiFetch<ScheduledWorkoutsResponse>('/api/scheduled-workouts?week_offset=0', opts),
       apiFetch<ActivitiesWeekResponse>('/api/activities-week?week_offset=0', opts),
-    ])
-      .then(([r, w, a]) => { setReport(r); setWorkouts(w); setActivities(a) })
-      .catch(err => { if (!controller.signal.aborted) setError(err.message) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    ]).then(([meResult, reportResult, workoutsResult, activitiesResult]) => {
+      if (controller.signal.aborted) return
+
+      if (meResult.status === 'rejected') {
+        setError(meResult.reason?.message ?? 'auth failed')
+        setLoading(false)
+        return
+      }
+
+      if (!meResult.value.intervals?.athlete_id) {
+        setNeedsOnboarding(true)
+        setLoading(false)
+        return
+      }
+
+      // User is onboarded — propagate data fetch results, failing if any
+      // dashboard endpoint rejected.
+      const firstFailure = [reportResult, workoutsResult, activitiesResult].find(r => r.status === 'rejected')
+      if (firstFailure && firstFailure.status === 'rejected') {
+        setError(firstFailure.reason?.message ?? 'load failed')
+        setLoading(false)
+        return
+      }
+
+      setReport((reportResult as PromiseFulfilledResult<WellnessResponse>).value)
+      setWorkouts((workoutsResult as PromiseFulfilledResult<ScheduledWorkoutsResponse>).value)
+      setActivities((activitiesResult as PromiseFulfilledResult<ActivitiesWeekResponse>).value)
+      setLoading(false)
+    })
     return () => controller.abort()
   }, [])
 
+  if (needsOnboarding) return <OnboardingPrompt />
   if (loading) return <Layout maxWidth="480px"><LoadingSpinner /></Layout>
   if (error) return <Layout maxWidth="480px"><ErrorMessage message={t('today.load_error')} /></Layout>
   if (!report?.has_data) return <Layout maxWidth="480px"><ErrorMessage message={t('today.no_data')} /></Layout>

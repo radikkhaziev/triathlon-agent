@@ -183,6 +183,30 @@
   - Single-shot invariant enforced в том же UPDATE через `rpe IS NULL` predicate (см. `docs/RPE_SPEC.md` § Single-shot)
 - **RPE не принимается через MCP write tool** — `get_activity_details`, `get_training_log`, `get_workout_compliance`, `get_weekly_summary` read-only. Запись возможна только через Telegram callback. Это защищает от prompt-injection сценария "Claude записал RPE по интерпретации фразы юзера".
 
+#### T15. Intervals.icu OAuth — Account Mismatch via State Race (Tampering)
+
+- **Что:** OAuth callback проверяет `db_user.athlete_id == response.athlete.id` для защиты от подмены аккаунта, но state JWT не snapshot'ит `athlete_id` — только `user_id`. Между инициацией (`/auth/connect`) и callback'ом (`/auth/callback`) `athlete_id` в БД может измениться (shell admin, parallel OAuth, migration), и guard пропустит чужой `athlete.id`.
+- **Где:** `api/routers/intervals.py:_validate_oauth_state` + `intervals_oauth_callback:208-216`
+- **Severity:** High (возможна cross-tenant data attribution после Phase 2 когда Bearer sync начнёт писать wellness/activities с чужого аккаунта)
+- **Реалистичность:** низкая на текущем этапе (2-юзерный dev, владелец shell'а = владелец OAuth). Становится реальной при public launch.
+- **Mitigation (Phase 2, follow-up issue):**
+  - В `_generate_oauth_state` добавить `athlete_id_snapshot` в payload
+  - В callback: reject если `db_user.athlete_id != state_snapshot.athlete_id` с error `oauth_state_stale`
+  - Защищает от ВСЕХ race-condition сценариев, не только shell-admin
+  - Плюс: добавить `aud='intervals_oauth_callback'` claim для PyJWT audience-level separation от session JWT (defence-in-depth поверх существующего `purpose` guard)
+
+#### T16. Intervals.icu OAuth — Long-Lived Token Without Rotation (Information Disclosure)
+
+- **Что:** Intervals.icu OAuth не выдаёт `refresh_token` и не указывает `expires_in` — access_token живёт "вечно" до явного revoke через Intervals.icu UI. Украденный токен (XSS, DB leak, лог с token) даёт perpetual access к wellness/activities/calendar юзера.
+- **Где:** `data/db/user.py:intervals_access_token_encrypted` (Fernet at rest), Intervals.icu token response shape (§T15 cookbook confirmed)
+- **Severity:** Medium (impact = read wellness/calendar, не financial)
+- **Mitigation:**
+  - Fernet encryption at rest (уже реализовано в Phase 1)
+  - **Нет rotation endpoint** — юзер может отозвать только через Intervals.icu UI. EndurAI detect'ит revoke через ленивую 401-проверку в `IntervalsClient` (Phase 2 §8)
+  - Callback логирует только structure, НЕ full token (`keys=sorted(data.keys())`, `body_len` вместо `body`). Полный token никогда не в логах, breadcrumbs, Sentry stack frames (через `data scrubbing` в `sentry_config.py`)
+  - Token exchange через POST body (не URL) — не в access logs Caddy/nginx
+  - **Phase 2 TODO:** rate limit `/api/intervals/auth/connect` (5 req / 5 min per user), иначе злоумышленник с валидной session может flood'ить OAuth initiation (abuse → блок IP со стороны Intervals.icu)
+
 ---
 
 ## 3. Data Isolation Strategy
@@ -395,22 +419,27 @@ Request → Authorization header
 
 Каждый пользователь приносит свои:
 
-| Secret                   | Колонка в `users`   | Хранение                    | Примечание                               |
-| ------------------------ | ------------------- | --------------------------- | ---------------------------------------- |
-| Intervals.icu API key    | `api_key_encrypted` | Fernet-encrypted            | Каждый user коннектит свой Intervals.icu |
-| Intervals.icu athlete ID | `athlete_id`        | Plain (unique)              | Не секрет, но per-user                   |
-| Telegram chat ID         | `chat_id`           | Plain (unique)              | Идентификатор                            |
-| MCP Bearer token         | `mcp_token`         | Plain (unique, VARCHAR(64)) | Per-user токен для MCP доступа           |
+| Secret                          | Колонка в `users`                     | Хранение                    | Примечание                                                        |
+| ------------------------------- | ------------------------------------- | --------------------------- | ----------------------------------------------------------------- |
+| Intervals.icu API key (legacy)  | `api_key_encrypted`                   | Fernet-encrypted            | Legacy path, замещается OAuth для новых юзеров                    |
+| Intervals.icu OAuth access_token | `intervals_access_token_encrypted`   | Fernet-encrypted            | Долгоживущий (нет `refresh_token` / `expires_in`), см. §T15       |
+| Intervals.icu OAuth scope       | `intervals_oauth_scope`               | Plain (не секрет)           | `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE`        |
+| Intervals.icu auth method       | `intervals_auth_method`               | Plain (`api_key`/`oauth`/`none`) | Source of truth для `IntervalsClient.for_user()` dispatch    |
+| Intervals.icu athlete ID        | `athlete_id`                          | Plain (unique)              | Не секрет, но per-user                                            |
+| Telegram chat ID                | `chat_id`                             | Plain (unique)              | Идентификатор                                                     |
+| MCP Bearer token                | `mcp_token`                           | Plain (unique, VARCHAR(64)) | Per-user токен для MCP доступа                                    |
 
 Системные секреты (общие для сервиса):
 
-| Secret               | Хранение       | Примечание                               |
-| -------------------- | -------------- | ---------------------------------------- |
-| `ANTHROPIC_API_KEY`  | `.env` / Vault | Один на сервис, usage per-tenant tracked |
-| `TELEGRAM_BOT_TOKEN` | `.env` / Vault | Один бот на всех                         |
-| `JWT_SECRET`         | `.env` / Vault | Подписание токенов                       |
-| `DATABASE_URL`       | `.env` / Vault | Единая БД                                |
-| `GITHUB_TOKEN`       | `.env` / Vault | CI/CD, не per-tenant                     |
+| Secret                             | Хранение         | Примечание                                            |
+| ---------------------------------- | ---------------- | ----------------------------------------------------- |
+| `ANTHROPIC_API_KEY`                | `.env` / Vault   | Один на сервис, usage per-tenant tracked              |
+| `TELEGRAM_BOT_TOKEN`               | `.env` / Vault   | Один бот на всех                                      |
+| `JWT_SECRET`                       | `.env` / Vault   | Подписание session + OAuth state JWT (разделены `purpose` claim) |
+| `DATABASE_URL`                     | `.env` / Vault   | Единая БД                                             |
+| `GITHUB_TOKEN`                     | `.env` / Vault   | CI/CD, не per-tenant                                  |
+| `INTERVALS_OAUTH_CLIENT_ID`        | `.env`           | Публичный client ID от Intervals.icu (plain)          |
+| `INTERVALS_OAUTH_CLIENT_SECRET`    | `.env` / Vault   | Секретный (в `SecretStr`), используется только в callback server-to-server |
 
 ### 5.2. Encryption at Rest (РЕАЛИЗОВАНО)
 
@@ -419,8 +448,9 @@ Request → Authorization header
 - `encrypt_field(value)` / `decrypt_field(encrypted)` — Fernet encryption
 - `generate_key()` — генерация нового ключа
 - `FIELD_ENCRYPTION_KEY` в `config.py` как `SecretStr`
-- `User.set_api_key()` / `get_api_key()` — хелперы для прозрачного шифрования
-- Key rotation (`re_encrypt_all`) — TODO, не реализовано
+- `User.set_api_key()` / `get_api_key()` — хелперы для Intervals.icu API key (legacy)
+- `User.set_oauth_tokens()` / `intervals_access_token` property / `clear_oauth_tokens()` — OAuth access_token dual с тем же ключом (см. §T15)
+- Key rotation (`re_encrypt_all`) — TODO, не реализовано. При ротации `FIELD_ENCRYPTION_KEY` нужно перезаписать **оба** поля: `api_key_encrypted` и `intervals_access_token_encrypted`.
 
 ### 5.3. New Env Vars
 

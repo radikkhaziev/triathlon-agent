@@ -52,7 +52,7 @@ triathlon-agent/
 
 28 tables. Full column specs in `data/db/`. Key tables:
 
-**Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
+**Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `docs/INTERVALS_OAUTH_SPEC.md`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
 **Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling).
 
@@ -76,7 +76,7 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ## Environment Variables (.env)
 
-See `.env.example` for full list. Key vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` (for Login Widget), `TELEGRAM_WEBHOOK_URL` (empty=polling), `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `API_BASE_URL` (single URL for API + webapp + static + CORS origin), `INTERVALS_API_KEY`/`INTERVALS_ATHLETE_ID` (legacy owner), `TIMEZONE=Europe/Belgrade`, `HRV_ALGORITHM=flatt_esco`, `MCP_AUTH_TOKEN`, `FIELD_ENCRYPTION_KEY` (Fernet), `SENTRY_DSN` (empty=disabled).
+See `.env.example` for full list. Key vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` (for Login Widget), `TELEGRAM_WEBHOOK_URL` (empty=polling), `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `API_BASE_URL` (single URL for API + webapp + static + CORS origin), `INTERVALS_API_KEY`/`INTERVALS_ATHLETE_ID` (legacy owner, being replaced by per-user OAuth), `INTERVALS_OAUTH_CLIENT_ID`/`INTERVALS_OAUTH_CLIENT_SECRET`/`INTERVALS_OAUTH_REDIRECT_URI` (per-user OAuth — see `docs/INTERVALS_OAUTH_SPEC.md`), `TIMEZONE=Europe/Belgrade`, `HRV_ALGORITHM=flatt_esco`, `MCP_AUTH_TOKEN`, `FIELD_ENCRYPTION_KEY` (Fernet), `SENTRY_DSN` (empty=disabled).
 
 **Telegram Login Widget setup** (one-time, for web login): in `@BotFather` run `/setdomain` → choose your bot → enter `bot.endurai.me` (no protocol, no path). Widget will only render on that domain. Set `TELEGRAM_BOT_USERNAME` in `.env` to the bot username (without `@`). See `api/auth.py:verify_telegram_widget_auth` for the HMAC-SHA256 verification logic (`docs/MULTI_TENANT_SECURITY.md` threat T3 scope).
 
@@ -153,7 +153,7 @@ Stateless. Each message: `agent.chat(text, mcp_token=user.mcp_token)` → Claude
 All commands use `@athlete_required` decorator — resolves `User` from Telegram `chat_id`.
 
 ```
-/start      — welcome message + create User in DB + Mini App button
+/start      — welcome + create User in DB. Branches on `athlete_id`: new users get "🔗 Подключить Intervals.icu" WebApp button → /settings onboarding. Existing athletes get the generic dashboard entry.
 /morning    — trigger morning report via dramatiq actor
 /dashboard  — dashboard link (Mini App)
 /workout    — interactive workout generation: sport picker → dry-run preview → "Отправить в Intervals" button
@@ -187,8 +187,12 @@ GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA
 GET  /api/progress?sport=bike&days=90   — aerobic efficiency trend (EF/SWOLF/pace)
 POST /api/auth/verify-code              — verify one-time code → JWT
-GET  /api/auth/me                       — auth status + language
+GET  /api/auth/me                       — auth status + language + intervals connection info
+GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, audit-logged)
 PUT  /api/auth/language                 — update user language (ru/en)
+GET  /api/intervals/auth/connect         — initiate Intervals.icu OAuth (302 → authorize)
+GET  /api/intervals/auth/callback        — OAuth callback: code → token → DB → redirect
+POST /api/intervals/hook/{external_id}   — webhook receiver stub (Phase 4)
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
@@ -383,6 +387,26 @@ Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per
 
 **Mood:** Via MCP only. Claude notices emotional context → `save_mood_checkin`. Scales 1-5: energy, mood, anxiety, social + note.
 **IQOS:** `/stick` command increments daily counter. MCP tool `get_iqos_sticks(target_date, days_back)` for trends.
+
+---
+
+## Intervals.icu Auth — Dual Mode (Phase 1 of OAuth migration)
+
+Per-user Intervals.icu credentials support **two** authentication methods, tracked by `users.intervals_auth_method`:
+
+| method | Credential storage | Who uses it |
+|---|---|---|
+| `"api_key"` | `users.api_key_encrypted` (Fernet) | Legacy — existing athletes, owner |
+| `"oauth"` | `users.intervals_access_token_encrypted` (Fernet) + `intervals_oauth_scope` | New/migrated users via OAuth flow |
+| `"none"` | — | Revoked OAuth with no api_key fallback (user must reconnect) |
+
+**OAuth flow** (`api/routers/intervals.py`): `GET /api/intervals/auth/connect` → signed JWT state (`purpose='intervals_oauth'`, 15-min TTL) → 302 to `intervals.icu/oauth/authorize` → consent → `GET /api/intervals/auth/callback?code=&state=` → server-side POST to `intervals.icu/api/oauth/token` → response has `{access_token, token_type: "Bearer", scope, athlete: {id, name}}` (**no** refresh_token, **no** expires_in) → `User.set_oauth_tokens()` → redirect to `/settings?connected=intervals`.
+
+**Scopes:** `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE` — `:WRITE` implies `:READ` per Intervals.icu docs, and listing the same area twice produces `"Duplicate scope"` error. `SETTINGS:WRITE` is required for `actor_update_zones` (ramp-test LTHR push).
+
+**Phase 1 scope (current):** OAuth tokens are stored but **not used** — `IntervalsClient` continues through the legacy api_key path. Role promotion, `mcp_token` generation, and auto-sync dispatch are deferred to Phase 2. See `docs/INTERVALS_OAUTH_SPEC.md` §3 for the full deferred list.
+
+**Onboarding routing:** `bot/main.py:start` branches on `user.athlete_id` — new users get a "Подключить Intervals.icu" WebApp button instead of the generic welcome. `webapp/src/pages/Login.tsx:routeAfterLogin` sends users without `athlete_id` to `/settings` after login. `webapp/src/pages/Today.tsx` fetches `/api/auth/me` first and renders `<OnboardingPrompt />` if `intervals.athlete_id` is null, instead of a broken empty dashboard.
 
 ---
 

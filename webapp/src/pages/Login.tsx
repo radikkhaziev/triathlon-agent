@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type FormEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -52,6 +52,20 @@ export default function Login() {
       .catch(() => {})
   }, [])
 
+  // After a successful login, route new users (no athlete_id) straight to
+  // Settings so they immediately see the "Подключить Intervals.icu" section.
+  // Existing athletes go to the main dashboard as before. Called from both
+  // the Telegram widget callback and the one-time code form.
+  const routeAfterLogin = useCallback(async () => {
+    try {
+      const me = await apiFetch<AuthMeResponse>('/api/auth/me')
+      const needsOnboarding = !me.intervals?.athlete_id
+      navigate(needsOnboarding ? '/settings' : '/')
+    } catch {
+      navigate('/')  // fall back to home on any auth/me failure
+    }
+  }, [navigate])
+
   useEffect(() => {
     window.onTelegramAuth = async (user: TelegramUser) => {
       setSubmitting(true)
@@ -65,7 +79,7 @@ export default function Login() {
         setJwt(data.token)
         setMessage(t('login.success'))
         setMsgType('success')
-        setTimeout(() => navigate('/'), 500)
+        setTimeout(routeAfterLogin, 500)
       } catch (err) {
         setMessage(err instanceof Error ? err.message : t('common.error'))
         setMsgType('error')
@@ -76,7 +90,7 @@ export default function Login() {
     return () => {
       delete window.onTelegramAuth
     }
-  }, [navigate, setJwt, t])
+  }, [setJwt, t, routeAfterLogin])
 
   useEffect(() => {
     if (!botUsername || !widgetContainerRef.current) return
@@ -115,7 +129,7 @@ export default function Login() {
       setJwt(data.token)
       setMessage(t('login.success'))
       setMsgType('success')
-      setTimeout(() => navigate('/'), 500)
+      setTimeout(routeAfterLogin, 500)
     } catch (err) {
       setMessage(err instanceof Error ? err.message : t('common.error'))
       setMsgType('error')

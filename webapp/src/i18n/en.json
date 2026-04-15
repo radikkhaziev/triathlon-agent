@@ -119,6 +119,25 @@
     "russian": "Русский",
     "english": "English",
     "logout": "Log out",
+    "intervals": {
+      "title": "Intervals.icu",
+      "loading": "Loading...",
+      "not_connected_desc": "Connect your account to sync workouts, wellness and HRV",
+      "connect": "Connect Intervals.icu",
+      "connected": "Connected",
+      "connected_legacy": "Connected (legacy API key)",
+      "migrate_to_oauth": "Switch to OAuth",
+      "athlete": "Athlete",
+      "method": "Method",
+      "method_oauth": "OAuth",
+      "method_api_key": "API key",
+      "scope": "Permissions",
+      "disconnect_soon": "Disconnect will be available in the next update",
+      "toast_connected": "Intervals.icu connected!",
+      "toast_cancelled": "Connection cancelled",
+      "toast_mismatch": "You're already linked to a different Intervals.icu account. Disconnect first.",
+      "toast_error": "Connection failed. Please try again."
+    },
     "mcp": {
       "title": "Connect via MCP",
       "description": "Paste this config into your MCP client (Claude Desktop, Cursor, etc). The token grants full access to your data — never share it.",
@@ -131,5 +150,11 @@
       "token_label": "Bearer Token",
       "json_config": "JSON config"
     }
+  },
+  "onboarding": {
+    "title": "Welcome to EndurAI!",
+    "description": "Connect your Intervals.icu account to start syncing data and get personal training recommendations.",
+    "cta": "🔗 Connect Intervals.icu",
+    "no_account_hint": "No account? Sign up for free at"
   }
 }

@@ -111,10 +111,25 @@ async def auth_telegram_widget_config() -> dict:
 
 @router.get("/api/auth/me")
 async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
-    """Check current auth status."""
+    """Check current auth status.
+
+    The `intervals` block tells the frontend whether this user is connected
+    to Intervals.icu and via which method (oauth / api_key / none). Settings
+    page uses it to render the "Connect / Migrate / Connected" state of the
+    Intervals.icu section. See `docs/INTERVALS_OAUTH_SPEC.md` §7.3.
+    """
     if not user:
         return {"role": "anonymous", "authenticated": False}
-    return {"role": user.role, "authenticated": True, "language": user.language}
+    return {
+        "role": user.role,
+        "authenticated": True,
+        "language": user.language,
+        "intervals": {
+            "method": user.intervals_auth_method,  # "api_key" | "oauth" | "none"
+            "athlete_id": user.athlete_id,
+            "scope": user.intervals_oauth_scope,
+        },
+    }
 
 
 @router.put("/api/auth/language")

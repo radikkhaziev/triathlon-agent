@@ -119,6 +119,25 @@
     "russian": "Русский",
     "english": "English",
     "logout": "Выйти",
+    "intervals": {
+      "title": "Intervals.icu",
+      "loading": "Загрузка...",
+      "not_connected_desc": "Подключите аккаунт для синхронизации тренировок, wellness и HRV",
+      "connect": "Подключить Intervals.icu",
+      "connected": "Подключено",
+      "connected_legacy": "Подключено (legacy API key)",
+      "migrate_to_oauth": "Переключить на OAuth",
+      "athlete": "Athlete",
+      "method": "Метод",
+      "method_oauth": "OAuth",
+      "method_api_key": "API key",
+      "scope": "Разрешения",
+      "disconnect_soon": "Отключение будет доступно в следующем обновлении",
+      "toast_connected": "Intervals.icu подключено!",
+      "toast_cancelled": "Подключение отменено",
+      "toast_mismatch": "Вы уже связаны с другим Intervals.icu аккаунтом. Сначала отключитесь.",
+      "toast_error": "Ошибка подключения. Попробуйте снова."
+    },
     "mcp": {
       "title": "Подключение через MCP",
       "description": "Скопируй конфиг в свой MCP-клиент (Claude Desktop, Cursor, и т.д.). Токен даёт полный доступ к твоим данным — никому не передавай.",
@@ -131,5 +150,11 @@
       "token_label": "Bearer Token",
       "json_config": "JSON конфиг"
     }
+  },
+  "onboarding": {
+    "title": "Добро пожаловать в EndurAI!",
+    "description": "Подключи свой аккаунт Intervals.icu, чтобы я начал синхронизировать данные и давать персональные рекомендации по тренировкам.",
+    "cta": "🔗 Подключить Intervals.icu",
+    "no_account_hint": "Нет аккаунта? Заведи бесплатный на"
   }
 }

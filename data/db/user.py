@@ -4,7 +4,7 @@ import secrets
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, select, update
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, Text, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -35,6 +35,12 @@ class User(Base):
     """Multi-tenant user table. Tenant = individual athlete."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "intervals_auth_method IN ('api_key', 'oauth', 'none')",
+            name="ck_users_intervals_auth_method",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     chat_id: Mapped[str] = mapped_column(String, unique=True)
@@ -55,6 +61,16 @@ class User(Base):
     is_silent: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_donation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Intervals.icu OAuth — see docs/INTERVALS_OAUTH_SPEC.md
+    # `intervals_auth_method` is the source of truth for which credential path
+    # `IntervalsClient.for_user()` should use. `"api_key"` is the legacy default,
+    # `"oauth"` is set after a successful OAuth callback, `"none"` means the user
+    # has no Intervals credentials configured at all (cleared after revoke).
+    intervals_access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted
+    intervals_oauth_scope: Mapped[str | None] = mapped_column(String, nullable=True)
+    intervals_auth_method: Mapped[str] = mapped_column(String(10), default="api_key", nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -80,6 +96,36 @@ class User(Base):
         """Generate a new MCP token, store it, return it."""
         self.mcp_token = secrets.token_hex(32)
         return self.mcp_token
+
+    # --- Intervals.icu OAuth (see docs/INTERVALS_OAUTH_SPEC.md) ---
+
+    def set_oauth_tokens(self, access_token: str, scope: str) -> None:
+        """Store Intervals.icu OAuth credentials.
+
+        Does NOT touch `role`, `athlete_id`, or `mcp_token` — the caller is
+        responsible for those side effects (Phase 2+ will handle role promotion
+        and mcp_token generation in the callback).
+        """
+        self.intervals_access_token_encrypted = encrypt_field(access_token)
+        self.intervals_oauth_scope = scope
+        self.intervals_auth_method = "oauth"
+
+    @property
+    def intervals_access_token(self) -> str | None:
+        if not self.intervals_access_token_encrypted:
+            return None
+        return decrypt_field(self.intervals_access_token_encrypted)
+
+    def clear_oauth_tokens(self) -> None:
+        """Wipe OAuth state. Called on disconnect or 401 from Intervals.icu.
+
+        Fallback `intervals_auth_method`:
+        - `"api_key"` if the user still has a legacy api_key (so sync keeps working)
+        - `"none"` otherwise (user must reconnect)
+        """
+        self.intervals_access_token_encrypted = None
+        self.intervals_oauth_scope = None
+        self.intervals_auth_method = "api_key" if self.api_key_encrypted else "none"
 
     # --- CRUD ---
 
