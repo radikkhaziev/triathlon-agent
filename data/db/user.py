@@ -4,7 +4,7 @@ import secrets
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, select, update
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, Text, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -35,6 +35,12 @@ class User(Base):
     """Multi-tenant user table. Tenant = individual athlete."""
 
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "intervals_auth_method IN ('api_key', 'oauth', 'none')",
+            name="ck_users_intervals_auth_method",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     chat_id: Mapped[str] = mapped_column(String, unique=True)

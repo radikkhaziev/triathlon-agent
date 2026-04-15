@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type FormEvent } from 'react'
+import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
@@ -56,7 +56,7 @@ export default function Login() {
   // Settings so they immediately see the "Подключить Intervals.icu" section.
   // Existing athletes go to the main dashboard as before. Called from both
   // the Telegram widget callback and the one-time code form.
-  const routeAfterLogin = async () => {
+  const routeAfterLogin = useCallback(async () => {
     try {
       const me = await apiFetch<AuthMeResponse>('/api/auth/me')
       const needsOnboarding = !me.intervals?.athlete_id
@@ -64,7 +64,7 @@ export default function Login() {
     } catch {
       navigate('/')  // fall back to home on any auth/me failure
     }
-  }
+  }, [navigate])
 
   useEffect(() => {
     window.onTelegramAuth = async (user: TelegramUser) => {
@@ -90,8 +90,7 @@ export default function Login() {
     return () => {
       delete window.onTelegramAuth
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigate, setJwt, t])
+  }, [setJwt, t, routeAfterLogin])
 
   useEffect(() => {
     if (!botUsername || !widgetContainerRef.current) return

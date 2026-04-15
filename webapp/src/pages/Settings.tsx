@@ -3,21 +3,9 @@ import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../api/client'
+import type { AuthMeResponse, IntervalsStatus } from '../api/types'
 
 type McpConfig = { url: string; token: string }
-
-type IntervalsStatus = {
-  method: 'oauth' | 'api_key' | 'none'
-  athlete_id: string | null
-  scope: string | null
-}
-
-type AuthMeResponse = {
-  authenticated: boolean
-  role?: string
-  language?: string
-  intervals?: IntervalsStatus
-}
 
 type IntervalsToast = {
   kind: 'success' | 'error'
@@ -72,13 +60,17 @@ export default function Settings() {
 
   // Intervals.icu connection status — separate fetch from /api/auth/me so
   // the Settings page owns its own state without waiting on App-level context.
+  // On any fetch failure we fall back to a `none` status instead of leaving
+  // `intervals=null` forever, which would stick the UI in the "loading" text.
   useEffect(() => {
     if (!isAuthenticated) return
     apiFetch<AuthMeResponse>('/api/auth/me')
       .then(data => {
-        if (data.intervals) setIntervals(data.intervals)
+        setIntervals(data.intervals ?? { method: 'none', athlete_id: null, scope: null })
       })
-      .catch(() => {})
+      .catch(() => {
+        setIntervals({ method: 'none', athlete_id: null, scope: null })
+      })
   }, [isAuthenticated])
 
   // One-shot toast after OAuth callback redirect. Clears `?connected=` or

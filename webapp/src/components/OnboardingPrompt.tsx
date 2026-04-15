@@ -15,7 +15,7 @@ export default function OnboardingPrompt() {
   return (
     <Layout maxWidth="480px">
       <div className="flex flex-col items-center text-center px-6 py-12">
-        <div className="text-5xl mb-4">🏊‍♂️ 🚴 🏃</div>
+        <div aria-hidden="true" className="text-5xl mb-4">🏊‍♂️ 🚴 🏃</div>
         <h1 className="text-xl font-bold mb-3">{t('onboarding.title')}</h1>
         <p className="text-sm text-text-dim leading-relaxed mb-8 max-w-[320px]">
           {t('onboarding.description')}

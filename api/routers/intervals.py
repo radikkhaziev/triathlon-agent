@@ -123,7 +123,7 @@ async def intervals_oauth_callback(
     `access_token`. This is intentional for Phase 1 observability.
 
     Always returns a 302 to `/settings?connected=intervals` on success, or
-    `/settings?error=oauth_<reason>` on any failure path. The fronted reads
+    `/settings?error=oauth_<reason>` on any failure path. The frontend reads
     the query param on mount and shows a toast.
     """
     settings_url = f"{settings.API_BASE_URL.rstrip('/')}/settings"

@@ -31,39 +31,46 @@ export default function Today() {
     const controller = new AbortController()
     const opts = { signal: controller.signal }
 
-    // Check onboarding state first — users without a linked Intervals.icu
-    // athlete get the OnboardingPrompt instead of a broken empty dashboard.
-    // We don't parallelize with the data fetches because if the user is new,
-    // the data endpoints would just 404/return empty anyway.
-    apiFetch<AuthMeResponse>('/api/auth/me', opts)
-      .then(me => {
-        if (!me.intervals?.athlete_id) {
-          if (!controller.signal.aborted) {
-            setNeedsOnboarding(true)
-            setLoading(false)
-          }
-          return null
-        }
-        return Promise.all([
-          apiFetch<WellnessResponse>('/api/report', opts),
-          apiFetch<ScheduledWorkoutsResponse>('/api/scheduled-workouts?week_offset=0', opts),
-          apiFetch<ActivitiesWeekResponse>('/api/activities-week?week_offset=0', opts),
-        ])
-      })
-      .then(result => {
-        if (!result || controller.signal.aborted) return
-        const [r, w, a] = result
-        setReport(r)
-        setWorkouts(w)
-        setActivities(a)
+    // Parallel fetch: auth/me + 3 data endpoints. If the user has no linked
+    // Intervals.icu athlete we discard the data responses and show the
+    // OnboardingPrompt. For existing users this avoids adding a round-trip
+    // of auth/me latency to time-to-content.
+    // `allSettled` so a failure in one data fetch doesn't kill the whole
+    // chain — we still need the auth/me result to decide onboarding vs error.
+    Promise.allSettled([
+      apiFetch<AuthMeResponse>('/api/auth/me', opts),
+      apiFetch<WellnessResponse>('/api/report', opts),
+      apiFetch<ScheduledWorkoutsResponse>('/api/scheduled-workouts?week_offset=0', opts),
+      apiFetch<ActivitiesWeekResponse>('/api/activities-week?week_offset=0', opts),
+    ]).then(([meResult, reportResult, workoutsResult, activitiesResult]) => {
+      if (controller.signal.aborted) return
+
+      if (meResult.status === 'rejected') {
+        setError(meResult.reason?.message ?? 'auth failed')
         setLoading(false)
-      })
-      .catch(err => {
-        if (!controller.signal.aborted) {
-          setError(err.message)
-          setLoading(false)
-        }
-      })
+        return
+      }
+
+      if (!meResult.value.intervals?.athlete_id) {
+        setNeedsOnboarding(true)
+        setLoading(false)
+        return
+      }
+
+      // User is onboarded — propagate data fetch results, failing if any
+      // dashboard endpoint rejected.
+      const firstFailure = [reportResult, workoutsResult, activitiesResult].find(r => r.status === 'rejected')
+      if (firstFailure && firstFailure.status === 'rejected') {
+        setError(firstFailure.reason?.message ?? 'load failed')
+        setLoading(false)
+        return
+      }
+
+      setReport((reportResult as PromiseFulfilledResult<WellnessResponse>).value)
+      setWorkouts((workoutsResult as PromiseFulfilledResult<ScheduledWorkoutsResponse>).value)
+      setActivities((activitiesResult as PromiseFulfilledResult<ActivitiesWeekResponse>).value)
+      setLoading(false)
+    })
     return () => controller.abort()
   }, [])
 
