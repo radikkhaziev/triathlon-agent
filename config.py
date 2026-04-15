@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     INTERVALS_OAUTH_CLIENT_ID: str = ""
     INTERVALS_OAUTH_CLIENT_SECRET: SecretStr = SecretStr("")
     INTERVALS_OAUTH_REDIRECT_URI: str = "https://bot.endurai.me/api/intervals/auth/callback"
+    # Shared secret configured in Intervals.icu → Manage App → Webhook Secret.
+    # Used (Phase 4) to verify push webhook signatures in `POST /api/intervals/webhook`.
+    # Empty = no verification, accept all (Phase 1 debug mode).
+    INTERVALS_WEBHOOK_SECRET: SecretStr = SecretStr("")
 
     # App
     API_BASE_URL: str = "https://bot.endurai.me"  # serves API + webapp + static from one container

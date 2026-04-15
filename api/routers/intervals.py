@@ -7,7 +7,7 @@ Two responsibilities:
    scope is intentionally narrow: we want to observe the real token-exchange
    response shape before wiring the tokens into `IntervalsClient` (Phase 2).
 
-2. **Webhook receiver** (`/hook/{external_id}`) — still a logging-only stub.
+2. **Webhook receiver** (`POST /webhook`) — still a logging-only stub.
    Intervals.icu push events (ACTIVITY_UPLOADED, CALENDAR_UPDATED, etc.) come
    here once webhooks are configured in the OAuth app settings. Real dispatch
    is deferred until we see a live payload.
@@ -22,11 +22,21 @@ import jwt
 import sentry_sdk
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from api.auth import _get_jwt_secret
 from api.deps import require_viewer
 from config import settings
 from data.db import User, get_session
+
+
+class IntervalsAuthInitResponse(BaseModel):
+    """Response of `POST /api/intervals/auth/init` — the signed Intervals.icu
+    authorize URL that the frontend navigates to via `window.location.assign`.
+    """
+
+    authorize_url: str
+
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +87,8 @@ def _validate_oauth_state(state: str) -> int | None:
         return None
 
 
-@router.post("/auth/init")
-async def intervals_oauth_init(user: User = Depends(require_viewer)) -> dict:
+@router.post("/auth/init", response_model=IntervalsAuthInitResponse)
+async def intervals_oauth_init(user: User = Depends(require_viewer)) -> IntervalsAuthInitResponse:
     """Initiate the Intervals.icu OAuth flow from an authenticated XHR.
 
     Why POST+JSON instead of a GET redirect: the frontend carries auth via the
@@ -109,7 +119,7 @@ async def intervals_oauth_init(user: User = Depends(require_viewer)) -> dict:
     }
     url = f"{_OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
     logger.info("Intervals OAuth init user_id=%s redirect_uri=%s", user.id, settings.INTERVALS_OAUTH_REDIRECT_URI)
-    return {"authorize_url": url}
+    return IntervalsAuthInitResponse(authorize_url=url)
 
 
 @router.get("/auth/callback")
@@ -238,27 +248,43 @@ async def intervals_oauth_callback(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/hook/{external_id}")
-async def intervals_hook(external_id: str, request: Request) -> dict:
-    """Stub receiver — logs method, headers, query params, and JSON body.
+@router.post("/webhook")
+async def intervals_webhook(request: Request) -> dict:
+    """Observability stub for Intervals.icu push webhooks.
 
-    Responds 200 unconditionally so Intervals.icu does not retry while we
-    are still figuring out the contract. Once we know the payload shape,
-    this will dispatch a dramatiq actor per event type.
+    Register this URL in Intervals.icu → Manage App → Webhook URLs:
+        https://bot.endurai.me/api/intervals/webhook
+
+    Intervals.icu posts a single fixed URL (not per-resource) and carries
+    the event type + identifiers in the JSON body. Event types documented
+    in the cookbook: `ACTIVITY_UPLOADED`, `ACTIVITY_ANALYZED`,
+    `CALENDAR_UPDATED`, `CALENDAR_EVENT_UPDATED`, `CALENDAR_EVENT_DELETED`,
+    `SPORT_SETTINGS_UPDATED`.
+
+    Phase 1 behaviour: log the full request (method, headers, query, body)
+    and return 200 unconditionally. We want to see the real payload shape
+    before writing a dispatcher — headers likely include a signature header
+    for verification, and the body keys tell us which identifiers
+    (athlete_id? activity_id? event_id?) come in which event type.
+
+    Real event routing → Phase 4 per `docs/INTERVALS_OAUTH_SPEC.md §13`.
+
+    **Do NOT** 4xx / 5xx here while debugging: Intervals.icu will retry
+    and either drown the endpoint or disable the webhook entirely.
     """
     try:
         body = await request.json()
+        body_repr = body
     except Exception:
         body = None
         raw = await request.body()
-        logger.info("Intervals hook [%s] non-JSON body: %r", external_id, raw[:2000])
+        body_repr = f"<non-json {len(raw)}B>: {raw[:500]!r}"
 
     logger.info(
-        "Intervals hook [%s] headers=%s query=%s body=%s",
-        external_id,
+        "Intervals webhook received headers=%s query=%s body=%s",
         dict(request.headers),
         dict(request.query_params),
-        body,
+        body_repr,
     )
 
-    return {"status": "ok", "external_id": external_id}
+    return {"status": "ok"}

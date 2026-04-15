@@ -192,7 +192,7 @@ GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, 
 PUT  /api/auth/language                 — update user language (ru/en)
 POST /api/intervals/auth/init            — initiate OAuth (authenticated XHR) → {authorize_url}
 GET  /api/intervals/auth/callback        — OAuth callback: code → token → DB → redirect
-POST /api/intervals/hook/{external_id}   — webhook receiver stub (Phase 4)
+POST /api/intervals/webhook              — webhook receiver stub (Phase 4, logs payload)
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
