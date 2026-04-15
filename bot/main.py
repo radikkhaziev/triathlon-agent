@@ -30,7 +30,7 @@ from telegram.ext import (
 
 from api.auth import generate_code
 from bot.agent import ClaudeAgent
-from bot.decorator import athlete_required
+from bot.decorator import athlete_required, user_required
 from bot.donate_nudge import get_nudge_text, should_show_nudge
 from bot.i18n import _
 from bot.i18n import set_language as _set_lang
@@ -152,7 +152,7 @@ async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User
     await update.message.reply_text(_("Отчёт формируется, подождите пару минут."), reply_markup=keyboard)
 
 
-@athlete_required
+@user_required
 async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle /lang command — show language picker inline buttons."""
     keyboard = InlineKeyboardMarkup(
@@ -166,7 +166,7 @@ async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE, user: Use
     await update.message.reply_text("🌐 Choose language:", reply_markup=keyboard)
 
 
-@athlete_required
+@user_required
 async def handle_lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle language selection callback."""
     query = update.callback_query
@@ -271,7 +271,7 @@ async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE, user: Us
     )
 
 
-@athlete_required
+@user_required
 async def silent(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle /silent command — toggle silent mode."""
     async with get_session() as session:
