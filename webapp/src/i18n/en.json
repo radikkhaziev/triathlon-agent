@@ -118,6 +118,18 @@
     "language": "Language",
     "russian": "Русский",
     "english": "English",
-    "logout": "Log out"
+    "logout": "Log out",
+    "mcp": {
+      "title": "Connect via MCP",
+      "description": "Paste this config into your MCP client (Claude Desktop, Cursor, etc). The token grants full access to your data — never share it.",
+      "loading": "Loading...",
+      "show": "Show",
+      "hide": "Hide",
+      "copy": "Copy",
+      "copied": "Copied",
+      "url_label": "URL",
+      "token_label": "Bearer Token",
+      "json_config": "JSON config"
+    }
   }
 }

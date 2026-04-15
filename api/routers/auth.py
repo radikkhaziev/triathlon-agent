@@ -1,6 +1,8 @@
 import logging
+import time
 from typing import Literal
 
+import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,6 +13,20 @@ from data.db import User, get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Best-effort single-process rate limit for `/api/auth/mcp-config` —
+# one disclosure per minute per user_id.
+#
+# LIMITATION: this dict lives in the process memory, so the guarantee holds
+# only while the API runs with a single uvicorn worker (current deployment).
+# Adding `--workers N` will silently partition clients across processes and
+# break the limit. Move to Redis INCR+EXPIRE before scaling out.
+#
+# We use `time.monotonic()` for the window comparison to avoid NTP clock
+# skew breaking the limiter.
+_MCP_CONFIG_RATE_WINDOW_SEC = 60.0
+_mcp_config_last_access: dict[int, float] = {}
+_MCP_ALLOWED_ROLES = {"athlete", "owner"}
 
 
 class VerifyCodeRequest(BaseModel):
@@ -113,3 +129,64 @@ async def set_language(body: SetLanguageRequest, user: User | None = Depends(get
         await session.commit()
 
     return {"language": body.language}
+
+
+@router.get("/api/auth/mcp-config")
+async def auth_mcp_config(request: Request, user: User | None = Depends(get_current_user)) -> dict:
+    """Return the authenticated user's MCP connection config.
+
+    Sensitive: `mcp_token` is a long-lived credential granting full MCP access.
+    Layered defenses:
+
+    - `get_current_user` — authentication (JWT or Telegram initData, freshness
+      enforced in `_verify_and_parse_init_data` at 15-min window, see T11)
+    - Role guard — only athletes and owners have mcp_tokens by design
+    - Rate limit — one disclosure per minute per user_id, even the legitimate
+      owner can't brute-scrape if their session is compromised. **Caveat:**
+      this guard is in-process (see module-level `_mcp_config_last_access`),
+      so it only works with a single uvicorn worker. Multi-worker deployment
+      would require a shared store (Redis INCR+EXPIRE).
+    - Audit log — every disclosure recorded to logs + Sentry breadcrumb with
+      user_id + client IP, so operator can retrace leaks post-incident
+
+    See `docs/MULTI_TENANT_SECURITY.md` §T4 (per-tenant MCP tokens) and §T11
+    (initData replay window).
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if user.role not in _MCP_ALLOWED_ROLES:
+        raise HTTPException(status_code=403, detail="MCP access not available for your role")
+    if not user.mcp_token:
+        raise HTTPException(status_code=404, detail="No MCP token configured for this user")
+
+    now = time.monotonic()
+    last = _mcp_config_last_access.get(user.id)
+    if last is not None and now - last < _MCP_CONFIG_RATE_WINDOW_SEC:
+        retry_in = int(_MCP_CONFIG_RATE_WINDOW_SEC - (now - last)) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit: try again in {retry_in}s",
+            headers={"Retry-After": str(retry_in)},
+        )
+    _mcp_config_last_access[user.id] = now
+
+    # Audit trail — this is the most sensitive disclosure endpoint in the API.
+    client_ip = request.client.host if request.client else "unknown"
+    logger.warning(
+        "mcp_token disclosed user_id=%s role=%s ip=%s user_agent=%s",
+        user.id,
+        user.role,
+        client_ip,
+        request.headers.get("user-agent", "-")[:200],
+    )
+    sentry_sdk.add_breadcrumb(
+        category="auth.mcp_token",
+        message=f"mcp_token disclosed to user_id={user.id}",
+        level="warning",
+        data={"user_id": user.id, "role": user.role, "ip": client_ip},
+    )
+
+    return {
+        "url": f"{settings.API_BASE_URL.rstrip('/')}/mcp/",
+        "token": user.mcp_token,
+    }
