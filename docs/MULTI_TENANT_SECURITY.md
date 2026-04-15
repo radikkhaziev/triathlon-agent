@@ -185,7 +185,7 @@
 
 #### T15. Intervals.icu OAuth — Account Mismatch via State Race (Tampering)
 
-- **Что:** OAuth callback проверяет `db_user.athlete_id == response.athlete.id` для защиты от подмены аккаунта, но state JWT не snapshot'ит `athlete_id` — только `user_id`. Между инициацией (`/auth/connect`) и callback'ом (`/auth/callback`) `athlete_id` в БД может измениться (shell admin, parallel OAuth, migration), и guard пропустит чужой `athlete.id`.
+- **Что:** OAuth callback проверяет `db_user.athlete_id == response.athlete.id` для защиты от подмены аккаунта, но state JWT не snapshot'ит `athlete_id` — только `user_id`. Между инициацией (`POST /auth/init`) и callback'ом (`GET /auth/callback`) `athlete_id` в БД может измениться (shell admin, parallel OAuth, migration), и guard пропустит чужой `athlete.id`.
 - **Где:** `api/routers/intervals.py:_validate_oauth_state` + `intervals_oauth_callback:208-216`
 - **Severity:** High (возможна cross-tenant data attribution после Phase 2 когда Bearer sync начнёт писать wellness/activities с чужого аккаунта)
 - **Реалистичность:** низкая на текущем этапе (2-юзерный dev, владелец shell'а = владелец OAuth). Становится реальной при public launch.
@@ -205,7 +205,7 @@
   - **Нет rotation endpoint** — юзер может отозвать только через Intervals.icu UI. EndurAI detect'ит revoke через ленивую 401-проверку в `IntervalsClient` (Phase 2 §8)
   - Callback логирует только structure, НЕ full token (`keys=sorted(data.keys())`, `body_len` вместо `body`). Полный token никогда не в логах, breadcrumbs, Sentry stack frames (через `data scrubbing` в `sentry_config.py`)
   - Token exchange через POST body (не URL) — не в access logs Caddy/nginx
-  - **Phase 2 TODO:** rate limit `/api/intervals/auth/connect` (5 req / 5 min per user), иначе злоумышленник с валидной session может flood'ить OAuth initiation (abuse → блок IP со стороны Intervals.icu)
+  - **Phase 2 TODO:** rate limit `POST /api/intervals/auth/init` (5 req / 5 min per user), иначе злоумышленник с валидной session может flood'ить OAuth initiation (abuse → блок IP со стороны Intervals.icu)
 
 ---
 

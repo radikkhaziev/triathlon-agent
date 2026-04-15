@@ -2,7 +2,7 @@
 
 Two responsibilities:
 
-1. **OAuth flow** (`/auth/connect`, `/auth/callback`) — Phase 1 of the OAuth
+1. **OAuth flow** (`POST /auth/init`, `GET /auth/callback`) — Phase 1 of the OAuth
    migration. See `docs/INTERVALS_OAUTH_SPEC.md` for the full plan. Current
    scope is intentionally narrow: we want to observe the real token-exchange
    response shape before wiring the tokens into `IntervalsClient` (Phase 2).
@@ -77,19 +77,25 @@ def _validate_oauth_state(state: str) -> int | None:
         return None
 
 
-@router.get("/auth/connect")
-async def intervals_oauth_connect(user: User = Depends(require_viewer)) -> RedirectResponse:
-    """Initiate the Intervals.icu OAuth flow.
+@router.post("/auth/init")
+async def intervals_oauth_init(user: User = Depends(require_viewer)) -> dict:
+    """Initiate the Intervals.icu OAuth flow from an authenticated XHR.
 
-    Redirects the user to Intervals.icu authorization page. Any authenticated
-    user can start OAuth — athlete_id mismatch guard lives in the callback
-    (see `intervals_oauth_callback`), not here.
+    Why POST+JSON instead of a GET redirect: the frontend carries auth via the
+    `Authorization` header (Telegram initData or Bearer JWT from localStorage).
+    A full-page `<a href>` navigation would NOT send that header, so a GET
+    endpoint with `require_viewer` would 401. Instead the frontend calls this
+    over `apiFetch` (which attaches the header), receives the signed authorize
+    URL, and navigates the browser to it via `window.location.assign(...)`.
 
-    Returns 503 if `INTERVALS_OAUTH_CLIENT_ID` is not configured, so we don't
-    send the user into a broken Intervals.icu page.
+    Returns `{authorize_url}` — the Intervals.icu /oauth/authorize URL with our
+    `client_id`, `redirect_uri`, `scope`, and a short-lived signed `state` JWT
+    that binds the callback to this user.
+
+    Returns 503 if `INTERVALS_OAUTH_CLIENT_ID` is not configured.
     """
     if not settings.INTERVALS_OAUTH_CLIENT_ID:
-        logger.error("OAuth connect called but INTERVALS_OAUTH_CLIENT_ID is not set")
+        logger.error("OAuth init called but INTERVALS_OAUTH_CLIENT_ID is not set")
         from fastapi import HTTPException
 
         raise HTTPException(status_code=503, detail="Intervals.icu OAuth is not configured on this server")
@@ -102,8 +108,8 @@ async def intervals_oauth_connect(user: User = Depends(require_viewer)) -> Redir
         "state": state,
     }
     url = f"{_OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
-    logger.info("Intervals OAuth connect user_id=%s redirect_uri=%s", user.id, settings.INTERVALS_OAUTH_REDIRECT_URI)
-    return RedirectResponse(url, status_code=302)
+    logger.info("Intervals OAuth init user_id=%s redirect_uri=%s", user.id, settings.INTERVALS_OAUTH_REDIRECT_URI)
+    return {"authorize_url": url}
 
 
 @router.get("/auth/callback")

@@ -19,9 +19,8 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
 
     # Intervals.icu OAuth (see docs/INTERVALS_OAUTH_SPEC.md)
-    # Empty `CLIENT_ID` disables the OAuth flow — `/api/intervals/auth/connect`
-    # returns 503. Register the app by emailing david@intervals.icu (see
-    # docs/email-draft-intervals-oauth.md).
+    # Empty `CLIENT_ID` disables the OAuth flow — `POST /api/intervals/auth/init`
+    # returns 503.
     INTERVALS_OAUTH_CLIENT_ID: str = ""
     INTERVALS_OAUTH_CLIENT_SECRET: SecretStr = SecretStr("")
     INTERVALS_OAUTH_REDIRECT_URI: str = "https://bot.endurai.me/api/intervals/auth/callback"
