@@ -465,7 +465,6 @@ MAX_USERS=10                      # Max registered users (safety limit)
 
 ```python
 CORS_ORIGINS = [
-    settings.WEBAPP_URL,
     settings.API_BASE_URL,
     # Telegram Mini App работает с нескольких доменов
     "https://web.telegram.org",

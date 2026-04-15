@@ -1,16 +1,21 @@
 import argparse
 import code
 import re
+import time
 from calendar import monthrange
 from datetime import date, timedelta
 
+import httpx
+from sqlalchemy import select
+
 from config import settings
-from data.db import User, Wellness, get_session
+from data.db import User, Wellness, get_session, get_sync_session
 from data.db.dto import UserDTO
 from data.garmin import importer as garmin_importer
 from data.garmin.parser import GarminExportParser
 from tasks.actors.activities import actor_fetch_user_activities
 from tasks.actors.wellness import actor_user_wellness
+from tasks.tools import TelegramTool
 
 
 def main() -> None:
@@ -64,6 +69,13 @@ def main() -> None:
         "period", nargs="?", default=None, help="2025Q4 | 2025-11 | 2025-01-01:2025-03-31 (default: 180d)"
     )
 
+    p_bm = sub.add_parser(
+        "broadcast-migration",
+        help="Notify active athletes about bot migration to @endurai_bot. Uses the bot token from .env "
+        "(should be the OLD bot token when run locally before migration). See docs/BOT_MIGRATION_SPEC.md §2.1.",
+    )
+    p_bm.add_argument("--dry-run", action="store_true", help="List recipients without sending")
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -80,6 +92,8 @@ def main() -> None:
         _import_garmin(args.user_id, args.source, args.types, args.period, args.force, args.dry_run)
     elif args.command == "backfill-races":
         _backfill_races(args.user_id, args.period)
+    elif args.command == "broadcast-migration":
+        _broadcast_migration(dry_run=args.dry_run)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -405,6 +419,76 @@ def _backfill_races(user_id: int, period: str | None) -> None:
         s.commit()
 
     print(f"backfill-races user {user_id}: {len(race_activities)} race activities, {created} new Race records")
+
+
+_MIGRATION_MESSAGE = (
+    "🔄 **Бот переезжает!**\n\n"
+    "Основной бот теперь @endurai_bot — перейди и нажми /start. "
+    "Все твои данные (настройки, история, тренировки) сохранятся автоматически.\n\n"
+    "Этот бот скоро будет отключён."
+)
+
+
+def _broadcast_migration(dry_run: bool) -> None:
+    """Send a one-time migration notice to every active athlete in the DB.
+
+    Scope: `is_active=True AND role='athlete'` — viewers and blocked users are
+    skipped. Athletes are the only group with actual data at stake (wellness,
+    training plan, activities) and a reason to care about migration.
+
+    Uses `settings.TELEGRAM_BOT_TOKEN` — when run locally **before** the migration,
+    this should point at the OLD bot (@radikrunbot), which is where users currently
+    have chats. `TelegramTool` handles 403 (blocked by user) gracefully: marks them
+    inactive in DB and returns None. Rate limit: Telegram caps bot messages at
+    ~30/sec globally; a small sleep between sends is insurance.
+    """
+    with get_sync_session() as s:
+        users = list(s.execute(select(User).where(User.is_active.is_(True), User.role == "athlete")).scalars().all())
+
+    if not users:
+        print("No active athletes found.")
+        return
+
+    print(f"Found {len(users)} active athlete(s)")
+    for u in users:
+        print(f"  id={u.id} chat_id={u.chat_id} @{u.username or '-'}")
+
+    if dry_run:
+        print("\nDry run — nothing sent.")
+        return
+
+    confirm = input(f"\nSend migration message to {len(users)} user(s)? [y/N]: ").strip().lower()
+    if confirm != "y":
+        print("Aborted.")
+        return
+
+    tool = TelegramTool()
+    sent = 0
+    failed: list[tuple[int, str]] = []
+
+    for u in users:
+        try:
+            result = tool.send_message(text=_MIGRATION_MESSAGE, chat_id=u.chat_id, markdown=True)
+            if result is None:
+                # 403 — TelegramTool marked user inactive already
+                failed.append((u.id, "blocked (403)"))
+                print(f"  ✗ id={u.id} blocked, marked inactive")
+            else:
+                sent += 1
+                print(f"  ✓ id={u.id} sent")
+        except httpx.HTTPStatusError as e:
+            failed.append((u.id, f"HTTP {e.response.status_code}"))
+            print(f"  ✗ id={u.id} HTTP {e.response.status_code}")
+        except Exception as e:
+            failed.append((u.id, type(e).__name__))
+            print(f"  ✗ id={u.id} {type(e).__name__}: {e}")
+
+        time.sleep(0.1)  # 10 req/sec — well under Telegram's 30/sec bot limit
+
+    print(f"\nSummary: sent={sent}, failed={len(failed)}")
+    if failed:
+        for uid, reason in failed:
+            print(f"  - user {uid}: {reason}")
 
 
 def _shell() -> None:
