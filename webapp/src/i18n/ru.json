@@ -118,6 +118,18 @@
     "language": "Язык",
     "russian": "Русский",
     "english": "English",
-    "logout": "Выйти"
+    "logout": "Выйти",
+    "mcp": {
+      "title": "Подключение через MCP",
+      "description": "Скопируй конфиг в свой MCP-клиент (Claude Desktop, Cursor, и т.д.). Токен даёт полный доступ к твоим данным — никому не передавай.",
+      "loading": "Загрузка...",
+      "show": "Показать",
+      "hide": "Скрыть",
+      "copy": "Копировать",
+      "copied": "Скопировано",
+      "url_label": "URL",
+      "token_label": "Bearer Token",
+      "json_config": "JSON конфиг"
+    }
   }
 }
