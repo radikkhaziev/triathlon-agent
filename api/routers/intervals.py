@@ -182,6 +182,39 @@ def _verify_webhook_secret(payload: IntervalsWebhookPayload, client_ip: str) -> 
     return True
 
 
+def _classify_parse_status(
+    records_count: int,
+    parsed_count: int,
+    has_model: bool,
+) -> tuple[str, str, str]:
+    """Decide how to categorize a webhook event for Sentry monitoring.
+
+    Returns `(status, level, prefix)`:
+    - `status` — value for the `parse_status` tag: `ok` / `partial` /
+      `failed` / `no_dto` / `empty`. Filterable in Sentry UI.
+    - `level` — Sentry severity (`info` for OK/empty/no_dto, `warning` for
+      partial/failed so they show up in warning filters and alerts).
+    - `prefix` — human-readable tag embedded in the Sentry message so each
+      category becomes its own Sentry Issue (distinct grouping fingerprint).
+
+    Decision tree:
+    - No records at all → empty (rare: APP_SCOPE_CHANGED)
+    - No DTO mapped → no_dto (shape needs sampling)
+    - All records parsed cleanly → ok
+    - Zero records parsed (100% errors) → failed
+    - Otherwise → partial (some records parsed, some errored)
+    """
+    if records_count == 0:
+        return "empty", "info", "EMPTY"
+    if not has_model:
+        return "no_dto", "info", "NO DTO"
+    if parsed_count == records_count:
+        return "ok", "info", "OK"
+    if parsed_count == 0:
+        return "failed", "warning", "PARSE FAILED"
+    return "partial", "warning", "PARTIAL"
+
+
 def _sentry_monitor_event(
     event: IntervalsWebhookEvent,
     normalized_type: str,
@@ -189,30 +222,41 @@ def _sentry_monitor_event(
     parsed_count: int,
     record_field_names: set[str],
     parse_errors: list[str],
+    has_model: bool,
 ) -> None:
-    """Send an info-level Sentry message with event **metadata only**.
+    """Send a classified Sentry message with event **metadata only**.
 
     **Does NOT forward record contents.** Wellness webhooks contain health
     data (weight, HRV, resting HR, sleep, body fat, blood glucose, ...)
     which is GDPR Art. 9 special-category PII; we deliberately keep it out
     of Sentry. What we send instead is enough to verify DTO coverage:
 
-    - tags: `intervals_event_type` (normalized for filtering),
+    - message encodes parse status (`OK` / `PARTIAL` / `PARSE FAILED` /
+      `NO DTO` / `EMPTY`) so Sentry groups them into separate Issues —
+      distinguishable in the Issues list without opening each event
+    - level is `warning` for `partial` / `failed`, `info` for the rest,
+      so you can filter/alert on `level:warning tag:source:intervals_webhook`
+    - tags: `source`, `intervals_event_type` (normalized), `parse_status`,
       `intervals_athlete_id`, `user_id`
-    - extras: `original_event_type` (as-received, may differ from normalized
-      if upstream is inconsistent), `records_count`, `parsed_count`,
-      `record_field_names` (sorted set of top-level keys seen across the
-      batch), `parse_errors` (first 10, PII-sanitized via
-      `_format_validation_errors`)
+    - extras: `original_event_type` (only if differs from normalized),
+      `records_count`, `parsed_count`, `record_field_names` (sorted set of
+      top-level keys — for schema drift detection), `parse_errors` (first
+      10, PII-sanitized via `_format_validation_errors`)
 
     Errors during Sentry send are swallowed — monitoring must never affect
     webhook 200 responses. Disable via `INTERVALS_WEBHOOK_MONITORING=false`
     (opt-in by default — see `config.py`).
     """
+    status, level, prefix = _classify_parse_status(
+        records_count=len(event.records),
+        parsed_count=parsed_count,
+        has_model=has_model,
+    )
     try:
         with sentry_sdk.new_scope() as scope:
             scope.set_tag("source", "intervals_webhook")
             scope.set_tag("intervals_event_type", normalized_type)
+            scope.set_tag("parse_status", status)
             scope.set_tag("intervals_athlete_id", event.athlete_id)
             scope.set_tag("user_id", str(user.id))
             if event.type != normalized_type:
@@ -224,8 +268,8 @@ def _sentry_monitor_event(
             if parse_errors:
                 scope.set_extra("parse_errors", parse_errors[:10])
             sentry_sdk.capture_message(
-                f"Intervals webhook: {normalized_type}",
-                level="info",
+                f"Intervals webhook {prefix}: {normalized_type}",
+                level=level,
             )
     except Exception:
         logger.warning("Failed to forward intervals webhook event to Sentry", exc_info=True)
@@ -313,7 +357,15 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
         )
 
     if settings.INTERVALS_WEBHOOK_MONITORING:
-        _sentry_monitor_event(event, normalized_type, user, parsed_count, record_field_names, parse_errors)
+        _sentry_monitor_event(
+            event,
+            normalized_type,
+            user,
+            parsed_count,
+            record_field_names,
+            parse_errors,
+            has_model=model_cls is not None,
+        )
 
 
 @router.post("/auth/init", response_model=IntervalsAuthInitResponse)
