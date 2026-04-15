@@ -2,7 +2,7 @@ import EnduraiLogo from '../components/EnduraiLogo'
 import { t } from '../i18n'
 
 const GITHUB_URL = 'https://github.com/radikkhaziev/triathlon-agent'
-const TELEGRAM_URL = 'https://t.me/radikrunbot'
+const TELEGRAM_URL = 'https://t.me/endurai_bot'
 const AUTHOR_URL = 'https://github.com/radikkhaziev'
 
 export default function Footer() {

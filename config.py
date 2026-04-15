@@ -19,8 +19,7 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
 
     # App
-    API_BASE_URL: str = "https://your-api.railway.app"
-    WEBAPP_URL: str = "https://your-app.vercel.app"
+    API_BASE_URL: str = "https://bot.endurai.me"  # serves API + webapp + static from one container
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/triathlon"
 
     TIMEZONE: str = "Europe/Belgrade"
