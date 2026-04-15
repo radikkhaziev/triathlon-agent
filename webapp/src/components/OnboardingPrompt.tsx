@@ -11,7 +11,7 @@ import { apiFetch } from '../api/client'
  * The CTA triggers an XHR POST to `/api/intervals/auth/init` (so `apiFetch`
  * attaches the Authorization header) and then navigates the browser to the
  * returned `authorize_url`. A plain `<a href>` would NOT send the bearer /
- * initData header and hit a 401 — see INTERVALS_OAUTH_SPEC §6.2.
+ * initData header and hit a 401.
  */
 export default function OnboardingPrompt() {
   const { t } = useTranslation()

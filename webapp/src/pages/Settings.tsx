@@ -90,7 +90,7 @@ export default function Settings() {
 
   // OAuth initiation: XHR POST (so apiFetch attaches auth header) → receive
   // authorize URL → navigate browser. A plain <a href> would NOT send the
-  // Bearer/initData header and hit a 401. See INTERVALS_OAUTH_SPEC §6.2.
+  // Bearer/initData header and hit a 401.
   //
   // `intervalsBusy` guards against double-click: a rapid second click while
   // the first POST is in flight would generate a second state JWT and show
@@ -167,7 +167,7 @@ export default function Settings() {
         </div>
       </Section>
 
-      {/* Intervals.icu Connection (see docs/INTERVALS_OAUTH_SPEC.md §7) */}
+      {/* Intervals.icu Connection */}
       {isAuthenticated && (
         <Section title={t('settings.intervals.title')} icon="🔗">
           {intervalsToast && (
