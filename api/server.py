@@ -125,7 +125,7 @@ async def lifespan(app):
 
 app = FastAPI(title="Triathlon Agent API", version="0.1.0", lifespan=lifespan)
 
-_allowed_origins = [settings.WEBAPP_URL] if settings.WEBAPP_URL else []
+_allowed_origins = [settings.API_BASE_URL] if settings.API_BASE_URL else []
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,

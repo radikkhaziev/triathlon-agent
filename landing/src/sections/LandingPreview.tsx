@@ -11,7 +11,7 @@ import {
 import { t, lang } from '../i18n'
 
 const BOT_LOGIN_URL = 'https://bot.endurai.me/login'
-const TELEGRAM_URL = 'https://t.me/radikrunbot'
+const TELEGRAM_URL = 'https://t.me/endurai_bot'
 
 export default function LandingPreview() {
   const aiText = lang === 'ru' ? DEMO_AI_TEXT_RU : DEMO_AI_TEXT_EN

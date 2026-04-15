@@ -1,7 +1,7 @@
 import EnduraiLogo from '../components/EnduraiLogo'
 import { t } from '../i18n'
 
-const TELEGRAM_URL = 'https://t.me/radikrunbot'
+const TELEGRAM_URL = 'https://t.me/endurai_bot'
 
 function scrollToPreview() {
   document.getElementById('preview')?.scrollIntoView({ behavior: 'smooth', block: 'start' })

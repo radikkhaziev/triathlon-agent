@@ -34,7 +34,7 @@ export default function Landing() {
               <Link to="/plan" className="btn-secondary">📋 Training Plan</Link>
               <Link to="/activities" className="btn-secondary">🏃 Activities</Link>
               <Link to="/wellness" className="btn-secondary">💚 Wellness</Link>
-              <a href="https://t.me/radikrunbot" className="btn-secondary">💬 Open in Telegram</a>
+              <a href="https://t.me/endurai_bot" className="btn-secondary">💬 Open in Telegram</a>
               {hasJwt && !hasTg && (
                 <button onClick={logout} className="btn-secondary opacity-60">{t('settings.logout')}</button>
               )}
@@ -42,7 +42,7 @@ export default function Landing() {
           ) : (
             <>
               <Link to="/login" className="btn-primary">{t('login.submit')}</Link>
-              <a href="https://t.me/radikrunbot" className="btn-primary">💬 Open in Telegram</a>
+              <a href="https://t.me/endurai_bot" className="btn-primary">💬 Open in Telegram</a>
             </>
           )}
         </div>
@@ -107,7 +107,7 @@ export default function Landing() {
 
       {/* Footer */}
       <footer className="text-center px-6 py-8 text-text-dim text-[13px] border-t border-border">
-        EndurAI &copy; {new Date().getFullYear()} &middot; <a href="https://t.me/radikrunbot" className="text-accent no-underline">@radikrunbot</a>
+        EndurAI &copy; {new Date().getFullYear()} &middot; <a href="https://t.me/endurai_bot" className="text-accent no-underline">@endurai_bot</a>
       </footer>
 
       <style>{`
