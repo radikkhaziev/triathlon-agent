@@ -37,3 +37,40 @@ def athlete_required(fn):
         return await fn(update, context, *args, user=user, **kwargs)
 
     return wrapper
+
+
+def user_required(fn):
+    """Decorator for Telegram handlers: resolve any active user (viewer or
+    athlete), pass as `user` kwarg.
+
+    Weaker than `athlete_required` — does NOT require `athlete_id`. Use for
+    commands that make sense for not-yet-onboarded users: `/silent`, `/lang`,
+    `/donate`, `/whoami`, etc. For commands that read athlete-scoped data
+    (`/morning`, `/workout`), stick with `athlete_required`.
+
+    Lookup: `User.get_by_chat_id(update.effective_user.id)`. The column name
+    `users.chat_id` is legacy — it stores the Telegram **user** ID, which in
+    private chats (the only chat type this bot handles) equals `chat.id`.
+    We use `effective_user.id` to identify the sender regardless of chat type,
+    matching the existing `athlete_required` convention.
+
+    Fallback: if the row is missing or `is_active=False`, reply with
+    "Сначала отправьте /start" on both `message` and `callback_query` paths
+    so the user gets consistent guidance on how to recover.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(update, context, *args, **kwargs):
+        user = await User.get_by_chat_id(str(update.effective_user.id))
+        if user:
+            set_language(user.language or "ru")
+        if not user or not user.is_active:
+            msg = _("Сначала отправьте /start")
+            if update.callback_query:
+                await update.callback_query.answer(msg, show_alert=True)
+            elif update.message:
+                await update.message.reply_text(msg)
+            return
+        return await fn(update, context, *args, user=user, **kwargs)
+
+    return wrapper
