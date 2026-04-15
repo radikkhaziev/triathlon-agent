@@ -153,6 +153,21 @@ class User(Base):
 
     @classmethod
     @with_session
+    async def get_by_athlete_id(cls, athlete_id: str, *, session: AsyncSession) -> User | None:
+        """Find user by Intervals.icu athlete_id (e.g. `i317960`).
+
+        Used by the webhook receiver to map incoming events to the correct
+        tenant. **Does NOT filter `is_active`** — after a user blocks the bot
+        (`is_active=False`) or is deactivated, Intervals.icu may keep pushing
+        events for some time, and we still want to record them so the history
+        remains consistent if the user returns. Downstream handlers decide
+        per event type whether to ignore or process for an inactive user.
+        """
+        result = await session.execute(select(cls).where(cls.athlete_id == athlete_id))
+        return result.scalar_one_or_none()
+
+    @classmethod
+    @with_session
     async def get_by_chat_id(
         cls,
         chat_id: int | str,

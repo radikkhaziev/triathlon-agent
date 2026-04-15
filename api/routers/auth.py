@@ -1,13 +1,12 @@
 import logging
 import time
-from typing import Literal
 
 import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
 from api.deps import get_current_user
+from api.dto import SetLanguageRequest, TelegramWidgetAuthRequest, VerifyCodeRequest
 from config import settings
 from data.db import User, get_session
 
@@ -27,32 +26,6 @@ router = APIRouter()
 _MCP_CONFIG_RATE_WINDOW_SEC = 60.0
 _mcp_config_last_access: dict[int, float] = {}
 _MCP_ALLOWED_ROLES = {"athlete", "owner"}
-
-
-class VerifyCodeRequest(BaseModel):
-    code: str = Field(..., min_length=1)
-
-
-class TelegramWidgetAuthRequest(BaseModel):
-    """Telegram Login Widget callback payload.
-
-    Extra fields are allowed for forward-compat — they're included in the
-    HMAC-SHA256 data-check-string per Telegram's spec.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    id: int
-    auth_date: int
-    hash: str
-    first_name: str | None = None
-    last_name: str | None = None
-    username: str | None = None
-    photo_url: str | None = None
-
-
-class SetLanguageRequest(BaseModel):
-    language: Literal["ru", "en"]
 
 
 @router.post("/api/auth/verify-code")
@@ -116,7 +89,7 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     The `intervals` block tells the frontend whether this user is connected
     to Intervals.icu and via which method (oauth / api_key / none). Settings
     page uses it to render the "Connect / Migrate / Connected" state of the
-    Intervals.icu section. See `docs/INTERVALS_OAUTH_SPEC.md` §7.3.
+    Intervals.icu section.
     """
     if not user:
         return {"role": "anonymous", "authenticated": False}
