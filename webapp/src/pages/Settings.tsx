@@ -6,6 +6,37 @@ import { apiFetch } from '../api/client'
 
 type McpConfig = { url: string; token: string }
 
+type IntervalsStatus = {
+  method: 'oauth' | 'api_key' | 'none'
+  athlete_id: string | null
+  scope: string | null
+}
+
+type AuthMeResponse = {
+  authenticated: boolean
+  role?: string
+  language?: string
+  intervals?: IntervalsStatus
+}
+
+type IntervalsToast = {
+  kind: 'success' | 'error'
+  key: string  // i18n key
+}
+
+function parseIntervalsQueryParam(search: string): IntervalsToast | null {
+  const params = new URLSearchParams(search)
+  if (params.get('connected') === 'intervals') {
+    return { kind: 'success', key: 'settings.intervals.toast_connected' }
+  }
+  const error = params.get('error')
+  if (!error) return null
+  if (error === 'oauth_cancelled') return { kind: 'error', key: 'settings.intervals.toast_cancelled' }
+  if (error === 'oauth_account_mismatch') return { kind: 'error', key: 'settings.intervals.toast_mismatch' }
+  if (error.startsWith('oauth_')) return { kind: 'error', key: 'settings.intervals.toast_error' }
+  return null
+}
+
 function buildMcpJsonSnippet(url: string, token: string): string {
   return JSON.stringify(
     {
@@ -29,6 +60,8 @@ export default function Settings() {
   const [mcpError, setMcpError] = useState<string | null>(null)
   const [mcpRevealed, setMcpRevealed] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  const [intervals, setIntervals] = useState<IntervalsStatus | null>(null)
+  const [intervalsToast, setIntervalsToast] = useState<IntervalsToast | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -36,6 +69,31 @@ export default function Settings() {
       .then(setMcpConfig)
       .catch((e: Error) => setMcpError(e.message || 'Failed to load MCP config'))
   }, [isAuthenticated])
+
+  // Intervals.icu connection status — separate fetch from /api/auth/me so
+  // the Settings page owns its own state without waiting on App-level context.
+  useEffect(() => {
+    if (!isAuthenticated) return
+    apiFetch<AuthMeResponse>('/api/auth/me')
+      .then(data => {
+        if (data.intervals) setIntervals(data.intervals)
+      })
+      .catch(() => {})
+  }, [isAuthenticated])
+
+  // One-shot toast after OAuth callback redirect. Clears `?connected=` or
+  // `?error=` from the URL so a reload doesn't re-fire the toast.
+  useEffect(() => {
+    const toast = parseIntervalsQueryParam(window.location.search)
+    if (!toast) return
+    setIntervalsToast(toast)
+    const url = new URL(window.location.href)
+    url.searchParams.delete('connected')
+    url.searchParams.delete('error')
+    window.history.replaceState({}, '', url.toString())
+    const timer = setTimeout(() => setIntervalsToast(null), 5000)
+    return () => clearTimeout(timer)
+  }, [])
 
   const copyToClipboard = async (text: string, label: string) => {
     try {
@@ -91,6 +149,63 @@ export default function Settings() {
           </button>
         </div>
       </Section>
+
+      {/* Intervals.icu Connection (see docs/INTERVALS_OAUTH_SPEC.md §7) */}
+      {isAuthenticated && (
+        <Section title={t('settings.intervals.title')} icon="🔗">
+          {intervalsToast && (
+            <div
+              className={`text-[12px] mb-3 px-2 py-1.5 rounded-lg border ${
+                intervalsToast.kind === 'success'
+                  ? 'bg-green/10 border-green/30 text-green'
+                  : 'bg-red/10 border-red/30 text-red'
+              }`}
+            >
+              {t(intervalsToast.key)}
+            </div>
+          )}
+          {!intervals && <p className="text-[13px] text-text-dim">{t('settings.intervals.loading')}</p>}
+          {intervals && (!intervals.athlete_id || intervals.method === 'none') && (
+            <>
+              <p className="text-[12px] text-text-dim mb-3 leading-snug">
+                {t('settings.intervals.not_connected_desc')}
+              </p>
+              <a
+                href="/api/intervals/auth/connect"
+                className="block w-full py-2.5 bg-accent text-white text-center rounded-xl text-sm font-semibold no-underline font-sans"
+              >
+                {t('settings.intervals.connect')}
+              </a>
+            </>
+          )}
+          {intervals && intervals.athlete_id && intervals.method === 'oauth' && (
+            <>
+              <div className="text-[13px] text-green mb-2">✅ {t('settings.intervals.connected')}</div>
+              <Row label={t('settings.intervals.athlete')} value={intervals.athlete_id} />
+              <Row label={t('settings.intervals.method')} value={t('settings.intervals.method_oauth')} />
+              {intervals.scope && (
+                <Row label={t('settings.intervals.scope')} value={intervals.scope} />
+              )}
+              <p className="text-[11px] text-text-dim mt-3 leading-snug">
+                {t('settings.intervals.disconnect_soon')}
+              </p>
+            </>
+          )}
+          {intervals && intervals.athlete_id && intervals.method === 'api_key' && (
+            <>
+              <div className="text-[13px] text-text-dim mb-2">✅ {t('settings.intervals.connected_legacy')}</div>
+              <Row label={t('settings.intervals.athlete')} value={intervals.athlete_id} />
+              <Row label={t('settings.intervals.method')} value={t('settings.intervals.method_api_key')} />
+              <a
+                href="/api/intervals/auth/connect"
+                className="block w-full mt-3 py-2.5 bg-surface border border-accent text-accent text-center rounded-xl text-sm font-semibold no-underline font-sans"
+              >
+                {t('settings.intervals.migrate_to_oauth')}
+              </a>
+            </>
+          )}
+        </Section>
+      )}
 
       {/* Athlete Profile */}
       <Section title="Athlete Profile" icon="🏊‍♂️">
