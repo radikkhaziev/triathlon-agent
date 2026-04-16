@@ -13,6 +13,7 @@ from fitparse import FitFile
 from pydantic import validate_call
 from sqlalchemy import select
 
+from bot.i18n import set_language
 from data.db import Activity, ActivityDetail, ActivityHrv, PaBaseline, Race, UserDTO, get_sync_session
 from data.hrv_activity import (
     calculate_dfa_timeseries,
@@ -324,6 +325,7 @@ def _actor_send_activity_notification(
     if activity_row.start_date_local != DateDTO.today().isoformat():
         return  # only notify for today's activities
 
+    set_language(user.language or "ru")
     tg = TelegramTool(user=user)
     summary = build_post_activity_message(activity_row, hrv_row, race=race_row)
     # Show the RPE rating keyboard only when the value is still unset.
