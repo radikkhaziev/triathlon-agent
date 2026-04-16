@@ -17,7 +17,7 @@ import { SPORT_ICONS } from '../lib/constants'
 import type { ActivityDetailsResponse, RaceInfo } from '../api/types'
 
 export default function Activity() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const { data, loading, error } = useApi<ActivityDetailsResponse>(
     id && /^i\d+$/.test(id) ? `/api/activity/${id}/details` : null
@@ -64,7 +64,7 @@ export default function Activity() {
   const swimPaceSecPer100m = swimPaceSecPerKm ? swimPaceSecPerKm / 10 : null
   const gapSecPerKm = normalizePaceSecPerKm(d?.gap)
 
-  const subParts = [fmtDateShort(data.date), data.duration, data.icu_training_load != null ? `TSS ${data.icu_training_load}` : null, data.average_hr != null ? `\u2764\uFE0F ${data.average_hr} bpm` : null].filter(Boolean)
+  const subParts = [fmtDateShort(data.date, i18n.language), data.duration, data.icu_training_load != null ? `TSS ${data.icu_training_load}` : null, data.average_hr != null ? `\u2764\uFE0F ${data.average_hr} bpm` : null].filter(Boolean)
 
   return (
     <Layout backTo="/activities" backLabel={t('activities.back_to_list')} hideBottomTabs>

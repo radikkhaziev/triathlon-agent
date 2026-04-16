@@ -11,7 +11,7 @@ interface DayNavProps {
 }
 
 export default function DayNav({ currentDate, isToday, hasPrev = true, hasNext, onPrev, onNext }: DayNavProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const disableNext = hasNext !== undefined ? !hasNext : isToday
 
   return (
@@ -24,7 +24,7 @@ export default function DayNav({ currentDate, isToday, hasPrev = true, hasNext, 
         &larr; {t('common.prev')}
       </button>
       <span className="text-sm font-semibold min-w-[140px] text-center">
-        {formatDateDisplay(currentDate)}
+        {formatDateDisplay(currentDate, i18n.language)}
         {isToday && (
           <span className="inline-block bg-[var(--button)] text-white text-[10px] font-bold px-1.5 py-px rounded ml-1.5 align-middle">
             {t('common.today_lower')}

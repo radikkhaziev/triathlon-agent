@@ -1,4 +1,4 @@
-import { MONTHS, WEEKDAY_RU } from './constants'
+import { MONTHS } from './constants'
 
 export function formatDate(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00')
@@ -6,40 +6,60 @@ export function formatDate(dateStr: string): string {
   return `${days[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}`
 }
 
-export function formatWeekLabel(start: string, end: string): string {
+export function formatWeekLabel(start: string, end: string, lang: string = 'ru'): string {
   const s = new Date(start + 'T00:00:00')
   const e = new Date(end + 'T00:00:00')
-  const sm = MONTHS[s.getMonth()]
-  const em = MONTHS[e.getMonth()]
+  const months = MONTHS[lang] || MONTHS.en
+  const sm = months[s.getMonth()]
+  const em = months[e.getMonth()]
   if (sm === em) {
     return `${sm} ${s.getDate()} \u2013 ${e.getDate()}, ${s.getFullYear()}`
   }
   return `${sm} ${s.getDate()} \u2013 ${em} ${e.getDate()}, ${e.getFullYear()}`
 }
 
-export function formatDayDate(dateStr: string, weekday: string): string {
+const _WEEKDAYS: Record<string, Record<string, string>> = {
+  ru: { Mon: 'пн', Tue: 'вт', Wed: 'ср', Thu: 'чт', Fri: 'пт', Sat: 'сб', Sun: 'вс' },
+  en: { Mon: 'Mon', Tue: 'Tue', Wed: 'Wed', Thu: 'Thu', Fri: 'Fri', Sat: 'Sat', Sun: 'Sun' },
+}
+
+const _WEEKDAYS_SHORT: Record<string, string[]> = {
+  ru: ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'],
+  en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+}
+
+export function formatDayDate(dateStr: string, weekday: string, lang: string = 'ru'): string {
   const d = new Date(dateStr + 'T00:00:00')
-  return `${WEEKDAY_RU[weekday] || weekday} ${d.getDate()}`
+  const wd = (_WEEKDAYS[lang] || _WEEKDAYS.en)[weekday] || weekday
+  return `${wd} ${d.getDate()}`
 }
 
-export function formatDateDisplay(d: Date): string {
-  const days = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб']
-  return `${days[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`
+export function formatDateDisplay(d: Date, lang: string = 'ru'): string {
+  const days = _WEEKDAYS_SHORT[lang] || _WEEKDAYS_SHORT.en
+  const months = MONTHS[lang] || MONTHS.en
+  return `${days[d.getDay()]}, ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`
 }
 
-export function fmtDateShort(dateStr: string): string {
+export function fmtDateShort(dateStr: string, lang: string = 'ru'): string {
   const d = new Date(dateStr + 'T00:00:00')
-  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
+  const months = MONTHS[lang] || MONTHS.en
+  return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
 }
 
-export function relativeTime(isoStr: string | null): string {
+const _RELATIVE: Record<string, { just_now: string; min: string; h: string; d: string }> = {
+  ru: { just_now: 'только что', min: 'мин назад', h: 'ч назад', d: 'дн назад' },
+  en: { just_now: 'just now', min: 'min ago', h: 'h ago', d: 'd ago' },
+}
+
+export function relativeTime(isoStr: string | null, lang: string = 'ru'): string {
   if (!isoStr) return ''
+  const t = _RELATIVE[lang] || _RELATIVE.en
   const diffMin = Math.floor((Date.now() - new Date(isoStr).getTime()) / 60000)
-  if (diffMin < 1) return 'только что'
-  if (diffMin < 60) return `${diffMin} мин назад`
+  if (diffMin < 1) return t.just_now
+  if (diffMin < 60) return `${diffMin} ${t.min}`
   const diffH = Math.floor(diffMin / 60)
-  if (diffH < 24) return `${diffH} ч назад`
-  return `${Math.floor(diffH / 24)} дн назад`
+  if (diffH < 24) return `${diffH} ${t.h}`
+  return `${Math.floor(diffH / 24)} ${t.d}`
 }
 
 export function num(v: number | null | undefined, decimals = 1): string {
