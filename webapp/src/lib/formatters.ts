@@ -1,15 +1,28 @@
 import { MONTHS } from './constants'
 
-export function formatDate(dateStr: string): string {
+/** Normalize 'ru-RU' → 'ru', 'en-US' → 'en', etc. */
+function normLang(lang: string): string {
+  const base = lang.split('-')[0]
+  return base in MONTHS ? base : 'en'
+}
+
+const _WEEKDAYS_FULL: Record<string, string[]> = {
+  ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'],
+  en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+}
+
+export function formatDate(dateStr: string, lang: string = 'ru'): string {
+  const l = normLang(lang)
   const d = new Date(dateStr + 'T00:00:00')
-  const days = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота']
-  return `${days[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}`
+  const days = _WEEKDAYS_FULL[l] || _WEEKDAYS_FULL.en
+  return `${days[d.getDay()]}, ${d.getDate()} ${(MONTHS[l] || MONTHS.en)[d.getMonth()]}`
 }
 
 export function formatWeekLabel(start: string, end: string, lang: string = 'ru'): string {
+  const l = normLang(lang)
   const s = new Date(start + 'T00:00:00')
   const e = new Date(end + 'T00:00:00')
-  const months = MONTHS[lang] || MONTHS.en
+  const months = MONTHS[l] || MONTHS.en
   const sm = months[s.getMonth()]
   const em = months[e.getMonth()]
   if (sm === em) {
@@ -29,20 +42,23 @@ const _WEEKDAYS_SHORT: Record<string, string[]> = {
 }
 
 export function formatDayDate(dateStr: string, weekday: string, lang: string = 'ru'): string {
+  const l = normLang(lang)
   const d = new Date(dateStr + 'T00:00:00')
-  const wd = (_WEEKDAYS[lang] || _WEEKDAYS.en)[weekday] || weekday
+  const wd = (_WEEKDAYS[l] || _WEEKDAYS.en)[weekday] || weekday
   return `${wd} ${d.getDate()}`
 }
 
 export function formatDateDisplay(d: Date, lang: string = 'ru'): string {
-  const days = _WEEKDAYS_SHORT[lang] || _WEEKDAYS_SHORT.en
-  const months = MONTHS[lang] || MONTHS.en
+  const l = normLang(lang)
+  const days = _WEEKDAYS_SHORT[l] || _WEEKDAYS_SHORT.en
+  const months = MONTHS[l] || MONTHS.en
   return `${days[d.getDay()]}, ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`
 }
 
 export function fmtDateShort(dateStr: string, lang: string = 'ru'): string {
+  const l = normLang(lang)
   const d = new Date(dateStr + 'T00:00:00')
-  const months = MONTHS[lang] || MONTHS.en
+  const months = MONTHS[l] || MONTHS.en
   return `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
 }
 
@@ -53,7 +69,7 @@ const _RELATIVE: Record<string, { just_now: string; min: string; h: string; d: s
 
 export function relativeTime(isoStr: string | null, lang: string = 'ru'): string {
   if (!isoStr) return ''
-  const t = _RELATIVE[lang] || _RELATIVE.en
+  const t = _RELATIVE[normLang(lang)] || _RELATIVE.en
   const diffMin = Math.floor((Date.now() - new Date(isoStr).getTime()) / 60000)
   if (diffMin < 1) return t.just_now
   if (diffMin < 60) return `${diffMin} ${t.min}`
