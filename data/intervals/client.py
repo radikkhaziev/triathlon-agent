@@ -271,6 +271,8 @@ def _resolve_credentials(user: User) -> dict:
     Returns a dict suitable for unpacking into ``cls(athlete_id=..., **creds)``.
     Raises ``LookupError`` if no usable credentials are configured.
     """
+    if not user.athlete_id:
+        raise LookupError(f"User {user.id} has no athlete_id — cannot build Intervals.icu API URLs")
     if user.intervals_auth_method == "oauth" and user.intervals_access_token:
         return {"athlete_id": user.athlete_id, "access_token": user.intervals_access_token}
     if user.api_key:

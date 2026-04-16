@@ -195,7 +195,7 @@ async def morning_report(user: User = Depends(require_viewer)) -> dict:
     if row is None:
         return {"date": today_str, "has_data": False, "role": user.role}
 
-    result = await _build_wellness_response(row, today, uid, language=user.language)
+    result = await _build_wellness_response(row, today, uid, language=user.language or "ru")
     result["role"] = user.role
     return result
 
@@ -235,7 +235,7 @@ async def wellness_day(
             "role": user.role,
         }
 
-    result = await _build_wellness_response(row, target, uid, language=user.language)
+    result = await _build_wellness_response(row, target, uid, language=user.language or "ru")
     result["is_today"] = target == today
     result["has_prev"] = has_prev
     result["has_next"] = has_next
