@@ -38,7 +38,7 @@ def _cv_verdict(cv: float | None, language: str = "ru") -> str | None:
 def _swc_verdict(
     today_val: float | None, baseline_60d: float | None, swc: float | None, language: str = "ru"
 ) -> str | None:
-    if not today_val or not baseline_60d or not swc:
+    if today_val is None or baseline_60d is None or swc is None:
         return None
     v = _SWC_VERDICTS.get(language, _SWC_VERDICTS["en"])
     delta = today_val - baseline_60d
