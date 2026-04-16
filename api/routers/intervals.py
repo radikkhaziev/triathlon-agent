@@ -288,6 +288,10 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
     # ever differs from the normalized form.
     normalized_type = event.type.strip().upper()
 
+    # TODO: TEMPORARY: remove it later
+    if normalized_type in ("WELLNESS_UPDATED",):
+        return
+
     user = await User.get_by_athlete_id(event.athlete_id)
     if user is None:
         logger.warning(
