@@ -49,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('auth_role')
     setJwtState(null)
     setRole('anonymous')
+    window.location.href = '/login'
   }, [])
 
   const setJwt = useCallback((token: string, newRole: AuthRole = 'viewer') => {
