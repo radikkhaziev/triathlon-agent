@@ -66,17 +66,17 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Pending: personal patterns cron, MT Phase 2 (JWT upgrade).
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 1 complete, Phase 2 (Bearer auth in `IntervalsClient`) complete. Webhook research done (10/10 event types documented in `docs/INTERVALS_WEBHOOKS_RESEARCH.md`). Pending: personal patterns cron, webhook dispatchers, MT Phase 2 (JWT upgrade).
 
-**Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP.
+**Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 
-**Webapp pages:** Today, Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs. `/report` → `/wellness`.
+**Webapp pages:** Today, Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs. `/report` → `/wellness`. Global auth gate in `App.tsx`: users without `athlete_id` see `<OnboardingPrompt />` on all data routes until OAuth onboarding completes. PWA manifest + favicon/icons (SVG + ICO + apple-touch + android-chrome).
 
 ---
 
 ## Environment Variables (.env)
 
-See `.env.example` for full list. Key vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` (for Login Widget), `TELEGRAM_WEBHOOK_URL` (empty=polling), `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `API_BASE_URL` (single URL for API + webapp + static + CORS origin), `INTERVALS_API_KEY`/`INTERVALS_ATHLETE_ID` (legacy owner, being replaced by per-user OAuth), `INTERVALS_OAUTH_CLIENT_ID`/`INTERVALS_OAUTH_CLIENT_SECRET`/`INTERVALS_OAUTH_REDIRECT_URI` (per-user OAuth — see `docs/INTERVALS_OAUTH_SPEC.md`), `TIMEZONE=Europe/Belgrade`, `HRV_ALGORITHM=flatt_esco`, `MCP_AUTH_TOKEN`, `FIELD_ENCRYPTION_KEY` (Fernet), `SENTRY_DSN` (empty=disabled).
+See `.env.example` for full list. Key vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` (for Login Widget), `TELEGRAM_WEBHOOK_URL` (empty=polling), `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `API_BASE_URL` (single URL for API + webapp + static + CORS origin), `INTERVALS_API_KEY`/`INTERVALS_ATHLETE_ID` (legacy owner, being replaced by per-user OAuth), `INTERVALS_OAUTH_CLIENT_ID`/`INTERVALS_OAUTH_CLIENT_SECRET`/`INTERVALS_OAUTH_REDIRECT_URI` (per-user OAuth), `INTERVALS_WEBHOOK_SECRET` (shared secret for webhook verification), `INTERVALS_WEBHOOK_MONITORING` (opt-in Sentry sampling, default false), `TIMEZONE=Europe/Belgrade`, `HRV_ALGORITHM=flatt_esco`, `MCP_AUTH_TOKEN`, `FIELD_ENCRYPTION_KEY` (Fernet), `SENTRY_DSN` (empty=disabled).
 
 **Telegram Login Widget setup** (one-time, for web login): in `@BotFather` run `/setdomain` → choose your bot → enter `bot.endurai.me` (no protocol, no path). Widget will only render on that domain. Set `TELEGRAM_BOT_USERNAME` in `.env` to the bot username (without `@`). See `api/auth.py:verify_telegram_widget_auth` for the HMAC-SHA256 verification logic (`docs/MULTI_TENANT_SECURITY.md` threat T3 scope).
 
@@ -150,7 +150,7 @@ Stateless. Each message: `agent.chat(text, mcp_token=user.mcp_token)` → Claude
 
 ## Bot Commands (bot/main.py)
 
-All commands use `@athlete_required` decorator — resolves `User` from Telegram `chat_id`.
+Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any active user) decorator — resolves `User` from Telegram `chat_id`.
 
 ```
 /start      — welcome + create User in DB. Branches on `athlete_id`: new users get "🔗 Подключить Intervals.icu" WebApp button → /settings onboarding. Existing athletes get the generic dashboard entry.
@@ -159,9 +159,9 @@ All commands use `@athlete_required` decorator — resolves `User` from Telegram
 /workout    — interactive workout generation: sport picker → dry-run preview → "Отправить в Intervals" button
 /web        — one-time code for desktop login (5 min TTL)
 /stick      — increment IQOS stick counter for today (owner only)
-/health     — server diagnostics: DB, Redis, queues, Intervals.icu, Anthropic (owner only)
-/lang       — set language: /lang ru or /lang en
-/silent     — toggle silent mode (suppress Telegram notifications)
+/health     — server diagnostics: system stats, DB/Redis/queues, per-athlete Intervals.icu token check (OAuth/api_key), daily token usage per user, Anthropic (owner only)
+/lang       — set language: /lang ru or /lang en (@user_required — works for viewers too)
+/silent     — toggle silent mode (@user_required — works for viewers too)
 /whoami     — show current user info (chat_id, role)
 /donate     — voluntary support via Telegram Stars (XTR), 3 tiers (50/200/500)
 <text>      — free-form AI chat (stateless, tool-use via MCP, per-user token)
@@ -192,7 +192,7 @@ GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, 
 PUT  /api/auth/language                 — update user language (ru/en)
 POST /api/intervals/auth/init            — initiate OAuth (authenticated XHR) → {authorize_url}
 GET  /api/intervals/auth/callback        — OAuth callback: code → token → DB → redirect
-POST /api/intervals/webhook              — webhook receiver stub (Phase 4, logs payload)
+POST /api/intervals/webhook              — Intervals.icu push webhooks: secret verification, DTO parsing, Sentry monitoring. 10/10 event types researched (see docs/INTERVALS_WEBHOOKS_RESEARCH.md)
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
@@ -205,7 +205,7 @@ GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles
 
 **Dashboard API** (scaffold, mock data): `/api/dashboard`, `/api/training-load`, `/api/goal`, `/api/weekly-summary`, job trigger stubs.
 
-**Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256) or `Bearer <jwt>`. Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id), `require_owner`. Viewers without `athlete_id` see owner data (read-only) via `get_data_user_id(user)`.
+**Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256, 15-min freshness) or `Bearer <jwt>`. Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id), `require_owner`. `get_data_user_id(user)` always returns `user.id` — no fallback to owner data (fixed in issue #185, was a data leak). API DTOs centralized in `api/dto.py`.
 
 ---
 
@@ -215,7 +215,9 @@ React 18 + TypeScript + Vite 6 + React Router v7 + Tailwind CSS v3 + Chart.js v4
 
 **Routes:** `/` (Today/Landing), `/wellness`, `/plan`, `/activities`, `/activity/:id`, `/dashboard` (3 tabs), `/settings`, `/login`. Bottom tabs navigation.
 
-**Auth:** `AuthProvider` (React Context): Telegram initData → JWT fallback → anonymous. `useAuth()` hook. Desktop: `/web` → 6-digit code → JWT.
+**Auth:** `AuthProvider` (React Context): Telegram initData → JWT fallback → anonymous. `useAuth()` hook. Desktop: `/web` → 6-digit code → JWT. **Global auth gate** in `App.tsx`: fetches `/api/auth/me` on login, checks `intervals.athlete_id`. If missing → all data routes render `<OnboardingPrompt />` (issue #185). Settings and Login always accessible for OAuth onboarding.
+
+**i18n:** `react-i18next` with `ru.json` / `en.json`. Backend sends localized strings for wellness verdicts (`_cv_verdict`, `_swc_verdict`, `_format_sleep_duration`) and recovery categories (`get_category_display`, `get_recommendation_text`) based on `user.language`. Frontend `StatusBadge` uses i18n keys.
 
 **Build:** Dev: `cd webapp && npm run dev` (:5173, proxies /api → :8000). Prod: Docker multi-stage Node 20 → Python 3.12.
 
@@ -227,6 +229,7 @@ React 18 + TypeScript + Vite 6 + React Router v7 + Tailwind CSS v3 + Chart.js v4
 python -m cli shell                                              # interactive Python shell with app context
 python -m cli sync-settings <user_id>                            # sync athlete settings & goals from Intervals.icu
 python -m cli sync-wellness <user_id> [period]                   # force re-sync wellness + HRV/RHR/recovery day by day
+python -m cli broadcast-migration [--dry-run]                    # notify active athletes about bot migration (one-time)
 python -m cli sync-activities <user_id> [period] [--force]       # force re-sync activities day by day
 python -m cli sync-training-log <user_id> [period]               # recalculate training log from existing activities
 python -m cli import-garmin <user_id> <source> [--types] [--period] [--force] [--dry-run]  # import Garmin GDPR export
@@ -402,11 +405,13 @@ Per-user Intervals.icu credentials support **two** authentication methods, track
 
 **OAuth flow** (`api/routers/intervals.py`): frontend XHR `POST /api/intervals/auth/init` (auth header attached by `apiFetch`) → signed JWT state (`purpose='intervals_oauth'`, 15-min TTL) → returns `{authorize_url}` → `window.location.assign(authorize_url)` → `intervals.icu/oauth/authorize` → consent → `GET /api/intervals/auth/callback?code=&state=` (validates state, no auth header needed) → server-side POST to `intervals.icu/api/oauth/token` → response has `{access_token, token_type: "Bearer", scope, athlete: {id, name}}` (**no** refresh_token, **no** expires_in) → `User.set_oauth_tokens()` → 302 redirect to `/settings?connected=intervals`. Why init is POST and not GET: a full-page `<a href>` doesn't send the Authorization header from localStorage, so a GET endpoint with `require_viewer` would 401. POST+XHR+JSON sidesteps that.
 
-**Scopes:** `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE` — `:WRITE` implies `:READ` per Intervals.icu docs, and listing the same area twice produces `"Duplicate scope"` error. `SETTINGS:WRITE` is required for `actor_update_zones` (ramp-test LTHR push).
+**Scopes:** `ACTIVITY:WRITE,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE` — `:WRITE` implies `:READ` per Intervals.icu docs, and listing the same area twice produces `"Duplicate scope"` error. `ACTIVITY:WRITE` for rename/update, `SETTINGS:WRITE` for `actor_update_zones` (ramp-test LTHR push).
 
-**Phase 1 scope (current):** OAuth tokens are stored but **not used** — `IntervalsClient` continues through the legacy api_key path. Role promotion, `mcp_token` generation, and auto-sync dispatch are deferred to Phase 2. See `docs/INTERVALS_OAUTH_SPEC.md` §3 for the full deferred list.
+**Phase 2 complete:** `IntervalsClient` (`data/intervals/client.py`) now supports dual auth — `_resolve_credentials(user)` reads `User.intervals_auth_method` and picks Bearer (`access_token`) or Basic (`api_key`). Constructor is keyword-only (`*, athlete_id, api_key=None, access_token=None`) to prevent positional arg swap. Both `for_user()` factories (async + sync) delegate to `_resolve_credentials`. Empty `athlete_id` → `LookupError` at resolve time. Verified end-to-end on real Intervals.icu API.
 
-**Onboarding routing:** `bot/main.py:start` branches on `user.athlete_id` — new users get a "Подключить Intervals.icu" WebApp button instead of the generic welcome. `webapp/src/pages/Login.tsx:routeAfterLogin` sends users without `athlete_id` to `/settings` after login. `webapp/src/pages/Today.tsx` fetches `/api/auth/me` first and renders `<OnboardingPrompt />` if `intervals.athlete_id` is null, instead of a broken empty dashboard.
+**Webhook receiver** (`POST /api/intervals/webhook`): verifies `body.secret` via `hmac.compare_digest`, resolves tenant by `athlete_id`, parses records into typed DTOs for drift detection, forwards metadata-only samples to Sentry (opt-in via `INTERVALS_WEBHOOK_MONITORING`). 5 delivery patterns documented: `records[]`, `activity`, `sportSettings[]`, top-level fields, empty notification. See `docs/INTERVALS_WEBHOOKS_RESEARCH.md` for full payload samples (10/10 event types researched).
+
+**Onboarding routing:** `bot/main.py:start` branches on `user.athlete_id` — new users get "🔗 Подключить Intervals.icu" WebApp button → `/settings`. `webapp/src/pages/Login.tsx:routeAfterLogin` sends users without `athlete_id` to `/settings`. Global auth gate in `App.tsx` blocks all data routes for unauthenticated users or users without `athlete_id` (issue #185 fix).
 
 ---
 
@@ -414,21 +419,23 @@ Per-user Intervals.icu credentials support **two** authentication methods, track
 
 ## Documentation
 
-Specs and plans in `docs/`. Key: `ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECURITY.md`, `intervals_icu_openapi.json` (API ref), `knowledge/` (training methodology).
+Specs and plans in `docs/`. Key: `ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECURITY.md`, `INTERVALS_WEBHOOKS_RESEARCH.md` (webhook payload samples for all 10 event types), `DONATE_SPEC.md`, `BOT_MIGRATION_SPEC.md`, `intervals_icu_openapi.json` (API ref), `knowledge/` (training methodology).
 
 ---
 
 ## Next Steps
 
-1. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
-2. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant), initData freshness check. See `docs/MULTI_TENANT_SECURITY.md`
+1. **Webhook dispatchers** — wire event types to existing actors: `WELLNESS_UPDATED` → wellness sync, `CALENDAR_UPDATED` → workouts sync, `ACTIVITY_UPLOADED` → activities sync, `SPORT_SETTINGS_UPDATED` → settings sync. See dispatch plan in `docs/INTERVALS_WEBHOOKS_RESEARCH.md`. Debounce required for WELLNESS (steps drift).
+2. **OAuth Phase 2 remaining** — viewer→athlete role promotion in callback + `generate_mcp_token()` + auto-dispatch sync actors for new users. Disconnect endpoint.
+3. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
+4. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`
 
 ---
 
 ## Contributing
 
 - Follow existing module structure
-- DTOs: `data/dto.py` (metrics), `data/db/dto.py` (DB), `data/intervals/dto.py` (API), `tasks/dto.py` (processing)
+- DTOs: `api/dto.py` (API request/response), `data/dto.py` (metrics), `data/db/dto.py` (DB), `data/intervals/dto.py` (Intervals.icu API), `tasks/dto.py` (processing)
 - ORM methods: use `@with_session` (async), `@with_sync_session` (sync), or `@dual` (both). `user_id` always first param after `cls`
 - New MCP tools: add to `mcp_server/tools/`, use `get_current_user_id()` from `mcp_server.context`, never accept `user_id` as tool parameter
 - New data tools: add only to MCP, not to `TOOL_HANDLERS` (deprecated)

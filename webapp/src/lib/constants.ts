@@ -21,11 +21,11 @@ export const CATEGORY_COLORS: Record<string, string> = {
   low: '#ef4444',
 }
 
-export const STATUS_BADGE_MAP: Record<string, { cls: string; label: string }> = {
-  green: { cls: 'bg-[#22c55e20] text-green', label: 'Норма' },
-  yellow: { cls: 'bg-[#f59e0b20] text-yellow', label: 'Внимание' },
-  red: { cls: 'bg-[#ef444420] text-red', label: 'Снижен' },
-  insufficient_data: { cls: 'bg-[#88888820] text-text-dim', label: 'Нет данных' },
+export const STATUS_BADGE_MAP: Record<string, { cls: string; labelKey: string }> = {
+  green: { cls: 'bg-[#22c55e20] text-green', labelKey: 'status.green' },
+  yellow: { cls: 'bg-[#f59e0b20] text-yellow', labelKey: 'status.yellow' },
+  red: { cls: 'bg-[#ef444420] text-red', labelKey: 'status.red' },
+  insufficient_data: { cls: 'bg-[#88888820] text-text-dim', labelKey: 'status.insufficient_data' },
 }
 
 export const CHART_COLORS = {
