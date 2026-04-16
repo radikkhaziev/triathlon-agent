@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import exists, select
 
 from api.deps import get_data_user_id, require_viewer
-from bot.formatter import CATEGORY_DISPLAY, RECOMMENDATION_TEXT, STATUS_EMOJI
+from bot.formatter import STATUS_EMOJI, get_category_display, get_recommendation_text
 from config import settings
 from data.db import HrvAnalysis, RhrAnalysis, User, Wellness, get_session
 from data.utils import extract_sport_ctl
@@ -34,10 +34,12 @@ def _swc_verdict(today_val: float | None, baseline_60d: float | None, swc: float
     return "значимое снижение"
 
 
-def _format_sleep_duration(secs: int | None) -> str | None:
+def _format_sleep_duration(secs: int | None, language: str = "ru") -> str | None:
     if not secs:
         return None
     h, m = divmod(secs // 60, 60)
+    if language == "en":
+        return f"{h}h {m}m" if h else f"{m}m"
     return f"{h}ч {m}м" if h else f"{m}м"
 
 
@@ -113,12 +115,12 @@ def _rhr_block(rhr_row) -> dict:
     }
 
 
-async def _build_wellness_response(row, target_date: date, user_id: int) -> dict:
+async def _build_wellness_response(row, target_date: date, user_id: int, language: str = "ru") -> dict:
     target_str = str(target_date)
 
     category = row.recovery_category or "moderate"
-    emoji, title = CATEGORY_DISPLAY.get(category, ("⚪", "СТАТУС НЕИЗВЕСТЕН"))
-    recommendation_text = RECOMMENDATION_TEXT.get(row.recovery_recommendation or "", row.recovery_recommendation or "")
+    emoji, title = get_category_display(category, language)
+    recommendation_text = get_recommendation_text(row.recovery_recommendation or "", language)
 
     hrv_flatt = await HrvAnalysis.get(user_id=user_id, dt=target_str, algorithm="flatt_esco")
     hrv_aie = await HrvAnalysis.get(user_id=user_id, dt=target_str, algorithm="ai_endurance")
@@ -150,7 +152,7 @@ async def _build_wellness_response(row, target_date: date, user_id: int) -> dict
         "sleep": {
             "score": row.sleep_score,
             "quality": row.sleep_quality,
-            "duration": _format_sleep_duration(row.sleep_secs),
+            "duration": _format_sleep_duration(row.sleep_secs, language),
             "duration_secs": row.sleep_secs,
         },
         "training_load": {
@@ -193,7 +195,7 @@ async def morning_report(user: User = Depends(require_viewer)) -> dict:
     if row is None:
         return {"date": today_str, "has_data": False, "role": user.role}
 
-    result = await _build_wellness_response(row, today, uid)
+    result = await _build_wellness_response(row, today, uid, language=user.language or "ru")
     result["role"] = user.role
     return result
 
@@ -233,7 +235,7 @@ async def wellness_day(
             "role": user.role,
         }
 
-    result = await _build_wellness_response(row, target, uid)
+    result = await _build_wellness_response(row, target, uid, language=user.language or "ru")
     result["is_today"] = target == today
     result["has_prev"] = has_prev
     result["has_next"] = has_next
