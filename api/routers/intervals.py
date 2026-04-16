@@ -586,6 +586,7 @@ async def intervals_webhook(request: Request) -> dict:
         raw = await request.body()
         logger.warning("Intervals webhook non-JSON body from ip=%s size=%d", client_ip, len(raw))
         return {"status": "ok"}
+    logger.info("Intervals webhook raw body from ip=%s body=%s", client_ip, raw_body)
 
     try:
         payload = IntervalsWebhookPayload.model_validate(raw_body)
