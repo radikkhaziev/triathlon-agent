@@ -61,7 +61,11 @@
     "step3": "3. Enter the 6-digit code above",
     "code_expires": "Code expires in 5 minutes",
     "already_auth": "You are already logged in.",
-    "go_home": "Go to home"
+    "go_home": "Go to home",
+    "demo_title": "Try the demo",
+    "demo_placeholder": "Demo password",
+    "demo_submit": "View demo",
+    "demo_checking": "Checking..."
   },
   "dashboard": {
     "tsb_zone": "TSB Zone",

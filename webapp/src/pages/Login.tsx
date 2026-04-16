@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
+import type { AuthRole } from '../auth/AuthProvider'
 import { apiFetch } from '../api/client'
 import EnduraiLogo from '../components/EnduraiLogo'
 import type { AuthMeResponse } from '../api/types'
@@ -33,6 +34,8 @@ export default function Login() {
   const [alreadyAuth, setAlreadyAuth] = useState(false)
   const [botUsername, setBotUsername] = useState<string | null>(null)
   const widgetContainerRef = useRef<HTMLDivElement>(null)
+  const [demoPassword, setDemoPassword] = useState('')
+  const [demoSubmitting, setDemoSubmitting] = useState(false)
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -71,12 +74,12 @@ export default function Login() {
       setSubmitting(true)
       setMessage('')
       try {
-        const data = await apiFetch<{ token: string }>('/api/auth/telegram-widget', {
+        const data = await apiFetch<{ token: string; role: string }>('/api/auth/telegram-widget', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(user),
         })
-        setJwt(data.token)
+        setJwt(data.token, data.role as AuthRole)
         setMessage(t('login.success'))
         setMsgType('success')
         setTimeout(routeAfterLogin, 500)
@@ -121,12 +124,12 @@ export default function Login() {
     setMessage('')
 
     try {
-      const data = await apiFetch<{ token: string }>('/api/auth/verify-code', {
+      const data = await apiFetch<{ token: string; role: string }>('/api/auth/verify-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
       })
-      setJwt(data.token)
+      setJwt(data.token, data.role as AuthRole)
       setMessage(t('login.success'))
       setMsgType('success')
       setTimeout(routeAfterLogin, 500)
@@ -188,6 +191,47 @@ export default function Login() {
             <p className="text-text-dim text-[13px]">{t('login.code_expires')}</p>
           </div>
         </details>
+
+        <div className="mt-6 pt-4 border-t border-border">
+          <p className="text-text-dim text-sm mb-3">{t('login.demo_title')}</p>
+          <form onSubmit={async (e) => {
+            e.preventDefault()
+            if (!demoPassword.trim()) return
+            setDemoSubmitting(true)
+            setMessage('')
+            try {
+              const data = await apiFetch<{ token: string; role: string }>('/api/auth/demo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: demoPassword }),
+              })
+              setJwt(data.token, data.role as 'demo')
+              setMessage(t('login.success'))
+              setMsgType('success')
+              setTimeout(() => navigate('/'), 500)
+            } catch (err) {
+              setMessage(err instanceof Error ? err.message : t('common.error'))
+              setMsgType('error')
+            } finally {
+              setDemoSubmitting(false)
+            }
+          }} className="flex gap-2">
+            <input
+              type="password"
+              value={demoPassword}
+              onChange={e => setDemoPassword(e.target.value)}
+              placeholder={t('login.demo_placeholder')}
+              className="flex-1 py-2.5 px-3 text-sm bg-surface-2 border border-border rounded-lg text-text outline-none focus:border-accent font-sans"
+            />
+            <button
+              type="submit"
+              disabled={demoSubmitting}
+              className="py-2.5 px-4 text-sm font-semibold bg-surface-2 border border-border text-text rounded-lg cursor-pointer hover:bg-border disabled:opacity-50 font-sans"
+            >
+              {demoSubmitting ? t('login.demo_checking') : t('login.demo_submit')}
+            </button>
+          </form>
+        </div>
 
         {message && (
           <div className={`mt-4 text-sm ${msgType === 'error' ? 'text-red' : 'text-green'}`}>

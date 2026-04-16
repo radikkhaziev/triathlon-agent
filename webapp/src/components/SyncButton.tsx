@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../api/client'
 import type { SyncResponse } from '../api/types'
 import { relativeTime } from '../lib/formatters'
@@ -14,10 +15,13 @@ export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncBut
   const [syncing, setSyncing] = useState(false)
   const [queued, setQueued] = useState(false)
   const { t, i18n } = useTranslation()
+  const { isDemo } = useAuth()
 
   useEffect(() => {
     setQueued(false)
   }, [lastSyncedAt])
+
+  if (isDemo) return null
 
   const handleSync = async () => {
     setSyncing(true)

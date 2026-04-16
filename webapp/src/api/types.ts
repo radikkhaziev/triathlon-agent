@@ -1,7 +1,7 @@
 // Auth
 export interface AuthVerifyCodeResponse {
   token: string
-  role: 'owner' | 'viewer'
+  role: 'owner' | 'viewer' | 'demo'
   expires_in_days: number
 }
 
@@ -12,7 +12,7 @@ export interface IntervalsStatus {
 }
 
 export interface AuthMeResponse {
-  role: 'owner' | 'viewer' | 'anonymous'
+  role: 'owner' | 'viewer' | 'demo' | 'anonymous'
   authenticated: boolean
   language?: string
   intervals?: IntervalsStatus

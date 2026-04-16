@@ -22,6 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field
 # ---------------------------------------------------------------------------
 
 
+class DemoAuthRequest(BaseModel):
+    """Body for `POST /api/auth/demo` — shared password for read-only demo."""
+
+    password: str = Field(..., min_length=1)
+
+
 class VerifyCodeRequest(BaseModel):
     """Body for `POST /api/auth/verify-code` — one-time code from `/web` bot
     command, exchanged for a session JWT.
