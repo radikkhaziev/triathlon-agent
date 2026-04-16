@@ -43,7 +43,7 @@ function buildMcpJsonSnippet(url: string, token: string): string {
 
 export default function Settings() {
   const { t, i18n } = useTranslation()
-  const { logout, isAuthenticated } = useAuth()
+  const { logout, isAuthenticated, isDemo } = useAuth()
   const [mcpConfig, setMcpConfig] = useState<McpConfig | null>(null)
   const [mcpError, setMcpError] = useState<string | null>(null)
   const [mcpRevealed, setMcpRevealed] = useState(false)
@@ -168,7 +168,7 @@ export default function Settings() {
       </Section>
 
       {/* Intervals.icu Connection */}
-      {isAuthenticated && (
+      {isAuthenticated && !isDemo && (
         <Section title={t('settings.intervals.title')} icon="🔗">
           {intervalsToast && (
             <div
@@ -247,14 +247,8 @@ export default function Settings() {
         <Row label="Run CTL" value="25" />
       </Section>
 
-      {/* AI Workouts */}
-      <Section title="AI Workouts" icon="🤖">
-        <Row label="Auto-generate" value="Coming soon" />
-        <Row label="Auto-push to Garmin" value="Coming soon" />
-      </Section>
-
       {/* MCP Connection */}
-      {isAuthenticated && (
+      {isAuthenticated && !isDemo && (
         <Section title={t('settings.mcp.title')} icon="🔌">
           {mcpError && <p className="text-[13px] text-red">{mcpError}</p>}
           {!mcpError && !mcpConfig && (

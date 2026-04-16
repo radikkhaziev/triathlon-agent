@@ -15,6 +15,8 @@ from tasks.formatter import (  # noqa: F401
     build_morning_message,
     build_post_activity_message,
     format_duration,
+    get_category_display,
+    get_recommendation_text,
     sport_emoji,
 )
 

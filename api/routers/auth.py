@@ -1,3 +1,4 @@
+import hmac
 import logging
 import time
 
@@ -6,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
 from api.deps import get_current_user
-from api.dto import SetLanguageRequest, TelegramWidgetAuthRequest, VerifyCodeRequest
+from api.dto import DemoAuthRequest, SetLanguageRequest, TelegramWidgetAuthRequest, VerifyCodeRequest
 from config import settings
 from data.db import User, get_session
 
@@ -26,6 +27,42 @@ router = APIRouter()
 _MCP_CONFIG_RATE_WINDOW_SEC = 60.0
 _mcp_config_last_access: dict[int, float] = {}
 _MCP_ALLOWED_ROLES = {"athlete", "owner"}
+
+# Rate limit for demo login: max 5 attempts per IP per 5 minutes
+_DEMO_RATE_WINDOW_SEC = 300.0
+_DEMO_MAX_ATTEMPTS = 5
+_demo_attempts: dict[str, list[float]] = {}
+
+
+@router.post("/api/auth/demo")
+async def auth_demo(request: Request, body: DemoAuthRequest) -> dict:
+    """Authenticate with demo password for read-only access to owner's data."""
+    demo_pw = settings.DEMO_PASSWORD.get_secret_value()
+    if not demo_pw:
+        raise HTTPException(status_code=404, detail="Demo mode is disabled")
+
+    # Rate limit by IP
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    attempts = _demo_attempts.get(client_ip, [])
+    attempts = [t for t in attempts if now - t < _DEMO_RATE_WINDOW_SEC]
+    if len(attempts) >= _DEMO_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many attempts, try later")
+    attempts.append(now)
+    _demo_attempts[client_ip] = attempts
+
+    password = body.password.strip()
+    if not password or not hmac.compare_digest(password, demo_pw):
+        logger.info("Demo login failed from ip=%s", client_ip)
+        raise HTTPException(status_code=401, detail="Invalid demo password")
+
+    owner = await User.get_owner()
+    if not owner:
+        raise HTTPException(status_code=503, detail="Demo not available")
+
+    token = create_jwt(str(owner.chat_id), purpose="demo")
+    logger.info("Demo login from ip=%s", client_ip)
+    return {"token": token, "role": "demo", "expires_in_days": settings.JWT_EXPIRY_DAYS}
 
 
 @router.post("/api/auth/verify-code")
@@ -93,7 +130,7 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     """
     if not user:
         return {"role": "anonymous", "authenticated": False}
-    return {
+    result = {
         "role": user.role,
         "authenticated": True,
         "language": user.language,
@@ -103,6 +140,10 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
             "scope": user.intervals_oauth_scope,
         },
     }
+    if user.role == "demo":
+        result["language"] = "en"
+        result["intervals"] = {"method": "oauth", "athlete_id": "demo", "scope": None}
+    return result
 
 
 @router.put("/api/auth/language")
@@ -110,6 +151,8 @@ async def set_language(body: SetLanguageRequest, user: User | None = Depends(get
     """Update user language preference."""
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    if user.role == "demo":
+        raise HTTPException(status_code=403, detail="Read-only demo mode")
 
     async with get_session() as session:
         db_user = await session.get(User, user.id)

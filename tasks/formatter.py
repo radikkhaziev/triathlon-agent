@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import TYPE_CHECKING
 
-from bot.i18n import _
+from bot.i18n import _, get_language
 
 if TYPE_CHECKING:
     from data.db import Activity, ActivityHrv, Race, Wellness
@@ -33,7 +33,7 @@ def _recommendation_text() -> dict:
     }
 
 
-# Keep static refs for code that doesn't need i18n (e.g. MCP tools)
+# Keep static refs for code that doesn't need i18n (e.g. MCP tools) — Russian default
 CATEGORY_DISPLAY = {
     "excellent": ("🟢", "ОТЛИЧНОЕ ВОССТАНОВЛЕНИЕ"),
     "good": ("🟢", "ГОТОВ К НАГРУЗКЕ"),
@@ -47,6 +47,31 @@ RECOMMENDATION_TEXT = {
     "zone1_short": "лёгкая активность, 30-45 мин",
     "skip": "отдых — не тренироваться",
 }
+
+_CATEGORY_DISPLAY_EN = {
+    "excellent": ("🟢", "EXCELLENT RECOVERY"),
+    "good": ("🟢", "READY TO TRAIN"),
+    "moderate": ("🟡", "MODERATE LOAD"),
+    "low": ("🔴", "REST RECOMMENDED"),
+}
+
+_RECOMMENDATION_TEXT_EN = {
+    "zone2_ok": "Z2 training — full volume",
+    "zone1_long": "aerobic base only, Z1-Z2",
+    "zone1_short": "light activity, 30-45 min",
+    "skip": "rest day — no training",
+}
+
+
+def get_category_display(category: str, language: str = "ru") -> tuple[str, str]:
+    table = _CATEGORY_DISPLAY_EN if language == "en" else CATEGORY_DISPLAY
+    return table.get(category, ("⚪", "UNKNOWN" if language == "en" else "СТАТУС НЕИЗВЕСТЕН"))
+
+
+def get_recommendation_text(key: str, language: str = "ru") -> str:
+    table = _RECOMMENDATION_TEXT_EN if language == "en" else RECOMMENDATION_TEXT
+    return table.get(key, key)
+
 
 STATUS_EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴", "insufficient_data": "⚪"}
 
@@ -84,8 +109,6 @@ _MONTHS = {
 
 
 def _get_months() -> dict:
-    from bot.i18n import get_language
-
     return _MONTHS.get(get_language(), _MONTHS["ru"])
 
 
@@ -284,12 +307,12 @@ def _build_post_race_message(activity: Activity, race: Race) -> str:
 def _format_workout_short(w) -> str:
     """Format a ScheduledWorkout as short string."""
     sport_names = {
-        "Swim": "Плавание",
-        "Ride": "Вело",
-        "Run": "Бег",
-        "Other": "Другое",
+        "Swim": _("Плавание"),
+        "Ride": _("Вело"),
+        "Run": _("Бег"),
+        "Other": _("Другое"),
     }
-    sport = sport_names.get(w.type or "", w.type or "Тренировка")
+    sport = sport_names.get(w.type or "", w.type or _("Тренировка"))
     name_part = ""
     if w.name:
         parts = w.name.split(":", 1)
@@ -308,18 +331,18 @@ def build_evening_message(
     today = date.today()
     date_str = f"{today.day} {_get_months().get(today.month, '')}"
 
-    lines: list[str] = [f"📊 Итог дня — {date_str}", ""]
+    lines: list[str] = [f"📊 {_('Итог дня')} — {date_str}", ""]
 
     if activities:
         total_tss = sum(a.icu_training_load or 0 for a in activities)
-        lines.append(f"Тренировки: {len(activities)} | TSS: {total_tss:.0f}")
+        lines.append(f"{_('Тренировки')}: {len(activities)} | TSS: {total_tss:.0f}")
         for a in activities:
             emoji = sport_emoji(a.type)
             dur = format_duration(a.moving_time)
             tss = f" (TSS {a.icu_training_load:.0f})" if a.icu_training_load else ""
             lines.append(f"  {emoji} {a.type or '?'} {dur}{tss}")
     else:
-        lines.append("🏋️ День отдыха")
+        lines.append(f"🏋️ {_('День отдыха')}")
 
     lines.append("")
 
@@ -338,10 +361,10 @@ def build_evening_message(
 
         if row.hrv is not None:
             hrv_emoji = STATUS_EMOJI.get(row.readiness_level or "", "⚪")
-            lines.append(f"HRV: {hrv_emoji} {row.hrv:.1f} мс")
+            lines.append(f"HRV: {hrv_emoji} {row.hrv:.1f} {_('мс')}")
 
         if row.resting_hr is not None:
-            lines.append(f"RHR: {row.resting_hr} уд/мин")
+            lines.append(f"RHR: {row.resting_hr} {_('уд/мин')}")
 
     processed = [h for h in hrv_analyses if h.processing_status == "processed" and h.ra_pct is not None]
     if processed:
@@ -355,10 +378,10 @@ def build_evening_message(
         workout_strs = [_format_workout_short(w) for w in tomorrow_workouts if w.category == "WORKOUT"]
         if workout_strs:
             lines.append("")
-            lines.append(f"📋 Завтра: {', '.join(workout_strs)}")
+            lines.append(f"📋 {_('Завтра')}: {', '.join(workout_strs)}")
     elif tomorrow_workouts is not None:
         lines.append("")
-        lines.append("📋 Завтра: отдых")
+        lines.append(f"📋 {_('Завтра')}: {_('отдых')}")
 
     return "\n".join(lines)
 
@@ -384,11 +407,11 @@ def build_morning_message(
 
     if threshold_drift and threshold_drift.get("alerts"):
         lines.append("")
-        lines.append("🔔 ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ")
+        lines.append(f"🔔 {_('ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ')}")
         lines.append("━━━━━━━━━━━━━━━━━━━━━")
         for alert in threshold_drift["alerts"]:
-            lines.append(f"HRVT1 стабильно {alert['measured_avg']} bpm ({alert['tests_count']} теста)")
-            lines.append(f"Текущий LTHR: {alert['config_value']} bpm ({alert['diff_pct']:+.1f}%)")
-            lines.append("→ Обнови LTHR в настройках")
+            lines.append(f"{_('HRVT1 стабильно')} {alert['measured_avg']} bpm ({alert['tests_count']} {_('теста')})")
+            lines.append(f"{_('Текущий LTHR')}: {alert['config_value']} bpm ({alert['diff_pct']:+.1f}%)")
+            lines.append(f"→ {_('Обнови LTHR в настройках')}")
 
     return "\n".join(lines)

@@ -11,7 +11,7 @@ interface WeekNavProps {
 }
 
 export default function WeekNav({ weekStart, weekEnd, hasPrev, hasNext, onPrev, onNext }: WeekNavProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   return (
     <div className="flex items-center justify-center gap-3 py-2">
       <button
@@ -22,7 +22,7 @@ export default function WeekNav({ weekStart, weekEnd, hasPrev, hasNext, onPrev, 
         &larr; {t('common.prev')}
       </button>
       <span className="text-sm font-semibold min-w-[180px] text-center">
-        {formatWeekLabel(weekStart, weekEnd)}
+        {formatWeekLabel(weekStart, weekEnd, i18n.language)}
       </span>
       <button
         onClick={onNext}

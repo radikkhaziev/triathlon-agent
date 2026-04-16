@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 import sentry_sdk
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ValidationError
 
@@ -85,12 +85,13 @@ router = APIRouter(prefix="/api/intervals", tags=["intervals"])
 
 _OAUTH_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
 _OAUTH_TOKEN_URL = "https://intervals.icu/api/oauth/token"
-_OAUTH_SCOPES = "ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE"
+_OAUTH_SCOPES = "ACTIVITY:WRITE,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE"
 # Per Intervals.icu docs: "For each scope specify READ or WRITE (to update,
 # implies READ access) and use commas to separate multiple scopes." So
 # :WRITE gives us both write AND read — listing the same area twice produces
 # "Duplicate scope" error because their parser keys by area name.
 #
+# Why ACTIVITY:WRITE: rename Strava-sourced activities, update activity fields.
 # Why SETTINGS:WRITE (not READ): `actor_update_zones` pushes new LTHR values
 # to Intervals.icu via client.update_sport_settings() after ramp-test drift
 # detection. Read-only would break the "Обновить зоны" button in morning
@@ -377,11 +378,13 @@ async def intervals_oauth_init(user: User = Depends(require_viewer)) -> Interval
     """Initiate the Intervals.icu OAuth flow from an authenticated XHR.
 
     Why POST+JSON instead of a GET redirect: the frontend carries auth via the
-    `Authorization` header (Telegram initData or Bearer JWT from localStorage).
-    A full-page `<a href>` navigation would NOT send that header, so a GET
-    endpoint with `require_viewer` would 401. Instead the frontend calls this
-    over `apiFetch` (which attaches the header), receives the signed authorize
-    URL, and navigates the browser to it via `window.location.assign(...)`.
+    ``Authorization`` header (Telegram initData or Bearer JWT from localStorage).
+    A full-page ``<a href>`` navigation would NOT send that header, so a GET
+    endpoint with ``require_viewer`` would 401. Instead the frontend calls this
+    over ``apiFetch`` (which attaches the header), receives the signed authorize
+    URL, and navigates the browser to it via ``window.location.assign(...)``.
+
+    Demo users are blocked — they must not initiate OAuth for the owner's account.
 
     Returns `{authorize_url}` — the Intervals.icu /oauth/authorize URL with our
     `client_id`, `redirect_uri`, `scope`, and a short-lived signed `state` JWT
@@ -389,10 +392,11 @@ async def intervals_oauth_init(user: User = Depends(require_viewer)) -> Interval
 
     Returns 503 if `INTERVALS_OAUTH_CLIENT_ID` is not configured.
     """
+    if user.role == "demo":
+        raise HTTPException(status_code=403, detail="Read-only demo mode")
+
     if not settings.INTERVALS_OAUTH_CLIENT_ID:
         logger.error("OAuth init called but INTERVALS_OAUTH_CLIENT_ID is not set")
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=503, detail="Intervals.icu OAuth is not configured on this server")
 
     state = _generate_oauth_state(user.id)

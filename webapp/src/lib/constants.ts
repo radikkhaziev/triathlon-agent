@@ -5,11 +5,10 @@ export const SPORT_ICONS: Record<string, string> = {
   Other: '\u{1F3CB}\uFE0F',
 }
 
-export const WEEKDAY_RU: Record<string, string> = {
-  Mon: 'Пн', Tue: 'Вт', Wed: 'Ср', Thu: 'Чт', Fri: 'Пт', Sat: 'Сб', Sun: 'Вс',
+export const MONTHS: Record<string, string[]> = {
+  ru: ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'],
+  en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
 }
-
-export const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
 
 export const ZONE_COLORS = ['#6b7280', '#22c55e', '#f59e0b', '#f97316', '#ef4444']
 export const ZONE_LABELS = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5']
@@ -21,11 +20,11 @@ export const CATEGORY_COLORS: Record<string, string> = {
   low: '#ef4444',
 }
 
-export const STATUS_BADGE_MAP: Record<string, { cls: string; label: string }> = {
-  green: { cls: 'bg-[#22c55e20] text-green', label: 'Норма' },
-  yellow: { cls: 'bg-[#f59e0b20] text-yellow', label: 'Внимание' },
-  red: { cls: 'bg-[#ef444420] text-red', label: 'Снижен' },
-  insufficient_data: { cls: 'bg-[#88888820] text-text-dim', label: 'Нет данных' },
+export const STATUS_BADGE_MAP: Record<string, { cls: string; labelKey: string }> = {
+  green: { cls: 'bg-[#22c55e20] text-green', labelKey: 'status.green' },
+  yellow: { cls: 'bg-[#f59e0b20] text-yellow', labelKey: 'status.yellow' },
+  red: { cls: 'bg-[#ef444420] text-red', labelKey: 'status.red' },
+  insufficient_data: { cls: 'bg-[#88888820] text-text-dim', labelKey: 'status.insufficient_data' },
 }
 
 export const CHART_COLORS = {

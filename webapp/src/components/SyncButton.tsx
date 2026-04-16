@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../api/client'
 import type { SyncResponse } from '../api/types'
 import { relativeTime } from '../lib/formatters'
@@ -13,11 +14,14 @@ interface SyncButtonProps {
 export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncButtonProps) {
   const [syncing, setSyncing] = useState(false)
   const [queued, setQueued] = useState(false)
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const { isDemo } = useAuth()
 
   useEffect(() => {
     setQueued(false)
   }, [lastSyncedAt])
+
+  if (isDemo) return null
 
   const handleSync = async () => {
     setSyncing(true)
@@ -51,7 +55,7 @@ export default function SyncButton({ endpoint, lastSyncedAt, onSynced }: SyncBut
         )}
       </button>
       <span className="text-xs text-text-dim">
-        {lastSyncedAt ? t('common.updated_at', { time: relativeTime(lastSyncedAt) }) : t('common.not_synced')}
+        {lastSyncedAt ? t('common.updated_at', { time: relativeTime(lastSyncedAt, i18n.language) }) : t('common.not_synced')}
       </span>
     </div>
   )

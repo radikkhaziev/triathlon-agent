@@ -30,10 +30,12 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     tg_username: str | None = None
     tg_display_name: str | None = None
     from_init_data = False
+    is_demo = False
 
     if authorization.startswith("Bearer "):
         jwt_token = authorization[7:]
-        chat_id = verify_jwt(jwt_token)
+        chat_id, purpose = verify_jwt(jwt_token)
+        is_demo = purpose == "demo"
     else:
         bot_token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
         if bot_token:
@@ -67,6 +69,10 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
         user = await User.get_by_chat_id(chat_id)
 
     if user:
+        if is_demo:
+            # Demo tokens grant read-only access to owner's data.
+            # Set a virtual role that frontend and deps can check.
+            user.role = "demo"  # type: ignore[assignment]  # virtual, not persisted
         sentry_sdk.set_user(
             {
                 "id": str(user.id),
@@ -116,18 +122,20 @@ async def require_viewer(user: User | None = Depends(get_current_user)) -> User:
 def get_data_user_id(user: User) -> int:
     """Resolve which user_id to query data for.
 
-    Active athletes with athlete_id → own data.
-    Everyone else (viewers) → owner data.
+    Always returns user.id. Demo tokens are minted with the owner's
+    chat_id, so the resolved User object is already the owner — no
+    special-casing needed here. Users without athlete_id see empty
+    data (frontend gates them to OnboardingPrompt).
     """
-    if user.is_active and user.athlete_id:
-        return user.id
-    return 1
+    return user.id
 
 
 async def require_athlete(user: User | None = Depends(get_current_user)) -> User:
     """Require active athlete with Intervals.icu credentials configured."""
     if not user:
         raise HTTPException(status_code=401, detail="Telegram authorization required")
+    if user.role == "demo":
+        raise HTTPException(status_code=403, detail="Read-only demo mode")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is deactivated")
     if not user.athlete_id:

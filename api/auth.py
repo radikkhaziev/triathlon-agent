@@ -75,14 +75,19 @@ def verify_code(code: str) -> str | None:
     return entry["chat_id"]
 
 
-def create_jwt(chat_id: str) -> str:
-    """Create a JWT token for the given chat_id."""
+def create_jwt(chat_id: str, *, purpose: str | None = None) -> str:
+    """Create a JWT token for the given chat_id.
+
+    Optional `purpose` claim: 'demo' for read-only demo access.
+    """
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "sub": chat_id,
         "iat": int(time.time()),
         "exp": int(time.time()) + settings.JWT_EXPIRY_DAYS * 86400,
     }
+    if purpose:
+        payload["purpose"] = purpose
 
     def _b64(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
@@ -159,12 +164,12 @@ def verify_telegram_widget_auth(data: dict, *, now: float | None = None) -> str 
         return None
 
 
-def verify_jwt(token: str) -> str | None:
-    """Verify JWT and return chat_id (sub claim), or None if invalid/expired."""
+def verify_jwt(token: str) -> tuple[str | None, str | None]:
+    """Verify JWT and return (chat_id, purpose) or (None, None) if invalid."""
     try:
         parts = token.split(".")
         if len(parts) != 3:
-            return None
+            return None, None
 
         h, p, s = parts
 
@@ -173,16 +178,16 @@ def verify_jwt(token: str) -> str | None:
         # Decode received signature (add padding)
         sig_bytes = base64.urlsafe_b64decode(s + "==")
         if not hmac.compare_digest(expected_sig, sig_bytes):
-            return None
+            return None, None
 
         # Decode payload (add padding)
         payload = json.loads(base64.urlsafe_b64decode(p + "=="))
 
         # Check expiry
         if payload.get("exp", 0) < time.time():
-            return None
+            return None, None
 
-        return payload.get("sub")
+        return payload.get("sub"), payload.get("purpose")
     except Exception:
         logger.debug("JWT verification failed", exc_info=True)
-        return None
+        return None, None
