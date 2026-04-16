@@ -30,6 +30,13 @@ class AthleteSettings(Base):
     threshold_pace: Mapped[float | None] = mapped_column(Float, nullable=True)  # Swim: sec/100m, Run: sec/km
     pace_units: Mapped[str | None] = mapped_column(String(20), nullable=True)  # SECS_100M / MINS_KM
 
+    # Zone boundaries from Intervals.icu sport-settings (source of truth)
+    hr_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [129, 136, 144, 152, 157, 161]
+    hr_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Recovery", "Aerobic", ...]
+    power_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [100, 140, 170, 210, 260]
+    pace_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [420, 390, 360, 330, 300]
+    pace_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Zone 1", "Zone 2", ...]
+
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -52,6 +59,11 @@ class AthleteSettings(Base):
         ftp: int | None = None,
         threshold_pace: float | None = None,
         pace_units: str | None = None,
+        hr_zones: list | None = None,
+        hr_zone_names: list | None = None,
+        power_zones: list | None = None,
+        pace_zones: list | None = None,
+        pace_zone_names: list | None = None,
         session: Session,
     ) -> AthleteSettings:
         now = datetime.now(timezone.utc)
@@ -63,6 +75,11 @@ class AthleteSettings(Base):
             ftp=ftp,
             threshold_pace=threshold_pace,
             pace_units=pace_units,
+            hr_zones=hr_zones,
+            hr_zone_names=hr_zone_names,
+            power_zones=power_zones,
+            pace_zones=pace_zones,
+            pace_zone_names=pace_zone_names,
             synced_at=now,
         )
         # On conflict: keep existing value when new value is None (COALESCE)
@@ -75,6 +92,11 @@ class AthleteSettings(Base):
                 "ftp": func.coalesce(excl.ftp, cls.ftp),
                 "threshold_pace": func.coalesce(excl.threshold_pace, cls.threshold_pace),
                 "pace_units": func.coalesce(excl.pace_units, cls.pace_units),
+                "hr_zones": func.coalesce(excl.hr_zones, cls.hr_zones),
+                "hr_zone_names": func.coalesce(excl.hr_zone_names, cls.hr_zone_names),
+                "power_zones": func.coalesce(excl.power_zones, cls.power_zones),
+                "pace_zones": func.coalesce(excl.pace_zones, cls.pace_zones),
+                "pace_zone_names": func.coalesce(excl.pace_zone_names, cls.pace_zone_names),
                 "synced_at": now,
                 "updated_at": now,
             },

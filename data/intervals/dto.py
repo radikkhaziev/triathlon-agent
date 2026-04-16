@@ -76,8 +76,11 @@ class SportSettingsDTO(BaseModel):
     threshold_pace: float | None = None
     pace_units: str | None = None  # SECS_100M, MINS_KM, SECS_100Y, etc.
     hr_zones: list[int] | None = None
+    hr_zone_names: list[str] | None = None
     power_zones: list[int] | None = None
+    power_zone_names: list[str] | None = None
     pace_zones: list[float] | None = None
+    pace_zone_names: list[str] | None = None
 
 
 class EventExDTO(BaseModel):
