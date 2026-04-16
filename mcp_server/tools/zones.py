@@ -14,23 +14,32 @@ def _zones_from_boundaries(boundaries: list, names: list | None, label: str) -> 
     """Build zone list from Intervals.icu boundary array.
 
     Intervals.icu stores zones as N threshold values → N+1 zones.
-    E.g. hr_zones=[129, 136, 144, 152, 157, 161] → 7 zones:
-      Z1: 0-129, Z2: 130-136, ..., Z7: 162+
+    HR/power boundaries are ascending: [129, 136, 144, 152, 157, 161]
+      → Z1: 0-129, Z2: 130-136, ..., Z7: 162+
+    Pace boundaries are descending (slower→faster): [420, 390, 360, 330, 300]
+      → Z1: >420 (slowest), Z2: 390-420, ..., Z6: <300 (fastest)
     """
     zones = []
     for i in range(len(boundaries) + 1):
-        lo = 0 if i == 0 else boundaries[i - 1] + (1 if label != "pace" else 0)
-        hi = boundaries[i] if i < len(boundaries) else None
         name = names[i] if names and i < len(names) else f"Z{i + 1}"
         zone: dict = {"zone": i + 1, "name": name}
+
         if label == "pace":
-            zone["min"] = lo
-            if hi is not None:
-                zone["max"] = hi
+            # Pace: descending boundaries. Z1 = slowest (> first boundary).
+            slower = boundaries[i - 1] if i > 0 else None
+            faster = boundaries[i] if i < len(boundaries) else None
+            if slower is not None:
+                zone["slower_than"] = slower
+            if faster is not None:
+                zone["faster_than"] = faster
         else:
+            # HR/power: ascending boundaries.
+            lo = 0 if i == 0 else boundaries[i - 1] + 1
+            hi = boundaries[i] if i < len(boundaries) else None
             zone[f"min_{label}"] = lo
             if hi is not None:
                 zone[f"max_{label}"] = hi
+
         zones.append(zone)
     return zones
 
@@ -77,9 +86,12 @@ def _fallback_power_zones(ftp: int) -> list[dict]:
     ]
 
 
+_SPORT_KEY = {"Ride": "bike", "Run": "run", "Swim": "swim"}
+
+
 def _build_sport_zones(s: AthleteSettings, sport: str, result: dict) -> None:
     """Add HR/power/pace zones for a sport to the result dict."""
-    prefix = sport.lower()
+    prefix = _SPORT_KEY.get(sport, sport.lower())
 
     # HR zones
     if s.hr_zones:
