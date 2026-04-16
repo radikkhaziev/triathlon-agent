@@ -19,7 +19,7 @@ import type {
 } from '../api/types'
 
 export default function Today() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [report, setReport] = useState<WellnessResponse | null>(null)
   const [workouts, setWorkouts] = useState<ScheduledWorkoutsResponse | null>(null)
   const [activities, setActivities] = useState<ActivitiesWeekResponse | null>(null)
@@ -158,7 +158,7 @@ export default function Today() {
             <div className="flex-1">
               <div className="text-[13px] font-medium">{sportLabel(lastActivity.type)}</div>
               <div className="text-xs text-text-dim">
-                {fmtDateShort(lastActivity.date)}
+                {fmtDateShort(lastActivity.date, i18n.language)}
                 {lastActivity.duration && ` \u00B7 ${lastActivity.duration}`}
                 {lastActivity.icu_training_load != null && ` \u00B7 TSS ${lastActivity.icu_training_load}`}
               </div>

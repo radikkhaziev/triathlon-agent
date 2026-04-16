@@ -12,7 +12,7 @@ import { SPORT_ICONS } from '../lib/constants'
 import type { ScheduledWorkoutsResponse, SyncResponse, ScheduledWorkout } from '../api/types'
 
 export default function Plan() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { offset, prev, next } = useWeekNav()
   const { data, loading, error, reload } = useApi<ScheduledWorkoutsResponse>(`/api/scheduled-workouts?week_offset=${offset}`)
 
@@ -51,7 +51,7 @@ export default function Plan() {
             return (
               <div key={day.date} className={`bg-surface border rounded-[14px] mb-2.5 overflow-hidden ${isToday ? 'border-accent' : 'border-border'}`}>
                 <div className="flex items-center justify-between px-4 py-3">
-                  <span className="text-sm font-semibold">{formatDayDate(day.date, day.weekday)}</span>
+                  <span className="text-sm font-semibold">{formatDayDate(day.date, day.weekday, i18n.language)}</span>
                   {isToday && <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-lg tracking-wide">{t('common.today_badge')}</span>}
                 </div>
                 {day.workouts.length === 0 ? (

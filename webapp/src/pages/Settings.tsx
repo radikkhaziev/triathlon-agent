@@ -247,12 +247,6 @@ export default function Settings() {
         <Row label="Run CTL" value="25" />
       </Section>
 
-      {/* AI Workouts */}
-      <Section title="AI Workouts" icon="🤖">
-        <Row label="Auto-generate" value="Coming soon" />
-        <Row label="Auto-push to Garmin" value="Coming soon" />
-      </Section>
-
       {/* MCP Connection */}
       {isAuthenticated && (
         <Section title={t('settings.mcp.title')} icon="🔌">

@@ -5,11 +5,10 @@ export const SPORT_ICONS: Record<string, string> = {
   Other: '\u{1F3CB}\uFE0F',
 }
 
-export const WEEKDAY_RU: Record<string, string> = {
-  Mon: 'Пн', Tue: 'Вт', Wed: 'Ср', Thu: 'Чт', Fri: 'Пт', Sat: 'Сб', Sun: 'Вс',
+export const MONTHS: Record<string, string[]> = {
+  ru: ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'],
+  en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
 }
-
-export const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
 
 export const ZONE_COLORS = ['#6b7280', '#22c55e', '#f59e0b', '#f97316', '#ef4444']
 export const ZONE_LABELS = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5']
