@@ -13,25 +13,40 @@ from data.utils import extract_sport_ctl
 router = APIRouter()
 
 
-def _cv_verdict(cv: float | None) -> str | None:
+_CV_VERDICTS = {
+    "ru": {"high": "высокая", "normal": "нормальная", "unstable": "нестабильная"},
+    "en": {"high": "high", "normal": "normal", "unstable": "unstable"},
+}
+
+_SWC_VERDICTS = {
+    "ru": {"noise": "в пределах шума", "improvement": "значимое улучшение", "decline": "значимое снижение"},
+    "en": {"noise": "within noise", "improvement": "significant improvement", "decline": "significant decline"},
+}
+
+
+def _cv_verdict(cv: float | None, language: str = "ru") -> str | None:
     if cv is None:
         return None
+    v = _CV_VERDICTS.get(language, _CV_VERDICTS["en"])
     if cv < 5:
-        return "высокая"
+        return v["high"]
     if cv < 10:
-        return "нормальная"
-    return "нестабильная"
+        return v["normal"]
+    return v["unstable"]
 
 
-def _swc_verdict(today_val: float | None, baseline_60d: float | None, swc: float | None) -> str | None:
+def _swc_verdict(
+    today_val: float | None, baseline_60d: float | None, swc: float | None, language: str = "ru"
+) -> str | None:
     if not today_val or not baseline_60d or not swc:
         return None
+    v = _SWC_VERDICTS.get(language, _SWC_VERDICTS["en"])
     delta = today_val - baseline_60d
     if abs(delta) < swc:
-        return "в пределах шума"
+        return v["noise"]
     if delta > 0:
-        return "значимое улучшение"
-    return "значимое снижение"
+        return v["improvement"]
+    return v["decline"]
 
 
 def _format_sleep_duration(secs: int | None, language: str = "ru") -> str | None:
@@ -43,7 +58,7 @@ def _format_sleep_duration(secs: int | None, language: str = "ru") -> str | None
     return f"{h}ч {m}м" if h else f"{m}м"
 
 
-def _hrv_block(hrv_row, hrv_today: float | None) -> dict:
+def _hrv_block(hrv_row, hrv_today: float | None, language: str = "ru") -> dict:
     if not hrv_row:
         return {"status": "insufficient_data", "status_emoji": "⚪"}
 
@@ -63,9 +78,9 @@ def _hrv_block(hrv_row, hrv_today: float | None) -> dict:
         "lower_bound": hrv_row.lower_bound,
         "upper_bound": hrv_row.upper_bound,
         "swc": hrv_row.swc,
-        "swc_verdict": _swc_verdict(hrv_today, hrv_row.rmssd_60d, hrv_row.swc),
+        "swc_verdict": _swc_verdict(hrv_today, hrv_row.rmssd_60d, hrv_row.swc, language),
         "cv_7d": hrv_row.cv_7d,
-        "cv_verdict": _cv_verdict(hrv_row.cv_7d),
+        "cv_verdict": _cv_verdict(hrv_row.cv_7d, language),
         "days_available": hrv_row.days_available,
         "trend": (
             {
@@ -79,7 +94,7 @@ def _hrv_block(hrv_row, hrv_today: float | None) -> dict:
     }
 
 
-def _rhr_block(rhr_row) -> dict:
+def _rhr_block(rhr_row, language: str = "ru") -> dict:
     if not rhr_row:
         return {"status": "insufficient_data", "status_emoji": "⚪"}
 
@@ -101,7 +116,7 @@ def _rhr_block(rhr_row) -> dict:
         "lower_bound": rhr_row.lower_bound,
         "upper_bound": rhr_row.upper_bound,
         "cv_7d": rhr_row.cv_7d,
-        "cv_verdict": _cv_verdict(rhr_row.cv_7d),
+        "cv_verdict": _cv_verdict(rhr_row.cv_7d, language),
         "days_available": rhr_row.days_available,
         "trend": (
             {
@@ -145,10 +160,10 @@ async def _build_wellness_response(row, target_date: date, user_id: int, languag
         },
         "hrv": {
             "primary_algorithm": settings.HRV_ALGORITHM,
-            "flatt_esco": _hrv_block(hrv_flatt, hrv_today),
-            "ai_endurance": _hrv_block(hrv_aie, hrv_today),
+            "flatt_esco": _hrv_block(hrv_flatt, hrv_today, language),
+            "ai_endurance": _hrv_block(hrv_aie, hrv_today, language),
         },
-        "rhr": _rhr_block(rhr_row),
+        "rhr": _rhr_block(rhr_row, language),
         "sleep": {
             "score": row.sleep_score,
             "quality": row.sleep_quality,

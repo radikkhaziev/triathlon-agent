@@ -1,4 +1,10 @@
 {
+  "status": {
+    "green": "Норма",
+    "yellow": "Внимание",
+    "red": "Снижен",
+    "insufficient_data": "Нет данных"
+  },
   "nav": {
     "today": "Сегодня",
     "plan": "План",

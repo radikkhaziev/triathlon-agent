@@ -1,4 +1,10 @@
 {
+  "status": {
+    "green": "Normal",
+    "yellow": "Attention",
+    "red": "Reduced",
+    "insufficient_data": "No data"
+  },
   "nav": {
     "today": "Today",
     "plan": "Plan",
