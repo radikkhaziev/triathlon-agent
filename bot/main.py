@@ -11,6 +11,7 @@ from typing import Callable, NamedTuple
 import httpx
 import psutil
 import sentry_sdk
+from sqlalchemy import select as sa_select
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
 from telegram import ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Update, WebAppInfo
@@ -335,18 +336,61 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
     lines.append(f"Uptime: {up_str}  CPU: {cpu_total}%")
     lines.append("```")
 
-    # DB + token counts (single session)
+    # DB + user stats + token usage (single session)
+    athletes: list[User] = []
     try:
         async with get_session() as session:
+            total_users = (await session.execute(text("SELECT count(*) FROM users"))).scalar()
             active_users = (await session.execute(text("SELECT count(*) FROM users WHERE is_active = true"))).scalar()
+            active_athletes = (
+                await session.execute(
+                    text("SELECT count(*) FROM users WHERE is_active = true AND athlete_id IS NOT NULL")
+                )
+            ).scalar()
+            oauth_users = (
+                await session.execute(text("SELECT count(*) FROM users WHERE intervals_auth_method = 'oauth'"))
+            ).scalar()
             mcp_tokens = (
                 await session.execute(text("SELECT count(*) FROM users WHERE mcp_token IS NOT NULL"))
             ).scalar()
-            api_keys = (
-                await session.execute(text("SELECT count(*) FROM users WHERE api_key_encrypted IS NOT NULL"))
-            ).scalar()
-        lines.append(f"✅ *DB*: ok | {active_users} active users")
-        lines.append(f"🔑 *Tokens*: {mcp_tokens} MCP | {api_keys} API keys")
+
+            # Fetch active athletes for per-user Intervals.icu check
+            athletes = list(
+                (await session.execute(sa_select(User).where(User.is_active.is_(True), User.athlete_id.isnot(None))))
+                .scalars()
+                .all()
+            )
+
+            # Today's token usage per user
+            today_str = datetime.now(TZ).strftime("%Y-%m-%d")
+            usage_rows = (
+                await session.execute(
+                    text(
+                        "SELECT u.username, u.role, a.input_tokens, a.output_tokens, "
+                        "a.cache_read_tokens, a.request_count "
+                        "FROM api_usage_daily a JOIN users u ON u.id = a.user_id "
+                        "WHERE a.date = :dt ORDER BY (a.input_tokens + a.output_tokens) DESC"
+                    ),
+                    {"dt": today_str},
+                )
+            ).fetchall()
+
+        lines.append(f"✅ *DB*: ok | 👥 {total_users} users | 🏃 {active_athletes} athletes | ✅ {active_users} active")
+        lines.append(f"🔑 *Auth*: {mcp_tokens} MCP | {oauth_users} OAuth")
+
+        if usage_rows:
+            lines.append(f"📊 *Tokens today* ({today_str}):")
+            for row in usage_rows:
+                username = row[0] or "—"
+                role = row[1] or "—"
+                inp = row[2] or 0
+                out = row[3] or 0
+                cache = row[4] or 0
+                reqs = row[5] or 0
+                total = inp + out
+                lines.append(f"  @{username} ({role}): {total:,}t ({reqs} reqs, {cache:,} cached)")
+        else:
+            lines.append("📊 *Tokens today*: no usage")
     except Exception as e:
         lines.append(f"❌ *DB*: {e}")
 
@@ -384,14 +428,38 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
     except Exception as e:
         lines.append(f"❌ *Redis*: {e}")
 
-    # Intervals.icu API (generic check, no real credentials)
+    # Intervals.icu — reachability + per-athlete credential check
     try:
         async with httpx.AsyncClient(timeout=5.0) as http:
             resp = await http.get("https://intervals.icu/api/v1/athlete/0", auth=("x", "x"))
-            if resp.status_code in (200, 401, 403):
-                lines.append("✅ *Intervals.icu*: reachable")
-            else:
-                lines.append(f"⚠️ *Intervals.icu*: HTTP {resp.status_code}")
+            reachable = resp.status_code in (200, 401, 403)
+            lines.append(
+                f"{'✅' if reachable else '❌'} *Intervals.icu*: "
+                f"{'reachable' if reachable else f'HTTP {resp.status_code}'}"
+            )
+            for a in athletes:
+                url = f"https://intervals.icu/api/v1/athlete/{a.athlete_id}"
+                name = a.username or f"id={a.id}"
+                method = a.intervals_auth_method
+                try:
+                    if a.intervals_access_token:
+                        r = await http.get(
+                            url,
+                            headers={"Authorization": f"Bearer {a.intervals_access_token}"},
+                        )
+                    elif a.api_key:
+                        r = await http.get(url, auth=("API_KEY", a.api_key))
+                    else:
+                        lines.append(f"  ⚠️ @{name}: no credentials")
+                        continue
+                    if r.status_code == 200:
+                        lines.append(f"  ✅ @{name}: {method} ok")
+                    elif r.status_code == 401:
+                        lines.append(f"  ❌ @{name}: {method} invalid")
+                    else:
+                        lines.append(f"  ⚠️ @{name}: {method} HTTP {r.status_code}")
+                except Exception as e:
+                    lines.append(f"  ❌ @{name}: {type(e).__name__}")
     except Exception as e:
         lines.append(f"❌ *Intervals.icu*: {e}")
 
