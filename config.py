@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     JWT_SECRET: SecretStr = SecretStr("")  # If empty, falls back to TELEGRAM_BOT_TOKEN
     JWT_EXPIRY_DAYS: int = 7  # JWT token lifetime
 
+    # Demo mode: shared password for read-only access to owner's data. Empty = disabled.
+    DEMO_PASSWORD: SecretStr = SecretStr("")
+
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
 

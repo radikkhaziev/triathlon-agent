@@ -182,6 +182,12 @@ class User(Base):
         return result.scalar_one_or_none()
 
     @classmethod
+    @with_session
+    async def get_owner(cls, *, session: AsyncSession) -> User | None:
+        result = await session.execute(select(cls).where(cls.role == "owner").limit(1))
+        return result.scalar_one_or_none()
+
+    @classmethod
     @dual
     def set_active_by_chat_id(cls, chat_id: int | str, active: bool, *, session: Session) -> None:
         """Toggle `is_active` by chat_id. Called from `my_chat_member` handler and 403 fallbacks."""
