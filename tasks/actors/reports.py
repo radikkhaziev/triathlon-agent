@@ -8,6 +8,7 @@ import sentry_sdk
 from pydantic import validate_call
 from sqlalchemy import select
 
+from bot.i18n import _, set_language
 from config import settings
 from data.db import (
     Activity,
@@ -80,13 +81,14 @@ def _actor_send_user_morning_report(
     """Sends morning report to user via Telegram."""
     from tasks.utils import RampTrainingSuggestion
 
+    set_language(user.language or "ru")
     summary = build_morning_message(wellness)
     webapp_url = settings.API_BASE_URL
     keyboard = {
         "inline_keyboard": [
             [
                 {
-                    "text": "Открыть отчёт",
+                    "text": _("Открыть отчёт"),
                     "web_app": {"url": webapp_url},
                 }
             ]
@@ -97,14 +99,14 @@ def _actor_send_user_morning_report(
     if ramp.is_test_needed:
         sport = ramp.suggested_sport or "Run"
         if ramp.days_since:
-            summary += f"\n\n⚡ Ramp Test ({sport}): последний тест {ramp.days_since} дней назад"
+            summary += f"\n\n⚡ Ramp Test ({sport}): {_('последний тест')} {ramp.days_since} {_('дней назад')}"
         else:
-            summary += f"\n\n⚡ Ramp Test ({sport}): тест ещё не выполнялся"
+            summary += f"\n\n⚡ Ramp Test ({sport}): {_('тест ещё не выполнялся')}"
 
         keyboard["inline_keyboard"].append(
             [
                 {
-                    "text": f"Создать Ramp Test ({sport})",
+                    "text": f"{_('Создать Ramp Test')} ({sport})",
                     "callback_data": f"ramp_test:{sport}",
                 }
             ]
@@ -135,19 +137,19 @@ def _actor_send_user_morning_report(
             category=wellness.recovery_category or "moderate",
             recommendation="",
         )
-        max_zone, _ = compute_constraints(recovery, hrv_status, tsb)
+        max_zone, _constraint_detail = compute_constraints(recovery, hrv_status, tsb)
 
         s = AthleteSettings.get(user.id, w.type or "Run")
         ftp = float(s.ftp) if s and s.ftp else 233
         lthr = s.lthr if s and s.lthr else 153
 
         if needs_adaptation(steps, max_zone, ftp, lthr):
-            w_name = w.name or "Тренировка"
-            summary += f"\n\n⚠️ {w_name} требует адаптации (recovery {recovery.category}, max Z{max_zone})"
+            w_name = w.name or _("Тренировка")
+            summary += f"\n\n⚠️ {w_name} {_('требует адаптации')} (recovery {recovery.category}, max Z{max_zone})"
             keyboard["inline_keyboard"].append(
                 [
                     {
-                        "text": f"Адаптировать: {w_name}",
+                        "text": f"{_('Адаптировать')}: {w_name}",
                         "callback_data": f"adapt:{w.id}",
                     }
                 ]
@@ -158,12 +160,12 @@ def _actor_send_user_morning_report(
     if drift:
         for alert in drift.alerts:
             summary += (
-                f"\n⚠️ LTHR {alert.sport}: текущий порог {alert.config_value} bpm, "
-                f"по тестам {alert.measured_avg} bpm ({alert.diff_pct:+.1f}%). Рекомендуем обновить"
+                f"\n⚠️ LTHR {alert.sport}: {_('текущий порог')} {alert.config_value} bpm, "
+                f"{_('по тестам')} {alert.measured_avg} bpm ({alert.diff_pct:+.1f}%). {_('Рекомендуем обновить')}"
             )
         keyboard["inline_keyboard"].append(
             [
-                {"text": "Обновить зоны", "callback_data": "update_zones"},
+                {"text": _("Обновить зоны"), "callback_data": "update_zones"},
             ]
         )
 
@@ -281,6 +283,7 @@ def actor_compose_user_evening_report(
         tomorrow = today + timedelta(days=1)
         tomorrow_workouts = ScheduledWorkout.get_for_date(user.id, dt=tomorrow, session=session)
 
+    set_language(user.language or "ru")
     summary = build_evening_message(_wellness_row, activities, hrv_analyses, tomorrow_workouts)
     tg = TelegramTool(user=user)
     tg.send_message(text=summary)

@@ -120,3 +120,99 @@ msgstr "No access"
 
 msgid "Уже оценено"
 msgstr "Already rated"
+
+msgid "Итог дня"
+msgstr "Daily Summary"
+
+msgid "Тренировки"
+msgstr "Workouts"
+
+msgid "День отдыха"
+msgstr "Rest day"
+
+msgid "мс"
+msgstr "ms"
+
+msgid "уд/мин"
+msgstr "bpm"
+
+msgid "Завтра"
+msgstr "Tomorrow"
+
+msgid "отдых"
+msgstr "rest"
+
+msgid "Плавание"
+msgstr "Swim"
+
+msgid "Вело"
+msgstr "Bike"
+
+msgid "Бег"
+msgstr "Run"
+
+msgid "Другое"
+msgstr "Other"
+
+msgid "Тренировка"
+msgstr "Workout"
+
+msgid "ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ"
+msgstr "THRESHOLDS — CONSIDER UPDATING"
+
+msgid "HRVT1 стабильно"
+msgstr "HRVT1 consistently"
+
+msgid "теста"
+msgstr "tests"
+
+msgid "Текущий LTHR"
+msgstr "Current LTHR"
+
+msgid "Обнови LTHR в настройках"
+msgstr "Update LTHR in settings"
+
+msgid "Гонка"
+msgstr "Race"
+
+msgid "Гонка завершена"
+msgstr "Race finished"
+
+msgid "цель"
+msgstr "goal"
+
+msgid "Место"
+msgstr "Place"
+
+msgid "Заполни детали (RPE, погода, заметки) — запомню для анализа."
+msgstr "Fill in details (RPE, weather, notes) — I'll remember for analysis."
+
+msgid "последний тест"
+msgstr "last test"
+
+msgid "дней назад"
+msgstr "days ago"
+
+msgid "тест ещё не выполнялся"
+msgstr "test not done yet"
+
+msgid "Создать Ramp Test"
+msgstr "Create Ramp Test"
+
+msgid "требует адаптации"
+msgstr "needs adaptation"
+
+msgid "Адаптировать"
+msgstr "Adapt"
+
+msgid "текущий порог"
+msgstr "current threshold"
+
+msgid "по тестам"
+msgstr "measured"
+
+msgid "Рекомендуем обновить"
+msgstr "Consider updating"
+
+msgid "Обновить зоны"
+msgstr "Update zones"
