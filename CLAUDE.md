@@ -106,9 +106,9 @@ Filter: `is_valid_for_decoupling()` — VI <= 1.10, >70% Z1+Z2, bike >= 60min / 
 Traffic light: green (<5%) / yellow (5-10%) / red (>10%). Uses abs() for negative drift.
 Trend: last-5 median via `get_efficiency_trend(strict_filter=True)`. Theory: `docs/knowledge/decoupling.md`.
 
-**HR Zones (% LTHR):**
-Run: Z1 0-72%, Z2 72-82%, Z3 82-87%, Z4 87-92%, Z5 92-100%
-Bike: Z1 0-68%, Z2 68-83%, Z3 83-94%, Z4 94-105%, Z5 105-120%
+**HR Zones** — synced from Intervals.icu sport-settings (source of truth). `get_zones` MCP tool returns boundaries from DB; fallback to calculated zones if not yet synced. Zone count varies per user (typically 5-7 zones). Fallback defaults:
+Run (7-zone): Z1 0-84%, Z2 85-89%, Z3 90-94%, Z4 95-99%, Z5 100-103%, Z6 103-106%, Z7 106%+
+Bike (5-zone): Z1 0-68%, Z2 68-83%, Z3 83-94%, Z4 94-105%, Z5 105-120%
 
 ---
 

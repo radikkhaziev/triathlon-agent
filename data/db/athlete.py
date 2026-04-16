@@ -34,6 +34,7 @@ class AthleteSettings(Base):
     hr_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [129, 136, 144, 152, 157, 161]
     hr_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Recovery", "Aerobic", ...]
     power_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [100, 140, 170, 210, 260]
+    power_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Active Recovery", ...]
     pace_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [420, 390, 360, 330, 300]
     pace_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Zone 1", "Zone 2", ...]
 
@@ -62,6 +63,7 @@ class AthleteSettings(Base):
         hr_zones: list | None = None,
         hr_zone_names: list | None = None,
         power_zones: list | None = None,
+        power_zone_names: list | None = None,
         pace_zones: list | None = None,
         pace_zone_names: list | None = None,
         session: Session,
@@ -78,6 +80,7 @@ class AthleteSettings(Base):
             hr_zones=hr_zones,
             hr_zone_names=hr_zone_names,
             power_zones=power_zones,
+            power_zone_names=power_zone_names,
             pace_zones=pace_zones,
             pace_zone_names=pace_zone_names,
             synced_at=now,
@@ -95,6 +98,7 @@ class AthleteSettings(Base):
                 "hr_zones": func.coalesce(excl.hr_zones, cls.hr_zones),
                 "hr_zone_names": func.coalesce(excl.hr_zone_names, cls.hr_zone_names),
                 "power_zones": func.coalesce(excl.power_zones, cls.power_zones),
+                "power_zone_names": func.coalesce(excl.power_zone_names, cls.power_zone_names),
                 "pace_zones": func.coalesce(excl.pace_zones, cls.pace_zones),
                 "pace_zone_names": func.coalesce(excl.pace_zone_names, cls.pace_zone_names),
                 "synced_at": now,

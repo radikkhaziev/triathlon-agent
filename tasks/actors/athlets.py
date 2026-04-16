@@ -61,6 +61,7 @@ def actor_sync_athlete_settings(user: UserDTO):
             hr_zones=ss.hr_zones,
             hr_zone_names=ss.hr_zone_names,
             power_zones=ss.power_zones,
+            power_zone_names=ss.power_zone_names,
             pace_zones=ss.pace_zones,
             pace_zone_names=ss.pace_zone_names,
         )

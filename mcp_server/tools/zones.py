@@ -101,7 +101,7 @@ def _build_sport_zones(s: AthleteSettings, sport: str, result: dict) -> None:
         result["power_zones"] = {
             "ftp": s.ftp,
             "source": "intervals.icu",
-            "zones": _zones_from_boundaries(s.power_zones, None, "w"),
+            "zones": _zones_from_boundaries(s.power_zones, s.power_zone_names, "w"),
         }
     elif s.ftp:
         result["power_zones"] = {
