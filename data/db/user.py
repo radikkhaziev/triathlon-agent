@@ -184,7 +184,7 @@ class User(Base):
     @classmethod
     @with_session
     async def get_owner(cls, *, session: AsyncSession) -> User | None:
-        result = await session.execute(select(cls).where(cls.role == "owner").limit(1))
+        result = await session.execute(select(cls).where(cls.role == "owner").order_by(cls.id.asc()).limit(1))
         return result.scalar_one_or_none()
 
     @classmethod
