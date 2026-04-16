@@ -60,19 +60,40 @@ class IntervalsClientBase:
     """Shared config, URL building, response parsing, and endpoint specs.
 
     Subclasses implement _request() and _execute() for sync/async transport.
+
+    Supports two authentication methods (see `docs/INTERVALS_OAUTH_SPEC.md`):
+    - **api_key** (legacy): HTTP Basic Auth ``("API_KEY", key)``
+    - **access_token** (OAuth): ``Authorization: Bearer {token}``
+
+    Callers should use the ``for_user()`` factory instead of ``__init__``
+    directly — it reads ``User.intervals_auth_method`` and picks the right
+    credential automatically.
     """
 
-    def __init__(self, api_key: str, athlete_id: str) -> None:
+    def __init__(
+        self,
+        athlete_id: str = "",
+        api_key: str | None = None,
+        access_token: str | None = None,
+    ) -> None:
+        if not api_key and not access_token:
+            raise ValueError("IntervalsClient requires either api_key or access_token")
         self._api_key = api_key
+        self._access_token = access_token
         self._athlete_id = athlete_id
 
     def _http_client_kwargs(self) -> dict:
-        return {
+        headers: dict[str, str] = {"Accept": "application/json"}
+        kwargs: dict[str, Any] = {
             "base_url": BASE_URL,
-            "auth": ("API_KEY", self._api_key),
-            "headers": {"Accept": "application/json"},
+            "headers": headers,
             "timeout": 30.0,
         }
+        if self._access_token:
+            headers["Authorization"] = f"Bearer {self._access_token}"
+        else:
+            kwargs["auth"] = ("API_KEY", self._api_key)
+        return kwargs
 
     def _compute_retry_delay(self, resp: httpx.Response, attempt: int) -> float:
         retry_after = resp.headers.get("Retry-After")
@@ -241,6 +262,23 @@ class IntervalsClientBase:
         )
 
 
+def _resolve_credentials(user: User) -> dict:
+    """Pick the right auth kwargs for IntervalsClient based on User's auth method.
+
+    Returns a dict suitable for unpacking into ``cls(athlete_id=..., **creds)``.
+    Raises ``LookupError`` if no usable credentials are configured.
+    """
+    if user.intervals_auth_method == "oauth" and user.intervals_access_token:
+        return {"athlete_id": user.athlete_id, "access_token": user.intervals_access_token}
+    if user.api_key:
+        return {"athlete_id": user.athlete_id, "api_key": user.api_key}
+    raise LookupError(
+        f"User {user.id} has no Intervals.icu credentials "
+        f"(method={user.intervals_auth_method}, api_key={'set' if user.api_key_encrypted else 'empty'}, "
+        f"oauth_token={'set' if user.intervals_access_token_encrypted else 'empty'})"
+    )
+
+
 # ======================================================================
 # Async client
 # ======================================================================
@@ -249,8 +287,8 @@ class IntervalsClientBase:
 class IntervalsAsyncClient(IntervalsClientBase):
     """Async Intervals.icu client using httpx.AsyncClient."""
 
-    def __init__(self, api_key: str, athlete_id: str) -> None:
-        super().__init__(api_key, athlete_id)
+    def __init__(self, athlete_id: str = "", api_key: str | None = None, access_token: str | None = None) -> None:
+        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token)
         self._client = httpx.AsyncClient(**self._http_client_kwargs())
 
     async def close(self) -> None:
@@ -267,8 +305,9 @@ class IntervalsAsyncClient(IntervalsClientBase):
     async def for_user(cls, user: int | User | UserDTO):
         """Create a session with per-user credentials from the DB.
 
-        UserDTO no longer carries credentials (issue #147), so it's re-fetched
-        from the DB to get the decrypted api_key — same path as passing an int.
+        Reads ``User.intervals_auth_method`` to choose between OAuth Bearer
+        token and legacy API key. UserDTO no longer carries credentials
+        (issue #147), so it's always re-fetched from the DB.
         """
         if isinstance(user, (int, UserDTO)):
             user_id = user if isinstance(user, int) else user.id
@@ -276,7 +315,7 @@ class IntervalsAsyncClient(IntervalsClientBase):
                 user = await session.get(User, user_id)
             if user is None:
                 raise LookupError(f"User {user_id} not found")
-        async with cls(api_key=user.api_key, athlete_id=user.athlete_id) as session:
+        async with cls(**_resolve_credentials(user)) as session:
             yield session
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
@@ -355,8 +394,8 @@ class IntervalsAsyncClient(IntervalsClientBase):
 class IntervalsSyncClient(IntervalsClientBase):
     """Sync Intervals.icu client using httpx.Client."""
 
-    def __init__(self, api_key: str, athlete_id: str) -> None:
-        super().__init__(api_key, athlete_id)
+    def __init__(self, athlete_id: str = "", api_key: str | None = None, access_token: str | None = None) -> None:
+        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token)
         self._client = httpx.Client(**self._http_client_kwargs())
 
     @classmethod
@@ -364,8 +403,9 @@ class IntervalsSyncClient(IntervalsClientBase):
     def for_user(cls, user: int | User | UserDTO):
         """Create a session with per-user credentials from the DB.
 
-        UserDTO no longer carries credentials (issue #147), so it's re-fetched
-        from the DB to get the decrypted api_key — same path as passing an int.
+        Reads ``User.intervals_auth_method`` to choose between OAuth Bearer
+        token and legacy API key. UserDTO no longer carries credentials
+        (issue #147), so it's always re-fetched from the DB.
         """
         if isinstance(user, (int, UserDTO)):
             user_id = user if isinstance(user, int) else user.id
@@ -373,7 +413,7 @@ class IntervalsSyncClient(IntervalsClientBase):
                 user = session.get(User, user_id)
             if user is None:
                 raise LookupError(f"User {user_id} not found")
-        with cls(api_key=user.api_key, athlete_id=user.athlete_id) as session:
+        with cls(**_resolve_credentials(user)) as session:
             yield session
 
     def close(self) -> None:

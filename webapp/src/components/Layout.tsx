@@ -28,7 +28,7 @@ export default function Layout({
     <>
       {showNav && <Sidebar />}
       <div className={`${showNav ? 'md:pl-56' : ''}`}>
-        <div className={`px-4 mx-auto ${hideBottomTabs ? 'pb-8' : 'pb-20 md:pb-8'}`} style={{ maxWidth }}>
+        <div className={`px-4 pt-4 mx-auto ${hideBottomTabs ? 'pb-8' : 'pb-20 md:pb-8'}`} style={{ maxWidth }}>
           {backTo && (
             <Link to={backTo} className="inline-flex items-center gap-1 text-[13px] text-accent no-underline pt-3">
               &larr; {label}

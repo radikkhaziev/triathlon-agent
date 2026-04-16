@@ -116,12 +116,15 @@ async def require_viewer(user: User | None = Depends(get_current_user)) -> User:
 def get_data_user_id(user: User) -> int:
     """Resolve which user_id to query data for.
 
-    Active athletes with athlete_id → own data.
-    Everyone else (viewers) → owner data.
+    Always returns the user's own id. Users without athlete_id will
+    naturally see empty data — the frontend gates them to OnboardingPrompt
+    before they can reach data pages.
+
+    Previous behaviour returned owner (user_id=1) as fallback for viewers,
+    which leaked the owner's personal training data to any authenticated
+    user. Removed per issue #185.
     """
-    if user.is_active and user.athlete_id:
-        return user.id
-    return 1
+    return user.id
 
 
 async def require_athlete(user: User | None = Depends(get_current_user)) -> User:
