@@ -85,12 +85,13 @@ router = APIRouter(prefix="/api/intervals", tags=["intervals"])
 
 _OAUTH_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
 _OAUTH_TOKEN_URL = "https://intervals.icu/api/oauth/token"
-_OAUTH_SCOPES = "ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE"
+_OAUTH_SCOPES = "ACTIVITY:WRITE,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE"
 # Per Intervals.icu docs: "For each scope specify READ or WRITE (to update,
 # implies READ access) and use commas to separate multiple scopes." So
 # :WRITE gives us both write AND read — listing the same area twice produces
 # "Duplicate scope" error because their parser keys by area name.
 #
+# Why ACTIVITY:WRITE: rename Strava-sourced activities, update activity fields.
 # Why SETTINGS:WRITE (not READ): `actor_update_zones` pushes new LTHR values
 # to Intervals.icu via client.update_sport_settings() after ramp-test drift
 # detection. Read-only would break the "Обновить зоны" button in morning
