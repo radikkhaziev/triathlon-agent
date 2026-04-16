@@ -1,0 +1,21 @@
+{
+  "name": "EndurAI",
+  "short_name": "EndurAI",
+  "description": "AI triathlon coach — morning readiness, HRV analysis, adaptive workouts",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f0f17",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
