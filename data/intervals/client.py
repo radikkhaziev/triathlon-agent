@@ -72,10 +72,13 @@ class IntervalsClientBase:
 
     def __init__(
         self,
-        athlete_id: str = "",
+        *,
+        athlete_id: str,
         api_key: str | None = None,
         access_token: str | None = None,
     ) -> None:
+        if not athlete_id:
+            raise ValueError("IntervalsClient requires a non-empty athlete_id")
         if not api_key and not access_token:
             raise ValueError("IntervalsClient requires either api_key or access_token")
         self._api_key = api_key
@@ -287,7 +290,7 @@ def _resolve_credentials(user: User) -> dict:
 class IntervalsAsyncClient(IntervalsClientBase):
     """Async Intervals.icu client using httpx.AsyncClient."""
 
-    def __init__(self, athlete_id: str = "", api_key: str | None = None, access_token: str | None = None) -> None:
+    def __init__(self, *, athlete_id: str, api_key: str | None = None, access_token: str | None = None) -> None:
         super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token)
         self._client = httpx.AsyncClient(**self._http_client_kwargs())
 
@@ -394,7 +397,7 @@ class IntervalsAsyncClient(IntervalsClientBase):
 class IntervalsSyncClient(IntervalsClientBase):
     """Sync Intervals.icu client using httpx.Client."""
 
-    def __init__(self, athlete_id: str = "", api_key: str | None = None, access_token: str | None = None) -> None:
+    def __init__(self, *, athlete_id: str, api_key: str | None = None, access_token: str | None = None) -> None:
         super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token)
         self._client = httpx.Client(**self._http_client_kwargs())
 

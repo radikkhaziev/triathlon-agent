@@ -33,7 +33,7 @@ def _recommendation_text() -> dict:
     }
 
 
-# Keep static refs for code that doesn't need i18n (e.g. MCP tools)
+# Keep static refs for code that doesn't need i18n (e.g. MCP tools) — Russian default
 CATEGORY_DISPLAY = {
     "excellent": ("🟢", "ОТЛИЧНОЕ ВОССТАНОВЛЕНИЕ"),
     "good": ("🟢", "ГОТОВ К НАГРУЗКЕ"),
@@ -47,6 +47,31 @@ RECOMMENDATION_TEXT = {
     "zone1_short": "лёгкая активность, 30-45 мин",
     "skip": "отдых — не тренироваться",
 }
+
+_CATEGORY_DISPLAY_EN = {
+    "excellent": ("🟢", "EXCELLENT RECOVERY"),
+    "good": ("🟢", "READY TO TRAIN"),
+    "moderate": ("🟡", "MODERATE LOAD"),
+    "low": ("🔴", "REST RECOMMENDED"),
+}
+
+_RECOMMENDATION_TEXT_EN = {
+    "zone2_ok": "Z2 training — full volume",
+    "zone1_long": "aerobic base only, Z1-Z2",
+    "zone1_short": "light activity, 30-45 min",
+    "skip": "rest day — no training",
+}
+
+
+def get_category_display(category: str, language: str = "ru") -> tuple[str, str]:
+    table = _CATEGORY_DISPLAY_EN if language == "en" else CATEGORY_DISPLAY
+    return table.get(category, ("⚪", "UNKNOWN" if language == "en" else "СТАТУС НЕИЗВЕСТЕН"))
+
+
+def get_recommendation_text(key: str, language: str = "ru") -> str:
+    table = _RECOMMENDATION_TEXT_EN if language == "en" else RECOMMENDATION_TEXT
+    return table.get(key, key)
+
 
 STATUS_EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴", "insufficient_data": "⚪"}
 
