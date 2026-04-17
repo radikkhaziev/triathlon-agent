@@ -536,11 +536,15 @@ async def intervals_oauth_callback(
         await session.refresh(db_user)
         user_dto = UserDTO.model_validate(db_user)
 
-    # Auto-dispatch initial sync for newly connected athletes
+    # Auto-dispatch initial sync for newly connected athletes.
+    # Wrapped in try/except so a Redis/broker outage doesn't break the redirect.
     if was_new:
-        actor_sync_athlete_settings.send(user=user_dto)
-        actor_user_wellness.send(user=user_dto)
-        logger.info("Dispatched initial sync for new athlete user_id=%d", user_id)
+        try:
+            actor_sync_athlete_settings.send(user=user_dto)
+            actor_user_wellness.send(user=user_dto)
+            logger.info("Dispatched initial sync for new athlete user_id=%d", user_id)
+        except Exception:
+            logger.exception("Failed to dispatch initial sync for user_id=%d", user_id)
 
     return RedirectResponse(f"{settings_url}?connected=intervals", status_code=302)
 
