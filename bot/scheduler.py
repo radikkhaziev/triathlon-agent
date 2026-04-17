@@ -9,7 +9,6 @@ from config import settings
 from data.db import UserDTO
 from tasks.actors import (
     actor_compose_user_evening_report,
-    actor_compose_user_morning_report,
     actor_compose_weekly_report,
     actor_fetch_user_activities,
     actor_sync_athlete_goals,
@@ -17,12 +16,12 @@ from tasks.actors import (
     actor_user_wellness,
 )
 
-from .decorator import with_athletes
+from .decorator import with_athletes, with_athletes_without_oauth
 
 logger = logging.getLogger(__name__)
 
 
-@with_athletes
+@with_athletes_without_oauth
 async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
     """Fetch planned workouts for the next 14 days and upsert into DB."""
     _group = group([actor_user_scheduled_workouts.message(user=a) for a in athletes])
@@ -32,11 +31,9 @@ async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
 
 
 @with_athletes
-async def scheduler_wellness_and_reports_job(athletes: list[UserDTO]) -> None:
+async def scheduler_wellness(athletes: list[UserDTO]) -> None:
     """Wellness sync + morning report generation (staggered to avoid rate limits)."""
     group([actor_user_wellness.message(user=a) for a in athletes]).run()
-    for i, a in enumerate(athletes):
-        actor_compose_user_morning_report.send_with_options(kwargs={"user": a}, delay=60_000 + i * 20_000)
 
 
 @with_athletes
@@ -76,7 +73,7 @@ async def create_scheduler() -> AsyncIOScheduler:
     )
 
     scheduler.add_job(
-        scheduler_wellness_and_reports_job,
+        scheduler_wellness,
         trigger=OrTrigger(
             [
                 CronTrigger(hour="4-8", minute="*/10", timezone=settings.TIMEZONE),

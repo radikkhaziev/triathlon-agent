@@ -1,9 +1,10 @@
 import functools
 
 from pydantic import TypeAdapter
+from sqlalchemy import select
 
 from bot.i18n import _, set_language
-from data.db import User, UserDTO
+from data.db import User, UserDTO, get_session
 
 _UserListAdapter = TypeAdapter(list[UserDTO])
 
@@ -14,6 +15,30 @@ def with_athletes(fn):
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         users: list[User] = await User.get_active_athletes()
+        athletes: list[UserDTO] = _UserListAdapter.validate_python(users)
+        return await fn(athletes, *args, **kwargs)
+
+    return wrapper
+
+
+def with_athletes_without_oauth(fn):
+    """Temporary decorator for scheduler jobs that need to run even for athletes who haven't completed
+    onboarding (and thus lack an IntervalsSyncClient).
+    Use `with_athletes` instead where possible,
+    and remove this once all scheduler jobs are migrated.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        async with get_session() as session:
+            result = await session.execute(
+                select(User).where(
+                    User.is_active.is_(True),
+                    User.intervals_auth_method == "api_key",
+                    User.athlete_id.isnot(None),
+                )
+            )
+            users = list(result.scalars().all())
         athletes: list[UserDTO] = _UserListAdapter.validate_python(users)
         return await fn(athletes, *args, **kwargs)
 
