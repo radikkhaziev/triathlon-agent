@@ -30,7 +30,7 @@ async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
     logger.info("Dispatched scheduled_workouts for %d athletes", len(athletes))
 
 
-@with_athletes
+@with_athletes_without_oauth
 async def scheduler_wellness(athletes: list[UserDTO]) -> None:
     """Wellness sync + morning report generation (staggered to avoid rate limits)."""
     group([actor_user_wellness.message(user=a) for a in athletes]).run()
@@ -55,7 +55,7 @@ async def scheduler_activities_job(athletes: list[UserDTO]) -> None:
     _group.run()
 
 
-@with_athletes
+@with_athletes_without_oauth
 async def scheduler_sync_goals_job(athletes: list[UserDTO]) -> None:
     _group = group([actor_sync_athlete_goals.message(user=a) for a in athletes])
     _group.run()
