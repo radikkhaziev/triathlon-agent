@@ -64,7 +64,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
     ],
 }
 
-ALWAYS_INCLUDE = {"core", "tracking"}
+ALWAYS_INCLUDE = {"core", "tracking", "workouts"}
 
 KEYWORD_TO_GROUPS: dict[str, list[str]] = {
     # Garmin
@@ -87,6 +87,15 @@ KEYWORD_TO_GROUPS: dict[str, list[str]] = {
     "plan": ["workouts"],
     "план": ["workouts"],
     "создай тренировку": ["workouts"],
+    "создай": ["workouts"],
+    "добав": ["workouts"],
+    "запланир": ["workouts"],
+    "календар": ["workouts"],
+    "calendar": ["workouts"],
+    "пробежк": ["workouts"],
+    "бег": ["workouts"],
+    "заплыв": ["workouts"],
+    "велотрен": ["workouts"],
     "анимац": ["workouts"],
     "карточк": ["workouts"],
     # Analysis
