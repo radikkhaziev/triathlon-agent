@@ -414,7 +414,7 @@ function FitnessProjectionChart() {
   useEffect(() => {
     apiFetch<FitnessProjectionData>('/api/fitness-projection')
       .then(setProjection)
-      .catch(() => {})
+      .catch(e => console.warn('fitness-projection fetch failed:', e))
   }, [])
 
   useEffect(() => {
@@ -428,13 +428,13 @@ function FitnessProjectionChart() {
     // Split into historical (past) and projection (future) segments
     const labels = projection.dates.map(d => d.slice(5)) // MM-DD
 
-    // CTL line — solid for past, dashed for future
-    const ctlPast = projection.ctl.map((v, i) => todayIdx >= 0 && i > todayIdx ? null : v)
-    const ctlFuture = projection.ctl.map((v, i) => todayIdx >= 0 && i < todayIdx ? null : v)
-
-    // ATL line — same split
-    const atlPast = projection.atl.map((v, i) => todayIdx >= 0 && i > todayIdx ? null : v)
-    const atlFuture = projection.atl.map((v, i) => todayIdx >= 0 && i < todayIdx ? null : v)
+    // Split into past (solid) and future (dashed) at today's position.
+    // If all dates are before today, treat everything as past — no future series.
+    const splitIdx = todayIdx >= 0 ? todayIdx : projection.dates.length
+    const ctlPast = projection.ctl.map((v, i) => i > splitIdx ? null : v)
+    const ctlFuture = todayIdx >= 0 ? projection.ctl.map((v, i) => i < splitIdx ? null : v) : projection.ctl.map(() => null)
+    const atlPast = projection.atl.map((v, i) => i > splitIdx ? null : v)
+    const atlFuture = todayIdx >= 0 ? projection.atl.map((v, i) => i < splitIdx ? null : v) : projection.atl.map(() => null)
 
     chartInstRef.current = new Chart(chartRef.current, {
       type: 'line',

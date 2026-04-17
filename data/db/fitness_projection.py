@@ -46,29 +46,28 @@ class FitnessProjection(Base):
             return 0
 
         now = datetime.now(timezone.utc)
-        for r in records:
-            stmt = (
-                insert(cls)
-                .values(
-                    user_id=user_id,
-                    date=r["id"],
-                    ctl=r.get("ctl"),
-                    atl=r.get("atl"),
-                    ramp_rate=r.get("rampRate"),
-                    updated_at=now,
-                )
-                .on_conflict_do_update(
-                    constraint="uq_fitness_projection_user_date",
-                    set_={
-                        "ctl": insert(cls).excluded.ctl,
-                        "atl": insert(cls).excluded.atl,
-                        "ramp_rate": insert(cls).excluded.ramp_rate,
-                        "updated_at": now,
-                    },
-                )
-            )
-            session.execute(stmt)
-
+        rows = [
+            {
+                "user_id": user_id,
+                "date": r["id"],
+                "ctl": r.get("ctl"),
+                "atl": r.get("atl"),
+                "ramp_rate": r.get("rampRate"),
+                "updated_at": now,
+            }
+            for r in records
+        ]
+        stmt = insert(cls).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_fitness_projection_user_date",
+            set_={
+                "ctl": stmt.excluded.ctl,
+                "atl": stmt.excluded.atl,
+                "ramp_rate": stmt.excluded.ramp_rate,
+                "updated_at": now,
+            },
+        )
+        session.execute(stmt)
         session.commit()
         return len(records)
 
