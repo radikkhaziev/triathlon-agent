@@ -51,8 +51,19 @@ export default function Settings() {
   const [intervals, setIntervals] = useState<IntervalsStatus | null>(null)
   const [intervalsToast, setIntervalsToast] = useState<IntervalsToast | null>(null)
   const [intervalsBusy, setIntervalsBusy] = useState(false)
-  const [profile, setProfile] = useState<Record<string, unknown> | null>(null)
-  const [goal, setGoal] = useState<Record<string, unknown> | null>(null)
+  const [profile, setProfile] = useState<{
+    age?: number | null
+    lthr_run?: number | null
+    lthr_bike?: number | null
+    ftp?: number | null
+    css?: number | null
+  } | null>(null)
+  const [goal, setGoal] = useState<{
+    event_name: string
+    event_date: string
+    ctl_target?: number | null
+    per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
+  } | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -67,7 +78,7 @@ export default function Settings() {
   // `intervals=null` forever, which would stick the UI in the "loading" text.
   useEffect(() => {
     if (!isAuthenticated) return
-    apiFetch<AuthMeResponse & { profile?: Record<string, unknown>; goal?: Record<string, unknown> }>('/api/auth/me')
+    apiFetch<AuthMeResponse & { profile?: typeof profile; goal?: typeof goal }>('/api/auth/me')
       .then(data => {
         setIntervals(data.intervals ?? { method: 'none', athlete_id: null, scope: null })
         if (data.profile) setProfile(data.profile)
@@ -249,11 +260,11 @@ export default function Settings() {
           <Row label="Event" value={String(goal.event_name)} />
           <Row label="Date" value={String(goal.event_date)} />
           {goal.ctl_target && <Row label="CTL Target" value={String(goal.ctl_target)} />}
-          {goal.per_sport_targets && typeof goal.per_sport_targets === 'object' && (
+          {goal.per_sport_targets && (
             <>
-              {(goal.per_sport_targets as Record<string, number>).swim != null && <Row label="Swim CTL" value={String((goal.per_sport_targets as Record<string, number>).swim)} />}
-              {(goal.per_sport_targets as Record<string, number>).ride != null && <Row label="Bike CTL" value={String((goal.per_sport_targets as Record<string, number>).ride)} />}
-              {(goal.per_sport_targets as Record<string, number>).run != null && <Row label="Run CTL" value={String((goal.per_sport_targets as Record<string, number>).run)} />}
+              {goal.per_sport_targets.swim != null && <Row label="Swim CTL" value={String(goal.per_sport_targets.swim)} />}
+              {goal.per_sport_targets.ride != null && <Row label="Bike CTL" value={String(goal.per_sport_targets.ride)} />}
+              {goal.per_sport_targets.run != null && <Row label="Run CTL" value={String(goal.per_sport_targets.run)} />}
             </>
           )}
         </Section>
