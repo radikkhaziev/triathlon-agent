@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 1 complete, Phase 2 (Bearer auth in `IntervalsClient`) complete. Webhook research done (10/10 event types documented in `docs/INTERVALS_WEBHOOKS_RESEARCH.md`). Pending: personal patterns cron, webhook dispatchers, MT Phase 2 (JWT upgrade).
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 1 complete, Phase 2 complete (Bearer auth in `IntervalsClient`, viewer→athlete promotion + mcp_token generation in callback, auto-dispatch sync actors for new users). Webhook research done (10/10 event types documented in `docs/INTERVALS_WEBHOOKS_RESEARCH.md`). Pending: OAuth disconnect endpoint, lazy 401 handling, webhook dispatchers, personal patterns cron, MT Phase 2 (JWT upgrade).
 
 **Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 
@@ -142,7 +142,7 @@ Stateless. Each message: `agent.chat(text, mcp_token=user.mcp_token)` → Claude
 
 **Distance-based workouts:** `WorkoutStep` supports `distance` (meters) as alternative to `duration` (seconds). Mutually exclusive. `target: "PACE"` set for Swim/Run.
 
-**Intensity target mandate:** `PlannedWorkoutDTO._check_steps_have_targets` rejects any terminal (non-repeat-group) step without `hr` / `power` / `pace`. Garmin/Wahoo watches only alert on the target corridor when a numeric target is present, so text-only steps (`"Z2" label + duration`) are forbidden. Per-sport convention: Run → `hr` with `%lthr` units, Ride → `power` with `%ftp`, Swim → `pace` with `%pace`. Use `value` (low) + `end` (high) for a corridor. The `suggest_workout` MCP tool docstring and `SYSTEM_PROMPT_CHAT` (workout-generation section) both enforce this contract — the validator is the backstop if the model forgets.
+**Intensity target mandate:** `PlannedWorkoutDTO._check_steps_have_targets` rejects any terminal (non-repeat-group) step without `hr` / `power` / `pace`. Garmin/Wahoo watches only alert on the target corridor when a numeric target is present, so text-only steps (`"Z2" label + duration`) are forbidden. **Exception:** sport `Other` (yoga, stretching, mobility) skips this validation — watches don't need intensity targets for these activities. Per-sport convention: Run → `hr` with `%lthr` units, Ride → `power` with `%ftp`, Swim → `pace` with `%pace`. Use `value` (low) + `end` (high) for a corridor. The `suggest_workout` MCP tool docstring and `SYSTEM_PROMPT_CHAT` (workout-generation section) both enforce this contract — the validator is the backstop if the model forgets.
 
 **Strava source filter:** Intervals.icu returns 422 `Cannot read Strava activities via the API` for `source == STRAVA` activities (licensing). `actor_fetch_user_activities` drops them **before** `Activity.save_bulk` so they never enter the DB or trigger downstream pipelines. `ActivityDTO.source` carries `GARMIN_CONNECT` / `OAUTH_CLIENT` / `STRAVA` / etc. from Intervals.icu.
 
@@ -188,7 +188,7 @@ GET  /api/activity/{id}/details         — full activity stats + zones + DFA
 GET  /api/progress?sport=bike&days=90   — aerobic efficiency trend (EF/SWOLF/pace)
 POST /api/auth/verify-code              — verify one-time code → JWT
 POST /api/auth/demo                     — demo password → JWT with role=demo (read-only owner data)
-GET  /api/auth/me                       — auth status + language + intervals connection info
+GET  /api/auth/me                       — auth status + language + intervals connection + profile/goal
 GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, audit-logged)
 PUT  /api/auth/language                 — update user language (ru/en)
 POST /api/intervals/auth/init            — initiate OAuth (authenticated XHR) → {authorize_url}
@@ -427,7 +427,7 @@ Specs and plans in `docs/`. Key: `ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECU
 ## Next Steps
 
 1. **Webhook dispatchers** — wire event types to existing actors: `WELLNESS_UPDATED` → wellness sync, `CALENDAR_UPDATED` → workouts sync, `ACTIVITY_UPLOADED` → activities sync, `SPORT_SETTINGS_UPDATED` → settings sync. See dispatch plan in `docs/INTERVALS_WEBHOOKS_RESEARCH.md`. Debounce required for WELLNESS (steps drift).
-2. **OAuth Phase 2 remaining** — viewer→athlete role promotion in callback + `generate_mcp_token()` + auto-dispatch sync actors for new users. Disconnect endpoint.
+2. **OAuth remaining** — disconnect endpoint (`POST /api/intervals/auth/disconnect`), lazy 401 handling (catch 401 → clear tokens → Telegram notify)
 3. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
 4. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`
 

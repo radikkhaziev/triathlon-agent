@@ -6,7 +6,7 @@ import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
-from api.deps import get_current_user
+from api.deps import get_current_user, get_data_user_id
 from api.dto import DemoAuthRequest, SetLanguageRequest, TelegramWidgetAuthRequest, VerifyCodeRequest
 from config import settings
 from data.db import AthleteGoal, AthleteSettings, User, get_session
@@ -130,8 +130,6 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     """
     if not user:
         return {"role": "anonymous", "authenticated": False}
-
-    from api.deps import get_data_user_id
 
     data_uid = get_data_user_id(user)
     t = await AthleteSettings.get_thresholds(data_uid)
