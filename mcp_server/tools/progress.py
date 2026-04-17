@@ -16,20 +16,15 @@ logger = logging.getLogger(__name__)
 # Minimum duration (seconds) for meaningful steady-state comparison
 _MIN_DURATION = {"bike": 30 * 60, "run": 20 * 60, "swim": 15 * 60}
 
-# Z2 HR ranges as fraction of LTHR (from CLAUDE.md)
+# Z2 HR ranges as fraction of LTHR
 _Z2_BIKE = (0.68, 0.83)
-_Z2_RUN = (0.72, 0.82)
+_Z2_RUN = (0.72, 0.89)
 
 
 def _sport_group(activity_type: str) -> str | None:
     """Map canonical activity type to sport group."""
-    if activity_type == "Ride":
-        return "bike"
-    if activity_type == "Run":
-        return "run"
-    if activity_type == "Swim":
-        return "swim"
-    return None
+    _MAP = {"Ride": "bike", "Run": "run", "Swim": "swim"}
+    return _MAP.get(activity_type)
 
 
 def _is_z2(avg_hr: float | None, sport: str, thresholds: AthleteThresholdsDTO) -> bool:
@@ -114,8 +109,6 @@ async def compute_efficiency_trend(
 
     # Filter by sport
     target_sports = {sport.lower()} if sport else {"bike", "run", "swim"}
-    if strict_filter:
-        target_sports -= {"swim"}
 
     thresholds: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
 
@@ -179,7 +172,7 @@ async def compute_efficiency_trend(
             entry["decoupling"] = round(detail.decoupling, 1) if detail.decoupling else None
             entry["np"] = detail.normalized_power if sg == "bike" else None
             entry["pace"] = round(detail.pace, 4) if detail.pace else None
-            if strict_filter and detail.decoupling is not None:
+            if detail.decoupling is not None:
                 entry["decoupling_status"] = decoupling_status(detail.decoupling)
         elif sg == "swim":
             if not detail.pace or detail.pace <= 0:
@@ -223,8 +216,8 @@ async def compute_efficiency_trend(
                     "swolf": {"unit": "points", "trend": _trend_pct(swolf_values)},
                 }
 
-        # Decoupling trend summary (last-5 median) when strict filter is on
-        if strict_filter and sg in ("bike", "run"):
+        # Decoupling trend summary (last-5 median)
+        if sg in ("bike", "run"):
             dec_entries = [(e["decoupling"], e["date"]) for e in entries if e.get("decoupling") is not None]
             last_5 = [v for v, _ in dec_entries[-5:]]
             if last_5:

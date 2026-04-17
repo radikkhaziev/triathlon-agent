@@ -2,8 +2,8 @@
 resolves tenant, dispatches actors for supported event types.
 """
 
-import asyncio
 import hmac
+import inspect
 import logging
 from typing import Any
 
@@ -13,7 +13,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from api.dto import IntervalsWebhookEvent, IntervalsWebhookPayload
 from config import settings
-from data.db import User, UserDTO, get_session
+from data.db import FitnessProjection, User, UserDTO, get_session
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
 from tasks.actors import (
     actor_sync_athlete_goals,
@@ -182,6 +182,14 @@ async def _dispatch_scope_changed(user: User, event: IntervalsWebhookEvent) -> N
         await session.commit()
 
 
+async def _dispatch_fitness(user_id: int, event: IntervalsWebhookEvent) -> None:
+    """Save fitness projection records from FITNESS_UPDATED webhook."""
+    if not event.records:
+        return
+    count = await FitnessProjection.save_bulk(user_id=user_id, records=event.records)
+    logger.info("Saved %d fitness projection records for user %d", count, user_id)
+
+
 # ---------------------------------------------------------------------------
 # Main webhook handler
 # ---------------------------------------------------------------------------
@@ -265,11 +273,12 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
         "CALENDAR_UPDATED": lambda: _dispatch_calendar(user_dto),
         "SPORT_SETTINGS_UPDATED": lambda: _dispatch_sport_settings(user_dto, event),
         "APP_SCOPE_CHANGED": lambda: _dispatch_scope_changed(user, event),
+        "FITNESS_UPDATED": lambda: _dispatch_fitness(user.id, event),
     }
     dispatcher = dispatchers.get(normalized_type)
     if dispatcher is not None:
         result = dispatcher()
-        if asyncio.iscoroutine(result):
+        if inspect.isawaitable(result):
             await result
 
 
@@ -281,7 +290,8 @@ async def intervals_webhook(request: Request) -> dict:
     Supported dispatchers: WELLNESS_UPDATED → ``actor_user_wellness``,
     CALENDAR_UPDATED → ``actor_user_scheduled_workouts`` + ``actor_sync_athlete_goals``,
     SPORT_SETTINGS_UPDATED → ``actor_sync_athlete_settings``,
-    APP_SCOPE_CHANGED → update scope / clear tokens on deauthorize.
+    APP_SCOPE_CHANGED → update scope / clear tokens on deauthorize,
+    FITNESS_UPDATED → save projection to ``fitness_projection`` table.
     """
 
     interesting_headers = {

@@ -199,14 +199,24 @@ class TestEventParsing:
 
 class TestDispatchWellness:
     def test_dispatches_for_each_record(self):
-        event = _make_event(WELLNESS_UPDATED_EVENT)
+        extra_record = {
+            **WELLNESS_UPDATED_EVENT["records"][0],
+            "id": "2026-04-14",
+            "updated": "2026-04-14T16:29:54.818+00:00",
+        }
+        payload = {
+            **WELLNESS_UPDATED_EVENT,
+            "records": [WELLNESS_UPDATED_EVENT["records"][0], extra_record],
+        }
+        event = _make_event(payload)
         user = _make_user_dto()
         with patch("api.routers.intervals.webhook.actor_user_wellness") as mock:
             _dispatch_wellness(user, event)
-            assert mock.send.call_count == 1
-            call_kwargs = mock.send.call_args.kwargs
-            assert call_kwargs["dt"] == "2026-04-15"
-            assert call_kwargs["user"] == user
+            assert mock.send.call_count == 2
+            # Records are sorted by `updated` ascending — oldest first.
+            dispatched_dates = [call.kwargs["dt"] for call in mock.send.call_args_list]
+            assert dispatched_dates == ["2026-04-14", "2026-04-15"]
+            assert all(call.kwargs["user"] == user for call in mock.send.call_args_list)
 
     def test_skips_empty_records(self):
         event = _make_event({**WELLNESS_UPDATED_EVENT, "records": []})

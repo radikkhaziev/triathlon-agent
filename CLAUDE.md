@@ -50,11 +50,11 @@ triathlon-agent/
 
 ## Database Schema
 
-28 tables. Full column specs in `data/db/`. Key tables:
+29 tables. Full column specs in `data/db/`. Key tables:
 
 **Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `docs/INTERVALS_OAUTH_SPEC.md`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
-**Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling).
+**Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling), `fitness_projection` (CTL/ATL/rampRate decay curve from `FITNESS_UPDATED` webhook, dates can be future).
 
 **Training:** `scheduled_workouts`, `activities` (incl. `is_race`/`sub_type`/`rpe` — Borg CR-10 1-10 with `CHECK` constraint, see `docs/RPE_SPEC.md`), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot). See `docs/RACE_TAGGING.md`.
 
@@ -186,6 +186,7 @@ GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun)
 GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA
 GET  /api/progress?sport=bike&days=90   — aerobic efficiency trend (EF/SWOLF/pace)
+GET  /api/fitness-projection            — CTL/ATL/rampRate decay curve (from FITNESS_UPDATED webhook)
 POST /api/auth/verify-code              — verify one-time code → JWT
 POST /api/auth/demo                     — demo password → JWT with role=demo (read-only owner data)
 GET  /api/auth/me                       — auth status + language + intervals connection + profile/goal
@@ -426,7 +427,7 @@ Specs and plans in `docs/`. Key: `ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECU
 
 ## Next Steps
 
-1. **Webhook dispatchers** — `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓ done. Remaining: `ACTIVITY_UPLOADED` → activities sync. See `docs/INTERVALS_WEBHOOKS_RESEARCH.md`.
+1. **Webhook dispatchers** — `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓, `FITNESS_UPDATED` ✓, `APP_SCOPE_CHANGED` ✓ done. Remaining: `ACTIVITY_UPLOADED` → activities sync. See `docs/INTERVALS_WEBHOOKS_RESEARCH.md`.
 2. **OAuth remaining** — disconnect endpoint (`POST /api/intervals/auth/disconnect`), lazy 401 handling (catch 401 → clear tokens → Telegram notify)
 3. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
 4. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`

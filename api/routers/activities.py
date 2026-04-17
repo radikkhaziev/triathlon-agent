@@ -6,7 +6,7 @@ from sqlalchemy import exists, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, ActivityHrv, Race, User, get_session
+from data.db import Activity, ActivityDetail, ActivityHrv, FitnessProjection, Race, User, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.tools.progress import compute_efficiency_trend
 
@@ -145,3 +145,16 @@ async def progress(
         days_back=days,
         strict_filter=strict_filter,
     )
+
+
+@router.get("/api/fitness-projection")
+async def fitness_projection(user: User = Depends(require_viewer)) -> dict:
+    """Get fitness projection (CTL/ATL decay curve from Intervals.icu)."""
+    rows = await FitnessProjection.get_projection(user_id=get_data_user_id(user))
+    return {
+        "count": len(rows),
+        "dates": [str(r.date) for r in rows],
+        "ctl": [r.ctl for r in rows],
+        "atl": [r.atl for r in rows],
+        "ramp_rate": [r.ramp_rate for r in rows],
+    }
