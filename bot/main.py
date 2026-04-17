@@ -977,13 +977,9 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 ALLOWED_DONATE_AMOUNTS = (50, 200, 500)
 
 
-async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@user_required
+async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Show donate message + 3 amount buttons. Open to all roles (viewer+)."""
-    chat_id = str(update.effective_user.id)
-    user = await User.get_by_chat_id(chat_id)
-    if user is None:
-        await update.message.reply_text(_("Сначала отправьте /start"))
-        return
 
     keyboard = InlineKeyboardMarkup(
         [
@@ -1010,7 +1006,8 @@ async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@user_required
+async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Parse `donate:{amount}`, whitelist-check, send XTR invoice."""
     query = update.callback_query
 
@@ -1021,12 +1018,6 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     if amount not in ALLOWED_DONATE_AMOUNTS:
         await query.answer(_("Недопустимая сумма"), show_alert=True)
-        return
-
-    chat_id = str(update.effective_user.id)
-    user = await User.get_by_chat_id(chat_id)
-    if user is None:
-        await query.answer(_("Сначала отправьте /start"), show_alert=True)
         return
 
     await query.answer()
