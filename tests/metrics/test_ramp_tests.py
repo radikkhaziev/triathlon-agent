@@ -59,7 +59,7 @@ class TestCreateRampTest:
         workout = create_ramp_test("Ride", date(2026, 4, 1), days_since=25)
         assert workout.sport == "Ride"
         assert "Ramp Test" in workout.name
-        assert workout.suffix == "generated"
+        assert workout.suffix is None
         assert len(workout.steps) == 8
         assert workout.duration_minutes == 50
         assert "25 days old" in workout.rationale
@@ -83,7 +83,8 @@ class TestCreateRampTest:
         assert event.category == "WORKOUT"
         assert event.type == "Ride"
         assert "AI: Ramp Test" in event.name
-        assert "(generated)" in event.name
+        assert "AI: Ramp Test" in event.name
+        assert "(generated)" not in event.name  # suffix=None → no label
         assert event.workout_doc is not None
         assert len(event.workout_doc["steps"]) == 8
 

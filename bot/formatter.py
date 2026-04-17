@@ -48,20 +48,20 @@ def build_workout_pushed_message(
     name: str,
     duration_minutes: int,
     target_tss: int | None,
-    suffix: str,
+    suffix: str | None,
     intervals_id: int | None,
     athlete_id: str,
     target_date: date | None = None,
 ) -> str:
     """Build Telegram notification for AI workout pushed to Intervals.icu."""
     emoji = sport_emoji(sport)
-    suffix_label = "adapted" if suffix == "adapted" else "generated"
+    suffix_label = f" ({suffix})" if suffix else ""
 
     date_str = target_date.strftime("%d.%m") if target_date else ""
     header = f"🏋️ AI тренировка добавлена на {date_str}" if date_str else "🏋️ AI тренировка добавлена"
 
     tss_part = f", ~{target_tss} TSS" if target_tss else ""
-    detail = f"{emoji} {name} ({suffix_label})\n{duration_minutes} мин{tss_part}"
+    detail = f"{emoji} {name}{suffix_label}\n{duration_minutes} мин{tss_part}"
 
     lines = [header, "", detail]
 

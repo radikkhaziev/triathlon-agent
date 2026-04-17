@@ -242,7 +242,7 @@ class PlannedWorkoutDTO(BaseModel):
     rationale: str = ""  # why this workout
     target_date: date = Field(default_factory=date.today)
     slot: str = "morning"  # "morning" | "evening"
-    suffix: str = "generated"  # "generated" | "adapted"
+    suffix: str | None = None  # "adapted"
 
     @model_validator(mode="after")
     def _check_steps_have_targets(self) -> "PlannedWorkoutDTO":
@@ -341,7 +341,7 @@ class PlannedWorkoutDTO(BaseModel):
         return EventExDTO(
             category="WORKOUT",
             type=self.sport,
-            name=f"AI: {clean_name} ({self.suffix})",
+            name=f"AI: {clean_name}" + (f" ({self.suffix})" if self.suffix else ""),
             description=self.rationale or "",
             start_date_local=f"{self.target_date}T00:00:00",
             moving_time=self.duration_minutes * 60,
