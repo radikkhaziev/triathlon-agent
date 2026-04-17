@@ -186,7 +186,7 @@
 #### T15. Intervals.icu OAuth — Account Mismatch via State Race (Tampering)
 
 - **Что:** OAuth callback проверяет `db_user.athlete_id == response.athlete.id` для защиты от подмены аккаунта, но state JWT не snapshot'ит `athlete_id` — только `user_id`. Между инициацией (`POST /auth/init`) и callback'ом (`GET /auth/callback`) `athlete_id` в БД может измениться (shell admin, parallel OAuth, migration), и guard пропустит чужой `athlete.id`.
-- **Где:** `api/routers/intervals.py:_validate_oauth_state` + `intervals_oauth_callback:208-216`
+- **Где:** `api/routers/intervals/oauth.py:_validate_oauth_state` + `intervals_oauth_callback`
 - **Severity:** High (возможна cross-tenant data attribution после Phase 2 когда Bearer sync начнёт писать wellness/activities с чужого аккаунта)
 - **Реалистичность:** низкая на текущем этапе (2-юзерный dev, владелец shell'а = владелец OAuth). Становится реальной при public launch.
 - **Mitigation (Phase 2, follow-up issue):**

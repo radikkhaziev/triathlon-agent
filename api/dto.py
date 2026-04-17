@@ -64,7 +64,7 @@ class SetLanguageRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Intervals.icu (api/routers/intervals.py)
+# Intervals.icu (api/routers/intervals/)
 # ---------------------------------------------------------------------------
 
 

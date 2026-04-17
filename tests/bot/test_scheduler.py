@@ -19,6 +19,6 @@ class TestSyncWellnessJobManual:
 
     @pytest.mark.asyncio
     async def test_sync_wellness_today(self):
-        from bot.scheduler import scheduler_wellness_and_reports_job
+        from bot.scheduler import scheduler_wellness
 
-        await scheduler_wellness_and_reports_job()
+        await scheduler_wellness()

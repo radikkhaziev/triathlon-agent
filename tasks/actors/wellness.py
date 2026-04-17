@@ -18,7 +18,7 @@ from data.metrics import (
     rmssd_ai_endurance,
     rmssd_flatt_esco,
 )
-from tasks.dto import DateDTO
+from tasks.dto import ORMDTO, DateDTO
 
 from .common import CATEGORY_TO_READINESS, actor_after_activity_update
 
@@ -243,24 +243,26 @@ def _actor_update_recovery_score(
 def actor_user_wellness(
     user: UserDTO,
     dt: DateDTO | None = None,
+    wellness: WellnessDTO | None = None,
     force: bool = False,
 ):
     from .athlets import actor_sync_athlete_settings
+    from .reports import actor_compose_user_morning_report
 
     today = DateDTO.today()
     dt = dt or today
-    # is_today = dt == today
 
-    with IntervalsSyncClient.for_user(user) as client:
-        _wellnessDTO: WellnessDTO = client.get_wellness(dt)
+    if wellness is None:
+        with IntervalsSyncClient.for_user(user) as client:
+            wellness: WellnessDTO = client.get_wellness(dt)
 
-    if not _wellnessDTO:
+    if not wellness:
         logger.info("No wellness data found for user %s on %s", user.id, dt)
         return
 
-    result = Wellness.save(user_id=user.id, wellness=_wellnessDTO)
+    result: ORMDTO = Wellness.save(user_id=user.id, wellness=wellness)
 
-    _dt = _wellnessDTO.id
+    _dt = wellness.id
 
     if not result.is_changed and not force:
         logger.debug("Wellness unchanged for user %s on %s, skipping pipelines", user.id, _dt)
@@ -292,3 +294,12 @@ def actor_user_wellness(
     )
     g.add_completion_callback(_actor_update_recovery_score.message(user=user, dt=_dt, force=force))
     g.run()
+
+    _row: Wellness = result.row
+    if (
+        _dt == DateDTO.today().isoformat()
+        and not _row.ai_recommendation
+        and _row.sleep_score is not None
+        and _row.recovery_score is not None
+    ):
+        actor_compose_user_morning_report.send(user=user)
