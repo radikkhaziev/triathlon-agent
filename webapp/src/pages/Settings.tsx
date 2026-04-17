@@ -51,6 +51,8 @@ export default function Settings() {
   const [intervals, setIntervals] = useState<IntervalsStatus | null>(null)
   const [intervalsToast, setIntervalsToast] = useState<IntervalsToast | null>(null)
   const [intervalsBusy, setIntervalsBusy] = useState(false)
+  const [profile, setProfile] = useState<Record<string, unknown> | null>(null)
+  const [goal, setGoal] = useState<Record<string, unknown> | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -65,9 +67,11 @@ export default function Settings() {
   // `intervals=null` forever, which would stick the UI in the "loading" text.
   useEffect(() => {
     if (!isAuthenticated) return
-    apiFetch<AuthMeResponse>('/api/auth/me')
+    apiFetch<AuthMeResponse & { profile?: Record<string, unknown>; goal?: Record<string, unknown> }>('/api/auth/me')
       .then(data => {
         setIntervals(data.intervals ?? { method: 'none', athlete_id: null, scope: null })
+        if (data.profile) setProfile(data.profile)
+        if (data.goal) setGoal(data.goal)
       })
       .catch(() => {
         setIntervals({ method: 'none', athlete_id: null, scope: null })
@@ -229,23 +233,31 @@ export default function Settings() {
       )}
 
       {/* Athlete Profile */}
-      <Section title="Athlete Profile" icon="🏊‍♂️">
-        <Row label="Age" value="43" />
-        <Row label="LTHR Run" value="153 bpm" />
-        <Row label="LTHR Bike" value="153 bpm" />
-        <Row label="FTP" value="233W" />
-        <Row label="CSS" value="2:21/100m" />
-      </Section>
+      {profile && (
+        <Section title="Athlete Profile" icon="🏊‍♂️">
+          {profile.age && <Row label="Age" value={String(profile.age)} />}
+          {profile.lthr_run && <Row label="LTHR Run" value={`${profile.lthr_run} bpm`} />}
+          {profile.lthr_bike && <Row label="LTHR Bike" value={`${profile.lthr_bike} bpm`} />}
+          {profile.ftp && <Row label="FTP" value={`${profile.ftp}W`} />}
+          {profile.css && <Row label="CSS" value={`${Math.floor(Number(profile.css) / 60)}:${String(Math.round(Number(profile.css) % 60)).padStart(2, '0')}/100m`} />}
+        </Section>
+      )}
 
       {/* Race Goal */}
-      <Section title="Race Goal" icon="🏁">
-        <Row label="Event" value="Ironman 70.3" />
-        <Row label="Date" value="Sep 15, 2026" />
-        <Row label="CTL Target" value="75" />
-        <Row label="Swim CTL" value="15" />
-        <Row label="Bike CTL" value="35" />
-        <Row label="Run CTL" value="25" />
-      </Section>
+      {goal && (
+        <Section title="Race Goal" icon="🏁">
+          <Row label="Event" value={String(goal.event_name)} />
+          <Row label="Date" value={String(goal.event_date)} />
+          {goal.ctl_target && <Row label="CTL Target" value={String(goal.ctl_target)} />}
+          {goal.per_sport_targets && typeof goal.per_sport_targets === 'object' && (
+            <>
+              {(goal.per_sport_targets as Record<string, number>).swim != null && <Row label="Swim CTL" value={String((goal.per_sport_targets as Record<string, number>).swim)} />}
+              {(goal.per_sport_targets as Record<string, number>).ride != null && <Row label="Bike CTL" value={String((goal.per_sport_targets as Record<string, number>).ride)} />}
+              {(goal.per_sport_targets as Record<string, number>).run != null && <Row label="Run CTL" value={String((goal.per_sport_targets as Record<string, number>).run)} />}
+            </>
+          )}
+        </Section>
+      )}
 
       {/* MCP Connection */}
       {isAuthenticated && !isDemo && (

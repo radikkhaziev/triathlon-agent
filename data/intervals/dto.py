@@ -240,8 +240,8 @@ class PlannedWorkoutDTO(BaseModel):
     slot: str = "morning"  # "morning" | "evening"
     suffix: str = "generated"  # "generated" | "adapted"
 
-    # Sports where intensity targets are not applicable (yoga, stretching, etc.)
-    _NO_TARGET_SPORTS = {"Other"}
+    # Sports where intensity targets are not applicable (Other = yoga, stretching, mobility in Intervals.icu)
+    _NO_TARGET_SPORTS: frozenset[str] = frozenset({"Other"})
 
     @model_validator(mode="after")
     def _check_steps_have_targets(self) -> "PlannedWorkoutDTO":
