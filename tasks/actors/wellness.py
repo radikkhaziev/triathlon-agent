@@ -296,5 +296,10 @@ def actor_user_wellness(
     g.run()
 
     _row: Wellness = result.row
-    if _dt == DateDTO.today().isoformat() and not _row.ai_recommendation and _row.sleep_score and _row.recovery_score:
+    if (
+        _dt == DateDTO.today().isoformat()
+        and not _row.ai_recommendation
+        and _row.sleep_score is not None
+        and _row.recovery_score is not None
+    ):
         actor_compose_user_morning_report.send(user=user)
