@@ -230,7 +230,10 @@ class AthleteGoal(Base):
         """Upsert goal from Intervals.icu event. Does NOT overwrite CTL targets."""
         now = datetime.now(timezone.utc)
         existing = session.execute(
-            select(cls).where(cls.user_id == user_id, cls.intervals_event_id == intervals_event_id)
+            select(cls).where(
+                cls.user_id == user_id,
+                cls.intervals_event_id == intervals_event_id,
+            )
         ).scalar_one_or_none()
 
         if existing:

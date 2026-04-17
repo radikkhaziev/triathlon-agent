@@ -210,7 +210,12 @@ class Wellness(Base):
         session: Session,
     ) -> None:
         date_str = dt.isoformat()
-        result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
+        result = session.execute(
+            select(cls).where(
+                cls.user_id == user_id,
+                cls.date == date_str,
+            )
+        )
         row = result.scalar_one_or_none()
         if row is None:
             return

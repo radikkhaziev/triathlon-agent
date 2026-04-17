@@ -83,10 +83,11 @@ class TestPlannedWorkout:
         assert event.moving_time == 3600
         assert event.external_id == "tricoach:2026-03-29:ride:morning"
 
-    def test_generated_suffix(self):
-        w = self._make_workout(suffix="generated")
+    def test_no_suffix_in_event_name(self):
+        """Default suffix=None produces clean name without parentheses."""
+        w = self._make_workout()
         event = w.to_intervals_event()
-        assert event.name == "AI: Z2 Endurance (generated)"
+        assert event.name == "AI: Z2 Endurance"
 
     def test_adapted_suffix(self):
         w = self._make_workout(suffix="adapted")

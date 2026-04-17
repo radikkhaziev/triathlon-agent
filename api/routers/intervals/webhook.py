@@ -54,7 +54,7 @@ def _verify_webhook_secret(payload: IntervalsWebhookPayload) -> bool:
         logger.warning(
             "Intervals webhook received but INTERVALS_WEBHOOK_SECRET is not set — "
             "accepting all requests (debug mode). Set the env var to enforce "
-            "verification. This warning will emit only once per process."
+            "verification."
         )
         return True
 
@@ -134,13 +134,13 @@ def _dispatch_wellness(user: UserDTO, event: IntervalsWebhookEvent) -> None:
     wellness_dtos = TypeAdapter(list[WellnessDTO]).validate_python(event.records)
 
     # Sort by updated ascending — process oldest records first
-    wellness_dtos.sort(key=lambda w: w.updated or "")
+    wellness_dtos.sort(key=lambda w: str(w.updated or ""))
 
     for wellness_dto in wellness_dtos:
         actor_user_wellness.send(
             user=user,
             dt=wellness_dto.id,
-            wellnessDTO=wellness_dto,
+            wellness=wellness_dto,
         )
 
 

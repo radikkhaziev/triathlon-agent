@@ -60,5 +60,4 @@ def create_ramp_test(sport: str, target_date: date, days_since: int = 0) -> Plan
             "Hold steady effort for each 5-min step."
         ),
         target_date=target_date,
-        suffix="generated",
     )
