@@ -141,7 +141,7 @@ def _dispatch_wellness(user: UserDTO, event: IntervalsWebhookEvent) -> None:
     wellness_dtos = TypeAdapter(list[WellnessDTO]).validate_python(event.records)
 
     # Sort by updated ascending — process oldest records first
-    wellness_dtos.sort(key=lambda w: w.updated)
+    wellness_dtos.sort(key=lambda w: w.updated or "")
 
     for wellness_dto in wellness_dtos:
         actor_user_wellness.send(
@@ -253,7 +253,7 @@ async def intervals_webhook(request: Request) -> dict:
         raw = await request.body()
         logger.warning("Intervals webhook non-JSON body from ip=%s size=%d", client_ip, len(raw))
         return {"status": "ok"}
-    logger.info("Intervals webhook raw body from ip=%s body=%s", client_ip, raw_body)
+    logger.debug("Intervals webhook raw body from ip=%s body=%s", client_ip, raw_body)
 
     try:
         payload = IntervalsWebhookPayload.model_validate(raw_body)
