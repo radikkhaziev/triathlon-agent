@@ -88,6 +88,11 @@ class IntervalsWebhookEvent(BaseModel):
     timestamp: str | None = None
     records: list[dict[str, Any]] = Field(default_factory=list)
     sport_settings: list[dict[str, Any]] = Field(default_factory=list, alias="sportSettings")
+    # ACTIVITY_* events deliver data via `activity` (single object, not array)
+    activity: dict[str, Any] | None = None
+    # APP_SCOPE_CHANGED delivers scope info as top-level event fields
+    scope: str | None = None
+    deauthorized: bool | None = None
 
 
 class IntervalsWebhookPayload(BaseModel):
