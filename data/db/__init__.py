@@ -11,6 +11,7 @@ from .dto import (  # noqa
     UserDTO,
     WellnessPostDTO,
 )
+from .fitness_projection import FitnessProjection  # noqa
 from .garmin import (  # noqa
     GarminAbnormalHrEvents,
     GarminBioMetrics,

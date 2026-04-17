@@ -7,9 +7,18 @@ import TabSwitcher from '../components/TabSwitcher'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
+import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
 import { num } from '../lib/formatters'
 import type { ProgressResponse, DecouplingTrend } from '../api/types'
+
+interface FitnessProjectionData {
+  count: number
+  dates: string[]
+  ctl: (number | null)[]
+  atl: (number | null)[]
+  ramp_rate: (number | null)[]
+}
 
 Chart.register(...registerables, annotationPlugin)
 
@@ -37,7 +46,7 @@ export default function Progress() {
   const [sport, setSport] = useState<Sport>('bike')
   const [days, setDays] = useState('180')
 
-  const endpoint = `/api/progress?sport=${sport}&days=${days}&strict_filter=true`
+  const endpoint = `/api/progress?sport=${sport}&days=${days}`
   const { data, loading, error } = useApi<ProgressResponse>(endpoint)
 
   return (
@@ -68,6 +77,7 @@ function ProgressContent({ data, sport }: { data: ProgressResponse; sport: Sport
           <DecouplingChart data={data} sport={sport} />
         </>
       )}
+      <FitnessProjectionChart />
       <ActivityList data={data} sport={sport} />
     </>
   )
@@ -395,6 +405,125 @@ function ActivityList({ data, sport }: { data: ProgressResponse; sport: Sport })
     </div>
   )
 }
+
+function FitnessProjectionChart() {
+  const chartRef = useRef<HTMLCanvasElement>(null)
+  const chartInstRef = useRef<Chart | null>(null)
+  const [projection, setProjection] = useState<FitnessProjectionData | null>(null)
+
+  useEffect(() => {
+    apiFetch<FitnessProjectionData>('/api/fitness-projection')
+      .then(setProjection)
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!chartRef.current || !projection || projection.count === 0) return
+
+    chartInstRef.current?.destroy()
+
+    const today = new Date().toISOString().slice(0, 10)
+    const todayIdx = projection.dates.findIndex(d => d >= today)
+
+    // Split into historical (past) and projection (future) segments
+    const labels = projection.dates.map(d => d.slice(5)) // MM-DD
+
+    // CTL line — solid for past, dashed for future
+    const ctlPast = projection.ctl.map((v, i) => todayIdx >= 0 && i > todayIdx ? null : v)
+    const ctlFuture = projection.ctl.map((v, i) => todayIdx >= 0 && i < todayIdx ? null : v)
+
+    // ATL line — same split
+    const atlPast = projection.atl.map((v, i) => todayIdx >= 0 && i > todayIdx ? null : v)
+    const atlFuture = projection.atl.map((v, i) => todayIdx >= 0 && i < todayIdx ? null : v)
+
+    chartInstRef.current = new Chart(chartRef.current, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'CTL',
+            data: ctlPast,
+            borderColor: CHART_COLORS.ctl,
+            backgroundColor: CHART_COLORS.ctl + '15',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 0,
+            borderWidth: 2,
+            spanGaps: true,
+          },
+          {
+            label: 'CTL (projection)',
+            data: ctlFuture,
+            borderColor: CHART_COLORS.ctl,
+            borderDash: [6, 4],
+            backgroundColor: CHART_COLORS.ctl + '08',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 0,
+            borderWidth: 2,
+            spanGaps: true,
+          },
+          {
+            label: 'ATL',
+            data: atlPast,
+            borderColor: CHART_COLORS.atl,
+            tension: 0.3,
+            pointRadius: 0,
+            borderWidth: 1.5,
+            spanGaps: true,
+          },
+          {
+            label: 'ATL (projection)',
+            data: atlFuture,
+            borderColor: CHART_COLORS.atl,
+            borderDash: [6, 4],
+            tension: 0.3,
+            pointRadius: 0,
+            borderWidth: 1.5,
+            spanGaps: true,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 }, filter: (item) => !item.text.includes('projection') } },
+          title: { display: true, text: 'Fitness Projection (CTL / ATL)', font: { size: 13 } },
+          annotation: todayIdx >= 0 ? {
+            annotations: {
+              todayLine: {
+                type: 'line',
+                xMin: todayIdx,
+                xMax: todayIdx,
+                borderColor: 'rgba(128,128,128,0.5)',
+                borderWidth: 1,
+                borderDash: [4, 4],
+                label: { content: 'Today', display: true, position: 'start', font: { size: 10 } },
+              },
+            },
+          } : {},
+        },
+        scales: {
+          x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45, maxTicksLimit: 12 } },
+          y: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } } },
+        },
+      },
+    })
+
+    return () => { chartInstRef.current?.destroy() }
+  }, [projection])
+
+  if (!projection || projection.count === 0) return null
+
+  return (
+    <ChartContainer>
+      <canvas ref={chartRef} />
+    </ChartContainer>
+  )
+}
+
 
 function EmptyState({ sport }: { sport: Sport }) {
   const sportLabel = sport === 'bike' ? 'cycling' : sport === 'run' ? 'running' : 'swimming'
