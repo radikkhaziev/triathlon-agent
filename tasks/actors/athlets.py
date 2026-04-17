@@ -8,7 +8,7 @@ from pydantic import validate_call
 
 from data.db import AthleteGoal, AthleteSettings, User, UserDTO
 from data.intervals.client import IntervalsSyncClient
-from data.intervals.dto import ScheduledWorkoutDTO
+from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
 from tasks.dto import DateDTO
 
 from ..tools import TelegramTool
@@ -30,10 +30,19 @@ def _actor_send_zones_notification(user: UserDTO, updated: list[str]):
 
 @dramatiq.actor(queue_name="default")
 @validate_call
-def actor_sync_athlete_settings(user: UserDTO):
-    """Sync sport settings from Intervals.icu → athlete_settings table."""
-    with IntervalsSyncClient.for_user(user) as client:
-        all_settings = client.list_sport_settings()
+def actor_sync_athlete_settings(
+    user: UserDTO,
+    sport_settings: list[SportSettingsDTO] | None = None,
+):
+    """Sync sport settings from Intervals.icu → athlete_settings table.
+
+    If ``sport_settings`` is provided (e.g. from webhook payload), skips the API call.
+    """
+    if sport_settings is None:
+        with IntervalsSyncClient.for_user(user) as client:
+            all_settings = client.list_sport_settings()
+    else:
+        all_settings = sport_settings
 
     for ss in all_settings:
         # Map types to primary sport: ["Ride", "VirtualRide", ...] → "Ride"

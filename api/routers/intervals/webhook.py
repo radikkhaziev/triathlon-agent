@@ -13,7 +13,12 @@ from api.dto import IntervalsWebhookEvent, IntervalsWebhookPayload
 from config import settings
 from data.db import User, UserDTO
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
-from tasks.actors import actor_sync_athlete_goals, actor_user_scheduled_workouts, actor_user_wellness
+from tasks.actors import (
+    actor_sync_athlete_goals,
+    actor_sync_athlete_settings,
+    actor_user_scheduled_workouts,
+    actor_user_wellness,
+)
 
 from . import router
 
@@ -150,6 +155,17 @@ def _dispatch_calendar(user: UserDTO) -> None:
     actor_sync_athlete_goals.send(user=user)
 
 
+def _dispatch_sport_settings(user: UserDTO, event: IntervalsWebhookEvent) -> None:
+    """Dispatch settings sync from SPORT_SETTINGS_UPDATED event.
+
+    Parses sport_settings from the webhook payload and passes directly
+    to the actor, avoiding a redundant API call to Intervals.icu.
+    """
+
+    settings = TypeAdapter(list[SportSettingsDTO]).validate_python(event.sport_settings)
+    actor_sync_athlete_settings.send(user=user, sport_settings=settings)
+
+
 # ---------------------------------------------------------------------------
 # Main webhook handler
 # ---------------------------------------------------------------------------
@@ -228,10 +244,14 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
 
     # Dispatch actors for supported event types.
     user_dto = UserDTO.model_validate(user)
-    if normalized_type == "WELLNESS_UPDATED":
-        _dispatch_wellness(user_dto, event)
-    elif normalized_type == "CALENDAR_UPDATED":
-        _dispatch_calendar(user_dto)
+    dispatchers = {
+        "WELLNESS_UPDATED": lambda: _dispatch_wellness(user_dto, event),
+        "CALENDAR_UPDATED": lambda: _dispatch_calendar(user_dto),
+        "SPORT_SETTINGS_UPDATED": lambda: _dispatch_sport_settings(user_dto, event),
+    }
+    dispatcher = dispatchers.get(normalized_type)
+    if dispatcher is not None:
+        dispatcher()
 
 
 @router.post("/webhook")
@@ -240,7 +260,8 @@ async def intervals_webhook(request: Request) -> dict:
 
     Always returns 200 — Intervals.icu retries/disables the webhook on 4xx/5xx.
     Supported dispatchers: WELLNESS_UPDATED → ``actor_user_wellness``,
-    CALENDAR_UPDATED → ``actor_user_scheduled_workouts`` + ``actor_sync_athlete_goals``.
+    CALENDAR_UPDATED → ``actor_user_scheduled_workouts`` + ``actor_sync_athlete_goals``,
+    SPORT_SETTINGS_UPDATED → ``actor_sync_athlete_settings``.
     """
 
     interesting_headers = {

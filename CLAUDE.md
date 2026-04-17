@@ -426,7 +426,7 @@ Specs and plans in `docs/`. Key: `ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECU
 
 ## Next Steps
 
-1. **Webhook dispatchers** — `WELLNESS_UPDATED` ✓ and `CALENDAR_UPDATED` ✓ done. Remaining: `ACTIVITY_UPLOADED` → activities sync, `SPORT_SETTINGS_UPDATED` → settings sync. See `docs/INTERVALS_WEBHOOKS_RESEARCH.md`.
+1. **Webhook dispatchers** — `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓ done. Remaining: `ACTIVITY_UPLOADED` → activities sync. See `docs/INTERVALS_WEBHOOKS_RESEARCH.md`.
 2. **OAuth remaining** — disconnect endpoint (`POST /api/intervals/auth/disconnect`), lazy 401 handling (catch 401 → clear tokens → Telegram notify)
 3. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
 4. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`

@@ -87,6 +87,7 @@ class IntervalsWebhookEvent(BaseModel):
     type: str
     timestamp: str | None = None
     records: list[dict[str, Any]] = Field(default_factory=list)
+    sport_settings: list[dict[str, Any]] = Field(default_factory=list, alias="sportSettings")
 
 
 class IntervalsWebhookPayload(BaseModel):
