@@ -523,10 +523,12 @@ async def intervals_oauth_callback(
         db_user.set_oauth_tokens(access_token=access_token, scope=scope)
         if not db_user.athlete_id:
             db_user.athlete_id = intervals_athlete_id
-        # Phase 1 intentional omissions (see spec §3):
-        # - no role promotion viewer→athlete
-        # - no user.generate_mcp_token() for new users
-        # - no sync actor dispatch
+        # Promote viewer → athlete and preserve any higher-privilege roles
+        if db_user.role == "viewer":
+            db_user.role = "athlete"
+        if not db_user.mcp_token:
+            db_user.generate_mcp_token()
+            logger.info("Generated mcp_token for user %d", user_id)
         await session.commit()
 
     return RedirectResponse(f"{settings_url}?connected=intervals", status_code=302)

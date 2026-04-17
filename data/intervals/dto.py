@@ -240,6 +240,9 @@ class PlannedWorkoutDTO(BaseModel):
     slot: str = "morning"  # "morning" | "evening"
     suffix: str = "generated"  # "generated" | "adapted"
 
+    # Sports where intensity targets are not applicable (yoga, stretching, etc.)
+    _NO_TARGET_SPORTS = {"Other"}
+
     @model_validator(mode="after")
     def _check_steps_have_targets(self) -> "PlannedWorkoutDTO":
         """Every terminal step must carry at least one intensity target.
@@ -248,7 +251,11 @@ class PlannedWorkoutDTO(BaseModel):
         defines them. Text-only steps ('Z2' label + duration) leave the athlete
         running blind, so we reject them here rather than silently pushing a
         useless workout to Intervals.icu.
+
+        Exception: ``Other`` sport (yoga, stretching, mobility) — no watch alerts needed.
         """
+        if self.sport in self._NO_TARGET_SPORTS:
+            return self
 
         def _walk(steps: list[WorkoutStepDTO], trail: str) -> None:
             for i, s in enumerate(steps):
