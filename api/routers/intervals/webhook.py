@@ -2,8 +2,10 @@
 resolves tenant, dispatches actors for supported event types.
 """
 
+import asyncio
 import hmac
 import logging
+from typing import Any
 
 import sentry_sdk
 from fastapi import Request
@@ -11,7 +13,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from api.dto import IntervalsWebhookEvent, IntervalsWebhookPayload
 from config import settings
-from data.db import User, UserDTO
+from data.db import User, UserDTO, get_session
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
 from tasks.actors import (
     actor_sync_athlete_goals,
@@ -161,9 +163,23 @@ def _dispatch_sport_settings(user: UserDTO, event: IntervalsWebhookEvent) -> Non
     Parses sport_settings from the webhook payload and passes directly
     to the actor, avoiding a redundant API call to Intervals.icu.
     """
+    parsed = TypeAdapter(list[SportSettingsDTO]).validate_python(event.sport_settings)
+    actor_sync_athlete_settings.send(user=user, sport_settings=parsed)
 
-    settings = TypeAdapter(list[SportSettingsDTO]).validate_python(event.sport_settings)
-    actor_sync_athlete_settings.send(user=user, sport_settings=settings)
+
+async def _dispatch_scope_changed(user: User, event: IntervalsWebhookEvent) -> None:
+    """Handle APP_SCOPE_CHANGED — update scope or clear tokens on deauthorize."""
+    async with get_session() as session:
+        db_user = await session.get(User, user.id)
+        if not db_user:
+            return
+        if event.deauthorized:
+            db_user.clear_oauth_tokens()
+            logger.warning("User %d deauthorized Intervals.icu OAuth", user.id)
+        elif event.scope is not None:
+            db_user.intervals_oauth_scope = event.scope
+            logger.info("Updated OAuth scope for user %d: %s", user.id, event.scope)
+        await session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -244,14 +260,17 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
 
     # Dispatch actors for supported event types.
     user_dto = UserDTO.model_validate(user)
-    dispatchers = {
+    dispatchers: dict[str, Any] = {
         "WELLNESS_UPDATED": lambda: _dispatch_wellness(user_dto, event),
         "CALENDAR_UPDATED": lambda: _dispatch_calendar(user_dto),
         "SPORT_SETTINGS_UPDATED": lambda: _dispatch_sport_settings(user_dto, event),
+        "APP_SCOPE_CHANGED": lambda: _dispatch_scope_changed(user, event),
     }
     dispatcher = dispatchers.get(normalized_type)
     if dispatcher is not None:
-        dispatcher()
+        result = dispatcher()
+        if asyncio.iscoroutine(result):
+            await result
 
 
 @router.post("/webhook")
@@ -261,7 +280,8 @@ async def intervals_webhook(request: Request) -> dict:
     Always returns 200 — Intervals.icu retries/disables the webhook on 4xx/5xx.
     Supported dispatchers: WELLNESS_UPDATED → ``actor_user_wellness``,
     CALENDAR_UPDATED → ``actor_user_scheduled_workouts`` + ``actor_sync_athlete_goals``,
-    SPORT_SETTINGS_UPDATED → ``actor_sync_athlete_settings``.
+    SPORT_SETTINGS_UPDATED → ``actor_sync_athlete_settings``,
+    APP_SCOPE_CHANGED → update scope / clear tokens on deauthorize.
     """
 
     interesting_headers = {
