@@ -523,8 +523,9 @@ async def intervals_oauth_callback(
         db_user.set_oauth_tokens(access_token=access_token, scope=scope)
         if not db_user.athlete_id:
             db_user.athlete_id = intervals_athlete_id
-        # Promote viewer → athlete and generate MCP token for new users
-        db_user.role = "athlete"
+        # Promote viewer → athlete and preserve any higher-privilege roles
+        if db_user.role == "viewer":
+            db_user.role = "athlete"
         if not db_user.mcp_token:
             db_user.generate_mcp_token()
             logger.info("Generated mcp_token for user %d", user_id)
