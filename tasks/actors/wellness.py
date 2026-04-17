@@ -243,7 +243,7 @@ def _actor_update_recovery_score(
 def actor_user_wellness(
     user: UserDTO,
     dt: DateDTO | None = None,
-    wellnessDTO: WellnessDTO | None = None,
+    wellness: WellnessDTO | None = None,
     force: bool = False,
 ):
     from .athlets import actor_sync_athlete_settings
@@ -252,17 +252,17 @@ def actor_user_wellness(
     today = DateDTO.today()
     dt = dt or today
 
-    if wellnessDTO is None:
+    if wellness is None:
         with IntervalsSyncClient.for_user(user) as client:
-            wellnessDTO: WellnessDTO = client.get_wellness(dt)
+            wellness: WellnessDTO = client.get_wellness(dt)
 
-    if not wellnessDTO:
+    if not wellness:
         logger.info("No wellness data found for user %s on %s", user.id, dt)
         return
 
-    result: ORMDTO = Wellness.save(user_id=user.id, wellness=wellnessDTO)
+    result: ORMDTO = Wellness.save(user_id=user.id, wellness=wellness)
 
-    _dt = wellnessDTO.id
+    _dt = wellness.id
 
     if not result.is_changed and not force:
         logger.debug("Wellness unchanged for user %s on %s, skipping pipelines", user.id, _dt)

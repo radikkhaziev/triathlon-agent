@@ -37,10 +37,6 @@ _EVENT_RECORD_MODELS: dict[str, type[BaseModel] | None] = {
 _KNOWN_EVENT_TYPES = frozenset(_EVENT_RECORD_MODELS.keys())
 
 
-# One-shot guard so the "SECRET is not set" warning emits at most once per process.
-_webhook_secret_missing_warned = False
-
-
 def _format_validation_errors(exc: ValidationError) -> list[str]:
     """Turn a Pydantic ``ValidationError`` into PII-safe metadata strings."""
     sanitized: list[str] = []
@@ -51,23 +47,20 @@ def _format_validation_errors(exc: ValidationError) -> list[str]:
     return sanitized
 
 
-def _verify_webhook_secret(payload: IntervalsWebhookPayload, client_ip: str) -> bool:
+def _verify_webhook_secret(payload: IntervalsWebhookPayload) -> bool:
     """Compare ``payload.secret`` against ``INTERVALS_WEBHOOK_SECRET`` in constant time."""
-    global _webhook_secret_missing_warned
     expected = settings.INTERVALS_WEBHOOK_SECRET.get_secret_value()
     if not expected:
-        if not _webhook_secret_missing_warned:
-            logger.warning(
-                "Intervals webhook received but INTERVALS_WEBHOOK_SECRET is not set — "
-                "accepting all requests (debug mode). Set the env var to enforce "
-                "verification. This warning will emit only once per process."
-            )
-            _webhook_secret_missing_warned = True
+        logger.warning(
+            "Intervals webhook received but INTERVALS_WEBHOOK_SECRET is not set — "
+            "accepting all requests (debug mode). Set the env var to enforce "
+            "verification. This warning will emit only once per process."
+        )
         return True
+
     if not payload.secret or not hmac.compare_digest(payload.secret, expected):
         logger.warning(
-            "Intervals webhook secret mismatch, dropping payload ip=%s events=%d",
-            client_ip,
+            "Intervals webhook secret mismatch, dropping payload events=%d",
             len(payload.events),
         )
         return False
@@ -240,34 +233,32 @@ async def intervals_webhook(request: Request) -> dict:
     Always returns 200 — Intervals.icu retries/disables the webhook on 4xx/5xx.
     Supported dispatchers: WELLNESS_UPDATED → ``actor_user_wellness``.
     """
-    client_ip = request.client.host if request.client else "unknown"
 
     interesting_headers = {
         k: v for k, v in request.headers.items() if k.startswith("x-") or k in ("user-agent", "content-type")
     }
-    logger.info("Intervals webhook delivery ip=%s headers=%s", client_ip, interesting_headers)
+    logger.info("Intervals webhook delivery  headers=%s", interesting_headers)
 
     try:
         raw_body = await request.json()
     except Exception:
         raw = await request.body()
-        logger.warning("Intervals webhook non-JSON body from ip=%s size=%d", client_ip, len(raw))
+        logger.warning("Intervals webhook non-JSON body size=%d", len(raw))
         return {"status": "ok"}
-    logger.debug("Intervals webhook raw body from ip=%s body=%s", client_ip, raw_body)
+    logger.debug("Intervals webhook raw body body=%s", raw_body)
 
     try:
         payload = IntervalsWebhookPayload.model_validate(raw_body)
     except ValidationError as e:
         sanitized = _format_validation_errors(e)
         logger.warning(
-            "Intervals webhook invalid payload from ip=%s error_count=%d fields=%s",
-            client_ip,
+            "Intervals webhook invalid payload error_count=%d fields=%s",
             len(sanitized),
             sanitized[:10],
         )
         return {"status": "ok"}
 
-    if not _verify_webhook_secret(payload, client_ip):
+    if not _verify_webhook_secret(payload):
         return {"status": "ok"}
 
     for event in payload.events:
