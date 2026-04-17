@@ -31,8 +31,9 @@ from api.auth import _get_jwt_secret
 from api.deps import require_viewer
 from api.dto import IntervalsAuthInitResponse, IntervalsWebhookEvent, IntervalsWebhookPayload
 from config import settings
-from data.db import User, get_session
+from data.db import User, UserDTO, get_session
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
+from tasks.actors import actor_sync_athlete_settings, actor_user_wellness
 
 # Map each known event type to the DTO used to parse items in `records`.
 # Intervals.icu webhook records have the same shape as the corresponding
@@ -521,15 +522,29 @@ async def intervals_oauth_callback(
             return RedirectResponse(f"{settings_url}?error=oauth_account_mismatch", status_code=302)
 
         db_user.set_oauth_tokens(access_token=access_token, scope=scope)
+        was_new = not db_user.athlete_id
         if not db_user.athlete_id:
             db_user.athlete_id = intervals_athlete_id
         # Promote viewer → athlete and preserve any higher-privilege roles
         if db_user.role == "viewer":
             db_user.role = "athlete"
+            logger.info("Promoted user %d to athlete via OAuth", user_id)
         if not db_user.mcp_token:
             db_user.generate_mcp_token()
             logger.info("Generated mcp_token for user %d", user_id)
         await session.commit()
+        await session.refresh(db_user)
+        user_dto = UserDTO.model_validate(db_user)
+
+    # Auto-dispatch initial sync for newly connected athletes.
+    # Wrapped in try/except so a Redis/broker outage doesn't break the redirect.
+    if was_new:
+        try:
+            actor_sync_athlete_settings.send(user=user_dto)
+            actor_user_wellness.send(user=user_dto)
+            logger.info("Dispatched initial sync for new athlete user_id=%d", user_id)
+        except Exception:
+            logger.exception("Failed to dispatch initial sync for user_id=%d", user_id)
 
     return RedirectResponse(f"{settings_url}?connected=intervals", status_code=302)
 

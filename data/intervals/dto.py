@@ -227,6 +227,10 @@ class WorkoutStepDTO(BaseModel):
         return result
 
 
+# Sports where intensity targets are not applicable (yoga, stretching, mobility)
+_NO_TARGET_SPORTS = frozenset({"Other"})
+
+
 class PlannedWorkoutDTO(BaseModel):
     """AI-generated workout to push to Intervals.icu (Phase 1: Adaptive Training Plan)."""
 
@@ -240,9 +244,6 @@ class PlannedWorkoutDTO(BaseModel):
     slot: str = "morning"  # "morning" | "evening"
     suffix: str = "generated"  # "generated" | "adapted"
 
-    # Sports where intensity targets are not applicable (yoga, stretching, etc.)
-    _NO_TARGET_SPORTS = {"Other"}
-
     @model_validator(mode="after")
     def _check_steps_have_targets(self) -> "PlannedWorkoutDTO":
         """Every terminal step must carry at least one intensity target.
@@ -254,7 +255,7 @@ class PlannedWorkoutDTO(BaseModel):
 
         Exception: ``Other`` sport (yoga, stretching, mobility) — no watch alerts needed.
         """
-        if self.sport in self._NO_TARGET_SPORTS:
+        if self.sport in _NO_TARGET_SPORTS:
             return self
 
         def _walk(steps: list[WorkoutStepDTO], trail: str) -> None:

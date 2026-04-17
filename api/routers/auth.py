@@ -6,10 +6,10 @@ import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
-from api.deps import get_current_user
+from api.deps import get_current_user, get_data_user_id
 from api.dto import DemoAuthRequest, SetLanguageRequest, TelegramWidgetAuthRequest, VerifyCodeRequest
 from config import settings
-from data.db import User, get_session
+from data.db import AthleteGoal, AthleteSettings, User, get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -130,15 +130,38 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     """
     if not user:
         return {"role": "anonymous", "authenticated": False}
+
+    data_uid = get_data_user_id(user)
+    t = await AthleteSettings.get_thresholds(data_uid)
+    g = await AthleteGoal.get_goal_dto(data_uid)
+
     result = {
         "role": user.role,
         "authenticated": True,
         "language": user.language,
         "intervals": {
-            "method": user.intervals_auth_method,  # "api_key" | "oauth" | "none"
+            "method": user.intervals_auth_method,
             "athlete_id": user.athlete_id,
             "scope": user.intervals_oauth_scope,
         },
+        "profile": {
+            "age": t.age,
+            "lthr_run": t.lthr_run,
+            "lthr_bike": t.lthr_bike,
+            "ftp": t.ftp,
+            "css": t.css,
+            "threshold_pace_run": t.threshold_pace_run,
+        },
+        "goal": (
+            {
+                "event_name": g.event_name,
+                "event_date": str(g.event_date),
+                "ctl_target": g.ctl_target,
+                "per_sport_targets": g.per_sport_targets,
+            }
+            if g
+            else None
+        ),
     }
     if user.role == "demo":
         result["language"] = "en"
