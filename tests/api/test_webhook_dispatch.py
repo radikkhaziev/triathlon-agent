@@ -144,15 +144,18 @@ ACTIVITY_ACHIEVEMENTS_EVENT = {
         "id": "i317960-2026-04-16-abc123",
         "start_date_local": "2026-04-16T15:00:00",
         "type": "VirtualRide",
+        "name": "Zwift - Zone 2 Endurance",
         "moving_time": 3312,
         "icu_training_load": 41.2,
         "average_heartrate": 141,
         "average_watts": 168,
         "icu_rolling_ftp": 210,
         "icu_rolling_ftp_delta": 2,
-        "ctl": 19.49,
-        "atl": 38.01,
-        "best_5s_watts": 500,
+        "icu_ctl": 19.49,
+        "icu_atl": 38.01,
+        "icu_achievements": [
+            {"id": "ps0_5", "type": "BEST_POWER", "watts": 500, "secs": 5},
+        ],
     },
     "records": [],
 }
@@ -217,7 +220,7 @@ class TestEventParsing:
         event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
         assert event.activity is not None
         assert event.activity["icu_rolling_ftp"] == 210
-        assert event.activity["best_5s_watts"] == 500
+        assert event.activity["icu_achievements"][0]["watts"] == 500
 
 
 # ---------------------------------------------------------------------------

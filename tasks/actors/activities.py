@@ -420,8 +420,7 @@ def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
 
     lines: list[str] = [f"🏆 {_('Новое достижение!')}"]
 
-    sport = activity.get("type", "")
-    activity_name = activity.get("name", sport)
+    activity_name = activity.get("name", activity.get("type", ""))
     lines.append(f"{activity_name}")
 
     # FTP update
@@ -431,17 +430,21 @@ def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
         delta_str = f" (+{ftp_delta})" if ftp_delta and ftp_delta > 0 else ""
         lines.append(f"⚡ FTP: {ftp}W{delta_str}")
 
-    # Power PRs
-    for duration in ("5s", "10s", "30s", "1m", "5m", "20m", "1h"):
-        key = f"best_{duration.replace('m', 'm').replace('h', 'h').replace('s', 's')}_watts"
-        val = activity.get(key)
-        if val is not None:
-            lines.append(f"💪 {duration} {_('рекорд')}: {val}W")
+    # Power PRs from icu_achievements array
+    for ach in activity.get("icu_achievements", []):
+        if ach.get("type") == "BEST_POWER" and ach.get("watts"):
+            secs = ach.get("secs", 0)
+            label = f"{secs // 60}m" if secs >= 60 else f"{secs}s"
+            lines.append(f"💪 {label} {_('рекорд')}: {ach['watts']}W")
 
     # CTL context
-    ctl = activity.get("ctl")
+    ctl = activity.get("icu_ctl")
     if ctl is not None:
         lines.append(f"📊 CTL: {ctl:.0f}")
+
+    # Don't send empty notification (only header + name, no achievements)
+    if len(lines) <= 2:
+        return
 
     tg = TelegramTool(user=user)
     tg.send_message(text="\n".join(lines))
