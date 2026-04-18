@@ -756,30 +756,35 @@ Total: 50 min. Ступеньки по 5 минут — минимум для с
 
 ### Протокол: бег
 
+Таргеты в `%LTHR` (не `%Pace`) — для DFA-детекции критична именно HR-реакция, пэйс следует за ней.
+
 ```
 Warm-up
-10m 65% Pace
+10m 70% LTHR
 
 Step 1
-5m 70% Pace
+5m 70% LTHR
 
 Step 2
-5m 78% Pace
+5m 78% LTHR
 
 Step 3
-5m 85% Pace
+5m 85% LTHR
 
 Step 4
-5m 92% Pace
+5m 92% LTHR
 
 Step 5
-5m 100% Pace
+5m 100% LTHR
+
+Step 6
+5m 108% LTHR   ← выше LTHR, чтобы DFA a1 опустился ниже 0.5 (HRVT2)
 
 Cool-down
-10m 60% Pace
+10m 70% LTHR
 ```
 
-Total: 50 min. `% Pace` — относительно CSS/threshold pace в Intervals.icu.
+Total: 50 min. Step 6 (@ 108% LTHR) добавлен после наблюдения, что 5-шаговый протокол до 100% LTHR не всегда пробивает HRVT2 — DFA a1 останавливается на ~0.7-0.8, и линейный фит даёт нереалистичные экстраполяции. WU/CD на 70% LTHR (вместо 65%) — иначе таргет попадает в зону ходьбы.
 
 ### Создание event
 
@@ -810,10 +815,11 @@ def create_ramp_test(sport: str, target_date: date) -> PlannedWorkout:
 
 1. Обрабатывает FIT → RR интервалы
 2. Рассчитывает DFA a1 по окнам
-3. Детектирует HRVT1 (a1=0.75) и HRVT2 (a1=0.50)
+3. Детектирует HRVT1 (a1=0.75) и HRVT2 (a1=0.50) — **только по WORK-сегментам** из `activity_details.intervals` (исключая WU/CD/recovery), чтобы шум от лёгких участков не портил линейный фит (R² падал с 0.7+ до 0.3 на реальных данных)
 4. Сохраняет в `activity_hrv`
+5. Если `ScheduledWorkout` с `"Ramp Test"` в имени совпадает по дате/спорту — сразу шлёт в Telegram ramp-test-специфичное уведомление (`tasks/formatter.py:build_ramp_test_message`) с HRVT1/HRVT2, R², confidence и — если дрифт >5% И есть ≥2 валидных HRVT1 в истории — inline-кнопкой `Обновить зоны` (callback `update_zones` → `actor_update_zones`). Если детекция не удалась, `diagnose_hrv_thresholds` возвращает структурированную причину (`too_few_points` / `a1_range_low` / `a1_range_high` / `positive_slope` / `noisy_fit` / `out_of_range` / `unknown`), и formatter показывает её атлету.
 
-Если новые пороги отличаются от текущих (>5%), утренний отчёт следующего дня включает threshold drift блок (см. ниже).
+Если новые пороги отличаются от текущих (>5%), утренний отчёт следующего дня дополнительно включает threshold drift блок (см. ниже).
 
 ### Threshold drift detection
 
@@ -907,10 +913,12 @@ async def create_ramp_test(sport: str, target_date: str) -> str:
 
 ### Этап 4: Фаза 4 — Ramp-тесты + threshold drift — Done
 
-- [x] Ramp протоколы (Ride 8 steps + Run 7 steps) в workout_doc формате (`data/ramp_tests.py`)
+- [x] Ramp протоколы (Ride 8 steps + Run 8 steps) в workout_doc формате (`data/ramp_tests.py`). Run: WU/CD @ 70% LTHR + ступени 70→78→85→92→100→**108%** LTHR, Step 6 добавлен для пробивки HRVT2 (a1<0.5)
 - [x] Проверка свежести порогов в утреннем cron (`_maybe_suggest_ramp` в scheduler)
 - [x] MCP tools: `get_threshold_freshness`, `create_ramp_test_tool` (`mcp_server/tools/ramp_tests.py`)
 - [x] Threshold drift detection: сравнение HRVT с config (LTHR/FTP), alert при >5% сдвиге (2+ теста)
 - [x] Обновлённый формат утреннего Telegram-сообщения (compact summary + threshold drift блок)
 - [x] AI-рекомендация не дублируется в Telegram (доступна только в webapp)
+- [x] HRVT linear fit только по WORK-сегментам (`detect_hrv_thresholds(work_segments=...)`) — WU/CD/recovery исключаются из регрессии; на реальных данных R² поднимается с 0.33 до 0.72+
+- [x] Ramp-test-специфичное пост-активити уведомление: новый код-путь в `_actor_send_activity_notification` с `_is_ramp_test_activity` детекцией, `build_ramp_test_message`, `diagnose_hrv_thresholds` (структурированные причины неудачи для i18n), inline-кнопка `Обновить зоны` только при ≥2 валидных HRVT1 (иначе `actor_update_zones` не сработает — требует ≥2 образцов)
 - [x] 15 unit-тестов (protocols, creation, morning message format, drift alert)

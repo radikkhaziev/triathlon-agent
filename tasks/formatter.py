@@ -187,16 +187,40 @@ def build_post_activity_message(
     return "\n".join(lines)
 
 
+def _ramp_failure_text(reason: dict) -> str:
+    """Localize a diagnose_hrv_thresholds code dict into a user message."""
+    code = reason.get("code")
+    if code == "too_few_points":
+        return _("слишком мало валидных точек ({count} < 20)").format(count=reason.get("count", 0))
+    if code == "a1_range_high":
+        return _("DFA a1 не достиг лёгкой зоны (max {max_a1} < 0.9)").format(max_a1=reason.get("max_a1"))
+    if code == "a1_range_low":
+        return _("последняя ступень слишком лёгкая — DFA a1 не пересёк порог (min {min_a1} > 0.80)").format(
+            min_a1=reason.get("min_a1")
+        )
+    if code == "positive_slope":
+        return _("DFA a1 не падает с ростом HR (slope={slope})").format(slope=reason.get("slope"))
+    if code == "noisy_fit":
+        return _("линейный фит слишком шумный (R²={r_squared} < 0.5)").format(r_squared=reason.get("r_squared"))
+    if code == "out_of_range":
+        return _("интерполяция вне физиологического диапазона (HRVT1={hrvt1}, HRVT2={hrvt2})").format(
+            hrvt1=reason.get("hrvt1"), hrvt2=reason.get("hrvt2")
+        )
+    return _("неизвестная причина")
+
+
 def build_ramp_test_message(
     activity: Activity,
     hrv: ActivityHrv,
     config_lthr: int | None,
-    failure_reason: str | None = None,
+    failure_reason: dict | None = None,
+    hrvt1_sample_count: int = 0,
 ) -> tuple[str, bool]:
     """Build ramp-test-specific notification. Returns (message, show_update_zones_button).
 
-    Button surfaces when a new HRVT1 was detected and differs from `config_lthr`
-    by more than 5% — same threshold as morning drift alerts.
+    Button surfaces when a new HRVT1 was detected, differs from `config_lthr` by
+    more than 5%, and there are enough samples (≥2) for drift detection to act
+    when the user taps it. The 2-sample threshold matches `User.detect_threshold_drift`.
     """
     sport = activity.type or "?"
     lines: list[str] = [f"⚡ {_('Ramp Test')} ({sport}) — {_('результат')}"]
@@ -224,12 +248,15 @@ def build_ramp_test_message(
             pct = (hrv.hrvt1_hr - config_lthr) / config_lthr * 100
             lines.append(f"{_('текущий LTHR')}: {config_lthr} bpm ({pct:+.1f}%)")
             if abs(pct) > 5:
-                show_button = True
-                lines.append(f"💡 {_('Рекомендуем обновить зоны')}")
+                if hrvt1_sample_count >= 2:
+                    show_button = True
+                    lines.append(f"💡 {_('Рекомендуем обновить зоны')}")
+                else:
+                    lines.append(f"ℹ️ {_('для обновления зон нужен ещё один ramp test')}")
     else:
         lines.append(f"⚠️ {_('детекция HRVT не удалась')}")
         if failure_reason:
-            lines.append(f"{_('причина')}: {failure_reason}")
+            lines.append(f"{_('причина')}: {_ramp_failure_text(failure_reason)}")
 
     return "\n".join(lines), show_button
 

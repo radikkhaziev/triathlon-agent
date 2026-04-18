@@ -262,6 +262,29 @@ class ActivityHrv(Base):
         )
         return list(result.scalars().all())
 
+    @classmethod
+    @dual
+    def count_hrvt1_samples(
+        cls,
+        user_id: int,
+        sport: str,
+        *,
+        session: Session,
+    ) -> int:
+        """Count processed HRVT1 measurements for (user, sport) — same filter as drift detection."""
+        result = session.execute(
+            select(func.count(cls.activity_id))
+            .join(Activity, Activity.id == cls.activity_id)
+            .where(
+                Activity.user_id == user_id,
+                Activity.type == sport,
+                cls.processing_status == "processed",
+                cls.hrvt1_hr.isnot(None),
+                cls.hrv_quality.in_(["good", "moderate"]),
+            )
+        )
+        return int(result.scalar_one() or 0)
+
 
 class ActivityDetail(Base):
     """Extended activity statistics from Intervals.icu API."""
