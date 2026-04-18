@@ -51,6 +51,7 @@ class Activity(Base):
     is_race: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     sub_type: Mapped[str | None] = mapped_column(String, nullable=True)  # NONE|RACE|COMMUTE|WARMUP|COOLDOWN
     rpe: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Borg CR-10 (1-10), see docs/RPE_SPEC.md
+    source: Mapped[str | None] = mapped_column(String, nullable=True)  # GARMIN_CONNECT, OAUTH_CLIENT, STRAVA, ...
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fit_file_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -82,6 +83,7 @@ class Activity(Base):
                 "average_hr": a.average_hr,
                 "is_race": getattr(a, "is_race", False),
                 "sub_type": getattr(a, "sub_type", None),
+                "source": getattr(a, "source", None),
                 "last_synced_at": now,
             }
             for a in activities
@@ -104,6 +106,7 @@ class Activity(Base):
                 "average_hr": stmt.excluded.average_hr,
                 "is_race": cls.is_race | stmt.excluded.is_race,
                 "sub_type": func.coalesce(cls.sub_type, stmt.excluded.sub_type),
+                "source": stmt.excluded.source,
                 "last_synced_at": stmt.excluded.last_synced_at,
             },
         )
