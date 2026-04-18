@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -156,6 +157,18 @@ class ActivityDTO(BaseModel):
     is_race: bool = Field(False, alias="race")
     sub_type: str | None = None
     source: str | None = None  # e.g. "GARMIN_CONNECT", "OAUTH_CLIENT", "STRAVA"
+    icu_rpe: int | None = None  # Borg CR-10 (1-10), from Intervals.icu / Garmin
+
+    @field_validator("icu_rpe", mode="before")
+    @classmethod
+    def _validate_rpe(cls, v: Any) -> int | None:
+        if v is None:
+            return None
+        try:
+            val = int(v)
+        except (TypeError, ValueError):
+            return None
+        return val if 1 <= val <= 10 else None
 
     @field_validator("type", mode="before")
     @classmethod

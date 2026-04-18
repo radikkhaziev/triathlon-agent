@@ -398,7 +398,7 @@ class TestDispatchActivityUpdated:
     @pytest.mark.asyncio
     async def test_saves_without_actors(self):
         """ACTIVITY_UPDATED only saves — no actors to avoid rename→update loop."""
-        event = _make_event(ACTIVITY_UPLOADED_EVENT)
+        event = _make_event({**ACTIVITY_UPLOADED_EVENT, "type": "ACTIVITY_UPDATED"})
         user = _make_user_dto()
         with (
             patch("api.routers.intervals.webhook.Activity") as mock_activity,

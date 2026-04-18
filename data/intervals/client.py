@@ -32,9 +32,8 @@ FIT_MAX_SIZE = 50 * 1024 * 1024  # 50 MB
 class IntervalsAuthError(Exception):
     """Raised when Intervals.icu returns 401 for an OAuth user.
 
-    The token has been revoked or expired. Tokens are already cleared
-    in the DB by the ``for_user`` context manager. Caller should send
-    a Telegram notification to reconnect.
+    The token has been revoked or expired. On 401, ``_execute()``
+    clears the stored tokens in the DB before raising this error.
     """
 
     def __init__(self, user_id: int):
@@ -205,7 +204,10 @@ class IntervalsClientBase:
         params = {
             "oldest": oldest.strftime("%Y-%m-%d"),
             "newest": newest.strftime("%Y-%m-%d"),
-            "fields": "id,start_date_local,type,icu_training_load,moving_time,average_heartrate,race,sub_type,source",
+            "fields": (
+                "id,start_date_local,type,icu_training_load,moving_time,"
+                "average_heartrate,race,sub_type,source,icu_rpe"
+            ),
         }
         return RequestSpec(
             "GET",

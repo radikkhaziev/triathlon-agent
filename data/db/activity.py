@@ -84,6 +84,7 @@ class Activity(Base):
                 "is_race": getattr(a, "is_race", False),
                 "sub_type": getattr(a, "sub_type", None),
                 "source": getattr(a, "source", None),
+                "rpe": getattr(a, "icu_rpe", None),
                 "last_synced_at": now,
             }
             for a in activities
@@ -107,6 +108,7 @@ class Activity(Base):
                 "is_race": cls.is_race | stmt.excluded.is_race,
                 "sub_type": func.coalesce(cls.sub_type, stmt.excluded.sub_type),
                 "source": stmt.excluded.source,
+                "rpe": func.coalesce(cls.rpe, stmt.excluded.rpe),
                 "last_synced_at": stmt.excluded.last_synced_at,
             },
         )
