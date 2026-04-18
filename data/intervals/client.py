@@ -74,7 +74,7 @@ class IntervalsClientBase:
 
     Subclasses implement _request() and _execute() for sync/async transport.
 
-    Supports two authentication methods (see `docs/INTERVALS_OAUTH_SPEC.md`):
+    Supports two authentication methods (see `api/routers/intervals/oauth.py`):
     - **api_key** (legacy): HTTP Basic Auth ``("API_KEY", key)``
     - **access_token** (OAuth): ``Authorization: Bearer {token}``
 

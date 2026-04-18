@@ -607,17 +607,25 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
             return
         if activity.type == "Other":
             return  # skip yoga/mobility/strength
-        current_name = activity.type or ""
-
-        # Idempotency: skip if already signed
-        if _already_signed(current_name):
-            return
 
         # Get wellness for context
         dt = str(activity.start_date_local)[:10]
         wellness = session.execute(
             select(Wellness).where(Wellness.user_id == user.id, Wellness.date == dt)
         ).scalar_one_or_none()
+
+    # Idempotency: fetch current name from Intervals.icu and check if already signed
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            detail = client.get_activity_detail(activity_id)
+    except Exception:
+        logger.warning("Failed to fetch activity detail for rename check %s", activity_id)
+        return
+    if not detail:
+        return
+    current_name = detail.get("name", "")
+    if _already_signed(current_name):
+        return
 
     # Try Claude, fallback to template
     title, description = _fallback_signature(activity, wellness)
