@@ -13,7 +13,7 @@ from fitparse import FitFile
 from pydantic import validate_call
 from sqlalchemy import select
 
-from bot.i18n import set_language
+from bot.i18n import _, set_language
 from data.db import Activity, ActivityDetail, ActivityHrv, PaBaseline, Race, UserDTO, get_sync_session
 from data.hrv_activity import (
     calculate_dfa_timeseries,
@@ -410,3 +410,38 @@ def actor_fetch_user_activities(
 
     g = group([_actor_update_activity_details.message(user=user, activity_id=aid, force=force) for aid in activity_ids])
     g.run()
+
+
+@dramatiq.actor(queue_name="default")
+@validate_call
+def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
+    """Send Telegram notification about activity achievements (PR, FTP update)."""
+    set_language(user.language or "ru")
+
+    lines: list[str] = [f"🏆 {_('Новое достижение!')}"]
+
+    sport = activity.get("type", "")
+    activity_name = activity.get("name", sport)
+    lines.append(f"{activity_name}")
+
+    # FTP update
+    ftp = activity.get("icu_rolling_ftp")
+    ftp_delta = activity.get("icu_rolling_ftp_delta")
+    if ftp is not None:
+        delta_str = f" (+{ftp_delta})" if ftp_delta and ftp_delta > 0 else ""
+        lines.append(f"⚡ FTP: {ftp}W{delta_str}")
+
+    # Power PRs
+    for duration in ("5s", "10s", "30s", "1m", "5m", "20m", "1h"):
+        key = f"best_{duration.replace('m', 'm').replace('h', 'h').replace('s', 's')}_watts"
+        val = activity.get(key)
+        if val is not None:
+            lines.append(f"💪 {duration} {_('рекорд')}: {val}W")
+
+    # CTL context
+    ctl = activity.get("ctl")
+    if ctl is not None:
+        lines.append(f"📊 CTL: {ctl:.0f}")
+
+    tg = TelegramTool(user=user)
+    tg.send_message(text="\n".join(lines))

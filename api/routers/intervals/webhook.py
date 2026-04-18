@@ -16,6 +16,7 @@ from config import settings
 from data.db import FitnessProjection, User, UserDTO, get_session
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
 from tasks.actors import (
+    actor_send_achievement_notification,
     actor_sync_athlete_goals,
     actor_sync_athlete_settings,
     actor_user_scheduled_workouts,
@@ -182,6 +183,13 @@ async def _dispatch_scope_changed(user: User, event: IntervalsWebhookEvent) -> N
         await session.commit()
 
 
+def _dispatch_achievements(user: UserDTO, event: IntervalsWebhookEvent) -> None:
+    """Send achievement notification from ACTIVITY_ACHIEVEMENTS event."""
+    if not event.activity:
+        return
+    actor_send_achievement_notification.send(user=user, activity=event.activity)
+
+
 async def _dispatch_fitness(user_id: int, event: IntervalsWebhookEvent) -> None:
     """Save fitness projection records from FITNESS_UPDATED webhook."""
     if not event.records:
@@ -274,6 +282,7 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
         "SPORT_SETTINGS_UPDATED": lambda: _dispatch_sport_settings(user_dto, event),
         "APP_SCOPE_CHANGED": lambda: _dispatch_scope_changed(user, event),
         "FITNESS_UPDATED": lambda: _dispatch_fitness(user.id, event),
+        "ACTIVITY_ACHIEVEMENTS": lambda: _dispatch_achievements(user_dto, event),
     }
     dispatcher = dispatchers.get(normalized_type)
     if dispatcher is not None:
