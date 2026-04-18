@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from bot.formatter import build_evening_message, build_post_activity_message, format_duration, sport_emoji
+from tasks.formatter import build_ramp_test_message
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -194,6 +195,60 @@ class TestBuildPostActivityMessage:
         msg = build_post_activity_message(_make_activity(), hrv)
         lines = msg.strip().split("\n")
         assert len(lines) == 2  # header + DFA a1 line
+
+
+# ---------------------------------------------------------------------------
+# Tests: ramp test message
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRampTestMessage:
+    def test_detected_with_drift_shows_button(self):
+        activity = _make_activity(type="Run")
+        hrv = _make_hrv(activity_type="Run", hrvt1_hr=165.0, hrvt1_power=None, hrvt1_pace="5:20")
+        msg, show_button = build_ramp_test_message(activity, hrv, config_lthr=153, hrvt1_sample_count=3)
+        assert "Ramp Test" in msg
+        assert "HRVT1: 165 bpm" in msg
+        assert "5:20" in msg
+        assert "153" in msg
+        assert "+7.8%" in msg
+        assert show_button is True
+
+    def test_detected_within_tolerance_no_button(self):
+        hrv = _make_hrv(hrvt1_hr=155.0, hrvt1_power=None)
+        _, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153, hrvt1_sample_count=5)
+        assert show_button is False
+
+    def test_single_sample_suppresses_button(self):
+        """With only 1 HRVT1 sample total, drift detection can't fire — button hidden."""
+        hrv = _make_hrv(hrvt1_hr=165.0, hrvt1_power=None)
+        msg, show_button = build_ramp_test_message(
+            _make_activity(type="Run"), hrv, config_lthr=153, hrvt1_sample_count=1
+        )
+        assert show_button is False
+        # Still informs the user drift was seen, just asks for another test
+        assert "ramp test" in msg.lower()
+
+    def test_detection_failed_shows_reason(self):
+        hrv = _make_hrv(
+            hrvt1_hr=None,
+            hrvt1_power=None,
+            hrvt1_pace=None,
+            hrvt2_hr=None,
+            threshold_r_squared=None,
+            threshold_confidence=None,
+        )
+        reason = {"code": "noisy_fit", "r_squared": 0.33}
+        msg, show_button = build_ramp_test_message(
+            _make_activity(type="Run"), hrv, config_lthr=153, failure_reason=reason
+        )
+        assert show_button is False
+        assert "0.33" in msg
+
+    def test_detection_failed_no_reason(self):
+        hrv = _make_hrv(hrvt1_hr=None, hrvt1_power=None, hrvt1_pace=None)
+        msg, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
+        assert show_button is False
 
 
 # ---------------------------------------------------------------------------

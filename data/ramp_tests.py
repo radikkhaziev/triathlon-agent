@@ -18,15 +18,17 @@ RAMP_STEPS_RIDE = [
     WorkoutStepDTO(text="Cool-down", duration=600, power={"units": "%ftp", "value": 55}),
 ]
 
-# Run: 5 steps from 70% to 100% LTHR, 5 min each
+# Run: 6 steps from 70% to 108% LTHR, 5 min each.
+# Last step above LTHR is needed to push DFA a1 below 0.5 (HRVT2) reliably.
 RAMP_STEPS_RUN = [
-    WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "value": 65}),
+    WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "value": 70}),
     WorkoutStepDTO(text="Step 1", duration=300, hr={"units": "%lthr", "value": 70}),
     WorkoutStepDTO(text="Step 2", duration=300, hr={"units": "%lthr", "value": 78}),
     WorkoutStepDTO(text="Step 3", duration=300, hr={"units": "%lthr", "value": 85}),
     WorkoutStepDTO(text="Step 4", duration=300, hr={"units": "%lthr", "value": 92}),
     WorkoutStepDTO(text="Step 5", duration=300, hr={"units": "%lthr", "value": 100}),
-    WorkoutStepDTO(text="Cool-down", duration=600, hr={"units": "%lthr", "value": 60}),
+    WorkoutStepDTO(text="Step 6", duration=300, hr={"units": "%lthr", "value": 108}),
+    WorkoutStepDTO(text="Cool-down", duration=600, hr={"units": "%lthr", "value": 70}),
 ]
 
 RAMP_PROTOCOLS = {

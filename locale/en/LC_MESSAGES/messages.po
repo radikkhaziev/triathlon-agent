@@ -222,3 +222,45 @@ msgstr "Consider updating"
 
 msgid "Обновить зоны"
 msgstr "Update zones"
+
+msgid "Ramp Test"
+msgstr "Ramp Test"
+
+msgid "результат"
+msgstr "result"
+
+msgid "текущий LTHR"
+msgstr "current LTHR"
+
+msgid "Рекомендуем обновить зоны"
+msgstr "Consider updating zones"
+
+msgid "для обновления зон нужен ещё один ramp test"
+msgstr "one more ramp test needed before updating zones"
+
+msgid "детекция HRVT не удалась"
+msgstr "HRVT detection failed"
+
+msgid "причина"
+msgstr "reason"
+
+msgid "слишком мало валидных точек ({count} < 20)"
+msgstr "too few valid points ({count} < 20)"
+
+msgid "DFA a1 не достиг лёгкой зоны (max {max_a1} < 0.9)"
+msgstr "DFA a1 never reached low-intensity range (max {max_a1} < 0.9)"
+
+msgid "последняя ступень слишком лёгкая — DFA a1 не пересёк порог (min {min_a1} > 0.80)"
+msgstr "last step too easy — DFA a1 didn't cross threshold (min {min_a1} > 0.80)"
+
+msgid "DFA a1 не падает с ростом HR (slope={slope})"
+msgstr "DFA a1 did not decrease with HR (slope={slope})"
+
+msgid "линейный фит слишком шумный (R²={r_squared} < 0.5)"
+msgstr "linear fit too noisy (R²={r_squared} < 0.5)"
+
+msgid "интерполяция вне физиологического диапазона (HRVT1={hrvt1}, HRVT2={hrvt2})"
+msgstr "interpolated thresholds out of range (HRVT1={hrvt1}, HRVT2={hrvt2})"
+
+msgid "неизвестная причина"
+msgstr "unknown reason"

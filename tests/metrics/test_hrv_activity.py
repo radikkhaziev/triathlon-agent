@@ -11,6 +11,7 @@ from data.hrv_activity import (
     calculate_readiness_ra,
     correct_rr_artifacts,
     detect_hrv_thresholds,
+    diagnose_hrv_thresholds,
 )
 
 # ---------------------------------------------------------------------------
@@ -229,6 +230,85 @@ class TestThresholdDetection:
         if result is not None and result.get("hrvt1_hr"):
             # Power data is available, should detect power threshold
             assert "hrvt1_power" in result or result.get("hrvt1_power") is None
+
+    def test_work_segments_filter_improves_fit(self):
+        """Points outside WORK windows (noisy WU/CD) should be dropped from the fit."""
+        ramp = _generate_ramp_timeseries()  # clean ramp 120..1890 sec
+        # Add 20 noisy points before/after — low-HR with scattered a1 values
+        rng = np.random.default_rng(7)
+        noise_before = [
+            {
+                "time_sec": 30 + i,
+                "dfa_a1": round(1.4 + rng.normal(0, 0.3), 3),
+                "hr_avg": round(95 + rng.normal(0, 8), 1),
+                "power": 90,
+            }
+            for i in range(10)
+        ]
+        noise_after = [
+            {
+                "time_sec": 2000 + i * 10,
+                "dfa_a1": round(1.5 + rng.normal(0, 0.4), 3),
+                "hr_avg": round(100 + rng.normal(0, 10), 1),
+                "power": 80,
+            }
+            for i in range(10)
+        ]
+        ts_noisy = noise_before + ramp + noise_after
+
+        # Without filter: includes noise points → R² drops
+        result_noisy = detect_hrv_thresholds(ts_noisy, activity_type="Ride")
+        # With WORK gate covering only the ramp window: R² recovers
+        result_clean = detect_hrv_thresholds(
+            ts_noisy,
+            activity_type="Ride",
+            work_segments=[(120, 1890)],
+        )
+        assert result_clean is not None
+        if result_noisy is not None:
+            assert result_clean["r_squared"] > result_noisy["r_squared"]
+
+    def test_work_segments_empty_list_is_no_filter(self):
+        """Empty work_segments list must behave the same as None (no gating)."""
+        ts = _generate_ramp_timeseries()
+        a = detect_hrv_thresholds(ts, activity_type="Ride", work_segments=None)
+        b = detect_hrv_thresholds(ts, activity_type="Ride", work_segments=[])
+        assert (a is None) == (b is None)
+        if a and b:
+            assert a["hrvt1_hr"] == b["hrvt1_hr"]
+
+
+class TestDiagnoseThresholds:
+    def test_too_few_points(self):
+        ts = _generate_ramp_timeseries()[:10]
+        reason = diagnose_hrv_thresholds(ts)
+        assert reason["code"] == "too_few_points"
+        assert reason["count"] == 10
+
+    def test_a1_range_low(self):
+        # Last step too easy — a1 never drops below 0.80
+        ts = [
+            {"time_sec": 120 + i * 30, "dfa_a1": round(1.3 - i * 0.005, 3), "hr_avg": 100 + i, "power": 100}
+            for i in range(60)
+        ]
+        reason = diagnose_hrv_thresholds(ts)
+        assert reason["code"] == "a1_range_low"
+        assert reason["min_a1"] > 0.80
+
+    def test_a1_range_high(self):
+        # a1 never reaches low-intensity range (always <0.9)
+        ts = [{"time_sec": 120 + i * 30, "dfa_a1": 0.5, "hr_avg": 150 + i, "power": 200} for i in range(30)]
+        reason = diagnose_hrv_thresholds(ts)
+        assert reason["code"] == "a1_range_high"
+
+    def test_noisy_fit(self):
+        rng = np.random.default_rng(1)
+        ts = _generate_ramp_timeseries()
+        # Scramble a1 values to kill correlation
+        for p in ts:
+            p["dfa_a1"] = round(float(rng.uniform(0.3, 1.5)), 3)
+        reason = diagnose_hrv_thresholds(ts)
+        assert reason["code"] in ("noisy_fit", "positive_slope")
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """Dramatiq actors — activity pipeline: fetch, FIT processing, DFA a1, notifications."""
 
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,19 +14,30 @@ from pydantic import validate_call
 from sqlalchemy import select
 
 from bot.i18n import _, set_language
-from data.db import Activity, ActivityDetail, ActivityHrv, PaBaseline, Race, UserDTO, get_sync_session
+from data.db import (
+    Activity,
+    ActivityDetail,
+    ActivityHrv,
+    AthleteSettings,
+    PaBaseline,
+    Race,
+    ScheduledWorkout,
+    UserDTO,
+    get_sync_session,
+)
 from data.hrv_activity import (
     calculate_dfa_timeseries,
     calculate_durability_da,
     calculate_readiness_ra,
     correct_rr_artifacts,
     detect_hrv_thresholds,
+    diagnose_hrv_thresholds,
 )
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
 from data.utils import HRV_ELIGIBLE_TYPES
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO
-from tasks.formatter import build_post_activity_message, build_rpe_keyboard
+from tasks.formatter import build_post_activity_message, build_ramp_test_message, build_rpe_keyboard
 from tasks.tools import TelegramTool
 
 from .common import actor_after_activity_update
@@ -190,8 +201,13 @@ def _actor_post_process_fit_file(
     warmup_points = [p for p in timeseries if p["time_sec"] <= 900]
     dfa_a1_warmup = float(np.mean([p["dfa_a1"] for p in warmup_points])) if warmup_points else None
 
-    # Threshold detection
-    thresholds = detect_hrv_thresholds(timeseries, activity_type=activity.type)
+    # Threshold detection — restrict regression to WORK intervals when available,
+    # otherwise warm-up / cool-down / recovery data pollutes the fit.
+    thresholds = detect_hrv_thresholds(
+        timeseries,
+        activity_type=activity.type,
+        work_segments=_load_work_segments(activity_id),
+    )
 
     # Readiness (Ra)
     ra_result = None
@@ -318,21 +334,80 @@ def _actor_send_activity_notification(
         return
 
     with get_sync_session() as session:
-        activity_row: Activity = session.get(Activity, activity_id)
-        hrv_row: ActivityHrv = session.get(ActivityHrv, activity_id)
-        race_row = Race.get_by_activity(user.id, activity_id) if activity_row.is_race else None
+        activity_row: Activity | None = session.get(Activity, activity_id)
+        hrv_row: ActivityHrv | None = session.get(ActivityHrv, activity_id)
+
+    if activity_row is None or hrv_row is None:
+        return
 
     if activity_row.start_date_local != DateDTO.today().isoformat():
         return  # only notify for today's activities
 
     set_language(user.language or "ru")
     tg = TelegramTool(user=user)
+
+    if _is_ramp_test_activity(user.id, activity_row):
+        failure_reason = None
+        if hrv_row.hrvt1_hr is None:
+            failure_reason = diagnose_hrv_thresholds(
+                hrv_row.dfa_timeseries or [],
+                work_segments=_load_work_segments(activity_id),
+            )
+        sport = activity_row.type or "Run"
+        settings = AthleteSettings.get(user.id, sport)
+        config_lthr = settings.lthr if settings else None
+        hrvt1_sample_count = ActivityHrv.count_hrvt1_samples(user.id, sport)
+        summary, show_update_zones = build_ramp_test_message(
+            activity_row,
+            hrv_row,
+            config_lthr=config_lthr,
+            failure_reason=failure_reason,
+            hrvt1_sample_count=hrvt1_sample_count,
+        )
+        reply_markup = (
+            {"inline_keyboard": [[{"text": _("Обновить зоны"), "callback_data": "update_zones"}]]}
+            if show_update_zones
+            else None
+        )
+        tg.send_message(text=summary, reply_markup=reply_markup)
+        return
+
+    race_row = Race.get_by_activity(user.id, activity_id) if activity_row.is_race else None
     summary = build_post_activity_message(activity_row, hrv_row, race=race_row)
     # Show the RPE rating keyboard only when the value is still unset.
     # After the first tap the bot handler clears the markup on the message;
     # we don't re-attach it here.
     reply_markup = build_rpe_keyboard(activity_id) if activity_row.rpe is None else None
     tg.send_message(text=summary, reply_markup=reply_markup)
+
+
+def _is_ramp_test_activity(user_id: int, activity: Activity) -> bool:
+    """True when a Ramp Test scheduled workout exists for the activity's date+sport.
+
+    Only catches pre-planned ramp tests (created via /workout or create_ramp_test_tool).
+    Ad-hoc ramp-style workouts without a matching ScheduledWorkout do not trigger
+    the ramp-specific notification — by design, to avoid false positives on
+    interval sessions that happen to look like ramps.
+    """
+    sport = activity.type
+    if not sport:
+        return False
+    dt = date.fromisoformat(activity.start_date_local)
+    scheduled = ScheduledWorkout.get_for_date(user_id, dt)
+    return any(w.type == sport and w.name and "ramp test" in w.name.lower() for w in scheduled)
+
+
+def _load_work_segments(activity_id: str) -> list[tuple[int, int]]:
+    with get_sync_session() as session:
+        detail = session.get(ActivityDetail, activity_id)
+    if not detail or not detail.intervals:
+        return []
+    icu_intervals = (detail.intervals or {}).get("icu_intervals") or []
+    return [
+        (int(iv["start_time"]), int(iv["end_time"]))
+        for iv in icu_intervals
+        if iv.get("type") == "WORK" and iv.get("start_time") is not None and iv.get("end_time") is not None
+    ]
 
 
 @dramatiq.actor(queue_name="default")

@@ -14,7 +14,7 @@ class TestRampProtocols:
 
     def test_run_protocol_has_steps(self):
         steps = RAMP_PROTOCOLS["Run"]
-        assert len(steps) == 7  # warmup + 5 steps + cooldown
+        assert len(steps) == 8  # warmup + 6 steps + cooldown
         assert steps[0].text == "Warm-up"
         assert steps[-1].text == "Cool-down"
 
@@ -68,8 +68,8 @@ class TestCreateRampTest:
     def test_creates_run_workout(self):
         workout = create_ramp_test("Run", date(2026, 4, 1))
         assert workout.sport == "Run"
-        assert len(workout.steps) == 7
-        assert workout.duration_minutes == 45  # 10+5*5+10 = 45
+        assert len(workout.steps) == 8
+        assert workout.duration_minutes == 50  # 10+6*5+10 = 50
 
     def test_rejects_swim(self):
         import pytest

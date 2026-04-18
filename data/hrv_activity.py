@@ -337,6 +337,7 @@ def calculate_dfa_timeseries(
 def detect_hrv_thresholds(
     dfa_timeseries: list[dict],
     activity_type: str = "Ride",
+    work_segments: list[tuple[int, int]] | None = None,
 ) -> dict | None:
     """Detect HRVT1 (a1=0.75) and HRVT2 (a1=0.50) from DFA timeseries.
 
@@ -347,17 +348,14 @@ def detect_hrv_thresholds(
     4. Interpolate HR where a1 = 0.75 (HRVT1) and a1 = 0.50 (HRVT2)
     5. Validate: R² > 0.5, physiological HR range
 
+    When `work_segments` is provided (list of (start_sec, end_sec) for WORK
+    intervals), points outside those windows are dropped — excludes noisy
+    warm-up / cool-down / recovery data from the regression. Empty list or
+    None disables the gate.
+
     Returns None if no valid ramp detected or insufficient quality.
     """
-    # Filter valid points
-    points = [
-        p
-        for p in dfa_timeseries
-        if p.get("hr_avg") is not None
-        and p.get("dfa_a1") is not None
-        and 0.1 < p["dfa_a1"] < 2.0
-        and 60 < p["hr_avg"] < 220
-    ]
+    points = _filter_valid_points(dfa_timeseries, work_segments)
 
     if len(points) < 20:
         return None
@@ -442,6 +440,72 @@ def detect_hrv_thresholds(
                 pass
 
     return result
+
+
+def diagnose_hrv_thresholds(
+    dfa_timeseries: list[dict],
+    work_segments: list[tuple[int, int]] | None = None,
+) -> dict:
+    """Explain why detect_hrv_thresholds rejected the data.
+
+    Mirrors the rejection checks in detect_hrv_thresholds. Returns a structured
+    dict with a `code` (for i18n lookup in formatters) and numeric context.
+    Callers localize the message via the code.
+
+    Codes: `too_few_points`, `a1_range_high`, `a1_range_low`, `positive_slope`,
+    `noisy_fit`, `out_of_range`, `unknown`.
+    """
+    points = _filter_valid_points(dfa_timeseries, work_segments)
+
+    if len(points) < 20:
+        return {"code": "too_few_points", "count": len(points)}
+
+    a1 = np.array([p["dfa_a1"] for p in points])
+    hr = np.array([p["hr_avg"] for p in points])
+
+    if np.max(a1) < 0.9:
+        return {"code": "a1_range_high", "max_a1": round(float(np.max(a1)), 2)}
+    if np.min(a1) > 0.80:
+        return {"code": "a1_range_low", "min_a1": round(float(np.min(a1)), 2)}
+
+    coeffs = np.polyfit(hr, a1, 1)
+    slope, intercept = coeffs
+    if slope >= 0:
+        return {"code": "positive_slope", "slope": round(float(slope), 4)}
+
+    a1_pred = np.polyval(coeffs, hr)
+    ss_res = np.sum((a1 - a1_pred) ** 2)
+    ss_tot = np.sum((a1 - np.mean(a1)) ** 2)
+    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+    if r_squared < 0.5:
+        return {"code": "noisy_fit", "r_squared": round(float(r_squared), 2)}
+
+    hrvt1_hr = (0.75 - intercept) / slope
+    hrvt2_hr = (0.50 - intercept) / slope
+    if not (80 < hrvt1_hr < 200 and hrvt1_hr < hrvt2_hr):
+        return {"code": "out_of_range", "hrvt1": round(float(hrvt1_hr)), "hrvt2": round(float(hrvt2_hr))}
+
+    return {"code": "unknown"}
+
+
+def _filter_valid_points(
+    dfa_timeseries: list[dict],
+    work_segments: list[tuple[int, int]] | None,
+) -> list[dict]:
+    """Shared point filter: physiological HR/a1 range + optional WORK-window gate."""
+
+    def _in_work(t: float) -> bool:
+        return any(start <= t <= end for start, end in (work_segments or []))
+
+    return [
+        p
+        for p in dfa_timeseries
+        if p.get("hr_avg") is not None
+        and p.get("dfa_a1") is not None
+        and 0.1 < p["dfa_a1"] < 2.0
+        and 60 < p["hr_avg"] < 220
+        and (not work_segments or _in_work(p.get("time_sec", 0)))
+    ]
 
 
 # ---------------------------------------------------------------------------
