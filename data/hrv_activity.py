@@ -337,6 +337,7 @@ def calculate_dfa_timeseries(
 def detect_hrv_thresholds(
     dfa_timeseries: list[dict],
     activity_type: str = "Ride",
+    work_segments: list[tuple[int, int]] | None = None,
 ) -> dict | None:
     """Detect HRVT1 (a1=0.75) and HRVT2 (a1=0.50) from DFA timeseries.
 
@@ -347,8 +348,16 @@ def detect_hrv_thresholds(
     4. Interpolate HR where a1 = 0.75 (HRVT1) and a1 = 0.50 (HRVT2)
     5. Validate: R² > 0.5, physiological HR range
 
+    When `work_segments` is provided (list of (start_sec, end_sec) for WORK
+    intervals), points outside those windows are dropped — excludes noisy
+    warm-up / cool-down / recovery data from the regression.
+
     Returns None if no valid ramp detected or insufficient quality.
     """
+
+    def _in_work(t: float) -> bool:
+        return any(start <= t <= end for start, end in work_segments)
+
     # Filter valid points
     points = [
         p
@@ -357,6 +366,7 @@ def detect_hrv_thresholds(
         and p.get("dfa_a1") is not None
         and 0.1 < p["dfa_a1"] < 2.0
         and 60 < p["hr_avg"] < 220
+        and (not work_segments or _in_work(p.get("time_sec", 0)))
     ]
 
     if len(points) < 20:
@@ -442,6 +452,60 @@ def detect_hrv_thresholds(
                 pass
 
     return result
+
+
+def diagnose_hrv_thresholds(
+    dfa_timeseries: list[dict],
+    work_segments: list[tuple[int, int]] | None = None,
+) -> str:
+    """Explain why detect_hrv_thresholds rejected the data — human-readable reason.
+
+    Mirrors the rejection checks in detect_hrv_thresholds. Intended for user
+    feedback after ramp tests that failed to produce a threshold.
+    """
+
+    def _in_work(t: float) -> bool:
+        return any(start <= t <= end for start, end in work_segments)
+
+    points = [
+        p
+        for p in dfa_timeseries
+        if p.get("hr_avg") is not None
+        and p.get("dfa_a1") is not None
+        and 0.1 < p["dfa_a1"] < 2.0
+        and 60 < p["hr_avg"] < 220
+        and (not work_segments or _in_work(p.get("time_sec", 0)))
+    ]
+
+    if len(points) < 20:
+        return f"too few valid points ({len(points)} < 20)"
+
+    a1 = np.array([p["dfa_a1"] for p in points])
+    hr = np.array([p["hr_avg"] for p in points])
+
+    if np.max(a1) < 0.9:
+        return f"DFA a1 never reached low-intensity range (max {np.max(a1):.2f} < 0.9)"
+    if np.min(a1) > 0.80:
+        return f"last step too easy — DFA a1 didn't cross HRVT1 (min {np.min(a1):.2f} > 0.80)"
+
+    coeffs = np.polyfit(hr, a1, 1)
+    slope, intercept = coeffs
+    if slope >= 0:
+        return f"DFA a1 did not decrease with HR (slope={slope:+.4f})"
+
+    a1_pred = np.polyval(coeffs, hr)
+    ss_res = np.sum((a1 - a1_pred) ** 2)
+    ss_tot = np.sum((a1 - np.mean(a1)) ** 2)
+    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+    if r_squared < 0.5:
+        return f"linear fit too noisy (R²={r_squared:.2f} < 0.5)"
+
+    hrvt1_hr = (0.75 - intercept) / slope
+    hrvt2_hr = (0.50 - intercept) / slope
+    if not (80 < hrvt1_hr < 200 and hrvt1_hr < hrvt2_hr):
+        return f"interpolated thresholds out of range (HRVT1={hrvt1_hr:.0f}, HRVT2={hrvt2_hr:.0f})"
+
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------

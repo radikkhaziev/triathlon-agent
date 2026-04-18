@@ -187,6 +187,53 @@ def build_post_activity_message(
     return "\n".join(lines)
 
 
+def build_ramp_test_message(
+    activity: Activity,
+    hrv: ActivityHrv,
+    config_lthr: int | None,
+    failure_reason: str | None = None,
+) -> tuple[str, bool]:
+    """Build ramp-test-specific notification. Returns (message, show_update_zones_button).
+
+    Button surfaces when a new HRVT1 was detected and differs from `config_lthr`
+    by more than 5% — same threshold as morning drift alerts.
+    """
+    sport = activity.type or "?"
+    lines: list[str] = [f"⚡ {_('Ramp Test')} ({sport}) — {_('результат')}"]
+    show_button = False
+
+    if hrv.hrvt1_hr is not None:
+        hrvt1 = f"HRVT1: {hrv.hrvt1_hr:.0f} bpm"
+        if hrv.hrvt1_power:
+            hrvt1 += f" / {hrv.hrvt1_power:.0f}W"
+        if hrv.hrvt1_pace:
+            hrvt1 += f" / {hrv.hrvt1_pace}"
+        lines.append(hrvt1)
+        if hrv.hrvt2_hr:
+            lines.append(f"HRVT2: {hrv.hrvt2_hr:.0f} bpm")
+
+        meta_bits = []
+        if hrv.threshold_r_squared is not None:
+            meta_bits.append(f"R²={hrv.threshold_r_squared:.2f}")
+        if hrv.threshold_confidence:
+            meta_bits.append(hrv.threshold_confidence)
+        if meta_bits:
+            lines.append(f"({', '.join(meta_bits)})")
+
+        if config_lthr:
+            pct = (hrv.hrvt1_hr - config_lthr) / config_lthr * 100
+            lines.append(f"{_('текущий LTHR')}: {config_lthr} bpm ({pct:+.1f}%)")
+            if abs(pct) > 5:
+                show_button = True
+                lines.append(f"💡 {_('Рекомендуем обновить зоны')}")
+    else:
+        lines.append(f"⚠️ {_('детекция HRVT не удалась')}")
+        if failure_reason:
+            lines.append(f"{_('причина')}: {failure_reason}")
+
+    return "\n".join(lines), show_button
+
+
 # ---------------------------------------------------------------------------
 # RPE inline keyboard (Borg CR-10, see docs/RPE_SPEC.md)
 # ---------------------------------------------------------------------------
