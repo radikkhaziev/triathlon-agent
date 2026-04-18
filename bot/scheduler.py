@@ -16,12 +16,12 @@ from tasks.actors import (
     actor_user_wellness,
 )
 
-from .decorator import with_athletes, with_athletes_without_oauth
+from .decorator import with_athletes, with_legacy_athletes
 
 logger = logging.getLogger(__name__)
 
 
-@with_athletes_without_oauth
+@with_legacy_athletes
 async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
     """Fetch planned workouts for the next 14 days and upsert into DB."""
     _group = group([actor_user_scheduled_workouts.message(user=a) for a in athletes])
@@ -30,7 +30,7 @@ async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
     logger.info("Dispatched scheduled_workouts for %d athletes", len(athletes))
 
 
-@with_athletes_without_oauth
+@with_legacy_athletes
 async def scheduler_wellness(athletes: list[UserDTO]) -> None:
     """Wellness sync + morning report generation (staggered to avoid rate limits)."""
     group([actor_user_wellness.message(user=a) for a in athletes]).run()
@@ -49,13 +49,13 @@ async def scheduler_weekly_report_job(athletes: list[UserDTO]) -> None:
     logger.info("Dispatched weekly report for %d athletes", len(athletes))
 
 
-@with_athletes
+@with_legacy_athletes
 async def scheduler_activities_job(athletes: list[UserDTO]) -> None:
     _group = group([actor_fetch_user_activities.message(user=a) for a in athletes])
     _group.run()
 
 
-@with_athletes_without_oauth
+@with_legacy_athletes
 async def scheduler_sync_goals_job(athletes: list[UserDTO]) -> None:
     _group = group([actor_sync_athlete_goals.message(user=a) for a in athletes])
     _group.run()
