@@ -134,6 +134,7 @@
       "loading": "Loading...",
       "not_connected_desc": "Connect your account to sync workouts, wellness and HRV",
       "connect": "Connect Intervals.icu",
+      "redirecting": "Redirecting to Intervals.icu...",
       "connected": "Connected",
       "connected_legacy": "Connected (legacy API key)",
       "migrate_to_oauth": "Switch to OAuth",
@@ -142,7 +143,8 @@
       "method_oauth": "OAuth",
       "method_api_key": "API key",
       "scope": "Permissions",
-      "disconnect_soon": "Disconnect will be available in the next update",
+      "disconnect": "Disconnect Intervals.icu",
+      "disconnect_confirm": "Are you sure? You can reconnect anytime.",
       "toast_connected": "Intervals.icu connected!",
       "toast_cancelled": "Connection cancelled",
       "toast_mismatch": "You're already linked to a different Intervals.icu account. Disconnect first.",
@@ -165,6 +167,7 @@
     "title": "Welcome to EndurAI!",
     "description": "Connect your Intervals.icu account to start syncing data and get personal training recommendations.",
     "cta": "🔗 Connect Intervals.icu",
+    "redirecting": "Redirecting to Intervals.icu...",
     "no_account_hint": "No account? Sign up for free at",
     "error": "Failed to start connection. Please try again in a minute."
   }

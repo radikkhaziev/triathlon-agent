@@ -157,6 +157,9 @@ msgstr "Other"
 msgid "Тренировка"
 msgstr "Workout"
 
+msgid "Подключение к Intervals.icu сброшено. Переподключитесь в настройках."
+msgstr "Intervals.icu connection was revoked. Please reconnect in Settings."
+
 msgid "Новое достижение!"
 msgstr "New achievement!"
 

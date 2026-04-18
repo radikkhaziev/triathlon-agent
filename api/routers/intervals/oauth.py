@@ -193,3 +193,24 @@ async def intervals_oauth_callback(
             logger.exception("Failed to dispatch initial sync for user_id=%d", user_id)
 
     return RedirectResponse(f"{settings_url}?connected=intervals", status_code=302)
+
+
+@router.post("/auth/disconnect")
+async def intervals_oauth_disconnect(user: User = Depends(require_viewer)) -> dict:
+    """Clear Intervals.icu OAuth tokens for the authenticated user.
+
+    Does NOT delete athlete_id or synced data — only revokes the API connection.
+    The user can reconnect via ``/auth/init`` at any time.
+    """
+    if user.role == "demo":
+        raise HTTPException(status_code=403, detail="Read-only demo mode")
+
+    async with get_session() as session:
+        db_user = await session.get(User, user.id)
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        db_user.clear_oauth_tokens()
+        await session.commit()
+
+    logger.info("User %d disconnected Intervals.icu OAuth", user.id)
+    return {"status": "disconnected"}
