@@ -420,8 +420,9 @@ def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
 
     lines: list[str] = [f"🏆 {_('Новое достижение!')}"]
 
-    activity_name = activity.get("name", activity.get("type", ""))
-    lines.append(f"{activity_name}")
+    activity_name = activity.get("name") or activity.get("type") or ""
+    if activity_name:
+        lines.append(activity_name)
 
     # FTP update
     ftp = activity.get("icu_rolling_ftp")
@@ -433,7 +434,9 @@ def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
     # Power PRs from icu_achievements array
     for ach in activity.get("icu_achievements", []):
         if ach.get("type") == "BEST_POWER" and ach.get("watts"):
-            secs = ach.get("secs", 0)
+            secs = int(ach.get("secs") or 0)
+            if secs <= 0:
+                continue
             label = f"{secs // 60}m" if secs >= 60 else f"{secs}s"
             lines.append(f"💪 {label} {_('рекорд')}: {ach['watts']}W")
 
