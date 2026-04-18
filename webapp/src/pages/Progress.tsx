@@ -493,7 +493,7 @@ function PolarizationWidget({ sport }: { sport: Sport }) {
         <div className="mt-2 pt-2 border-t border-border">
           {data.signals.map((s, i) => (
             <div key={i} className="text-[12px] text-text-dim mt-1">
-              ⚠ {s.split(': ').slice(1).join(': ') || s}
+              ⚠ {s}
             </div>
           ))}
         </div>

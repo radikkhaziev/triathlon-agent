@@ -80,7 +80,7 @@ class TestPolarizationTrends:
             28: {"mid_pct": 12, "low_pct": 78, "high_pct": 10, "pattern": "polarized"},
         }
         signals = compute_polarization_trends(windows)
-        assert any("gray_zone_drift" in s for s in signals)
+        assert any("Gray zone growing" in s for s in signals)
 
     def test_taper_detected(self):
         """14d high dropping vs 56d → taper."""
@@ -89,7 +89,7 @@ class TestPolarizationTrends:
             56: {"mid_pct": 10, "low_pct": 75, "high_pct": 15, "pattern": "polarized"},
         }
         signals = compute_polarization_trends(windows)
-        assert any("taper_detected" in s for s in signals)
+        assert any("Taper mode" in s for s in signals)
 
     def test_deload_week(self):
         """7d much more easy than 28d → deload."""
@@ -98,7 +98,7 @@ class TestPolarizationTrends:
             28: {"mid_pct": 10, "low_pct": 78, "high_pct": 12, "pattern": "polarized"},
         }
         signals = compute_polarization_trends(windows)
-        assert any("deload_week" in s for s in signals)
+        assert any("Deload week" in s for s in signals)
 
     def test_threshold_warning(self):
         """14d mid > 20% → warning."""
@@ -106,7 +106,7 @@ class TestPolarizationTrends:
             14: {"mid_pct": 25, "low_pct": 60, "high_pct": 15, "pattern": "threshold"},
         }
         signals = compute_polarization_trends(windows)
-        assert any("threshold_warning" in s for s in signals)
+        assert any("Too much Z3" in s for s in signals)
 
     def test_too_hard(self):
         """14d pattern too_hard → signal."""
@@ -114,7 +114,7 @@ class TestPolarizationTrends:
             14: {"mid_pct": 10, "low_pct": 50, "high_pct": 40, "pattern": "too_hard"},
         }
         signals = compute_polarization_trends(windows)
-        assert any("too_hard" in s for s in signals)
+        assert any("Overtraining risk" in s for s in signals)
 
     def test_no_signals_when_optimal(self):
         """All windows polarized, no drift → no signals."""
