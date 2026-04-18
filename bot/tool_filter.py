@@ -54,6 +54,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "tag_race",
         "update_race",
         "get_weekly_summary",
+        "get_polarization_index",
     ],
     "admin": [
         "create_github_issue",
@@ -114,6 +115,10 @@ KEYWORD_TO_GROUPS: dict[str, list[str]] = {
     "зон": ["analysis"],
     "zone": ["analysis"],
     "порог": ["analysis"],
+    "поляризац": ["analysis"],
+    "polariz": ["analysis"],
+    "серая зона": ["analysis"],
+    "gray zone": ["analysis"],
     "threshold": ["analysis"],
     "вес": ["analysis"],
     "weight": ["analysis"],

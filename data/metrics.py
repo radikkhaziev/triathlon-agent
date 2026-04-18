@@ -572,3 +572,115 @@ def decoupling_status(value: float) -> str:
     if av <= 10.0:
         return "yellow"
     return "red"
+
+
+# ---------------------------------------------------------------------------
+# Polarization Index
+# ---------------------------------------------------------------------------
+
+
+def _classify_polarization(low: float, mid: float, high: float) -> str:
+    if low > 90 and high < 3:
+        return "too_easy"
+    if low < 60 and high > 20:
+        return "too_hard"
+    if mid > 25:
+        return "threshold"
+    if low >= 75 and mid <= 15 and high >= 5:
+        return "polarized"
+    if low >= 70 and high >= 5:
+        return "pyramidal"
+    return "threshold"
+
+
+def compute_polarization(hr_zone_times_list: list[list[int | float]]) -> dict:
+    """Compute Polarization Index from a list of hr_zone_times arrays.
+
+    Each entry is [Z1_secs, Z2_secs, Z3_secs, Z4_secs, Z5_secs, ...] (5-7 zones).
+    Returns {low_pct, mid_pct, high_pct, total_hours, pattern, by_zone}.
+    """
+    totals: dict[str, float] = {}
+    for zt in hr_zone_times_list:
+        if not zt:
+            continue
+        for i, secs in enumerate(zt):
+            key = f"Z{i + 1}"
+            totals[key] = totals.get(key, 0) + (secs or 0)
+
+    total = sum(totals.values())
+    if total < 1:
+        return {
+            "low_pct": 0,
+            "mid_pct": 0,
+            "high_pct": 0,
+            "total_hours": 0,
+            "pattern": "insufficient_data",
+            "n_activities": len(hr_zone_times_list),
+            "by_zone": {},
+        }
+
+    # Aggregate: Low = Z1+Z2, Mid = Z3, High = remainder
+    low = totals.get("Z1", 0) + totals.get("Z2", 0)
+    mid = totals.get("Z3", 0)
+
+    low_pct = round(low / total * 100, 1)
+    mid_pct = round(mid / total * 100, 1)
+    high_pct = max(0, round(100 - low_pct - mid_pct, 1))  # guarantee sum ≈ 100, never negative
+    total_hours = round(total / 3600, 1)
+
+    pattern = _classify_polarization(low_pct, mid_pct, high_pct)
+
+    return {
+        "low_pct": low_pct,
+        "mid_pct": mid_pct,
+        "high_pct": high_pct,
+        "total_hours": total_hours,
+        "pattern": pattern,
+        "n_activities": len(hr_zone_times_list),
+        "by_zone": {k: round(v / total * 100, 1) for k, v in sorted(totals.items())},
+    }
+
+
+def compute_polarization_trends(windows: dict[int, dict]) -> list[str]:
+    """Detect trend signals by comparing polarization across windows.
+
+    Args:
+        windows: {days: compute_polarization_result} for multiple windows (e.g. 7, 14, 28, 56).
+
+    Returns:
+        List of coaching signal strings.
+    """
+    signals: list[str] = []
+    w7 = windows.get(7)
+    w14 = windows.get(14)
+    w28 = windows.get(28)
+    w56 = windows.get(56)
+
+    # Gray zone drift: short-term mid is growing vs long-term
+    if w7 and w28 and w7["mid_pct"] - w28["mid_pct"] > 5:
+        delta = w7["mid_pct"] - w28["mid_pct"]
+        signals.append(f"gray_zone_drift: mid_pct 7d={w7['mid_pct']}% vs 28d={w28['mid_pct']}% (+{delta:.1f})")
+
+    # Taper detection: intensity dropping
+    if w14 and w56 and w56["high_pct"] - w14["high_pct"] > 5:
+        signals.append(f"taper_detected: high_pct dropping 14d={w14['high_pct']}% vs 56d={w56['high_pct']}%")
+
+    # Deload week: much more easy than usual
+    if w7 and w28 and w7["low_pct"] - w28["low_pct"] > 10:
+        signals.append(
+            f"deload_week: low_pct 7d={w7['low_pct']}% vs 28d={w28['low_pct']}% (+{w7['low_pct'] - w28['low_pct']:.1f})"
+        )
+
+    # Too much threshold (14d rule for morning report)
+    if w14 and w14["mid_pct"] > 20:
+        signals.append(f"threshold_warning: mid_pct 14d={w14['mid_pct']}% (>20%)")
+
+    # Too easy (28d)
+    if w28 and w28["pattern"] == "too_easy":
+        signals.append("too_easy: not enough intensity stimulus over 28d")
+
+    # Too hard (14d)
+    if w14 and w14["pattern"] == "too_hard":
+        signals.append("too_hard: overtraining risk over 14d")
+
+    return signals

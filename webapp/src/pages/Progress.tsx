@@ -71,6 +71,7 @@ function ProgressContent({ data, sport }: { data: ProgressResponse; sport: Sport
     <>
       <TrendBadge data={data} sport={sport} />
       {data.decoupling_trend && <DecouplingBadge trend={data.decoupling_trend} />}
+      {sport !== 'swim' && <PolarizationWidget sport={sport} />}
       {sport === 'swim' ? <SwimCharts data={data} /> : (
         <>
           <EFChart data={data} sport={sport} />
@@ -405,6 +406,102 @@ function ActivityList({ data, sport }: { data: ProgressResponse; sport: Sport })
     </div>
   )
 }
+
+const PATTERN_COLORS: Record<string, string> = {
+  polarized: '#22c55e',
+  pyramidal: '#eab308',
+  threshold: '#f97316',
+  too_easy: '#ef4444',
+  too_hard: '#ef4444',
+  insufficient_data: '#9ca3af',
+}
+
+const PATTERN_LABELS: Record<string, string> = {
+  polarized: 'Polarized (optimal)',
+  pyramidal: 'Pyramidal (acceptable)',
+  threshold: 'Threshold (gray zone)',
+  too_easy: 'Too easy',
+  too_hard: 'Too hard',
+  insufficient_data: 'Not enough data',
+}
+
+interface PolarizationData {
+  low_pct: number
+  mid_pct: number
+  high_pct: number
+  pattern: string
+  total_hours: number
+  n_activities: number
+  signals: string[]
+  windows?: Record<string, { low_pct: number; mid_pct: number; high_pct: number; pattern: string }>
+}
+
+function PolarizationWidget({ sport }: { sport: Sport }) {
+  const [data, setData] = useState<PolarizationData | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const apiSport = sport === 'bike' ? 'ride' : sport
+    apiFetch<PolarizationData>(`/api/polarization?sport=${apiSport}&days=28`)
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => console.warn('polarization fetch failed:', e))
+    return () => { cancelled = true }
+  }, [sport])
+
+  if (!data || data.pattern === 'insufficient_data') return null
+
+  const color = PATTERN_COLORS[data.pattern] || '#9ca3af'
+
+  return (
+    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[13px] text-text-dim">Zone Distribution (28d)</span>
+        <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ color, backgroundColor: color + '15' }}>
+          {PATTERN_LABELS[data.pattern] || data.pattern}
+        </span>
+      </div>
+
+      {/* Stacked bar */}
+      <div className="flex rounded-lg overflow-hidden h-7 text-[11px] font-mono font-semibold text-white">
+        {data.low_pct > 0 && (
+          <div className="flex items-center justify-center" style={{ width: `${data.low_pct}%`, backgroundColor: '#22c55e' }}>
+            {data.low_pct >= 10 && `${data.low_pct}%`}
+          </div>
+        )}
+        {data.mid_pct > 0 && (
+          <div className="flex items-center justify-center" style={{ width: `${data.mid_pct}%`, backgroundColor: '#f59e0b' }}>
+            {data.mid_pct >= 8 && `${data.mid_pct}%`}
+          </div>
+        )}
+        {data.high_pct > 0 && (
+          <div className="flex items-center justify-center" style={{ width: `${data.high_pct}%`, backgroundColor: '#ef4444' }}>
+            {data.high_pct >= 8 && `${data.high_pct}%`}
+          </div>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-4 mt-2 text-[11px] text-text-dim">
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#22c55e] mr-1" />Low {data.low_pct}%</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#f59e0b] mr-1" />Mid {data.mid_pct}%</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-[#ef4444] mr-1" />High {data.high_pct}%</span>
+        <span className="ml-auto">{data.total_hours}h · {data.n_activities} sessions</span>
+      </div>
+
+      {/* Signals */}
+      {data.signals.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-border">
+          {data.signals.map((s, i) => (
+            <div key={i} className="text-[12px] text-text-dim mt-1">
+              ⚠ {s.split(': ').slice(1).join(': ') || s}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 function FitnessProjectionChart() {
   const chartRef = useRef<HTMLCanvasElement>(null)
