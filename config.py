@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Demo mode: shared password for read-only access to owner's data. Empty = disabled.
     DEMO_PASSWORD: SecretStr = SecretStr("")
 
+    # Strava signature: auto-rename activities with AI-generated promo title/description.
+    STRAVA_SIGNATURE_ENABLED: bool = False
+
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
 

@@ -50,9 +50,9 @@ triathlon-agent/
 
 ## Database Schema
 
-29 tables. Full column specs in `data/db/`. Key tables:
+30 tables. Full column specs in `data/db/`. Key tables:
 
-**Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `docs/INTERVALS_OAUTH_SPEC.md`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
+**Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `api/routers/intervals/oauth.py`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
 **Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling), `fitness_projection` (CTL/ATL/rampRate decay curve from `FITNESS_UPDATED` webhook, dates can be future).
 
@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 1 complete, Phase 2 complete (Bearer auth in `IntervalsClient`, viewer→athlete promotion + mcp_token generation in callback, auto-dispatch sync actors for new users). Webhook research done (10/10 event types documented in `docs/INTERVALS_WEBHOOKS_RESEARCH.md`). Pending: OAuth disconnect endpoint, lazy 401 handling, webhook dispatchers, personal patterns cron, MT Phase 2 (JWT upgrade).
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag. Pending: personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars.
 
 **Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 
@@ -196,6 +196,7 @@ GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, 
 PUT  /api/auth/language                 — update user language (ru/en)
 POST /api/intervals/auth/init            — initiate OAuth (authenticated XHR) → {authorize_url}
 GET  /api/intervals/auth/callback        — OAuth callback: code → token → DB → redirect
+POST /api/intervals/auth/disconnect      — clear OAuth tokens (user can reconnect anytime)
 POST /api/intervals/webhook              — Intervals.icu push webhooks: secret verification, DTO parsing, Sentry monitoring. 10/10 event types researched (see docs/INTERVALS_WEBHOOKS_RESEARCH.md)
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
@@ -430,7 +431,7 @@ Specs and plans in `docs/`. Key: `ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECU
 ## Next Steps
 
 1. **Webhook dispatchers** — all done: `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓, `FITNESS_UPDATED` ✓, `APP_SCOPE_CHANGED` ✓, `ACTIVITY_ACHIEVEMENTS` ✓, `ACTIVITY_UPLOADED` ✓, `ACTIVITY_UPDATED` ✓. Skipped: `ACTIVITY_ANALYZED` (rare, re-analysis only), `ACTIVITY_DELETED`.
-2. **OAuth remaining** — disconnect endpoint (`POST /api/intervals/auth/disconnect`), lazy 401 handling (catch 401 → clear tokens → Telegram notify)
+2. **OAuth** — ✅ disconnect endpoint, ✅ lazy 401 handling. Remaining: rate limit on `/auth/init` (nice-to-have), retire legacy `INTERVALS_API_KEY` env vars (Phase 5)
 3. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
 4. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`
 

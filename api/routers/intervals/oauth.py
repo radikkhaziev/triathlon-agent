@@ -1,6 +1,7 @@
-"""Intervals.icu OAuth flow — init + callback endpoints."""
+"""Intervals.icu OAuth flow — init + callback + disconnect endpoints."""
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -26,6 +27,11 @@ _OAUTH_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 _OAUTH_SCOPES = "ACTIVITY:WRITE,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE"
 _STATE_TTL_MINUTES = 15
 _STATE_PURPOSE = "intervals_oauth"
+
+# Rate limit: max 5 OAuth init requests per user per 5 minutes
+_OAUTH_INIT_WINDOW_SEC = 300.0
+_OAUTH_INIT_MAX = 5
+_oauth_init_attempts: dict[int, list[float]] = {}
 
 
 def _generate_oauth_state(user_id: int) -> str:
@@ -63,6 +69,15 @@ async def intervals_oauth_init(user: User = Depends(require_viewer)) -> Interval
     """
     if user.role == "demo":
         raise HTTPException(status_code=403, detail="Read-only demo mode")
+
+    # Rate limit per user
+    now = time.monotonic()
+    attempts = _oauth_init_attempts.get(user.id, [])
+    attempts = [t for t in attempts if now - t < _OAUTH_INIT_WINDOW_SEC]
+    if len(attempts) >= _OAUTH_INIT_MAX:
+        raise HTTPException(status_code=429, detail="Too many requests, try later")
+    attempts.append(now)
+    _oauth_init_attempts[user.id] = attempts
 
     if not settings.INTERVALS_OAUTH_CLIENT_ID:
         logger.error("OAuth init called but INTERVALS_OAUTH_CLIENT_ID is not set")
@@ -193,3 +208,24 @@ async def intervals_oauth_callback(
             logger.exception("Failed to dispatch initial sync for user_id=%d", user_id)
 
     return RedirectResponse(f"{settings_url}?connected=intervals", status_code=302)
+
+
+@router.post("/auth/disconnect")
+async def intervals_oauth_disconnect(user: User = Depends(require_viewer)) -> dict:
+    """Clear Intervals.icu OAuth tokens for the authenticated user.
+
+    Does NOT delete athlete_id or synced data — only revokes the API connection.
+    The user can reconnect via ``/auth/init`` at any time.
+    """
+    if user.role == "demo":
+        raise HTTPException(status_code=403, detail="Read-only demo mode")
+
+    async with get_session() as session:
+        db_user = await session.get(User, user.id)
+        if not db_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        db_user.clear_oauth_tokens()
+        await session.commit()
+
+    logger.info("User %d disconnected Intervals.icu OAuth", user.id)
+    return {"status": "disconnected"}

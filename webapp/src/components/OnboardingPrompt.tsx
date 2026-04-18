@@ -46,9 +46,10 @@ export default function OnboardingPrompt() {
           type="button"
           onClick={startOAuth}
           disabled={busy}
-          className="block w-full max-w-[320px] py-3.5 bg-accent text-white text-center rounded-xl text-[15px] font-semibold border-none cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-2 w-full max-w-[320px] py-3.5 bg-accent text-white text-center rounded-xl text-[15px] font-semibold border-none cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          {t('onboarding.cta')}
+          {busy && <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+          {busy ? t('onboarding.redirecting') : t('onboarding.cta')}
         </button>
         {error && (
           <p className="text-[12px] text-red mt-3 max-w-[320px]">

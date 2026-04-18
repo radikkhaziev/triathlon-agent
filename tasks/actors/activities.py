@@ -1,10 +1,12 @@
 """Dramatiq actors — activity pipeline: fetch, FIT processing, DFA a1, notifications."""
 
+import json
 import logging
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import dramatiq
 import numpy as np
 import sentry_sdk
@@ -14,6 +16,7 @@ from pydantic import validate_call
 from sqlalchemy import select
 
 from bot.i18n import _, set_language
+from config import settings
 from data.db import (
     Activity,
     ActivityDetail,
@@ -23,6 +26,7 @@ from data.db import (
     Race,
     ScheduledWorkout,
     UserDTO,
+    Wellness,
     get_sync_session,
 )
 from data.hrv_activity import (
@@ -526,3 +530,124 @@ def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
 
     tg = TelegramTool(user=user)
     tg.send_message(text="\n".join(lines))
+
+
+_SIGNATURE_MARKERS = ("endurai.me", "Readiness")
+
+
+def _already_signed(name: str) -> bool:
+    return any(m in name for m in _SIGNATURE_MARKERS)
+
+
+def _generate_signature_prompt(activity: Activity, wellness: Wellness | None) -> str:
+    """Build a short prompt for Claude to generate title + description."""
+    lines = [
+        "Generate a short activity title and description for Strava feed.",
+        "Style: like Whoop or Garmin Coach — metric-first, not ads.",
+        f"Sport: {activity.type or 'Activity'}",
+        f"Duration: {(activity.moving_time or 0) // 60} min",
+    ]
+    if activity.icu_training_load:
+        lines.append(f"TSS: {activity.icu_training_load:.0f}")
+    if activity.average_hr:
+        lines.append(f"Avg HR: {activity.average_hr:.0f}")
+    if wellness:
+        if wellness.recovery_score is not None:
+            lines.append(f"Recovery: {wellness.recovery_score:.0f}/100 ({wellness.recovery_category or ''})")
+        if wellness.ctl is not None:
+            lines.append(f"CTL: {wellness.ctl:.0f}")
+        tsb = (wellness.ctl - wellness.atl) if wellness.ctl and wellness.atl else None
+        if tsb is not None:
+            lines.append(f"TSB: {tsb:+.0f}")
+
+    lines.append("")
+    lines.append("Rules:")
+    lines.append("- Title: max 60 chars. Format: '{original_name} · {metric or insight}'. No emojis in title.")
+    lines.append("- Description: 3-5 lines. Include key metrics. End with: '→ endurai.me'")
+    lines.append("- Language: English")
+    lines.append("- Do NOT include hashtags")
+    lines.append("")
+    lines.append('Respond as JSON: {"title": "...", "description": "..."}')
+    return "\n".join(lines)
+
+
+def _fallback_signature(activity: Activity, wellness: Wellness | None) -> tuple[str, str]:
+    """Template-based fallback when Claude is unavailable."""
+    name = activity.type or "Activity"
+    if wellness and wellness.recovery_score is not None:
+        title = f"{name} · Readiness {wellness.recovery_score:.0f}/100"
+    else:
+        title = f"{name} · endurai.me"
+
+    desc_lines = ["🧠 Coached by endurai.me — AI triathlon coach"]
+    if wellness and wellness.recovery_score is not None:
+        desc_lines.append(f"Readiness: {wellness.recovery_score:.0f}/100")
+    if wellness and wellness.ctl is not None:
+        tsb = (wellness.ctl - wellness.atl) if wellness.atl else 0
+        desc_lines.append(f"CTL {wellness.ctl:.0f} · TSB {tsb:+.0f}")
+    desc_lines.append("")
+    desc_lines.append("→ endurai.me")
+    return title, "\n".join(desc_lines)
+
+
+@dramatiq.actor(queue_name="default")
+@validate_call
+def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
+    """Rename activity with AI-generated promo title/description.
+
+    Called with a 5-minute delay from ACTIVITY_UPLOADED webhook.
+    Uses Claude for unique text, falls back to template on error.
+    """
+    if not settings.STRAVA_SIGNATURE_ENABLED:
+        return
+
+    with get_sync_session() as session:
+        activity = session.get(Activity, activity_id)
+        if not activity:
+            return
+        if activity.type == "Other":
+            return  # skip yoga/mobility/strength
+
+        # Get wellness for context
+        dt = str(activity.start_date_local)[:10]
+        wellness = session.execute(
+            select(Wellness).where(Wellness.user_id == user.id, Wellness.date == dt)
+        ).scalar_one_or_none()
+
+    # Idempotency: fetch current name from Intervals.icu and check if already signed
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            detail = client.get_activity_detail(activity_id)
+    except Exception:
+        logger.warning("Failed to fetch activity detail for rename check %s", activity_id)
+        return
+    if not detail:
+        return
+    current_name = detail.get("name", "")
+    if _already_signed(current_name):
+        return
+
+    # Try Claude, fallback to template
+    title, description = _fallback_signature(activity, wellness)
+    try:
+        prompt = _generate_signature_prompt(activity, wellness)
+        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY.get_secret_value())
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text
+        parsed = json.loads(text)
+        title = parsed.get("title", title)[:60]
+        description = parsed.get("description", description)
+    except Exception:
+        logger.warning("Claude signature generation failed for %s, using template", activity_id)
+
+    # Push to Intervals.icu
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            client.update_activity(activity_id, {"name": title, "description": description})
+        logger.info("Renamed activity %s for user %d: %s", activity_id, user.id, title)
+    except Exception:
+        logger.exception("Failed to rename activity %s for user %d", activity_id, user.id)

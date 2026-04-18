@@ -29,6 +29,19 @@ RETRY_STATUSES = {429, 500, 502, 503, 504}
 FIT_MAX_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
+class IntervalsAuthError(Exception):
+    """Raised when Intervals.icu returns 401 for an OAuth user.
+
+    The token has been revoked or expired. Tokens are already cleared
+    in the DB by the ``for_user`` context manager. Caller should send
+    a Telegram notification to reconnect.
+    """
+
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        super().__init__(f"Intervals.icu OAuth token revoked for user {user_id}")
+
+
 def to_snake(name: str) -> str:
     """Convert camelCase to snake_case: 'restingHR' → 'resting_hr'."""
     result: list[str] = []
@@ -61,7 +74,7 @@ class IntervalsClientBase:
 
     Subclasses implement _request() and _execute() for sync/async transport.
 
-    Supports two authentication methods (see `docs/INTERVALS_OAUTH_SPEC.md`):
+    Supports two authentication methods (see `api/routers/intervals/oauth.py`):
     - **api_key** (legacy): HTTP Basic Auth ``("API_KEY", key)``
     - **access_token** (OAuth): ``Authorization: Bearer {token}``
 
@@ -76,6 +89,7 @@ class IntervalsClientBase:
         athlete_id: str,
         api_key: str | None = None,
         access_token: str | None = None,
+        user_id: int | None = None,
     ) -> None:
         if not athlete_id:
             raise ValueError("IntervalsClient requires a non-empty athlete_id")
@@ -84,6 +98,7 @@ class IntervalsClientBase:
         self._api_key = api_key
         self._access_token = access_token
         self._athlete_id = athlete_id
+        self._user_id = user_id
 
     def _http_client_kwargs(self) -> dict:
         headers: dict[str, str] = {"Accept": "application/json"}
@@ -214,6 +229,9 @@ class IntervalsClientBase:
     def _spec_get_activity_intervals(self, activity_id: str) -> RequestSpec:
         return RequestSpec("GET", f"/activity/{activity_id}/intervals", handle_404=True)
 
+    def _spec_update_activity(self, activity_id: str, data: dict) -> RequestSpec:
+        return RequestSpec("PUT", f"/activity/{activity_id}", kwargs={"json": data})
+
     def _spec_create_event(self, event: EventExDTO) -> RequestSpec:
         return RequestSpec(
             "POST",
@@ -292,8 +310,15 @@ def _resolve_credentials(user: User) -> dict:
 class IntervalsAsyncClient(IntervalsClientBase):
     """Async Intervals.icu client using httpx.AsyncClient."""
 
-    def __init__(self, *, athlete_id: str, api_key: str | None = None, access_token: str | None = None) -> None:
-        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token)
+    def __init__(
+        self,
+        *,
+        athlete_id: str,
+        api_key: str | None = None,
+        access_token: str | None = None,
+        user_id: int | None = None,
+    ) -> None:
+        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token, user_id=user_id)
         self._client = httpx.AsyncClient(**self._http_client_kwargs())
 
     async def close(self) -> None:
@@ -310,9 +335,8 @@ class IntervalsAsyncClient(IntervalsClientBase):
     async def for_user(cls, user: int | User | UserDTO):
         """Create a session with per-user credentials from the DB.
 
-        Reads ``User.intervals_auth_method`` to choose between OAuth Bearer
-        token and legacy API key. UserDTO no longer carries credentials
-        (issue #147), so it's always re-fetched from the DB.
+        On 401 with OAuth — ``_execute`` clears tokens and raises
+        ``IntervalsAuthError``.
         """
         if isinstance(user, (int, UserDTO)):
             user_id = user if isinstance(user, int) else user.id
@@ -320,7 +344,8 @@ class IntervalsAsyncClient(IntervalsClientBase):
                 user = await session.get(User, user_id)
             if user is None:
                 raise LookupError(f"User {user_id} not found")
-        async with cls(**_resolve_credentials(user)) as session:
+        creds = _resolve_credentials(user)
+        async with cls(**creds, user_id=user.id) as session:
             yield session
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
@@ -345,6 +370,14 @@ class IntervalsAsyncClient(IntervalsClientBase):
         except httpx.HTTPStatusError as e:
             if spec.handle_404 and e.response.status_code == 404:
                 return None
+            if e.response.status_code == 401 and self._access_token and self._user_id:
+                logger.warning("Intervals.icu 401 for OAuth user %d — clearing tokens", self._user_id)
+                async with get_session() as session:
+                    db_user = await session.get(User, self._user_id)
+                    if db_user:
+                        db_user.clear_oauth_tokens()
+                        await session.commit()
+                raise IntervalsAuthError(self._user_id) from e
             raise
 
     # -- Endpoints (one-liners) ----------------------------------------
@@ -363,6 +396,9 @@ class IntervalsAsyncClient(IntervalsClientBase):
 
     async def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return await self._execute(self._spec_get_activity_intervals(activity_id))
+
+    async def update_activity(self, activity_id: str, data: dict) -> dict:
+        return await self._execute(self._spec_update_activity(activity_id, data))
 
     async def create_event(self, event: EventExDTO) -> ScheduledWorkoutDTO:
         return await self._execute(self._spec_create_event(event))
@@ -399,8 +435,15 @@ class IntervalsAsyncClient(IntervalsClientBase):
 class IntervalsSyncClient(IntervalsClientBase):
     """Sync Intervals.icu client using httpx.Client."""
 
-    def __init__(self, *, athlete_id: str, api_key: str | None = None, access_token: str | None = None) -> None:
-        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token)
+    def __init__(
+        self,
+        *,
+        athlete_id: str,
+        api_key: str | None = None,
+        access_token: str | None = None,
+        user_id: int | None = None,
+    ) -> None:
+        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token, user_id=user_id)
         self._client = httpx.Client(**self._http_client_kwargs())
 
     @classmethod
@@ -408,9 +451,8 @@ class IntervalsSyncClient(IntervalsClientBase):
     def for_user(cls, user: int | User | UserDTO):
         """Create a session with per-user credentials from the DB.
 
-        Reads ``User.intervals_auth_method`` to choose between OAuth Bearer
-        token and legacy API key. UserDTO no longer carries credentials
-        (issue #147), so it's always re-fetched from the DB.
+        On 401 with OAuth — ``_execute`` clears tokens and raises
+        ``IntervalsAuthError``.
         """
         if isinstance(user, (int, UserDTO)):
             user_id = user if isinstance(user, int) else user.id
@@ -418,7 +460,8 @@ class IntervalsSyncClient(IntervalsClientBase):
                 user = session.get(User, user_id)
             if user is None:
                 raise LookupError(f"User {user_id} not found")
-        with cls(**_resolve_credentials(user)) as session:
+        creds = _resolve_credentials(user)
+        with cls(**creds, user_id=user.id) as session:
             yield session
 
     def close(self) -> None:
@@ -452,6 +495,14 @@ class IntervalsSyncClient(IntervalsClientBase):
         except httpx.HTTPStatusError as e:
             if spec.handle_404 and e.response.status_code == 404:
                 return None
+            if e.response.status_code == 401 and self._access_token and self._user_id:
+                logger.warning("Intervals.icu 401 for OAuth user %d — clearing tokens", self._user_id)
+                with get_sync_session() as session:
+                    db_user = session.get(User, self._user_id)
+                    if db_user:
+                        db_user.clear_oauth_tokens()
+                        session.commit()
+                raise IntervalsAuthError(self._user_id) from e
             raise
 
     # -- Endpoints (one-liners) ----------------------------------------
@@ -470,6 +521,9 @@ class IntervalsSyncClient(IntervalsClientBase):
 
     def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return self._execute(self._spec_get_activity_intervals(activity_id))
+
+    def update_activity(self, activity_id: str, data: dict) -> dict:
+        return self._execute(self._spec_update_activity(activity_id, data))
 
     def create_event(self, event: EventExDTO) -> ScheduledWorkoutDTO:
         return self._execute(self._spec_create_event(event))

@@ -206,9 +206,10 @@ export default function Settings() {
                 type="button"
                 onClick={startIntervalsOAuth}
                 disabled={intervalsBusy}
-                className="block w-full py-2.5 bg-accent text-white text-center rounded-xl text-sm font-semibold border-none cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex items-center justify-center gap-2 w-full py-2.5 bg-accent text-white rounded-xl text-sm font-semibold border-none cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {t('settings.intervals.connect')}
+                {intervalsBusy && <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+                {intervalsBusy ? t('settings.intervals.redirecting') : t('settings.intervals.connect')}
               </button>
             </>
           )}
@@ -220,9 +221,21 @@ export default function Settings() {
               {intervals.scope && (
                 <Row label={t('settings.intervals.scope')} value={intervals.scope} />
               )}
-              <p className="text-[11px] text-text-dim mt-3 leading-snug">
-                {t('settings.intervals.disconnect_soon')}
-              </p>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!confirm(t('settings.intervals.disconnect_confirm'))) return
+                  try {
+                    await apiFetch('/api/intervals/auth/disconnect', { method: 'POST' })
+                    setIntervals({ method: 'none', athlete_id: null, scope: null })
+                  } catch (e) {
+                    console.error('Disconnect failed:', e)
+                  }
+                }}
+                className="block w-full mt-3 py-2 bg-surface border border-red text-red text-center rounded-xl text-sm font-semibold cursor-pointer font-sans hover:bg-red/5"
+              >
+                {t('settings.intervals.disconnect')}
+              </button>
             </>
           )}
           {intervals && intervals.athlete_id && intervals.method === 'api_key' && (
@@ -234,9 +247,10 @@ export default function Settings() {
                 type="button"
                 onClick={startIntervalsOAuth}
                 disabled={intervalsBusy}
-                className="block w-full mt-3 py-2.5 bg-surface border border-accent text-accent text-center rounded-xl text-sm font-semibold cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
+                className="flex items-center justify-center gap-2 w-full mt-3 py-2.5 bg-surface border border-accent text-accent rounded-xl text-sm font-semibold cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {t('settings.intervals.migrate_to_oauth')}
+                {intervalsBusy && <span className="inline-block w-3.5 h-3.5 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />}
+                {intervalsBusy ? t('settings.intervals.redirecting') : t('settings.intervals.migrate_to_oauth')}
               </button>
             </>
           )}

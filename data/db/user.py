@@ -62,7 +62,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_donation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Intervals.icu OAuth — see docs/INTERVALS_OAUTH_SPEC.md
+    # Intervals.icu OAuth — see api/routers/intervals/oauth.py
     # `intervals_auth_method` is the source of truth for which credential path
     # `IntervalsClient.for_user()` should use. `"api_key"` is the legacy default,
     # `"oauth"` is set after a successful OAuth callback, `"none"` means the user
@@ -97,7 +97,7 @@ class User(Base):
         self.mcp_token = secrets.token_hex(32)
         return self.mcp_token
 
-    # --- Intervals.icu OAuth (see docs/INTERVALS_OAUTH_SPEC.md) ---
+    # --- Intervals.icu OAuth (see api/routers/intervals/oauth.py) ---
 
     def set_oauth_tokens(self, access_token: str, scope: str) -> None:
         """Store Intervals.icu OAuth credentials.
