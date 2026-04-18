@@ -6,6 +6,7 @@ import pytest
 
 from api.dto import IntervalsWebhookEvent
 from api.routers.intervals.webhook import (
+    _dispatch_achievements,
     _dispatch_calendar,
     _dispatch_scope_changed,
     _dispatch_sport_settings,
@@ -135,6 +136,30 @@ FITNESS_UPDATED_EVENT = {
     ],
 }
 
+ACTIVITY_ACHIEVEMENTS_EVENT = {
+    "athlete_id": "i317960",
+    "type": "ACTIVITY_ACHIEVEMENTS",
+    "timestamp": "2026-04-16T15:43:26.000+00:00",
+    "activity": {
+        "id": "i317960-2026-04-16-abc123",
+        "start_date_local": "2026-04-16T15:00:00",
+        "type": "VirtualRide",
+        "name": "Zwift - Zone 2 Endurance",
+        "moving_time": 3312,
+        "icu_training_load": 41.2,
+        "average_heartrate": 141,
+        "average_watts": 168,
+        "icu_rolling_ftp": 210,
+        "icu_rolling_ftp_delta": 2,
+        "icu_ctl": 19.49,
+        "icu_atl": 38.01,
+        "icu_achievements": [
+            {"id": "ps0_5", "type": "BEST_POWER", "watts": 500, "secs": 5},
+        ],
+    },
+    "records": [],
+}
+
 
 def _make_user_dto(**kwargs) -> UserDTO:
     defaults = {"id": 1, "chat_id": "12345", "athlete_id": "i317960", "language": "en"}
@@ -190,6 +215,12 @@ class TestEventParsing:
     def test_fitness_updated_records(self):
         event = _make_event(FITNESS_UPDATED_EVENT)
         assert len(event.records) == 2
+
+    def test_achievements_activity(self):
+        event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
+        assert event.activity is not None
+        assert event.activity["icu_rolling_ftp"] == 210
+        assert event.activity["icu_achievements"][0]["watts"] == 500
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +320,49 @@ class TestDispatchScopeChanged:
         mock_db_user.clear_oauth_tokens.assert_called_once()
 
 
+class TestDispatchAchievements:
+    def test_dispatches_notification_with_activity(self):
+        event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
+        user = _make_user_dto()
+        with patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock:
+            _dispatch_achievements(user, event)
+            mock.send.assert_called_once()
+            call_kwargs = mock.send.call_args.kwargs
+            assert call_kwargs["user"] == user
+            assert call_kwargs["activity"]["icu_rolling_ftp"] == 210
+
+    def test_skips_without_activity(self):
+        event = _make_event({**ACTIVITY_ACHIEVEMENTS_EVENT, "activity": None})
+        user = _make_user_dto()
+        with patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock:
+            _dispatch_achievements(user, event)
+            mock.send.assert_not_called()
+
+
+class TestDispatchFitness:
+    @pytest.mark.asyncio
+    async def test_dispatches_save_bulk(self):
+        from api.routers.intervals.webhook import _dispatch_fitness
+
+        event = _make_event(FITNESS_UPDATED_EVENT)
+        with patch("api.routers.intervals.webhook.FitnessProjection") as mock_cls:
+            mock_cls.save_bulk = AsyncMock(return_value=2)
+            await _dispatch_fitness(user_id=1, event=event)
+            mock_cls.save_bulk.assert_called_once()
+            call_kwargs = mock_cls.save_bulk.call_args.kwargs
+            assert call_kwargs["user_id"] == 1
+            assert len(call_kwargs["records"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_records(self):
+        from api.routers.intervals.webhook import _dispatch_fitness
+
+        event = _make_event({**FITNESS_UPDATED_EVENT, "records": []})
+        with patch("api.routers.intervals.webhook.FitnessProjection") as mock_cls:
+            await _dispatch_fitness(user_id=1, event=event)
+            mock_cls.save_bulk.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Integration: _handle_webhook_event routes to correct dispatcher
 # ---------------------------------------------------------------------------
@@ -359,6 +433,32 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_scope_changed", new_callable=AsyncMock) as mock_dispatch,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
+            mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
+            await _handle_webhook_event(event)
+            mock_dispatch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_achievements_dispatched(self):
+        event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
+        with (
+            patch("api.routers.intervals.webhook.User") as mock_user_cls,
+            patch("api.routers.intervals.webhook._dispatch_achievements") as mock_dispatch,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
+            mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
+            await _handle_webhook_event(event)
+            mock_dispatch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fitness_dispatched(self):
+        event = _make_event(FITNESS_UPDATED_EVENT)
+        with (
+            patch("api.routers.intervals.webhook.User") as mock_user_cls,
+            patch("api.routers.intervals.webhook._dispatch_fitness", new_callable=AsyncMock) as mock_dispatch,
             patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
             mock_settings.INTERVALS_WEBHOOK_MONITORING = False

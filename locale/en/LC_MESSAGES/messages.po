@@ -157,6 +157,12 @@ msgstr "Other"
 msgid "Тренировка"
 msgstr "Workout"
 
+msgid "Новое достижение!"
+msgstr "New achievement!"
+
+msgid "рекорд"
+msgstr "PR"
+
 msgid "ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ"
 msgstr "THRESHOLDS — CONSIDER UPDATING"
 
