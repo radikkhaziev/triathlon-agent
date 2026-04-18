@@ -50,7 +50,7 @@ triathlon-agent/
 
 ## Database Schema
 
-29 tables. Full column specs in `data/db/`. Key tables:
+30 tables. Full column specs in `data/db/`. Key tables:
 
 **Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `docs/INTERVALS_OAUTH_SPEC.md`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 1 complete, Phase 2 complete (Bearer auth in `IntervalsClient`, viewer→athlete promotion + mcp_token generation in callback, auto-dispatch sync actors for new users). Webhook research done (10/10 event types documented in `docs/INTERVALS_WEBHOOKS_RESEARCH.md`). Pending: OAuth disconnect endpoint, lazy 401 handling, webhook dispatchers, personal patterns cron, MT Phase 2 (JWT upgrade).
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag. Pending: personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars.
 
 **Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 

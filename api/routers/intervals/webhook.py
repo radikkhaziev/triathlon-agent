@@ -16,6 +16,7 @@ from config import settings
 from data.db import Activity, FitnessProjection, User, UserDTO, get_session
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
 from tasks.actors import (
+    actor_rename_activity,
     actor_send_achievement_notification,
     actor_sync_athlete_goals,
     actor_sync_athlete_settings,
@@ -199,18 +200,28 @@ async def _dispatch_fitness(user_id: int, event: IntervalsWebhookEvent) -> None:
     logger.info("Saved %d fitness projection records for user %d", count, user_id)
 
 
-async def _dispatch_activity(user: UserDTO, event: IntervalsWebhookEvent) -> None:
-    """Save activity from webhook payload and run full details pipeline.
-
-    Used for both ACTIVITY_UPLOADED and ACTIVITY_UPDATED — payload is identical.
-    """
+async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEvent) -> None:
+    """Save new activity and run full details pipeline + delayed rename."""
     if not event.activity:
         return
 
     dto = ActivityDTO.model_validate(event.activity)
-
     await Activity.save_bulk(user.id, [dto])
     actor_update_activity_details.send(user=user, activity_id=dto.id)
+    # Delayed rename: 5 min after upload, rename with promo description
+    actor_rename_activity.send_with_options(
+        kwargs={"user": user, "activity_id": dto.id},
+        delay=5 * 60 * 1000,  # 5 minutes in milliseconds
+    )
+
+
+async def _dispatch_activity_updated(user: UserDTO, event: IntervalsWebhookEvent) -> None:
+    """Save updated activity to DB. No actors — avoids rename→update loop."""
+    if not event.activity:
+        return
+
+    dto = ActivityDTO.model_validate(event.activity)
+    await Activity.save_bulk(user.id, [dto])
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +309,8 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
         "APP_SCOPE_CHANGED": lambda: _dispatch_scope_changed(user, event),
         "FITNESS_UPDATED": lambda: _dispatch_fitness(user.id, event),
         "ACTIVITY_ACHIEVEMENTS": lambda: _dispatch_achievements(user_dto, event),
-        "ACTIVITY_UPLOADED": lambda: _dispatch_activity(user_dto, event),
-        "ACTIVITY_UPDATED": lambda: _dispatch_activity(user_dto, event),
+        "ACTIVITY_UPLOADED": lambda: _dispatch_activity_uploaded(user_dto, event),
+        "ACTIVITY_UPDATED": lambda: _dispatch_activity_updated(user_dto, event),
     }
     dispatcher = dispatchers.get(normalized_type)
     if dispatcher is not None:

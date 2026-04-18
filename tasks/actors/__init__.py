@@ -10,6 +10,7 @@ from tasks.broker import broker  # noqa: F401 — ensure broker is configured be
 
 from .activities import (  # noqa: F401
     actor_fetch_user_activities,
+    actor_rename_activity,
     actor_send_achievement_notification,
     actor_update_activity_details,
 )

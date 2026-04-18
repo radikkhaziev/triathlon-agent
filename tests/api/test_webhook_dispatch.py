@@ -7,7 +7,8 @@ import pytest
 from api.dto import IntervalsWebhookEvent
 from api.routers.intervals.webhook import (
     _dispatch_achievements,
-    _dispatch_activity,
+    _dispatch_activity_updated,
+    _dispatch_activity_uploaded,
     _dispatch_calendar,
     _dispatch_scope_changed,
     _dispatch_sport_settings,
@@ -364,22 +365,24 @@ class TestDispatchFitness:
             mock_cls.save_bulk.assert_not_called()
 
 
-class TestDispatchActivity:
-    """Unified dispatcher for ACTIVITY_UPLOADED and ACTIVITY_UPDATED."""
-
+class TestDispatchActivityUploaded:
     @pytest.mark.asyncio
-    async def test_saves_and_dispatches_details(self):
+    async def test_saves_and_dispatches_details_and_rename(self):
         event = _make_event(ACTIVITY_UPLOADED_EVENT)
         user = _make_user_dto()
         with (
             patch("api.routers.intervals.webhook.Activity") as mock_activity,
-            patch("api.routers.intervals.webhook.actor_update_activity_details") as mock_actor,
+            patch("api.routers.intervals.webhook.actor_update_activity_details") as mock_details,
+            patch("api.routers.intervals.webhook.actor_rename_activity") as mock_rename,
         ):
             mock_activity.save_bulk = AsyncMock()
-            await _dispatch_activity(user, event)
+            await _dispatch_activity_uploaded(user, event)
             mock_activity.save_bulk.assert_called_once()
-            mock_actor.send.assert_called_once()
-            assert mock_actor.send.call_args.kwargs["activity_id"] == "i317960-2026-04-16-abc123"
+            mock_details.send.assert_called_once()
+            mock_rename.send_with_options.assert_called_once()
+            rename_kwargs = mock_rename.send_with_options.call_args.kwargs
+            assert rename_kwargs["kwargs"]["activity_id"] == "i317960-2026-04-16-abc123"
+            assert rename_kwargs["delay"] == 300000  # 5 min
 
     @pytest.mark.asyncio
     async def test_skips_without_activity(self):
@@ -387,8 +390,24 @@ class TestDispatchActivity:
         user = _make_user_dto()
         with patch("api.routers.intervals.webhook.Activity") as mock_activity:
             mock_activity.save_bulk = AsyncMock()
-            await _dispatch_activity(user, event)
+            await _dispatch_activity_uploaded(user, event)
             mock_activity.save_bulk.assert_not_called()
+
+
+class TestDispatchActivityUpdated:
+    @pytest.mark.asyncio
+    async def test_saves_without_actors(self):
+        """ACTIVITY_UPDATED only saves — no actors to avoid rename→update loop."""
+        event = _make_event(ACTIVITY_UPLOADED_EVENT)
+        user = _make_user_dto()
+        with (
+            patch("api.routers.intervals.webhook.Activity") as mock_activity,
+            patch("api.routers.intervals.webhook.actor_update_activity_details") as mock_details,
+        ):
+            mock_activity.save_bulk = AsyncMock()
+            await _dispatch_activity_updated(user, event)
+            mock_activity.save_bulk.assert_called_once()
+            mock_details.send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +518,7 @@ class TestHandleWebhookEvent:
         event = _make_event(ACTIVITY_UPLOADED_EVENT)
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
-            patch("api.routers.intervals.webhook._dispatch_activity", new_callable=AsyncMock) as mock_dispatch,
+            patch("api.routers.intervals.webhook._dispatch_activity_uploaded", new_callable=AsyncMock) as mock_dispatch,
             patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
             mock_settings.INTERVALS_WEBHOOK_MONITORING = False
@@ -512,7 +531,7 @@ class TestHandleWebhookEvent:
         event = _make_event({**ACTIVITY_UPLOADED_EVENT, "type": "ACTIVITY_UPDATED"})
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
-            patch("api.routers.intervals.webhook._dispatch_activity", new_callable=AsyncMock) as mock_dispatch,
+            patch("api.routers.intervals.webhook._dispatch_activity_updated", new_callable=AsyncMock) as mock_dispatch,
             patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
             mock_settings.INTERVALS_WEBHOOK_MONITORING = False

@@ -229,6 +229,9 @@ class IntervalsClientBase:
     def _spec_get_activity_intervals(self, activity_id: str) -> RequestSpec:
         return RequestSpec("GET", f"/activity/{activity_id}/intervals", handle_404=True)
 
+    def _spec_update_activity(self, activity_id: str, data: dict) -> RequestSpec:
+        return RequestSpec("PUT", f"/activity/{activity_id}", kwargs={"json": data})
+
     def _spec_create_event(self, event: EventExDTO) -> RequestSpec:
         return RequestSpec(
             "POST",
@@ -394,6 +397,9 @@ class IntervalsAsyncClient(IntervalsClientBase):
     async def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return await self._execute(self._spec_get_activity_intervals(activity_id))
 
+    async def update_activity(self, activity_id: str, data: dict) -> dict:
+        return await self._execute(self._spec_update_activity(activity_id, data))
+
     async def create_event(self, event: EventExDTO) -> ScheduledWorkoutDTO:
         return await self._execute(self._spec_create_event(event))
 
@@ -515,6 +521,9 @@ class IntervalsSyncClient(IntervalsClientBase):
 
     def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return self._execute(self._spec_get_activity_intervals(activity_id))
+
+    def update_activity(self, activity_id: str, data: dict) -> dict:
+        return self._execute(self._spec_update_activity(activity_id, data))
 
     def create_event(self, event: EventExDTO) -> ScheduledWorkoutDTO:
         return self._execute(self._spec_create_event(event))
