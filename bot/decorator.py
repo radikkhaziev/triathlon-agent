@@ -21,7 +21,7 @@ def with_athletes(fn):
     return wrapper
 
 
-def with_athletes_without_oauth(fn):
+def with_legacy_athletes(fn):
     """Temporary decorator for scheduler jobs that need to run even for athletes who haven't completed
     onboarding (and thus lack an IntervalsSyncClient).
     Use `with_athletes` instead where possible,

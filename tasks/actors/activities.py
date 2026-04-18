@@ -412,7 +412,7 @@ def _load_work_segments(activity_id: str) -> list[tuple[int, int]]:
 
 @dramatiq.actor(queue_name="default")
 @validate_call
-def _actor_update_activity_details(
+def actor_update_activity_details(
     user: UserDTO,
     activity_id: str,
     force: bool = False,
@@ -483,7 +483,7 @@ def actor_fetch_user_activities(
     if not activity_ids:
         return
 
-    g = group([_actor_update_activity_details.message(user=user, activity_id=aid, force=force) for aid in activity_ids])
+    g = group([actor_update_activity_details.message(user=user, activity_id=aid, force=force) for aid in activity_ids])
     g.run()
 
 

@@ -245,7 +245,7 @@ class TestActorFetchActivityDetails:
 
     def test_calls_get_activity_detail(self):
         """Actor calls client.get_activity_detail with the activity ID."""
-        from tasks.actors.activities import _actor_update_activity_details
+        from tasks.actors.activities import actor_update_activity_details
 
         user = _user()
         mock_client = _mock_client()
@@ -256,13 +256,13 @@ class TestActorFetchActivityDetails:
             patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.activities.ActivityDetail.save"),
         ):
-            _actor_update_activity_details(user.model_dump(), activity_id="i12345")
+            actor_update_activity_details(user.model_dump(), activity_id="i12345")
 
         mock_client.get_activity_detail.assert_called_once_with("i12345")
 
     def test_calls_get_activity_intervals(self):
         """Actor calls client.get_activity_intervals with the activity ID."""
-        from tasks.actors.activities import _actor_update_activity_details
+        from tasks.actors.activities import actor_update_activity_details
 
         user = _user()
         mock_client = _mock_client()
@@ -273,13 +273,13 @@ class TestActorFetchActivityDetails:
             patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.activities.ActivityDetail.save"),
         ):
-            _actor_update_activity_details(user.model_dump(), activity_id="i12345")
+            actor_update_activity_details(user.model_dump(), activity_id="i12345")
 
         mock_client.get_activity_intervals.assert_called_once_with("i12345")
 
     def test_calls_activity_detail_save(self):
         """Actor calls ActivityDetail.save with ID, detail_data, and intervals_data."""
-        from tasks.actors.activities import _actor_update_activity_details
+        from tasks.actors.activities import actor_update_activity_details
 
         user = _user()
         detail_data = {"max_heartrate": 175, "icu_average_watts": 220}
@@ -292,13 +292,13 @@ class TestActorFetchActivityDetails:
             patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.activities.ActivityDetail.save") as mock_save,
         ):
-            _actor_update_activity_details(user.model_dump(), activity_id="i12345")
+            actor_update_activity_details(user.model_dump(), activity_id="i12345")
 
         mock_save.assert_called_once_with("i12345", detail_data, intervals_data)
 
     def test_returns_early_when_no_detail_data(self):
         """Actor returns early without calling ActivityDetail.save if detail is None/empty."""
-        from tasks.actors.activities import _actor_update_activity_details
+        from tasks.actors.activities import actor_update_activity_details
 
         user = _user()
         mock_client = _mock_client()
@@ -309,7 +309,7 @@ class TestActorFetchActivityDetails:
             patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
             patch("tasks.actors.activities.ActivityDetail.save") as mock_save,
         ):
-            _actor_update_activity_details(user.model_dump(), activity_id="i12345")
+            actor_update_activity_details(user.model_dump(), activity_id="i12345")
 
         mock_save.assert_not_called()
 

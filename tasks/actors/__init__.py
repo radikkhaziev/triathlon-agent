@@ -8,7 +8,11 @@ imported directly from their submodules when needed (e.g. in tests).
 import tasks.middleware  # noqa: F401 — ensure Pydantic encoder is active before any actor dispatch
 from tasks.broker import broker  # noqa: F401 — ensure broker is configured before actor discovery
 
-from .activities import actor_fetch_user_activities, actor_send_achievement_notification  # noqa: F401
+from .activities import (  # noqa: F401
+    actor_fetch_user_activities,
+    actor_send_achievement_notification,
+    actor_update_activity_details,
+)
 from .athlets import actor_sync_athlete_goals, actor_sync_athlete_settings, actor_update_zones  # noqa: F401
 from .reports import (  # noqa: F401
     actor_compose_user_evening_report,

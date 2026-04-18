@@ -145,12 +145,14 @@ class HRVDataDTO(BaseModel):
 class ActivityDTO(BaseModel):
     """Completed activity from Intervals.icu activities endpoint."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str  # Intervals.icu activity ID (e.g. "i12345")
     start_date_local: date
     type: str | None = None  # Normalized: Ride | Run | Swim | Other
     icu_training_load: float | None = None
     moving_time: int | None = None  # seconds
-    average_hr: float | None = None  # average heart rate (from average_heartrate API field)
+    average_hr: float | None = Field(None, alias="average_heartrate")  # API field: average_heartrate
     is_race: bool = Field(False, alias="race")
     sub_type: str | None = None
     source: str | None = None  # e.g. "GARMIN_CONNECT", "OAUTH_CLIENT", "STRAVA"
