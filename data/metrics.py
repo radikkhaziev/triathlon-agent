@@ -658,29 +658,26 @@ def compute_polarization_trends(windows: dict[int, dict]) -> list[str]:
 
     # Gray zone drift: short-term mid is growing vs long-term
     if w7 and w28 and w7["mid_pct"] - w28["mid_pct"] > 5:
-        delta = w7["mid_pct"] - w28["mid_pct"]
-        signals.append(f"gray_zone_drift: mid_pct 7d={w7['mid_pct']}% vs 28d={w28['mid_pct']}% (+{delta:.1f})")
+        signals.append(f"Gray zone growing: {w7['mid_pct']}% this week vs {w28['mid_pct']}% monthly avg")
 
     # Taper detection: intensity dropping
     if w14 and w56 and w56["high_pct"] - w14["high_pct"] > 5:
-        signals.append(f"taper_detected: high_pct dropping 14d={w14['high_pct']}% vs 56d={w56['high_pct']}%")
+        signals.append(f"Taper mode: high intensity dropped to {w14['high_pct']}% (was {w56['high_pct']}%)")
 
     # Deload week: much more easy than usual
     if w7 and w28 and w7["low_pct"] - w28["low_pct"] > 10:
-        signals.append(
-            f"deload_week: low_pct 7d={w7['low_pct']}% vs 28d={w28['low_pct']}% (+{w7['low_pct'] - w28['low_pct']:.1f})"
-        )
+        signals.append(f"Deload week: {w7['low_pct']}% easy this week (avg {w28['low_pct']}%)")
 
     # Too much threshold (14d rule for morning report)
     if w14 and w14["mid_pct"] > 20:
-        signals.append(f"threshold_warning: mid_pct 14d={w14['mid_pct']}% (>20%)")
+        signals.append(f"Too much Z3 over 2 weeks ({w14['mid_pct']}%)")
 
     # Too easy (28d)
     if w28 and w28["pattern"] == "too_easy":
-        signals.append("too_easy: not enough intensity stimulus over 28d")
+        signals.append("Not enough intensity — add 1-2 hard sessions per week")
 
     # Too hard (14d)
     if w14 and w14["pattern"] == "too_hard":
-        signals.append("too_hard: overtraining risk over 14d")
+        signals.append("Overtraining risk — too much high intensity over 2 weeks")
 
     return signals
