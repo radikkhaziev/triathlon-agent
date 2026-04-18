@@ -188,6 +188,7 @@ GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun)
 GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA
 GET  /api/progress?sport=bike&days=90   — aerobic efficiency trend (EF/SWOLF/pace)
+GET  /api/polarization?sport=run&days=28 — zone distribution (Low/Mid/High) + multi-window + signals
 GET  /api/fitness-projection            — CTL/ATL/rampRate decay curve (from FITNESS_UPDATED webhook)
 POST /api/auth/verify-code              — verify one-time code → JWT
 POST /api/auth/demo                     — demo password → JWT with role=demo (read-only owner data)
@@ -379,13 +380,13 @@ User sends /morning → @athlete_required resolves User from chat_id
 
 ---
 
-## MCP Server (49 tools + 3 resources)
+## MCP Server (50 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per-user Bearer auth via `User.mcp_token`).
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**49 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, goal progress, zones, races (`get_races`/`tag_race`/`update_race`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**50 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 

@@ -50,6 +50,16 @@ get_garmin_abnormal_hr_events — если были аномальные HR со
 Если days_since > 14 — данные устарели, не акцентируй. Грейдинг: green (<5%), yellow (5-10%), red (>10%).
 Устойчивый красный дрейф (2 из 3) = рекомендация Base Building Protocol.
 
+10. get_polarization_index(sport='run') — распределение времени по зонам (Low/Mid/High).
+    Возвращает 4 окна (7d/14d/28d/56d) + coaching signals.
+    Если signals содержит:
+    - threshold_warning → "⚠ Слишком много Z3 за 2 недели. Замедли лёгкие или замени tempo на Z4+ интервалы."
+    - too_hard → "⚠ Риск перетренировки — слишком много интенсивных сессий."
+    - too_easy → "ℹ Не хватает стимула — добавь 1-2 интервальных сессии."
+    - gray_zone_drift → "⚠ Серая зона растёт — easy-тренировки недостаточно лёгкие."
+    - deload_week → информационно, не предупреждение.
+    Если signals пуст → не упоминай поляризацию (всё ок).
+
 ## Формат ответа
 
 Дай ответ в 4 секциях (Russian, max 250 words):
@@ -114,14 +124,16 @@ Athlete profile:
 4. get_efficiency_trend(days_back=30) — аэробный тренд
 5. get_goal_progress() — прогресс к цели
 6. get_scheduled_workouts(days_ahead=7) — план следующей недели
+7. get_polarization_index(sport='run') — распределение зон (28d pattern + signals)
 
 ## Формат ответа (Russian, 300-400 words)
 
 1. 📊 **Итог недели** — sessions completed/planned, compliance %, total TSS/hours, by-sport breakdown
 2. 💚 **Восстановление** — HRV тренд (стабильный/падает/растёт), средний sleep score, RHR тренд, recovery days by color
 3. 📈 **Прогресс** — CTL delta за неделю, ramp rate, per-sport CTL, прогресс к цели
-4. 🔍 **Наблюдение** — один ключевой инсайт: compliance, decoupling, или корреляция (IQOS ↔ recovery)
-5. 📅 **План на неделю** — краткий обзор запланированных тренировок + рекомендация
+4. ⚡ **Поляризация** — 28d pattern, Low/Mid/High %. Signals → рекомендация. Polarized → "ок"
+5. 🔍 **Наблюдение** — один ключевой инсайт: compliance, decoupling, или корреляция (IQOS ↔ recovery)
+6. 📅 **План на неделю** — краткий обзор запланированных тренировок + рекомендация
 
 ## Правила
 - Конкретные цифры: TSS, часы, compliance %, CTL delta

@@ -8,6 +8,7 @@ from api.deps import get_data_user_id, require_viewer
 from config import settings
 from data.db import Activity, ActivityDetail, ActivityHrv, FitnessProjection, Race, User, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
+from mcp_server.tools.polarization import get_polarization_multi_window
 from mcp_server.tools.progress import compute_efficiency_trend
 
 router = APIRouter()
@@ -145,6 +146,25 @@ async def progress(
         days_back=days,
         strict_filter=strict_filter,
     )
+
+
+@router.get("/api/polarization")
+async def polarization(
+    sport: str = Query(default="run", description="run or ride"),
+    days: int = Query(default=28, description="Primary window: 7, 14, 28, or 56"),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Get Polarization Index with multi-window analysis and trend signals."""
+    windows, signals = await get_polarization_multi_window(get_data_user_id(user), sport)
+    primary = windows.get(days, windows[28])
+
+    return {
+        "sport": sport,
+        "primary_window": days,
+        **primary,
+        "windows": {str(d): w for d, w in windows.items()},
+        "signals": signals,
+    }
 
 
 @router.get("/api/fitness-projection")
