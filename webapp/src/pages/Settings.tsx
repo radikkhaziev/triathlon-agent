@@ -227,7 +227,7 @@ export default function Settings() {
                   if (!confirm(t('settings.intervals.disconnect_confirm'))) return
                   try {
                     await apiFetch('/api/intervals/auth/disconnect', { method: 'POST' })
-                    setIntervals({ method: 'none', athlete_id: null, scope: null })
+                    setIntervals(prev => prev ? { ...prev, method: 'none', scope: null } : prev)
                   } catch (e) {
                     console.error('Disconnect failed:', e)
                   }

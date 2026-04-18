@@ -535,8 +535,9 @@ def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
 _SIGNATURE_MARKERS = ("endurai.me", "Readiness")
 
 
-def _already_signed(name: str) -> bool:
-    return any(m in name for m in _SIGNATURE_MARKERS)
+def _already_signed(name: str, description: str = "") -> bool:
+    text = f"{name} {description}"
+    return any(m in text for m in _SIGNATURE_MARKERS)
 
 
 def _generate_signature_prompt(activity: Activity, wellness: Wellness | None) -> str:
@@ -624,7 +625,8 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
     if not detail:
         return
     current_name = detail.get("name", "")
-    if _already_signed(current_name):
+    current_desc = detail.get("description") or ""
+    if _already_signed(current_name, current_desc):
         return
 
     # Try Claude, fallback to template
