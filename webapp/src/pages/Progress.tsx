@@ -516,7 +516,6 @@ interface ProgressionData {
 }
 
 const FEATURE_LABELS: Record<string, string> = {
-  total_tss_all: 'Total TSS',
   n_sessions: 'Sessions',
   sessions_per_week: 'Sessions/week',
   decoupling_median: 'Cardiac drift',
