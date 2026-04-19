@@ -11,6 +11,7 @@ from tasks.actors import (
     actor_compose_user_evening_report,
     actor_compose_weekly_report,
     actor_fetch_user_activities,
+    actor_retrain_progression_model,
     actor_sync_athlete_goals,
     actor_user_scheduled_workouts,
     actor_user_wellness,
@@ -53,6 +54,17 @@ async def scheduler_weekly_report_job(athletes: list[UserDTO]) -> None:
 async def scheduler_activities_job(athletes: list[UserDTO]) -> None:
     _group = group([actor_fetch_user_activities.message(user=a) for a in athletes])
     _group.run()
+
+
+@with_athletes
+async def scheduler_progression_model_job(athletes: list[UserDTO]) -> None:
+    """Retrain progression models weekly for all athletes with enough data."""
+    for i, a in enumerate(athletes):
+        actor_retrain_progression_model.send_with_options(
+            kwargs={"user": a, "sport": "Ride"},
+            delay=i * 30_000,
+        )
+    logger.info("Dispatched progression model retraining for %d athletes", len(athletes))
 
 
 @with_legacy_athletes
@@ -111,6 +123,12 @@ async def create_scheduler() -> AsyncIOScheduler:
         hour="4-23",
         minute=30,
         id="scheduler_sync_goals_job",
+    )
+
+    scheduler.add_job(
+        scheduler_progression_model_job,
+        trigger=CronTrigger(day_of_week="sun", hour=16, minute=0, timezone=settings.TIMEZONE),
+        id="scheduler_progression_model_job",
     )
 
     return scheduler

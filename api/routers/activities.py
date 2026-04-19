@@ -7,6 +7,7 @@ from sqlalchemy import exists, select
 from api.deps import get_data_user_id, require_viewer
 from config import settings
 from data.db import Activity, ActivityDetail, ActivityHrv, FitnessProjection, Race, User, get_session
+from data.ml.progression import get_latest_analysis
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.tools.polarization import get_polarization_multi_window
 from mcp_server.tools.progress import compute_efficiency_trend
@@ -165,6 +166,18 @@ async def polarization(
         "windows": {str(d): w for d, w in windows.items()},
         "signals": signals,
     }
+
+
+@router.get("/api/progression")
+async def progression(
+    sport: str = Query(default="Ride", description="Ride only for now"),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Get ML progression analysis — SHAP feature importance."""
+    result = get_latest_analysis(get_data_user_id(user), sport)
+    if not result:
+        return {"status": "no_model"}
+    return {"status": "ok", **result}
 
 
 @router.get("/api/fitness-projection")

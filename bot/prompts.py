@@ -125,6 +125,7 @@ Athlete profile:
 5. get_goal_progress() — прогресс к цели
 6. get_scheduled_workouts(days_ahead=7) — план следующей недели
 7. get_polarization_index(sport='run') — распределение зон (28d pattern + signals)
+8. get_progression_analysis(sport='Ride') — SHAP insights: что двигает EF тренд
 
 ## Формат ответа (Russian, 300-400 words)
 
@@ -132,8 +133,9 @@ Athlete profile:
 2. 💚 **Восстановление** — HRV тренд (стабильный/падает/растёт), средний sleep score, RHR тренд, recovery days by color
 3. 📈 **Прогресс** — CTL delta за неделю, ramp rate, per-sport CTL, прогресс к цели
 4. ⚡ **Поляризация** — 28d pattern, Low/Mid/High %. Signals → рекомендация. Polarized → "ок"
-5. 🔍 **Наблюдение** — один ключевой инсайт: compliance, decoupling, или корреляция (IQOS ↔ recovery)
-6. 📅 **План на неделю** — краткий обзор запланированных тренировок + рекомендация
+5. 🧠 **ML insights** (Ride) — если get_progression_analysis вернул данные, покажи top-3 фактора
+6. 🔍 **Наблюдение** — один ключевой инсайт: compliance, decoupling, или корреляция
+7. 📅 **План на неделю** — краткий обзор запланированных тренировок + рекомендация
 
 ## Правила
 - Конкретные цифры: TSS, часы, compliance %, CTL delta

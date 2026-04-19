@@ -55,6 +55,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "update_race",
         "get_weekly_summary",
         "get_polarization_index",
+        "get_progression_analysis",
     ],
     "admin": [
         "create_github_issue",

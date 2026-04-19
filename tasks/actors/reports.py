@@ -1,6 +1,7 @@
 """Dramatiq actors — reports (morning, evening), echo, scheduled workouts."""
 
 import logging
+import time
 from datetime import timedelta
 
 import dramatiq
@@ -174,6 +175,15 @@ def _actor_send_user_morning_report(
     logger.info("Morning report sent for user %d", user.id)
 
 
+def _clear_sentinel(user_id: int, dt: str) -> None:
+    """Clear __generating__ sentinel so retry can attempt again."""
+    with get_sync_session() as session:
+        row = Wellness.get(user_id, dt, session=session)
+        if row and row.ai_recommendation and row.ai_recommendation.startswith("__generating__"):
+            row.ai_recommendation = None
+            session.commit()
+
+
 @dramatiq.actor(queue_name="default")
 @validate_call
 def actor_compose_user_morning_report(
@@ -181,45 +191,67 @@ def actor_compose_user_morning_report(
 ):
     _dt = DateDTO.today().isoformat()
 
+    # Transaction 1: short lock — claim the slot with sentinel, release immediately.
+    # Prevents race: two concurrent actors both see ai_recommendation=None.
     with get_sync_session() as session:
-        # FOR UPDATE prevents race condition: two concurrent actors both see
-        # ai_recommendation=None and both generate a report. The second one
-        # waits for the first to commit, then sees the recommendation is set.
         _wellness_row = session.execute(
-            select(Wellness)
-            .where(
-                Wellness.user_id == user.id,
-                Wellness.date == _dt,
-            )
-            .with_for_update()
+            select(Wellness).where(Wellness.user_id == user.id, Wellness.date == _dt).with_for_update()
         ).scalar_one_or_none()
 
-        if not _wellness_row or not _wellness_row.sleep_score or _wellness_row.ai_recommendation:
+        if not _wellness_row or not _wellness_row.sleep_score:
             return
 
-        # Generate morning report: sync Claude API + MCP tools (per-user token).
-        # UserDTO no longer carries credentials (issue #147), so we re-fetch
-        # the ORM User inside the worker to get the plaintext mcp_token.
+        # Sentinel format: "__generating__:1713520800" (unix timestamp).
+        # Allow retry if sentinel is stuck >10 min (worker crash).
+        if _wellness_row.ai_recommendation:
+            if _wellness_row.ai_recommendation.startswith("__generating__"):
+                parts = _wellness_row.ai_recommendation.split(":", 1)
+                if len(parts) == 2:
+                    try:
+                        set_at = float(parts[1])
+                        if time.time() - set_at < 600:
+                            return
+                    except ValueError:
+                        pass
+                logger.warning("Stale __generating__ sentinel for user %d, retrying", user.id)
+            else:
+                return
+
+        _wellness_row.ai_recommendation = f"__generating__:{time.time():.0f}"
+        session.commit()
+
+    # Fetch user credentials (outside lock)
+    with get_sync_session() as session:
         _user_orm = session.get(User, user.id)
-        if _user_orm is None:
-            logger.warning("Morning report skipped: user %d no longer exists", user.id)
-            return
-        try:
-            mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
-            text = mcp.generate_morning_report_via_mcp(_dt)
-        except Exception as e:
-            sentry_sdk.capture_exception(e)
-            logger.exception("Morning report generation failed for user %d", user.id)
-            return
-        if not text:
-            return
+    if _user_orm is None:
+        logger.warning("Morning report skipped: user %d no longer exists", user.id)
+        _clear_sentinel(user.id, _dt)
+        return
 
+    # Generate report (no DB lock held — can take 30-120s)
+    try:
+        mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
+        text = mcp.generate_morning_report_via_mcp(_dt)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        logger.exception("Morning report generation failed for user %d", user.id)
+        _clear_sentinel(user.id, _dt)
+        return
+    if not text:
+        _clear_sentinel(user.id, _dt)
+        return
+
+    # Transaction 2: save the real report
+    with get_sync_session() as session:
+        _wellness_row = Wellness.get(user.id, _dt, session=session)
+        if not _wellness_row:
+            logger.warning("Morning report: wellness row disappeared for user %d, date %s", user.id, _dt)
+            return
         _wellness_row.ai_recommendation = text
         session.commit()
         session.refresh(_wellness_row)
+        wellness_dto = WellnessPostDTO.model_validate(_wellness_row)
         logger.info("Morning report saved for user %d, date %s", user.id, _dt)
-
-    wellness_dto = WellnessPostDTO.model_validate(_wellness_row)
 
     _actor_send_user_morning_report.send(
         user=user,

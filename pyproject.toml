@@ -32,6 +32,8 @@ dependencies = [
     "sentry-sdk[fastapi,dramatiq]>=2.19.0",
     "psutil (>=7.2.2,<8.0.0)",
     "babel (>=2.18.0,<3.0.0)",
+    "xgboost (>=3.2.0,<4.0.0)",
+    "shap (>=0.51.0,<0.52.0)",
 ]
 
 [project.optional-dependencies]
@@ -71,7 +73,7 @@ line_length = 120
 max-line-length = 120
 extend-ignore = ["E203", "W503"]
 per-file-ignores = ["ai/prompts.py:E501"]
-exclude = [".git", "__pycache__", ".venv", "alembic/versions"]
+exclude = [".git", "__pycache__", ".venv", "alembic/versions", "docs/knowledge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

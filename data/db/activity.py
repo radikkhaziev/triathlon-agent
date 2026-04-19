@@ -383,6 +383,15 @@ class ActivityDetail(Base):
         if intervals_json is not None:
             row.intervals = intervals_json
 
+        # Compute EF fallback if Intervals.icu didn't provide it.
+        # EF = speed (m/min) / avg HR — gives values ~1.0-1.5.
+        # For Run: use GAP (grade-adjusted pace) to normalize terrain effects.
+        if not row.efficiency_factor:
+            speed = row.gap if row.gap and row.gap > 0 else row.pace
+            avg_hr = detail_json.get("average_heartrate") or detail_json.get("average_hr")
+            if speed and speed > 0 and avg_hr and avg_hr > 0:
+                row.efficiency_factor = round((speed * 60) / avg_hr, 6)
+
         is_changed = is_new or session.is_modified(row)
         session.commit()
         return ORMDTO(is_new=is_new, is_changed=is_changed, row=row)
