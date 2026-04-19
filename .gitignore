@@ -5,6 +5,8 @@ __pycache__/
 *.pyo
 *.db
 *.sqlite
+*.joblib
+static/models/*.joblib
 .pytest_cache/
 htmlcov/
 dist/

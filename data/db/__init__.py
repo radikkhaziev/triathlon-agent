@@ -24,6 +24,7 @@ from .garmin import (  # noqa
     GarminTrainingReadiness,
 )
 from .hrv import HrvAnalysis, PaBaseline, RhrAnalysis  # noqa
+from .progression import ProgressionModelRun  # noqa
 from .tracking import ApiUsageDaily, IqosDaily, MoodCheckin, StarTransaction  # noqa
 from .user import User  # noqa
 from .wellness import Wellness  # noqa

@@ -72,6 +72,7 @@ function ProgressContent({ data, sport }: { data: ProgressResponse; sport: Sport
       <TrendBadge data={data} sport={sport} />
       {data.decoupling_trend && <DecouplingBadge trend={data.decoupling_trend} />}
       {sport !== 'swim' && <PolarizationWidget sport={sport} />}
+      {sport === 'bike' && <ProgressionWidget />}
       {sport === 'swim' ? <SwimCharts data={data} /> : (
         <>
           <EFChart data={data} sport={sport} />
@@ -496,6 +497,110 @@ function PolarizationWidget({ sport }: { sport: Sport }) {
               ⚠ {s}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+interface ProgressionData {
+  status: string
+  shap?: {
+    features?: { name: string; importance: number; direction: string }[]
+    latest_drivers?: { name: string; shap: number; value: number }[]
+  }
+  r2?: number
+  n_examples?: number
+  trained_at?: string
+}
+
+const FEATURE_LABELS: Record<string, string> = {
+  total_tss_all: 'Total TSS',
+  n_sessions: 'Sessions',
+  sessions_per_week: 'Sessions/week',
+  decoupling_median: 'Cardiac drift',
+  recovery_mean: 'Recovery',
+  total_sessions_all: 'All sessions',
+  ctl_delta: 'CTL change',
+  ctl_mean: 'CTL avg',
+  low_pct: 'Low zone %',
+  mid_pct: 'Mid zone %',
+  high_pct: 'High zone %',
+  weekly_tss: 'Weekly TSS',
+  weekly_hours: 'Weekly hours',
+  total_hours: 'Total hours',
+  ef_mean: 'EF avg',
+  recovery_below_40: 'Low recovery days',
+  sleep_mean: 'Sleep score',
+  hrv_mean: 'HRV avg',
+}
+
+function ProgressionWidget() {
+  const [data, setData] = useState<ProgressionData | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch<ProgressionData>('/api/progression?sport=Ride')
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => { if (!cancelled) console.warn('progression fetch failed:', e) })
+    return () => { cancelled = true }
+  }, [])
+
+  if (!data || data.status !== 'ok' || !data.shap?.features?.length) return null
+
+  const features = data.shap.features.slice(0, 5)
+
+  return (
+    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[13px] text-text-dim">EF Drivers (Ride)</span>
+        <span className="text-[10px] text-text-dim font-mono">
+          {data.n_examples} weeks · R²={data.r2?.toFixed(2)}
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        {features.map((f, i) => {
+          const label = FEATURE_LABELS[f.name] || f.name
+          const isPositive = f.direction === 'positive'
+          const color = isPositive ? '#22c55e' : '#ef4444'
+          const maxImp = features[0].importance || 1
+          const width = Math.max(8, (f.importance / maxImp) * 100)
+
+          return (
+            <div key={f.name} className="flex items-center gap-2">
+              <span className="text-[11px] text-text-dim w-28 truncate text-right">{label}</span>
+              <div className="flex-1 h-4 bg-surface-2 rounded overflow-hidden">
+                <div
+                  className="h-full rounded flex items-center justify-end pr-1"
+                  style={{ width: `${width}%`, backgroundColor: color + '30', borderRight: `3px solid ${color}` }}
+                >
+                  <span className="text-[9px] font-mono" style={{ color }}>{isPositive ? '↑' : '↓'}</span>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {data.shap.latest_drivers && data.shap.latest_drivers.length > 0 && (
+        <div className="mt-3 pt-2 border-t border-border">
+          <span className="text-[10px] text-text-dim">Latest week drivers:</span>
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {data.shap.latest_drivers.map((d, i) => (
+              <span
+                key={i}
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                style={{
+                  color: d.shap > 0 ? '#22c55e' : '#ef4444',
+                  backgroundColor: d.shap > 0 ? '#22c55e15' : '#ef444415',
+                }}
+              >
+                {d.shap > 0 ? '↑' : '↓'} {FEATURE_LABELS[d.name] || d.name}
+              </span>
+            ))}
+          </div>
         </div>
       )}
     </div>

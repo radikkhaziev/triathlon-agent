@@ -165,7 +165,7 @@ async def compute_efficiency_trend(
             ef = detail.efficiency_factor
             # Fallback: compute EF from speed/HR when Intervals.icu doesn't provide it
             if (not ef or ef <= 0) and detail.pace and detail.pace > 0 and act.average_hr and act.average_hr > 0:
-                ef = detail.pace / act.average_hr
+                ef = (detail.pace * 60) / act.average_hr  # m/s → m/min / HR
             if not ef or ef <= 0:
                 continue
             entry["ef"] = round(ef, 4)

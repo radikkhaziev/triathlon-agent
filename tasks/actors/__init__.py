@@ -15,6 +15,7 @@ from .activities import (  # noqa: F401
     actor_update_activity_details,
 )
 from .athlets import actor_sync_athlete_goals, actor_sync_athlete_settings, actor_update_zones  # noqa: F401
+from .progression import actor_retrain_progression_model  # noqa: F401
 from .reports import (  # noqa: F401
     actor_compose_user_evening_report,
     actor_compose_user_morning_report,
