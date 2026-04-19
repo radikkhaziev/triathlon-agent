@@ -262,6 +262,23 @@ async def handle_rpe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 @athlete_required
+async def handle_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle 📸 Card button — dispatch workout card generation."""
+    from tasks.actors import actor_generate_workout_card
+
+    query = update.callback_query
+    parts = query.data.split(":")
+    if len(parts) != 2:
+        await query.answer()
+        return
+
+    activity_id = parts[1]
+    user_dto = UserDTO.model_validate(user)
+    actor_generate_workout_card.send(user=user_dto, activity_id=activity_id)
+    await query.answer("📸 Generating card...")
+
+
+@athlete_required
 async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle /web command — generate one-time login code for desktop browser."""
     code = generate_code(str(user.chat_id))
@@ -1209,6 +1226,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_update_zones_callback, pattern=r"^update_zones$"))
     app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(handle_rpe_callback, pattern=r"^rpe:"))
+    app.add_handler(CallbackQueryHandler(handle_card_callback, pattern=r"^card:"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     # Photo handler — download, save, pass to AI chat with vision
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))

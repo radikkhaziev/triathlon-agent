@@ -22,6 +22,12 @@ dist/
 static/exercises/*.html
 static/workouts/*.html
 
+# Downloaded fonts (fetched at build time)
+static/fonts/
+
+# Generated workout card images
+static/cards/
+
 # Webapp
 webapp/node_modules/
 webapp/dist/

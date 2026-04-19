@@ -36,7 +36,7 @@ triathlon-agent/
 ├── config.py / sentry_config.py / cli.py
 ├── bot/          # Telegram bot: main.py (handlers), agent.py (ClaudeAgent), tools.py (MCPClient), prompts.py, scheduler.py
 ├── tasks/        # Dramatiq actors: broker.py, actors/ (wellness, activities, training_log, reports, workout)
-├── data/         # Domain: metrics.py, hrv_activity.py, workout_adapter.py, ramp_tests.py, crypto.py
+├── data/         # Domain: metrics.py, hrv_activity.py, workout_adapter.py, ramp_tests.py, crypto.py, card_renderer.py
 │   ├── intervals/  # Intervals.icu client + DTOs
 │   ├── garmin/     # Garmin GDPR parser + importer
 │   └── db/         # SQLAlchemy ORM (@dual sync/async), all models, decorators
@@ -50,7 +50,7 @@ triathlon-agent/
 
 ## Database Schema
 
-30 tables. Full column specs in `data/db/`. Key tables:
+31 tables. Full column specs in `data/db/`. Key tables:
 
 **Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `api/routers/intervals/oauth.py`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag. Pending: personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars.
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag. Workout card PNG generator: Pillow-based renderer with GPS polyline, AI text via Claude, sport-specific metrics (Run=pace, Ride=power, Swim=pace/100m), endurai.me branding — triggered via inline button in activity notification. Pending: personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars.
 
 **Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 
@@ -169,7 +169,7 @@ Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any a
 <reply>     — reply context included as "[В ответ на: ...]"
 ```
 
-**Callback handlers:** `ramp_test:{sport}` — create ramp test, `update_zones` — update HR zones, `workout:{sport}` / `workout_push` / `workout_cancel` — `/workout` ConversationHandler states, `rpe:{activity_id}:{value}` — single-shot RPE rating from post-activity notification (see `docs/RPE_SPEC.md`).
+**Callback handlers:** `ramp_test:{sport}` — create ramp test, `update_zones` — update HR zones, `workout:{sport}` / `workout_push` / `workout_cancel` — `/workout` ConversationHandler states, `rpe:{activity_id}:{value}` — single-shot RPE rating from post-activity notification (see `docs/RPE_SPEC.md`), `card:{activity_id}` — generate Instagram workout card PNG (GPS track + metrics + AI text) via `actor_generate_workout_card`.
 
 **Ramp test post-activity flow:** `_actor_send_activity_notification` detects ramp-test activities via `_is_ramp_test_activity` (matches a `ScheduledWorkout` with `"Ramp Test"` in name on same date/sport) and routes to `build_ramp_test_message` (`tasks/formatter.py`) instead of the generic message. HRVT regression in `detect_hrv_thresholds` filters by WORK-segments from `activity_details.intervals` to exclude WU/CD/recovery noise. On detection failure `diagnose_hrv_thresholds` returns a structured `{code, ...}` dict localized in the formatter. The inline `Обновить зоны` button is shown only when drift >5% AND `ActivityHrv.count_hrvt1_samples(user, sport) >= 2` (matching `User.detect_threshold_drift`'s 2-sample minimum, so the button never lies). See `docs/ADAPTIVE_TRAINING_PLAN.md` Фаза 4 for the full protocol.
 
@@ -380,13 +380,13 @@ User sends /morning → @athlete_required resolves User from chat_id
 
 ---
 
-## MCP Server (50 tools + 3 resources)
+## MCP Server (51 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per-user Bearer auth via `User.mcp_token`).
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**50 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**51 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 

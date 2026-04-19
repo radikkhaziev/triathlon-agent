@@ -452,6 +452,49 @@ class TelegramTool:
                 logger.warning("Telegram send attempt %d/3 failed: %s", attempt + 1, e)
         raise last_exc  # type: ignore[misc]
 
+    def send_photo(
+        self,
+        photo: bytes,
+        caption: str = "",
+        reply_markup: dict | None = None,
+        chat_id: int | str | None = None,
+    ) -> dict | None:
+        """Send a photo via Telegram Bot API. Skips if user is_silent."""
+        if self.user and self.user.is_silent:
+            return None
+
+        _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
+        if not _chat_id:
+            raise ValueError("chat_id required: pass it or provide user to TelegramTool")
+
+        data: dict = {"chat_id": _chat_id}
+        if caption:
+            data["caption"] = caption
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+
+        files = {"photo": ("card.png", photo, "image/png")}
+
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/sendPhoto",
+                    data=data,
+                    files=files,
+                    timeout=30.0,
+                )
+                if resp.status_code == 403:
+                    logger.info("Telegram 403 for chat_id=%s — marking inactive", _chat_id)
+                    User.set_active_by_chat_id(_chat_id, False)
+                    return None
+                resp.raise_for_status()
+                return resp.json()
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_exc = e
+                logger.warning("Telegram sendPhoto attempt %d/3 failed: %s", attempt + 1, e)
+        raise last_exc  # type: ignore[misc]
+
 
 @dataclass
 class MCPTool:

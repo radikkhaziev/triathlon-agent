@@ -378,10 +378,15 @@ def _actor_send_activity_notification(
 
     race_row = Race.get_by_activity(user.id, activity_id) if activity_row.is_race else None
     summary = build_post_activity_message(activity_row, hrv_row, race=race_row)
-    # Show the RPE rating keyboard only when the value is still unset.
-    # After the first tap the bot handler clears the markup on the message;
-    # we don't re-attach it here.
     reply_markup = build_rpe_keyboard(activity_id) if activity_row.rpe is None else None
+
+    # Add "📸 Card" button (works with and without GPS — fallback shows sport label)
+    card_btn = [{"text": "📸 Card", "callback_data": f"card:{activity_id}"}]
+    if reply_markup:
+        reply_markup["inline_keyboard"].append(card_btn)
+    else:
+        reply_markup = {"inline_keyboard": [card_btn]}
+
     tg.send_message(text=summary, reply_markup=reply_markup)
 
 
