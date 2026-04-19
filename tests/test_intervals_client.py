@@ -1,4 +1,4 @@
-"""Tests for Intervals.icu client retry logic."""
+"""Tests for Intervals.icu client retry logic and endpoint specs."""
 
 from unittest.mock import MagicMock
 
@@ -48,3 +48,46 @@ class TestComputeRetryDelay:
         total = sum(client._compute_retry_delay(resp, i) for i in range(5))
         assert total == 190  # 10 + 20 + 40 + 60 + 60
         assert total < 200
+
+
+# ---------------------------------------------------------------------------
+#  _spec_get_activity_streams
+# ---------------------------------------------------------------------------
+
+
+class TestSpecGetActivityStreams:
+    """_spec_get_activity_streams: builds correct URL path and query params."""
+
+    def test_method_is_get(self, client):
+        spec = client._spec_get_activity_streams("abc123")
+        assert spec.method == "GET"
+
+    def test_path_contains_activity_id(self, client):
+        spec = client._spec_get_activity_streams("abc123")
+        assert "/activity/abc123/streams" in spec.path
+
+    def test_handle_404_is_true(self, client):
+        """Streams endpoint should silently swallow 404 (activity may lack streams)."""
+        spec = client._spec_get_activity_streams("abc123")
+        assert spec.handle_404 is True
+
+    def test_no_params_when_types_is_none(self, client):
+        spec = client._spec_get_activity_streams("abc123", types=None)
+        assert spec.kwargs == {}
+
+    def test_no_params_when_types_is_empty(self, client):
+        spec = client._spec_get_activity_streams("abc123", types=[])
+        assert spec.kwargs == {}
+
+    def test_single_type_joined_as_csv(self, client):
+        spec = client._spec_get_activity_streams("abc123", types=["latlng"])
+        assert spec.kwargs == {"params": {"types": "latlng"}}
+
+    def test_multiple_types_joined_as_csv(self, client):
+        spec = client._spec_get_activity_streams("abc123", types=["latlng", "altitude", "heartrate"])
+        params = spec.kwargs["params"]["types"]
+        assert params == "latlng,altitude,heartrate"
+
+    def test_different_activity_id(self, client):
+        spec = client._spec_get_activity_streams("xyz999")
+        assert "xyz999" in spec.path

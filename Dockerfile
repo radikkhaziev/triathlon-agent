@@ -12,7 +12,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq-dev libgomp1 curl && \
+    apt-get install -y --no-install-recommends libpq-dev libgomp1 curl unzip && \
     curl -sSL https://install.python-poetry.org | python3 - && \
     rm -rf /var/lib/apt/lists/*
 
@@ -25,7 +25,13 @@ RUN poetry config virtualenvs.create false && \
 
 COPY . .
 
-RUN mkdir -p /app/static/exercises /app/static/workouts
+RUN mkdir -p /app/static/exercises /app/static/workouts /app/static/cards /app/static/fonts
+
+# Download Inter fonts for workout card renderer
+RUN curl -sL https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip -o /tmp/inter.zip && \
+    unzip -jo /tmp/inter.zip "extras/ttf/Inter-Regular.ttf" "extras/ttf/Inter-Bold.ttf" "extras/ttf/Inter-Medium.ttf" \
+    -d /app/static/fonts/ && \
+    rm /tmp/inter.zip
 
 # Copy built SPA from frontend stage
 COPY --from=frontend /webapp/dist ./webapp/dist

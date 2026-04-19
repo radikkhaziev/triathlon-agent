@@ -228,6 +228,17 @@ class IntervalsClientBase:
     def _spec_get_activity_detail(self, activity_id: str) -> RequestSpec:
         return RequestSpec("GET", f"/activity/{activity_id}", handle_404=True)
 
+    def _spec_get_activity_streams(self, activity_id: str, types: list[str] | None = None) -> RequestSpec:
+        params: dict = {}
+        if types:
+            params["types"] = ",".join(types)
+        return RequestSpec(
+            "GET",
+            f"/activity/{activity_id}/streams",
+            kwargs={"params": params} if params else {},
+            handle_404=True,
+        )
+
     def _spec_get_activity_intervals(self, activity_id: str) -> RequestSpec:
         return RequestSpec("GET", f"/activity/{activity_id}/intervals", handle_404=True)
 
@@ -396,6 +407,9 @@ class IntervalsAsyncClient(IntervalsClientBase):
     async def get_activity_detail(self, activity_id: str) -> dict | None:
         return await self._execute(self._spec_get_activity_detail(activity_id))
 
+    async def get_activity_streams(self, activity_id: str, types: list[str] | None = None) -> list[dict] | None:
+        return await self._execute(self._spec_get_activity_streams(activity_id, types))
+
     async def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return await self._execute(self._spec_get_activity_intervals(activity_id))
 
@@ -520,6 +534,9 @@ class IntervalsSyncClient(IntervalsClientBase):
 
     def get_activity_detail(self, activity_id: str) -> dict | None:
         return self._execute(self._spec_get_activity_detail(activity_id))
+
+    def get_activity_streams(self, activity_id: str, types: list[str] | None = None) -> list[dict] | None:
+        return self._execute(self._spec_get_activity_streams(activity_id, types))
 
     def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return self._execute(self._spec_get_activity_intervals(activity_id))
