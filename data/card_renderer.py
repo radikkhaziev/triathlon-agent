@@ -1,12 +1,11 @@
 """Workout card PNG renderer (Pillow-based).
 
-Generates Instagram-ready workout cards (feed 1080x1080, story 1080x1920)
+Generates Instagram story cards (1080x1920, transparent background)
 with GPS polyline track, key metrics, AI insight, and endurai.me branding.
 """
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -33,15 +32,9 @@ SPORT_LABEL = {
     "Other": "WORKOUT",
 }
 
-BG_COLOR = "#0A0A0A"
 TEXT_WHITE = "#FFFFFF"
 TEXT_DIM = "#6B7280"
 TEXT_LIGHT = "#D1D5DB"
-
-
-class CardFormat(str, Enum):
-    FEED = "feed"  # 1080x1080
-    STORY = "story"  # 1080x1920
 
 
 @dataclass

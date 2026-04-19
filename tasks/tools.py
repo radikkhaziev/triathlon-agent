@@ -463,11 +463,11 @@ class TelegramTool:
         if self.user and self.user.is_silent:
             return None
 
-        _chat_id = chat_id or (self.user.chat_id if self.user else None)
+        _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
         if not _chat_id:
             raise ValueError("chat_id required: pass it or provide user to TelegramTool")
 
-        data: dict = {"chat_id": str(_chat_id)}
+        data: dict = {"chat_id": _chat_id}
         if caption:
             data["caption"] = caption
         if reply_markup:

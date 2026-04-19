@@ -31,23 +31,31 @@ _CARD_AI_PROMPT = (
 )
 
 
-def _generate_card_ai_text(activity: Activity, detail: ActivityDetail | None) -> str:
+def _generate_card_ai_text(
+    sport: str,
+    distance: float | None,
+    moving_time: int | None,
+    avg_hr: float | None,
+    pace: float | None,
+    avg_power: float | None,
+    elevation: float | None,
+) -> str:
     """Generate 2-3 sentence workout analysis via Claude."""
-    distance = f"{detail.distance:.0f}m" if detail and detail.distance else "N/A"
-    duration_min = f"{activity.moving_time // 60}min" if activity.moving_time else "N/A"
-    avg_hr = f"{int(activity.average_hr)}bpm" if activity.average_hr else "N/A"
-    pace = f"{detail.pace:.2f}m/s" if detail and detail.pace else "N/A"
-    power = f"{int(detail.avg_power)}W" if detail and detail.avg_power else "N/A"
-    elevation = f"{detail.elevation_gain:.0f}m" if detail and detail.elevation_gain else "N/A"
+    dist_str = f"{distance:.0f}m" if distance else "N/A"
+    dur_str = f"{moving_time // 60}min" if moving_time else "N/A"
+    hr_str = f"{int(avg_hr)}bpm" if avg_hr else "N/A"
+    pace_str = f"{pace:.2f}m/s" if pace else "N/A"
+    power_str = f"{int(avg_power)}W" if avg_power else "N/A"
+    elev_str = f"{elevation:.0f}m" if elevation else "N/A"
 
     prompt = _CARD_AI_PROMPT.format(
-        sport=activity.type or "Run",
-        distance=distance,
-        duration=duration_min,
-        avg_hr=avg_hr,
-        pace=pace,
-        power=power,
-        elevation=elevation,
+        sport=sport,
+        distance=dist_str,
+        duration=dur_str,
+        avg_hr=hr_str,
+        pace=pace_str,
+        power=power_str,
+        elevation=elev_str,
     )
 
     try:
@@ -61,8 +69,7 @@ def _generate_card_ai_text(activity: Activity, detail: ActivityDetail | None) ->
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.warning("Card AI text generation failed: %s", e)
-        # Fallback template
-        return f"{activity.type or 'Workout'} session: {duration_min}, {avg_hr}."
+        return f"{sport} session: {dur_str}, {hr_str}."
 
 
 def _fetch_latlng(user: User, activity_id: str) -> list[tuple[float, float]]:
@@ -114,8 +121,16 @@ def actor_generate_workout_card(user: UserDTO, activity_id: str):
         # Fetch GPS track
         latlng = _fetch_latlng(user_orm, activity_id)
 
-        # Generate AI text
-        ai_text = _generate_card_ai_text(activity, detail)
+        # Generate AI text (primitives only — no ORM objects)
+        ai_text = _generate_card_ai_text(
+            sport=sport_type,
+            distance=distance,
+            moving_time=moving_time,
+            avg_hr=average_hr,
+            pace=pace,
+            avg_power=avg_power,
+            elevation=elevation_gain,
+        )
 
         # Build card data
         pace_sec_per_km = 1000 / pace if pace and pace > 0 else None
