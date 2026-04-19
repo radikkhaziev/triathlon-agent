@@ -561,7 +561,7 @@ function ProgressionWidget() {
       </div>
 
       <div className="space-y-2">
-        {features.map((f, i) => {
+        {features.map((f) => {
           const label = FEATURE_LABELS[f.name] || f.name
           const isPositive = f.direction === 'positive'
           const color = isPositive ? '#22c55e' : '#ef4444'
