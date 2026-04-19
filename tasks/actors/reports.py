@@ -182,7 +182,17 @@ def actor_compose_user_morning_report(
     _dt = DateDTO.today().isoformat()
 
     with get_sync_session() as session:
-        _wellness_row = Wellness.get(user_id=user.id, dt=_dt, session=session)
+        # FOR UPDATE prevents race condition: two concurrent actors both see
+        # ai_recommendation=None and both generate a report. The second one
+        # waits for the first to commit, then sees the recommendation is set.
+        _wellness_row = session.execute(
+            select(Wellness)
+            .where(
+                Wellness.user_id == user.id,
+                Wellness.date == _dt,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
 
         if not _wellness_row or not _wellness_row.sleep_score or _wellness_row.ai_recommendation:
             return

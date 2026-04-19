@@ -333,18 +333,13 @@ async def intervals_webhook(request: Request) -> dict:
     ACTIVITY_UPLOADED / ACTIVITY_UPDATED → direct save + ``actor_update_activity_details``.
     """
 
-    interesting_headers = {
-        k: v for k, v in request.headers.items() if k.startswith("x-") or k in ("user-agent", "content-type")
-    }
-    logger.info("Intervals webhook delivery  headers=%s", interesting_headers)
-
     try:
         raw_body = await request.json()
+        logger.warning("Intervals webhook raw body body=%s", raw_body)
     except Exception:
         raw = await request.body()
         logger.warning("Intervals webhook non-JSON body size=%d", len(raw))
         return {"status": "ok"}
-    logger.debug("Intervals webhook raw body body=%s", raw_body)
 
     try:
         payload = IntervalsWebhookPayload.model_validate(raw_body)
