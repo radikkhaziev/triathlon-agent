@@ -530,10 +530,18 @@ const FEATURE_LABELS: Record<string, string> = {
   weekly_tss: 'Weekly TSS',
   weekly_hours: 'Weekly hours',
   total_hours: 'Total hours',
+  total_tss: 'Total TSS',
+  total_tss_all: 'Total TSS (all)',
   ef_mean: 'EF avg',
+  ef_std: 'EF variability',
   recovery_below_40: 'Low recovery days',
   sleep_mean: 'Sleep score',
   hrv_mean: 'HRV avg',
+  rhr_mean: 'RHR avg',
+  ctl_max: 'CTL max',
+  tsb_mean: 'TSB avg',
+  tsb_min: 'TSB min',
+  longest_min: 'Longest session',
 }
 
 function ProgressionWidget() {
@@ -548,8 +556,10 @@ function ProgressionWidget() {
   }, [])
 
   if (!data || data.status !== 'ok' || !data.shap?.features?.length) return null
+  if (data.r2 == null || data.r2 < 0) return null
 
   const features = data.shap.features.slice(0, 5)
+  const isWeak = data.r2 < 0.3
 
   return (
     <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
@@ -559,6 +569,11 @@ function ProgressionWidget() {
           {data.n_examples} weeks · R²={data.r2?.toFixed(2)}
         </span>
       </div>
+      {isWeak && (
+        <div className="text-[10px] text-text-dim bg-surface-2 rounded px-2 py-1 mb-3">
+          Low R² — not enough data yet, insights may be unreliable
+        </div>
+      )}
 
       <div className="space-y-2">
         {features.map((f) => {
@@ -588,9 +603,9 @@ function ProgressionWidget() {
         <div className="mt-3 pt-2 border-t border-border">
           <span className="text-[10px] text-text-dim">Latest week drivers:</span>
           <div className="flex flex-wrap gap-1.5 mt-1">
-            {data.shap.latest_drivers.map((d, i) => (
+            {data.shap.latest_drivers.map((d) => (
               <span
-                key={i}
+                key={d.name}
                 className="text-[10px] font-mono px-1.5 py-0.5 rounded"
                 style={{
                   color: d.shap > 0 ? '#22c55e' : '#ef4444',
