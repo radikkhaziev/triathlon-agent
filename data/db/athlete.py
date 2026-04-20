@@ -30,12 +30,18 @@ class AthleteSettings(Base):
     threshold_pace: Mapped[float | None] = mapped_column(Float, nullable=True)  # Swim: sec/100m, Run: sec/km
     pace_units: Mapped[str | None] = mapped_column(String(20), nullable=True)  # SECS_100M / MINS_KM
 
-    # Zone boundaries from Intervals.icu sport-settings (source of truth)
-    hr_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [129, 136, 144, 152, 157, 161]
+    # Zone boundaries from Intervals.icu sport-settings (source of truth).
+    # N threshold values → N+1 zones. Top zone opens upward (often with a sentinel
+    # value like 999 as the last bound).
+    # Units differ per kind — keep this contract in sync with consumers:
+    #   hr_zones     — absolute bpm, ascending.    Example: [129, 136, 144, 152, 157, 161]
+    #   power_zones  — **%FTP, ascending** (NOT absolute watts). Example: [55, 75, 90, 105, 120, 150, 999]
+    #   pace_zones   — %threshold where 100.0 = threshold, ascending. Example: [77.5, 87.7, 94.3, 100.0, 103.4]
+    hr_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
     hr_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Recovery", "Aerobic", ...]
-    power_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [100, 140, 170, 210, 260]
+    power_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
     power_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Active Recovery", ...]
-    pace_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [420, 390, 360, 330, 300]
+    pace_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
     pace_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Zone 1", "Zone 2", ...]
 
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

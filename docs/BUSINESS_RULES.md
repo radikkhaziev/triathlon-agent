@@ -75,11 +75,21 @@ Re-calibrate every 4-6 weeks via `scipy.optimize.minimize` against actual RMSSD.
 Linear regression on rolling window. Per-metric thresholds in `TREND_THRESHOLDS` dict.
 Directions: rising_fast/rising/stable/declining/declining_fast. Show only if r² ≥ 0.3.
 
-## HR Zones (% of LTHR)
+## HR / Power Zones
+
+Zones come from Intervals.icu sport-settings (`athlete_settings.{hr,power,pace}_zones`) —
+per-user, typically 5-7 zones. `hr_zones` = absolute bpm; `power_zones` = **%FTP**
+(pre-normalized by Intervals, not watts); `pace_zones` = %threshold (100.0 = threshold).
+
+The chat prompt renders these straight into `SYSTEM_PROMPT_CHAT` via
+`bot/prompts._zones_block()` so workout generation always uses the athlete's own zones.
+
+Friel fallbacks (applied only when Intervals.icu hasn't been synced yet):
 
 ```
-Run:  Z1 0-72%, Z2 72-82%, Z3 82-87%, Z4 87-92%, Z5 92-100%
-Bike: Z1 0-68%, Z2 68-83%, Z3 83-94%, Z4 94-105%, Z5 105-120%
+Run  (HR %LTHR):    Z1 0-72%, Z2 72-82%, Z3 82-87%, Z4 87-92%, Z5 92-100%
+Bike (HR %LTHR):    Z1 0-68%, Z2 68-83%, Z3 83-94%, Z4 94-105%, Z5 105-120%
+Ride (power %FTP):  Z1 0-55%, Z2 55-75%, Z3 75-90%, Z4 90-105%, Z5 105-120%
 ```
 
 ## Morning Report — Workout Suggestion Rules

@@ -193,6 +193,10 @@ _UNDOABLE_TOOLS = {
 
 Готовая почва для расширения: если появятся другие «committed with undo» tool'ы (например, `schedule_workout` без preview), регистрируем их сюда.
 
+**Edge case — `save_fact` внутри `/workout` flow.** Хэндлеры `workout_sport_chosen` / `workout_dialog_text` вызывают `agent.chat(..., tool_calls_filter={"suggest_workout", "compose_workout"})` — узкий filter, чтобы не хранить deep-copy чужих tool_calls. Если Claude решит внутри этого диалога вызвать `save_fact` («запомни, что тренируюсь утром»), факт **запишется в БД** (server-side MCP работает всегда), но undo-кнопка **не появится** — `save_fact` не попадёт в `ChatResult.tool_calls` из-за фильтра.
+
+Решение для MVP: **silent save** — приемлемо, т.к. факт можно deactivate'ить из обычного чата («забудь что я тренируюсь утром») или `list_facts` + `deactivate_fact`. Альтернатива — union фильтра `{"suggest_workout", "compose_workout", "save_fact"}` в workout-хэндлерах + показ undo-кнопки после основного preview. Сделаем если пользователи начнут жаловаться.
+
 ### Phase 2 — async post-chat extractor с batch-approval
 
 1. `ClaudeAgent.chat()` после ответа пушит в Redis stream `user_facts_stream:{user_id}` кортеж `(user_msg, assistant_msg)`.
@@ -211,6 +215,10 @@ _UNDOABLE_TOOLS = {
 3. Драфт живёт в `context.user_data["pending_facts"] = [...]` **ровно так же**, как `pending_workout` в `/workout`. Batch approval — прямой `MCPClient.call_tool("save_fact", ...)` в цикле, без повторной Claude-инференции.
 4. «⚙️ Выборочно» — вторая клавиатура с per-item чекбоксами (можно начать без этой кнопки в Phase 2a, добавить в 2b).
 5. Consume-on-read: `pop("pending_facts")` при любом финальном действии.
+
+**Timing.** Cron в локальной TZ юзера (`users.timezone` или fallback `TIMEZONE=Europe/Belgrade`), окно `hour=18..19` — в это время атлет обычно free + evening report уже ушёл, можно спокойно показать предложение. Не в 3 утра. Scheduler читает per-user TZ как это делает `tasks/scheduler.py` для morning report.
+
+**Concurrent pending.** Если при запуске cron видим что `user_data["pending_facts"]` уже непустой (предыдущий батч без ответа) — **skip** текущий запуск, не затирая старый. Юзер отреагирует → флаг очистится → следующий cron подхватит. Объединять батчи не стоит: смешанные свежие + вчерашние кандидаты ломают UX «я подметил в недавних разговорах». Если pending висит >48h — автоматически dismiss через job_queue (см. TTL на undo в §4), чтобы не блокировать пайплайн навечно.
 
 **Почему здесь preview-confirm оправдан** (в отличие от Phase 1 `save_fact`):
 - Extractor может галлюцинировать — пользователь **должен** увидеть что сохраняется.
@@ -232,13 +240,15 @@ _UNDOABLE_TOOLS = {
 ### Как
 
 ```
-[ статический system prompt ──── стабильно, cache_control:ephemeral ]
-[ блок goal      (из athlete://goal)  ────┐                           ]
-[ блок facts     (активные user_facts) ───┤ меняются редко,           ]
-[ блок athlete   (профиль, sports)    ────┘ тоже под cache_control    ]
+[ static_prompt  ─ cache_control #1 ]    ← вечный кэш, один раз на сессию
+[ dynamic_tail   ─ cache_control #2 ]    ← tухнет при save_fact / goal update
+     │
+     ├── athlete profile (sports, TZ)
+     ├── goal block       (из athlete://goal)
+     └── facts block      (активные user_facts)
 ```
 
-Все три блока попадают в **один** cacheable segment, т.к. Anthropic позволяет максимум 4 `cache_control` точки. Порядок: статика сверху, «часто-не-меняющееся» снизу — если факт изменится, отвалится только хвост кэша.
+Два `cache_control` маркера — см. §6 для полного объяснения. Статика держится горячей между сохранениями фактов.
 
 **Формат facts-блока:**
 
@@ -264,19 +274,40 @@ _UNDOABLE_TOOLS = {
 
 ## 6. Prompt caching — стратегия
 
-Подтверждено в `bot/agent.py:76`:
+Сейчас `bot/agent.py:76` ставит **один** `cache_control` в конец system prompt:
 
 ```python
 cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 ```
 
-Сейчас весь system prompt — один блок с `ephemeral`. После этого спека системный промпт **остаётся одним string-ом**, внутрь которого мы просто склеиваем goal + facts + athlete. Никаких структурных изменений в `agent.py` не нужно — вся работа в `bot/prompts.py`.
+**Почему одного маркера мало.** Anthropic prompt cache работает как **префиксный хэш**: хэш считается от начала до маркера. Если в конце блока меняется хоть один символ (добавили факт → блок `## Что я помню о тебе` переписался) — хэш префикса до маркера другой → **cache miss на весь system prompt**, включая статику. Текущая схема работает пока facts/goal не меняются — но как только сделаем `save_fact` в диалоге, следующее сообщение читает всё с нуля.
+
+**Как надо.** Разбиваем system prompt на **два** cacheable сегмента (лимит — 4, запас есть):
+
+```python
+static_prompt = get_static_system_prompt()           # ~весь текущий SYSTEM_PROMPT_CHAT
+dynamic_tail  = render_athlete_block(user)           # goal + facts + профиль
+
+cached_system = [
+    {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}},
+    {"type": "text", "text": dynamic_tail,  "cache_control": {"type": "ephemeral"}},
+]
+```
+
+**Поведение:**
+
+- `static_prompt` хэшируется до маркера #1 → кэш **вечный** относительно изменений facts (пока не правим сам шаблон промпта).
+- `dynamic_tail` — свой кэш, тухнет только при `save_fact` / `deactivate_fact` / смене `goal`.
+- `save_fact` инвалидирует ровно хвост; статика (3–5к токенов) остаётся горячей.
 
 **Эффект:**
 
-- TTL ephemeral кэша 5 мин. При активном диалоге (несколько сообщений подряд) — кэш попадает на каждом tool-use-loop-итерации.
-- Стоимость cache read ≈10% от input tokens. Для чата с MCP tools где tool-use-loop делает 3–5 итераций — это уже экономит кратно.
-- `save_fact` инвалидирует кэш для следующего сообщения — ожидаемо, делать ничего не надо.
+- TTL ephemeral 5 мин → при активном диалоге кэш попадает на каждой tool-use-loop итерации и в следующих сообщениях.
+- Cache read ≈10% от input tokens. На чате с tool-use (3–5 итераций) + частыми сохранениями фактов экономия **кратная** — без двух маркеров весь system prompt инвалидировался бы на каждом save.
+
+**Порядок внутри `dynamic_tail`:** athlete profile (редко) → goal (реже) → facts (чаще). Но после второго маркера порядок значения не имеет — всё одним хэшем. Оставляем читабельный порядок.
+
+**Что делать в `agent.py`:** поменять строку 76 с одного blob'а на два элемента. Весь остальной tool-use-loop не трогаем. В `bot/prompts.py` разделить `SYSTEM_PROMPT_CHAT` на `get_static_system_prompt()` (константа) и `render_athlete_block(user)` (динамика).
 
 ---
 
@@ -331,7 +362,7 @@ cached_system = [{"type": "text", "text": system, "cache_control": {"type": "eph
 
 ### Phase 2 — Async extractor с batch-approval (условный)
 
-Запускаем только если Phase 1 покажет, что Claude систематически забывает звать `save_fact` (см. §10.3 trigger: <3 tool-фактов при >100 сообщений за 30 дней).
+Запускаем только если Phase 1 покажет, что Claude систематически забывает звать `save_fact` (см. §11.3 trigger + §10 метрики).
 
 - [ ] Redis stream `user_facts_stream:{user_id}` — писатель в `ClaudeAgent.chat()`, LTRIM до последних 50 пар.
 - [ ] Dramatiq actor `actor_extract_user_facts` — раз в 24ч на активного юзера.
@@ -361,9 +392,9 @@ cached_system = [{"type": "text", "text": system, "cache_control": {"type": "eph
 | `undo_tap_rate` | (count `deactivated_reason='user_request'` within 10min of `created_at`) / `facts_written` | Если >30% — Claude слишком жадный, нужно ужесточать docstring. |
 | `topic_distribution` | `SELECT topic, count(*) FROM user_facts WHERE deactivated_at IS NULL GROUP BY topic` | Ловим разрастание синонимов (`food_preference` vs `nutrition`). >3 near-synonyms → пропишем enum. |
 | `cap_evictions_per_week` | count `deactivated_reason='topic_cap'` | Высокий rate на одном topic → увеличить N с 3 до 5, или это спам от Claude. |
-| `fact_citation_rate` | heuristic: count сообщений, где в ответе Claude встречается substring любого активного факта / total chat messages | Proxy для «факты реально используются». Ловим случай «кладём в промпт, но не влияет на ответы». |
+| `fact_citation_rate` ⚠ best-effort | heuristic: count сообщений, где в ответе Claude встречается substring любого активного факта / total chat messages | Proxy для «факты реально используются». **Подводные камни:** Claude парафразит («болит колено» → «травма ноги») — substring match промахнётся. Метрика low-signal, **не используется** для gating-решений (вроде «выключить facts-блок»), только как лёгкий sanity check. Альтернатива (структурный `cited_fact_ids` в ответе) меняет chat-protocol — откладываем. |
 | `cache_hit_rate_chat` | `api_usage_daily.cache_read_tokens / input_tokens` по чат-вызовам | Хотим ≥70% на активных диалогах. Падение после релиза = facts-блок ломает кэш (порядок блоков кривой). |
-| `tool_facts_per_100_msgs` | `facts_written / chat_messages * 100` за 30 дней | **Триггер Phase 2**: если <3 — Claude не зовёт tool, пора включать extractor (см. §11.3). |
+| `tool_facts_per_100_msgs` | `facts_written / chat_messages * 100` за 30 дней, **только если `chat_messages >= 100`** | **Триггер Phase 2**: если ratio <3 при достаточной выборке — Claude не зовёт tool, пора включать extractor (см. §11.3). |
 
 ### Где хранить
 
@@ -383,9 +414,9 @@ MCP tool `get_fact_metrics()` — **per-user**, как все остальные
 
 ## 11. Open questions
 
-1. **Язык фактов.** Атлет пишет по-русски → факт сохранится по-русски. Если атлет позже переключится на `/lang en`, в промпте всё равно будет русскоязычный факт. Phase 1 — храним as-is, Claude многоязычный и поймёт. Если увидим проблемы — добавим `fact_language` + переводы on-the-fly.
+1. **Язык фактов.** Факт сохраняется на том языке, на котором атлет его произнёс (без нормализации). **При смене `/lang` переводы НЕ делаем** — ни в момент смены языка, ни при инъекции в промпт. Claude многоязычный и корректно цитирует русский факт в английском ответе. Это экономит лишние Claude-вызовы и защищает от дрейфа смысла при авто-переводе («болит ахилл» ≠ «Achilles tendon pain» в коннотации). Если через полгода увидим, что факты на родном языке мешают — добавим колонку `fact_language` + ручную миграцию по запросу юзера, не автомат.
 2. **Ограничение количества.** Решено: per-topic cap N=3 (append-with-cap, §3) + global soft warning на >50. Hard cap не ставим.
-3. **Phase 2 trigger.** `tool_facts_per_100_msgs < 3` за 30 дней (§10) → включаем extractor. До этого — not planned.
+3. **Phase 2 trigger.** Минимум данных для надёжного ratio: `total_chat_msgs_30d >= 100`. Если выполнено **И** `tool_facts_per_100_msgs < 3` — включаем extractor для этого юзера. При `msgs < 100` не триггерим вообще: ratio на малой выборке шумный (у тихого юзера 0/10 даст нулевой ratio, но проблемы нет — просто мало данных).
 4. **Morning report inject.** Решено: Phase 1 не инжектим. Revisit после ≥2 недель данных.
 5. **Sensitive topics injection.** Факты `topic=health`/`family` могут быть чувствительными. Инжектим их наравне с остальными (иначе теряется смысл памяти), но не логируем тело факта в Sentry breadcrumbs — только `topic` + `fact_id`. См. §12.
 

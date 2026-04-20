@@ -106,9 +106,11 @@ Filter: `is_valid_for_decoupling()` — VI <= 1.10, >70% Z1+Z2, bike >= 60min / 
 Traffic light: green (<5%) / yellow (5-10%) / red (>10%). Uses abs() for negative drift.
 Trend: last-5 median via `get_efficiency_trend(strict_filter=True)`. Theory: `docs/knowledge/decoupling.md`.
 
-**HR Zones** — synced from Intervals.icu sport-settings (source of truth). `get_zones` MCP tool returns boundaries from DB; fallback to calculated zones if not yet synced. Zone count varies per user (typically 5-7 zones). Fallback defaults:
-Run (7-zone): Z1 0-84%, Z2 85-89%, Z3 90-94%, Z4 95-99%, Z5 100-103%, Z6 103-106%, Z7 106%+
-Bike (5-zone): Z1 0-68%, Z2 68-83%, Z3 83-94%, Z4 94-105%, Z5 105-120%
+**HR / Power / Pace Zones** — synced from Intervals.icu sport-settings into `athlete_settings.{hr,power,pace}_zones` (source of truth). Zone count varies per user (typically 5-7 zones). **Units contract** (see `data/db/athlete.py:33`): `hr_zones` are absolute bpm, `power_zones` are **%FTP** (not watts — Intervals stores them pre-normalized), `pace_zones` are %threshold where 100.0 = threshold. Top zone opens upward, often stored with a `999` sentinel.
+
+Two independent consumers read these zones, each with its own fallback:
+- **`get_zones` MCP tool** (`mcp_server/tools/zones.py`) — returns raw boundaries for tool-use introspection. Fallbacks: Run 7-zone Z1 0-84%…Z7 106%+, Bike 5-zone Z1 0-68%…Z5 105-120%.
+- **`get_system_prompt_chat`** (`bot/prompts.py`) — renders a per-user `{zones_block}` straight into `SYSTEM_PROMPT_CHAT` so workout generation uses the athlete's own zones rather than a hardcoded model. Fallbacks (Friel 5-zone): Run `_FALLBACK_RUN_HR_PCT` Z1 0-72%…Z5 92-100%, Bike HR `_FALLBACK_BIKE_HR_PCT` Z1 0-68%…Z5 105-120%, Ride power `_FALLBACK_RIDE_POWER_PCT` Z1 0-55%…Z5 105-120%. Each rendered branch always emits a concrete Example Z2 JSON step so Claude never invents the target shape.
 
 ---
 
