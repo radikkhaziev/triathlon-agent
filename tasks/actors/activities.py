@@ -538,6 +538,20 @@ def actor_send_achievement_notification(user: UserDTO, activity: dict) -> None:
 
 
 _SIGNATURE_MARKERS = ("endurai.me", "Readiness")
+_SIGNATURE_LINK = "→ endurai.me"
+
+_SPORT_EMOJI = {
+    "Run": "🏃",
+    "TrailRun": "🏃",
+    "Ride": "🚴",
+    "VirtualRide": "🚴",
+    "MountainBikeRide": "🚵",
+    "Swim": "🏊",
+    "Walk": "🚶",
+    "Hike": "🥾",
+    "WeightTraining": "🏋️",
+    "Workout": "💪",
+}
 
 
 def _already_signed(name: str, description: str = "") -> bool:
@@ -545,18 +559,57 @@ def _already_signed(name: str, description: str = "") -> bool:
     return any(m in text for m in _SIGNATURE_MARKERS)
 
 
-def _generate_signature_prompt(activity: Activity, wellness: Wellness | None) -> str:
-    """Build a short prompt for Claude to generate title + description."""
+def _sport_emoji(sport: str | None) -> str:
+    return _SPORT_EMOJI.get(sport or "", "💪")
+
+
+def _format_distance(sport: str | None, distance_m: float | None) -> str | None:
+    if not distance_m or distance_m <= 0:
+        return None
+    if sport == "Swim":
+        return f"{distance_m:.0f}m"
+    return f"{distance_m / 1000:.1f}km"
+
+
+def _format_pace(sport: str | None, pace_m_per_s: float | None) -> str | None:
+    if not pace_m_per_s or pace_m_per_s <= 0:
+        return None
+    if sport == "Swim":
+        sec = round(100 / pace_m_per_s)
+        return f"{sec // 60}:{sec % 60:02d}/100m"
+    sec = round(1000 / pace_m_per_s)
+    return f"{sec // 60}:{sec % 60:02d}/km"
+
+
+def _generate_signature_prompt(
+    activity: Activity,
+    detail: ActivityDetail | None,
+    wellness: Wellness | None,
+) -> str:
+    """Build a prompt for Claude to generate title + Instagram-style description."""
+    sport = activity.type or "Activity"
     lines = [
-        "Generate a short activity title and description for Strava feed.",
-        "Style: like Whoop or Garmin Coach — metric-first, not ads.",
-        f"Sport: {activity.type or 'Activity'}",
+        "You are a triathlon coach. Generate a short title and 2-3 sentence description",
+        "for a Strava activity feed, in the same tone as an Instagram story card.",
+        "Be concise, data-driven, no emojis, English only.",
+        "",
+        f"Sport: {sport}",
         f"Duration: {(activity.moving_time or 0) // 60} min",
     ]
-    if activity.icu_training_load:
-        lines.append(f"TSS: {activity.icu_training_load:.0f}")
+    dist = _format_distance(sport, detail.distance if detail else None)
+    if dist:
+        lines.append(f"Distance: {dist}")
+    pace = _format_pace(sport, detail.pace if detail else None)
+    if pace:
+        lines.append(f"Pace: {pace}")
+    if detail and detail.avg_power:
+        lines.append(f"Avg Power: {int(detail.avg_power)}W")
     if activity.average_hr:
         lines.append(f"Avg HR: {activity.average_hr:.0f}")
+    if detail and detail.elevation_gain:
+        lines.append(f"Elevation: {detail.elevation_gain:.0f}m")
+    if activity.icu_training_load:
+        lines.append(f"TSS: {activity.icu_training_load:.0f}")
     if wellness:
         if wellness.recovery_score is not None:
             lines.append(f"Recovery: {wellness.recovery_score:.0f}/100 ({wellness.recovery_category or ''})")
@@ -568,32 +621,70 @@ def _generate_signature_prompt(activity: Activity, wellness: Wellness | None) ->
 
     lines.append("")
     lines.append("Rules:")
-    lines.append("- Title: max 60 chars. Format: '{original_name} · {metric or insight}'. No emojis in title.")
-    lines.append("- Description: 3-5 lines. Include key metrics. End with: '→ endurai.me'")
-    lines.append("- Language: English")
-    lines.append("- Do NOT include hashtags")
+    lines.append("- Title: max 40 chars. Short workout type + key metric, e.g. 'Easy Run 10k',")
+    lines.append("  'Endurance Swim 1.8k', 'Tempo Ride 45min'. No emojis (one is added automatically).")
+    lines.append("- Description: 2-3 sentences. Mention key insight about intensity, efficiency,")
+    lines.append("  or recovery. No emojis, no hashtags, no promotional tone.")
+    lines.append("- Do NOT include any link or signature (added automatically).")
     lines.append("")
     lines.append('Respond as JSON: {"title": "...", "description": "..."}')
     return "\n".join(lines)
 
 
-def _fallback_signature(activity: Activity, wellness: Wellness | None) -> tuple[str, str]:
+def _fallback_signature(
+    activity: Activity,
+    detail: ActivityDetail | None,
+    wellness: Wellness | None,
+) -> tuple[str, str]:
     """Template-based fallback when Claude is unavailable."""
-    name = activity.type or "Activity"
-    if wellness and wellness.recovery_score is not None:
-        title = f"{name} · Readiness {wellness.recovery_score:.0f}/100"
-    else:
-        title = f"{name} · endurai.me"
+    sport = activity.type or "Activity"
+    dist = _format_distance(sport, detail.distance if detail else None)
+    descriptor = f"{sport} · {dist}" if dist else sport
 
-    desc_lines = ["🧠 Coached by endurai.me — AI triathlon coach"]
+    desc_bits: list[str] = []
+    duration_min = (activity.moving_time or 0) // 60
+    if duration_min:
+        desc_bits.append(f"{duration_min} min session")
+    pace = _format_pace(sport, detail.pace if detail else None)
+    if pace:
+        desc_bits.append(f"pace {pace}")
+    if activity.average_hr:
+        desc_bits.append(f"avg HR {int(activity.average_hr)}")
+    if desc_bits:
+        joined = ", ".join(desc_bits)
+        summary = joined[:1].upper() + joined[1:] + "."
+    else:
+        summary = f"{sport} session logged."
+
+    desc_lines = [summary]
     if wellness and wellness.recovery_score is not None:
-        desc_lines.append(f"Readiness: {wellness.recovery_score:.0f}/100")
-    if wellness and wellness.ctl is not None:
-        tsb = (wellness.ctl - wellness.atl) if wellness.atl else 0
-        desc_lines.append(f"CTL {wellness.ctl:.0f} · TSB {tsb:+.0f}")
-    desc_lines.append("")
-    desc_lines.append("→ endurai.me")
-    return title, "\n".join(desc_lines)
+        desc_lines.append(f"Readiness {wellness.recovery_score:.0f}/100.")
+
+    return descriptor, _compose_description(desc_lines)
+
+
+def _compose_description(body_lines: list[str]) -> str:
+    parts = [line for line in body_lines if line]
+    parts.append("")
+    parts.append(_SIGNATURE_LINK)
+    return "\n".join(parts)
+
+
+def _parse_signature_json(text: str) -> dict:
+    """Parse Claude response — tolerate ```json fences and surrounding prose."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("```", 2)[1]
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:]
+        stripped = stripped.strip()
+    start = stripped.find("{")
+    if start == -1:
+        raise ValueError("no JSON object in response")
+    obj, _ = json.JSONDecoder().raw_decode(stripped[start:])
+    if not isinstance(obj, dict):
+        raise ValueError("expected JSON object")
+    return obj
 
 
 @dramatiq.actor(queue_name="default")
@@ -614,6 +705,10 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
         if activity.type == "Other":
             return  # skip yoga/mobility/strength
 
+        detail = session.execute(
+            select(ActivityDetail).where(ActivityDetail.activity_id == activity_id)
+        ).scalar_one_or_none()
+
         # Get wellness for context
         dt = str(activity.start_date_local)[:10]
         wellness = session.execute(
@@ -623,33 +718,36 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
     # Idempotency: fetch current name from Intervals.icu and check if already signed
     try:
         with IntervalsSyncClient.for_user(user) as client:
-            detail = client.get_activity_detail(activity_id)
+            remote = client.get_activity_detail(activity_id)
     except Exception:
         logger.warning("Failed to fetch activity detail for rename check %s", activity_id)
         return
-    if not detail:
+    if not remote:
         return
-    current_name = detail.get("name", "")
-    current_desc = detail.get("description") or ""
+    current_name = remote.get("name", "")
+    current_desc = remote.get("description") or ""
     if _already_signed(current_name, current_desc):
         return
 
     # Try Claude, fallback to template
-    title, description = _fallback_signature(activity, wellness)
+    descriptor, description = _fallback_signature(activity, detail, wellness)
     try:
-        prompt = _generate_signature_prompt(activity, wellness)
+        prompt = _generate_signature_prompt(activity, detail, wellness)
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY.get_secret_value())
         resp = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=200,
+            max_tokens=220,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = resp.content[0].text
-        parsed = json.loads(text)
-        title = parsed.get("title", title)[:60]
-        description = parsed.get("description", description)
+        parsed = _parse_signature_json(resp.content[0].text)
+        descriptor = (parsed.get("title") or descriptor)[:40]
+        ai_desc = parsed.get("description")
+        if ai_desc:
+            description = _compose_description([ai_desc.strip()])
     except Exception:
         logger.warning("Claude signature generation failed for %s, using template", activity_id)
+
+    title = f"{_sport_emoji(activity.type)} {descriptor}".strip()[:60]
 
     # Push to Intervals.icu
     try:

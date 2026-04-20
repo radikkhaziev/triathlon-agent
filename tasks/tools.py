@@ -400,6 +400,44 @@ class TelegramTool:
     def __post_init__(self):
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
+    def _post_with_retries(
+        self,
+        endpoint: str,
+        chat_id: str,
+        *,
+        timeout: float,
+        retries: int = 3,
+        **httpx_kwargs,
+    ) -> dict | None:
+        """POST to Telegram endpoint with retry on transient errors.
+
+        403 marks the user inactive and returns None.
+        Passes through ``data=`` / ``files=`` / ``json=`` kwargs to ``httpx.post``.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(retries):
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/{endpoint}",
+                    timeout=timeout,
+                    **httpx_kwargs,
+                )
+                if resp.status_code == 403:
+                    # User blocked the bot (or deactivated). `my_chat_member` is
+                    # the primary signal, but scheduled actors may fire between
+                    # the block and the webhook — flip the flag here too so the
+                    # next scheduled run skips this user.
+                    logger.info("Telegram 403 for chat_id=%s — marking inactive", chat_id)
+                    User.set_active_by_chat_id(chat_id, False)
+                    return None
+                resp.raise_for_status()
+                return resp.json()
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_exc = e
+                logger.warning("Telegram %s attempt %d/%d failed: %s", endpoint, attempt + 1, retries, e)
+        assert last_exc is not None  # retries >= 1
+        raise last_exc
+
     def send_message(
         self,
         text: str,
@@ -416,7 +454,7 @@ class TelegramTool:
         if self.user and self.user.is_silent:
             return None
 
-        _chat_id = chat_id or (self.user.chat_id if self.user else None)
+        _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
         if not _chat_id:
             raise ValueError("chat_id required: pass it or provide user to TelegramTool")
 
@@ -429,28 +467,7 @@ class TelegramTool:
         if reply_markup:
             payload["reply_markup"] = json.dumps(reply_markup)
 
-        last_exc: Exception | None = None
-        for attempt in range(3):
-            try:
-                resp = httpx.post(
-                    f"{self.base_url}/sendMessage",
-                    json=payload,
-                    timeout=15.0,
-                )
-                if resp.status_code == 403:
-                    # User blocked the bot (or deactivated). `my_chat_member` is
-                    # the primary signal, but scheduled actors may fire between
-                    # the block and the webhook — flip the flag here too so the
-                    # next scheduled run skips this user.
-                    logger.info("Telegram 403 for chat_id=%s — marking inactive", _chat_id)
-                    User.set_active_by_chat_id(_chat_id, False)
-                    return None
-                resp.raise_for_status()
-                return resp.json()
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
-                last_exc = e
-                logger.warning("Telegram send attempt %d/3 failed: %s", attempt + 1, e)
-        raise last_exc  # type: ignore[misc]
+        return self._post_with_retries("sendMessage", _chat_id, timeout=15.0, json=payload)
 
     def send_photo(
         self,
@@ -474,26 +491,33 @@ class TelegramTool:
             data["reply_markup"] = json.dumps(reply_markup)
 
         files = {"photo": ("card.png", photo, "image/png")}
+        return self._post_with_retries("sendPhoto", _chat_id, timeout=30.0, data=data, files=files)
 
-        last_exc: Exception | None = None
-        for attempt in range(3):
-            try:
-                resp = httpx.post(
-                    f"{self.base_url}/sendPhoto",
-                    data=data,
-                    files=files,
-                    timeout=30.0,
-                )
-                if resp.status_code == 403:
-                    logger.info("Telegram 403 for chat_id=%s — marking inactive", _chat_id)
-                    User.set_active_by_chat_id(_chat_id, False)
-                    return None
-                resp.raise_for_status()
-                return resp.json()
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
-                last_exc = e
-                logger.warning("Telegram sendPhoto attempt %d/3 failed: %s", attempt + 1, e)
-        raise last_exc  # type: ignore[misc]
+    def send_document(
+        self,
+        document: bytes,
+        filename: str,
+        mime_type: str = "application/octet-stream",
+        caption: str = "",
+        reply_markup: dict | None = None,
+        chat_id: int | str | None = None,
+    ) -> dict | None:
+        """Send a document via Telegram Bot API. Preserves PNG transparency. Skips if user is_silent."""
+        if self.user and self.user.is_silent:
+            return None
+
+        _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
+        if not _chat_id:
+            raise ValueError("chat_id required: pass it or provide user to TelegramTool")
+
+        data: dict = {"chat_id": _chat_id}
+        if caption:
+            data["caption"] = caption
+        if reply_markup:
+            data["reply_markup"] = json.dumps(reply_markup)
+
+        files = {"document": (filename, document, mime_type)}
+        return self._post_with_retries("sendDocument", _chat_id, timeout=30.0, data=data, files=files)
 
 
 @dataclass
