@@ -650,7 +650,11 @@ def _fallback_signature(
         desc_bits.append(f"pace {pace}")
     if activity.average_hr:
         desc_bits.append(f"avg HR {int(activity.average_hr)}")
-    summary = ", ".join(desc_bits).capitalize() + "." if desc_bits else f"{sport} session logged."
+    if desc_bits:
+        joined = ", ".join(desc_bits)
+        summary = joined[:1].upper() + joined[1:] + "."
+    else:
+        summary = f"{sport} session logged."
 
     desc_lines = [summary]
     if wellness and wellness.recovery_score is not None:

@@ -261,3 +261,74 @@ class TestSendPhotoRetry:
         with patch("httpx.post", side_effect=httpx.ConnectError("unreachable")):
             with pytest.raises(httpx.ConnectError):
                 tool.send_photo(b"PNG_BYTES")
+
+
+# ---------------------------------------------------------------------------
+#  send_document
+# ---------------------------------------------------------------------------
+
+
+class TestSendDocument:
+    """send_document: posts to /sendDocument preserving filename, mime and caption."""
+
+    def test_posts_to_send_document_endpoint(self):
+        tool = _make_tool(_make_user())
+        with patch("httpx.post", return_value=_ok_response()) as mock_post:
+            tool.send_document(b"PNG_BYTES", filename="card.png", mime_type="image/png")
+
+        assert mock_post.call_args.args[0].endswith("/sendDocument")
+
+    def test_multipart_document_key_and_mime_preserved(self):
+        tool = _make_tool(_make_user())
+        with patch("httpx.post", return_value=_ok_response()) as mock_post:
+            tool.send_document(b"PNG_BYTES", filename="run-card.png", mime_type="image/png")
+
+        files = mock_post.call_args.kwargs["files"]
+        assert "document" in files
+        name, content, mime = files["document"]
+        assert name == "run-card.png"
+        assert content == b"PNG_BYTES"
+        assert mime == "image/png"
+
+    def test_default_mime_is_octet_stream(self):
+        tool = _make_tool(_make_user())
+        with patch("httpx.post", return_value=_ok_response()) as mock_post:
+            tool.send_document(b"BYTES", filename="file.bin")
+
+        _, _, mime = mock_post.call_args.kwargs["files"]["document"]
+        assert mime == "application/octet-stream"
+
+    def test_caption_and_reply_markup_passthrough(self):
+        tool = _make_tool(_make_user())
+        markup = {"inline_keyboard": [[{"text": "ok", "callback_data": "ok"}]]}
+        with patch("httpx.post", return_value=_ok_response()) as mock_post:
+            tool.send_document(b"B", filename="f.png", caption="card", reply_markup=markup)
+
+        data = mock_post.call_args.kwargs["data"]
+        assert data["caption"] == "card"
+        assert json.loads(data["reply_markup"]) == markup
+
+    def test_silent_user_skipped(self):
+        tool = _make_tool(_make_user(is_silent=True))
+        with patch("httpx.post") as mock_post:
+            result = tool.send_document(b"B", filename="f.png")
+
+        assert result is None
+        mock_post.assert_not_called()
+
+    def test_403_marks_user_inactive(self):
+        tool = _make_tool(_make_user())
+        with (
+            patch("httpx.post", return_value=_error_response(403)) as mock_post,
+            patch("tasks.tools.User.set_active_by_chat_id") as mock_set_inactive,
+        ):
+            result = tool.send_document(b"B", filename="f.png")
+
+        assert result is None
+        mock_post.assert_called_once()
+        mock_set_inactive.assert_called_once()
+
+    def test_missing_chat_id_raises(self):
+        tool = _make_tool(None)
+        with pytest.raises(ValueError):
+            tool.send_document(b"B", filename="f.png")
