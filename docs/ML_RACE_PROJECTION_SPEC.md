@@ -17,7 +17,7 @@
 | `data/db/fitness_projection.py` | **Уже работает**: CTL/ATL/rampRate кривая из `FITNESS_UPDATED` webhook, даты могут быть в будущем (CLAUDE.md:57) |
 | `api/routers/intervals/webhook.py` | `FITNESS_UPDATED` dispatcher — источник projection |
 | `GET /api/fitness-projection` | Уже есть эндпоинт, уже дёргается из webapp Dashboard |
-| `data/db/athlete.py:AthleteGoal` | Race date + `ctl_target` — см. `RACE_CREATION_SPEC.md` |
+| `data/db/athlete.py:AthleteGoal` | Race date + `ctl_target` (local-only overlay, `upsert_from_intervals` не трогает) |
 | `data/db/activity.py`, `activity_details.py` | Source для per-discipline performance features |
 | `data/db/race.py` | `races` таблица — 22 записи у user 1 (mostly Run) |
 | `docs/BUSINESS_RULES.md:53` | Banister recovery model (наш, НЕ тот Banister что из issue — просто confusing terminology) |

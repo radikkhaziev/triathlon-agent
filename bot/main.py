@@ -524,20 +524,34 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        # Free-form chat does not replay tool calls — skip deep-copy via empty filter.
+        # Free-form chat watches only for race-creation previews — workouts come
+        # through the /workout ConversationHandler, not here. Filtering narrowly
+        # keeps tool_calls deep-copy cost minimal.
         result = await agent.chat(
             user_text,
             mcp_token=user.mcp_token,
             user_id=user.id,
             language=user.language,
-            tool_calls_filter=set(),
+            tool_calls_filter=_RACE_TOOLS,
         )
+
+        pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
+        context.user_data["pending_race"] = pending_race
+
+        race_markup = None
+        if pending_race is not None:
+            race_markup = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")],
+                    [InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")],
+                ]
+            )
 
         # Telegram Markdown is fragile — fallback to plain text on parse error
         try:
-            await update.message.reply_text(result.text, parse_mode="Markdown")
+            await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=race_markup)
         except Exception:
-            await update.message.reply_text(result.text)
+            await update.message.reply_text(result.text, reply_markup=race_markup)
 
         if should_show_nudge(user, result.nudge_boundary, result.request_count):
             # Nudge send is best-effort — never let it surface an outer error
@@ -590,13 +604,25 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
             language=user.language,
             image_data=bytes(photo_bytes),
             image_url=image_url,
-            tool_calls_filter=set(),
+            tool_calls_filter=_RACE_TOOLS,
         )
 
+        pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
+        context.user_data["pending_race"] = pending_race
+
+        race_markup = None
+        if pending_race is not None:
+            race_markup = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")],
+                    [InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")],
+                ]
+            )
+
         try:
-            await update.message.reply_text(result.text, parse_mode="Markdown")
+            await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=race_markup)
         except Exception:
-            await update.message.reply_text(result.text)
+            await update.message.reply_text(result.text, reply_markup=race_markup)
 
         if should_show_nudge(user, result.nudge_boundary, result.request_count):
             nudge_text = get_nudge_text()
@@ -651,23 +677,44 @@ def _compose_workout_apply_push(inp: dict) -> None:
     inp["push_to_intervals"] = True
 
 
+def _suggest_race_is_preview(inp: dict) -> bool:
+    # suggest_race: dry_run=True means preview, default False pushes.
+    return inp.get("dry_run") is True
+
+
+def _suggest_race_apply_push(inp: dict) -> None:
+    inp["dry_run"] = False
+
+
 _PREVIEWABLE_TOOLS: dict[str, PreviewableTool] = {
     "suggest_workout": PreviewableTool(_suggest_workout_is_preview, _suggest_workout_apply_push),
     "compose_workout": PreviewableTool(_compose_workout_is_preview, _compose_workout_apply_push),
+    "suggest_race": PreviewableTool(_suggest_race_is_preview, _suggest_race_apply_push),
 }
 
+_WORKOUT_TOOLS = {"suggest_workout", "compose_workout"}
+_RACE_TOOLS = {"suggest_race"}
 
-def _extract_pending_workout(tool_calls: list[dict]) -> dict | None:
-    """Find the most recent previewed workout tool call that can be replayed as a push.
 
-    Scans in reverse order so that if Claude revised the workout twice in one
-    turn, we pick the final version. Returns ``{"name", "input"}`` where
+def _extract_pending_preview(tool_calls: list[dict], tool_filter: set[str] | None = None) -> dict | None:
+    """Find the most recent previewed tool call (optionally filtered by tool name)
+    that can be replayed as a push.
+
+    Scans in reverse order so that if Claude revised the workout/race twice in
+    one turn, we pick the final version. Returns ``{"name", "input"}`` where
     ``input`` is a fresh deep copy — safe to mutate without touching the
     agent's tool-use history.
+
+    ``tool_filter`` restricts the scan to specific tool names (e.g. only
+    ``{"suggest_race"}`` when extracting a race draft); None = all previewable tools.
     """
     for call in reversed(tool_calls):
         name = call.get("name")
-        tool_cfg = _PREVIEWABLE_TOOLS.get(name) if isinstance(name, str) else None
+        if not isinstance(name, str):
+            continue
+        if tool_filter is not None and name not in tool_filter:
+            continue
+        tool_cfg = _PREVIEWABLE_TOOLS.get(name)
         if tool_cfg is None:
             continue
         if tool_cfg.is_preview(call.get("input", {})):
@@ -680,7 +727,7 @@ def _apply_push_flag(pending: dict) -> None:
 
     Raises KeyError if the pending draft references a tool we don't know how
     to push. This should not happen in practice because
-    :func:`_extract_pending_workout` only stores tools from
+    :func:`_extract_pending_preview` only stores tools from
     ``_PREVIEWABLE_TOOLS``, but the guard prevents a silent no-op in which
     the caller would re-run the tool still in preview mode and show a
     misleading success message to the user.
@@ -765,7 +812,7 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
         response_text = "Ошибка при генерации. Попробуй ещё раз или /cancel."
 
     # Always replace so a previous draft can't linger if the new turn produced none.
-    context.user_data["pending_workout"] = _extract_pending_workout(tool_calls)
+    context.user_data["pending_workout"] = _extract_pending_preview(tool_calls, _WORKOUT_TOOLS)
 
     keyboard = InlineKeyboardMarkup(
         [
@@ -810,7 +857,7 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         response_text = "Ошибка. Попробуй ещё раз или /cancel."
 
     # Always replace so a previous draft can't linger if the new turn produced none.
-    context.user_data["pending_workout"] = _extract_pending_workout(tool_calls)
+    context.user_data["pending_workout"] = _extract_pending_preview(tool_calls, _WORKOUT_TOOLS)
 
     keyboard = InlineKeyboardMarkup(
         [
@@ -910,6 +957,93 @@ async def workout_cancel_command(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data.pop("workout_messages", None)
     context.user_data.pop("pending_workout", None)
     return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# /race — free-form chat → suggest_race preview → confirm button
+# ---------------------------------------------------------------------------
+#
+# Unlike /workout, race creation has no ConversationHandler — Claude collects
+# the fields through normal chat, then renders a confirm button tied to the
+# single `pending_race` draft in context.user_data. race_push / race_cancel
+# are registered as standalone CallbackQueryHandlers.
+
+
+@athlete_required
+async def race_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Replay the cached dry-run suggest_race with dry_run=False via direct MCP call.
+
+    Mirrors workout_push (bot/main.py) — no second Claude inference, so the event
+    that reaches Intervals.icu is bit-for-bit what the user saw in the preview.
+    """
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    # Consume-on-read: pop immediately so a duplicate tap cannot replay the draft.
+    pending = context.user_data.pop("pending_race", None)
+    if not pending:
+        await query.message.reply_text("Не нашёл черновик гонки — опиши её снова в чате.")
+        return
+
+    await query.message.chat.send_action("typing")
+
+    tool_name = pending["name"]
+    try:
+        _apply_push_flag(pending)
+    except KeyError:
+        logger.error("race_push: unknown tool %s cached in pending_race", tool_name)
+        await query.message.reply_text(
+            "Не могу отправить: внутренняя ошибка (неизвестный тип). Попробуй снова описать гонку."
+        )
+        return
+
+    try:
+        mcp = MCPClient(token=user.mcp_token)
+        result = await mcp.call_tool(tool_name, pending["input"])
+        if isinstance(result, dict) and result.get("error"):
+            logger.warning("MCP tool %s returned error: %s", tool_name, result["error"])
+            response = f"Ошибка при отправке: {result['error']}"
+        elif isinstance(result, dict) and result.get("text"):
+            response = result["text"]
+        else:
+            response = "Гонка отправлена в Intervals.icu."
+    except Exception:
+        logger.exception("Race push failed (tool=%s)", tool_name)
+        response = "Ошибка при отправке в Intervals.icu. Попробуй ещё раз."
+
+    # Plain text — response may contain URLs / names with Markdown metachars.
+    await query.message.reply_text(response)
+
+
+@athlete_required
+async def race_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Discard the pending race draft."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+    context.user_data.pop("pending_race", None)
+    await query.message.reply_text(_("Отменено."))
+
+
+@athlete_required
+async def race_command(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """`/race` — lightweight entry point into race creation/edit via chat.
+
+    Sends a priming message so the athlete knows exactly what to provide, then
+    leaves the heavy lifting to the existing free-form chat flow (which already
+    catches `suggest_race(dry_run=True)` and renders the confirm button).
+    No ConversationHandler state — free-form chat is the state.
+    """
+    await update.message.reply_text(
+        _(
+            "🏁 Опиши гонку одним сообщением: название, приоритет (A/B/C), дату, "
+            "опционально вид (Run / Ride / Swim / Triathlon), дистанцию и target CTL.\n\n"
+            "Пример: «Ironman 70.3 Belgrade 15 сентября, RACE A, триатлон, "
+            "CTL target 75».\n\n"
+            "Чтобы удалить гонку — напиши «удали RACE_A» (или B / C)."
+        )
+    )
 
 
 @athlete_required
@@ -1210,6 +1344,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))
     app.add_handler(CommandHandler("health", health))
+    app.add_handler(CommandHandler("race", race_command))
     app.add_handler(CommandHandler("lang", set_lang))
     app.add_handler(CommandHandler("silent", silent))
     workout_conv = ConversationHandler(
@@ -1233,6 +1368,12 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(handle_rpe_callback, pattern=r"^rpe:"))
     app.add_handler(CallbackQueryHandler(handle_card_callback, pattern=r"^card:"))
+    # Race creation confirm/cancel — standalone, not inside ConversationHandler.
+    # Race is requested via free-form chat (Claude emits suggest_race(dry_run=True)),
+    # not through a multi-state /race wizard, so these handlers live outside the
+    # workout ConversationHandler.
+    app.add_handler(CallbackQueryHandler(race_push, pattern=r"^race_push$"))
+    app.add_handler(CallbackQueryHandler(race_cancel, pattern=r"^race_cancel$"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     # Photo handler — download, save, pass to AI chat with vision
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))

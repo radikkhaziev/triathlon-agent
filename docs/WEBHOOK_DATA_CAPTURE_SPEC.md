@@ -215,7 +215,7 @@ await ActivityDetail.patch(
 )
 ```
 
-**`ActivityDetail.patch`** — новый helper, обновляет **только переданные поля** (sentinel `_UNSET` паттерн, как в `RACE_CREATION_SPEC §10.3 update_local_fields`), чтобы не стирать уже заполненное (например, `trimp` приходит в UPLOADED, а `achievements_json` — в ACHIEVEMENTS через 60 секунд).
+**`ActivityDetail.patch`** — новый helper, обновляет **только переданные поля** (sentinel `_UNSET` паттерн, как в `AthleteGoal.update_local_fields` из `data/db/athlete.py`), чтобы не стирать уже заполненное (например, `trimp` приходит в UPLOADED, а `achievements_json` — в ACHIEVEMENTS через 60 секунд).
 
 ### 5.2. `_dispatch_achievements` (ACTIVITY_ACHIEVEMENTS)
 

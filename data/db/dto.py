@@ -76,6 +76,7 @@ class AthleteThresholdsDTO(BaseModel):
 class AthleteGoalDTO(BaseModel):
     """Active goal summary."""
 
+    id: int | None = None
     event_name: str
     event_date: date
     sport_type: str

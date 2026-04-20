@@ -92,6 +92,29 @@ Bike (HR %LTHR):    Z1 0-68%, Z2 68-83%, Z3 83-94%, Z4 94-105%, Z5 105-120%
 Ride (power %FTP):  Z1 0-55%, Z2 55-75%, Z3 75-90%, Z4 90-105%, Z5 105-120%
 ```
 
+## Race Priority (RACE_A / RACE_B / RACE_C)
+
+One active goal per category per athlete, stored in `athlete_goals`. Dedupe
+key for `suggest_race` is `(user_id, category)` — a new date on the same
+category updates the existing row, doesn't create a second one.
+
+| Category | Role | Typical taper | Planning focus |
+|---|---|---|---|
+| **RACE_A** | Season goal. The one race everything is built around. | Full taper (10-14 days). `ctl_target` is the peak CTL you aim to reach **on race day**, after which ATL drops and TSB turns positive. | Primary input to periodization — all blocks aim at peak CTL minus taper decay. |
+| **RACE_B** | Tune-up / important race, but you race through it — not the main event. | Short taper (3-5 days). Fitness shouldn't take a hit from it. | Race-specific intensity check, pacing rehearsal. CTL continues up or plateaus after. |
+| **RACE_C** | Fitness check / training race. Hard effort, no special tapering. | No taper — train through. | Pure feedback: lactate threshold, race nutrition, pacing strategy. |
+
+`ctl_target` is **local-only** — it does not sync to Intervals.icu (Intervals has
+no such field on events). Set via chat (`suggest_race` with `ctl_target=...`)
+or via Settings UI (`PATCH /api/athlete/goal/{id}`). The 30-min
+`actor_sync_athlete_goals` job deliberately never overwrites it so user input
+survives Intervals syncs.
+
+MCP surface in `mcp_server/tools/races.py`: `suggest_race` (create / move),
+`get_races`, `tag_race` (mark past activity as race), `update_race` (edit
+already-tagged race), `delete_race_goal` (remove future race from
+Intervals + soft-delete local row).
+
 ## Morning Report — Workout Suggestion Rules
 
 | Condition | Allowed Training |

@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from api.routers.activities import router as activities_router
+from api.routers.athlete import router as athlete_router
 from api.routers.auth import router as auth_router
 from api.routers.intervals import router as intervals_router
 from api.routers.jobs import router as jobs_router
@@ -12,6 +13,7 @@ router = APIRouter()
 
 router.include_router(system_router)
 router.include_router(auth_router)
+router.include_router(athlete_router)
 router.include_router(wellness_router)
 router.include_router(workouts_router)
 router.include_router(activities_router)
