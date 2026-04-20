@@ -241,20 +241,148 @@ explicitly asks for today.
 **Every step must carry an intensity target** so Garmin/Wahoo watches alert on the HR/power/pace
 corridor. Never emit text-only steps (`Z2` label + duration with nothing else) — the watch will
 run the step without beeping and the athlete runs blind.
-  - **Run**: use `hr` with `%lthr` units. LTHR for run is {lthr_run}. Ranges per zone:
-    Z1 0-72%, Z2 72-82%, Z3 82-87%, Z4 87-92%, Z5 92-100%. Example Z2 step:
-    `{{"text": "Z2", "duration": 900, "hr": {{"units": "%lthr", "value": 72, "end": 82}}}}`.
-  - **Ride**: use `power` with `%ftp` units. FTP = {ftp}. Example Z2:
-    `"power": {{"units": "%ftp", "value": 65, "end": 75}}`.
-  - **Swim**: use `pace` with `%pace` units. CSS = {css}. Example:
-    `"pace": {{"units": "%pace", "value": 95, "end": 100}}`.
+{zones_block}
   - For repeat groups (`reps` + sub-`steps`), the target goes on each sub-step, not the wrapper.
 """
+
+
+# ---------------------------------------------------------------------------
+# Per-user HR/power zone block for workout generation
+# ---------------------------------------------------------------------------
+
+# Fallback Friel-like ranges (% of LTHR/FTP) used when the athlete has no
+# sport-settings synced from Intervals.icu yet.
+_FALLBACK_RUN_HR_PCT = [(0, 72), (72, 82), (82, 87), (87, 92), (92, 100)]
+_FALLBACK_BIKE_HR_PCT = [(0, 68), (68, 83), (83, 94), (94, 105), (105, 120)]
+_FALLBACK_RIDE_POWER_PCT = [(0, 55), (55, 75), (75, 90), (90, 105), (105, 120)]
+
+# Intervals.icu stores an open-ended top zone as a dummy boundary like 999.
+# Anything at or above this cutoff is treated as sentinel, not a real bound.
+_SENTINEL_PCT_CUTOFF = 500
+
+
+def _pct_ranges(pct_bounds: list[int]) -> list[tuple[int, int]]:
+    """Convert an ascending list of %-of-threshold bounds into zone ranges.
+
+    The top zone opens upward — we cap it at ``max(prev+10, 120)`` for display.
+    Sentinel boundaries (``>= _SENTINEL_PCT_CUTOFF``) are trimmed so the printed
+    top zone stays readable.
+    """
+    ranges: list[tuple[int, int]] = []
+    prev = 0
+    for p in pct_bounds:
+        if p >= _SENTINEL_PCT_CUTOFF:
+            break
+        ranges.append((prev, p))
+        prev = p
+    ranges.append((prev, max(prev + 10, 120)))
+    return ranges
+
+
+def _pct_ranges_from_hr(boundaries: list[int], lthr: int) -> list[tuple[int, int]]:
+    """Absolute bpm boundaries → %-of-LTHR ranges.
+
+    Enforces strict monotonicity: if ``round(b / lthr * 100)`` collapses two
+    adjacent boundaries onto the same integer (can happen with high LTHR and
+    tight zone spacing), bump the second by +1 so we never render zero-width
+    zones like ``Z2 84-84%`` into the prompt.
+    """
+    pct_bounds: list[int] = []
+    prev: int | None = None
+    for b in boundaries:
+        pct = round(b / lthr * 100)
+        if prev is not None and pct <= prev:
+            pct = prev + 1
+        pct_bounds.append(pct)
+        prev = pct
+    return _pct_ranges(pct_bounds)
+
+
+def _format_range_list(ranges: list[tuple[int, int]]) -> str:
+    return ", ".join(f"Z{i + 1} {lo}-{hi}%" for i, (lo, hi) in enumerate(ranges))
+
+
+def _zones_block(settings_by_sport: dict[str, AthleteSettings], t: AthleteThresholdsDTO) -> str:
+    """Render the Run/Ride/Swim zone block for SYSTEM_PROMPT_CHAT.
+
+    Uses real per-sport boundaries from ``athlete_settings`` (synced from
+    Intervals.icu) when available; falls back to a Friel-like 5-zone model
+    otherwise so new athletes still get sane defaults.
+    """
+    lines: list[str] = []
+
+    # Run — %LTHR. Prefer Intervals synced zones whenever an LTHR is available
+    # from either the sport-row or the thresholds DTO (historically some
+    # athlete_settings rows had hr_zones populated but lthr=None — don't punish
+    # them with Friel fallback when t.lthr_run is right there).
+    run = settings_by_sport.get("Run")
+    lthr_run = (run and run.lthr) or t.lthr_run
+    if run and run.hr_zones and lthr_run:
+        ranges = _pct_ranges_from_hr(run.hr_zones, lthr_run)
+        source = "from your Intervals.icu sport-settings"
+    else:
+        ranges = _FALLBACK_RUN_HR_PCT
+        source = "Friel fallback — athlete has no synced Run zones yet"
+    z2 = ranges[1] if len(ranges) >= 2 else (72, 82)
+    lines.append(
+        f"  - **Run**: use `hr` with `%lthr` units. LTHR = {lthr_run or '—'}. "
+        f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2 step: "
+        f'`{{"text": "Z2", "duration": 900, "hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}}}`.'
+    )
+
+    # Ride — prefer %FTP (power). Intervals.icu stores power_zones already as
+    # percentages of FTP (not absolute watts), so the zones themselves need no
+    # FTP — it's only displayed as the watts reference in the prompt text.
+    ride = settings_by_sport.get("Ride")
+    ftp = (ride and ride.ftp) or t.ftp
+    if ride and ride.power_zones:
+        ranges = _pct_ranges(list(ride.power_zones))
+        z2 = ranges[1] if len(ranges) >= 2 else (55, 75)
+        source = "from your Intervals.icu sport-settings"
+        ftp_str = f"{ftp}W" if ftp else "—"
+        lines.append(
+            f"  - **Ride**: use `power` with `%ftp` units. FTP = {ftp_str}. "
+            f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2: "
+            f'`"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
+        )
+    elif t.ftp:
+        z2 = _FALLBACK_RIDE_POWER_PCT[1]
+        lines.append(
+            f"  - **Ride**: use `power` with `%ftp` units. FTP = {t.ftp}W. "
+            f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_RIDE_POWER_PCT)}. "
+            f'Example Z2: `"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
+        )
+    else:
+        lthr_bike = (ride and ride.lthr) or t.lthr_bike
+        z2 = _FALLBACK_BIKE_HR_PCT[1]
+        lines.append(
+            f"  - **Ride**: use `hr` with `%lthr` units. LTHR bike = {lthr_bike or '—'}. "
+            f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_BIKE_HR_PCT)}. "
+            f'Example Z2: `"hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}`.'
+        )
+
+    # Swim — CSS corridor (no real zones in Intervals.icu sport-settings for swim).
+    css = t.css
+    if css:
+        mm = int(css // 60)
+        ss = int(css % 60)
+        css_str = f"{mm}:{ss:02d}/100m"
+    else:
+        css_str = "—"
+    lines.append(
+        f"  - **Swim**: use `pace` with `%pace` units. CSS = {css_str}. "
+        'Z2 corridor 95-105%. Example: `"pace": {"units": "%pace", "value": 95, "end": 105}`.'
+    )
+
+    return "\n".join(lines)
 
 
 async def get_system_prompt_chat(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
+    all_settings = await AthleteSettings.get_all(user_id)
+    settings_by_sport = {s.sport: s for s in all_settings}
+
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).strftime("%Y-%m-%d")
 
@@ -267,5 +395,6 @@ async def get_system_prompt_chat(user_id: int, language: str = "ru") -> str:
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",
         css=t.css or "—",
+        zones_block=_zones_block(settings_by_sport, t),
         response_language=_lang_name(language),
     )
