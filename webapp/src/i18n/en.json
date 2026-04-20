@@ -150,6 +150,11 @@
       "toast_mismatch": "You're already linked to a different Intervals.icu account. Disconnect first.",
       "toast_error": "Connection failed. Please try again."
     },
+    "goal": {
+      "ctl_edit_hint": "Click to edit",
+      "save_failed": "Failed to save",
+      "edit_via_chat_hint": "To change the name / date / priority — send /race in the bot chat."
+    },
     "mcp": {
       "title": "Connect via MCP",
       "description": "Paste this config into your MCP client (Claude Desktop, Cursor, etc). The token grants full access to your data — never share it.",

@@ -63,6 +63,34 @@ class SetLanguageRequest(BaseModel):
     language: Literal["ru", "en"]
 
 
+class PerSportTargetsPayload(BaseModel):
+    """Optional per-sport CTL split inside :class:`AthleteGoalPatchRequest`.
+
+    CTL in single-digit to low-triple-digit range in practice; clamping
+    rejects obvious garbage without blocking legit high-volume athletes.
+    """
+
+    swim: float | None = Field(default=None, ge=0, le=200)
+    ride: float | None = Field(default=None, ge=0, le=200)
+    run: float | None = Field(default=None, ge=0, le=200)
+
+
+class AthleteGoalPatchRequest(BaseModel):
+    """Body for `PATCH /api/athlete/goal/{goal_id}` — local-only overlay fields.
+
+    Only ``ctl_target`` and ``per_sport_targets`` are writable from the UI; race
+    name/date/category live in Intervals.icu and must go through chat +
+    ``suggest_race`` MCP tool (which pushes the edit to Intervals.icu).
+
+    Missing fields are left untouched — the router distinguishes absence from
+    explicit ``null`` via ``model_fields_set`` / ``exclude_unset`` so a PATCH
+    does not silently clear untouched columns.
+    """
+
+    ctl_target: float | None = Field(default=None, ge=0, le=200)
+    per_sport_targets: PerSportTargetsPayload | None = None
+
+
 # ---------------------------------------------------------------------------
 # Intervals.icu (api/routers/intervals/)
 # ---------------------------------------------------------------------------

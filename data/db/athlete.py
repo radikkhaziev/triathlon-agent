@@ -3,13 +3,31 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Mapped, mapped_column
 
 from data.db.common import Base, Session
 from data.db.decorator import dual
 from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
+
+# Sentinel for partial updates: distinguishes "field not provided" from
+# "explicitly set to None" so a PATCH does not silently clear untouched
+# columns. Used by AthleteGoal.update_local_fields.
+_UNSET: object = object()
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +225,7 @@ class AthleteGoal(Base):
         if not goal:
             return None
         return AthleteGoalDTO(
+            id=goal.id,
             event_name=goal.event_name,
             event_date=goal.event_date,
             sport_type=goal.sport_type,
@@ -247,6 +266,12 @@ class AthleteGoal(Base):
             existing.event_date = event_date
             existing.category = category
             existing.synced_at = now
+            # Reactivate if this row was previously soft-deleted. Matching is
+            # by intervals_event_id, so when the athlete re-creates a race
+            # after delete_race_goal (same event_id can come back if Intervals
+            # restore, or the sync picks up a fresh push) we bring the row
+            # back into the active set.
+            existing.is_active = True
             session.commit()
             return existing
 
@@ -261,5 +286,124 @@ class AthleteGoal(Base):
             synced_at=now,
         )
         session.add(goal)
+        session.commit()
+        return goal
+
+    @classmethod
+    @dual
+    def get_by_category(cls, user_id: int, category: str, *, session: Session) -> AthleteGoal | None:
+        """Return the active goal for (user_id, category) or None.
+
+        Used by ``suggest_race`` to decide create vs update — an athlete has at
+        most one RACE_A / RACE_B / RACE_C, and repeated calls with a new date
+        must rename-in-place, not create a second row.
+
+        There is no DB unique constraint enforcing the one-active-per-category
+        invariant (a crash mid-soft-delete could leave two actives), so we
+        explicitly pick the most recently inserted row instead of letting
+        ``scalar_one_or_none`` raise. Log if duplicates are seen — that's a
+        signal to run a cleanup.
+        """
+        rows = (
+            session.execute(
+                select(cls)
+                .where(
+                    cls.user_id == user_id,
+                    cls.category == category,
+                    cls.is_active.is_(True),
+                )
+                .order_by(cls.id.desc())
+            )
+            .scalars()
+            .all()
+        )
+        if len(rows) > 1:
+            logger.warning(
+                "AthleteGoal.get_by_category: %d active rows for user_id=%d category=%s — picking id=%d",
+                len(rows),
+                user_id,
+                category,
+                rows[0].id,
+            )
+        return rows[0] if rows else None
+
+    @classmethod
+    @dual
+    def deactivate_by_category(cls, user_id: int, category: str, *, session: Session) -> AthleteGoal | None:
+        """Soft-delete the active goal for (user_id, category). Scheduler sync
+        matches by ``intervals_event_id``, so once the underlying Intervals.icu
+        event is deleted too, the deactivated row stays dormant and a future
+        ``suggest_race`` on the same category creates a fresh record.
+
+        Returns the deactivated row or None if nothing was active.
+        """
+        goal = session.execute(
+            select(cls)
+            .where(
+                cls.user_id == user_id,
+                cls.category == category,
+                cls.is_active.is_(True),
+            )
+            .order_by(cls.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if goal is None:
+            return None
+        goal.is_active = False
+        session.commit()
+        return goal
+
+    @classmethod
+    @dual
+    def set_ctl_target(cls, goal_id: int, ctl_target: float | None, *, session: Session) -> None:
+        """Overwrite ctl_target for a goal. Kept separate from ``upsert_from_intervals``
+        so the sync actor cannot stomp on user-entered CTL targets (see docstring
+        on :meth:`upsert_from_intervals`).
+        """
+        session.execute(update(cls).where(cls.id == goal_id).values(ctl_target=ctl_target))
+        session.commit()
+
+    @classmethod
+    @dual
+    def update_local_fields(
+        cls,
+        goal_id: int,
+        *,
+        user_id: int,
+        ctl_target: float | None = _UNSET,
+        per_sport_targets: dict | None = _UNSET,
+        session: Session,
+    ) -> AthleteGoal | None:
+        """Patch local-only overlay fields (``ctl_target``, ``per_sport_targets``).
+
+        ``_UNSET`` sentinel distinguishes "field not provided" from "explicit
+        clear" so the helper never silently stomps columns the caller didn't
+        touch:
+          * ``field=_UNSET`` — leave as-is.
+          * ``ctl_target=None`` — clear to NULL.
+          * ``per_sport_targets=None`` — clear the whole JSON blob.
+          * ``per_sport_targets={"ride": 40}`` — **merge** into the existing
+            blob, preserving other sport keys. PATCH-semantics: one sport at
+            a time doesn't wipe the others.
+
+        Returns the updated goal or ``None`` if not found or not owned by
+        ``user_id``. Callers should 404 in the latter case (not 403) to avoid
+        leaking existence of other users' goals — see
+        ``docs/MULTI_TENANT_SECURITY.md`` T1.
+        """
+        goal = session.execute(select(cls).where(cls.id == goal_id, cls.user_id == user_id)).scalar_one_or_none()
+        if goal is None:
+            return None
+
+        if ctl_target is not _UNSET:
+            goal.ctl_target = ctl_target
+        if per_sport_targets is not _UNSET:
+            if per_sport_targets is None:
+                goal.per_sport_targets = None
+            else:
+                current = dict(goal.per_sport_targets or {})
+                current.update(per_sport_targets)
+                goal.per_sport_targets = current
+
         session.commit()
         return goal

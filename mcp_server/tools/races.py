@@ -1,12 +1,22 @@
-"""MCP tools for race tagging and analytics."""
+"""MCP tools for race tagging, analytics, and future-race creation."""
 
+import logging
 from datetime import date, timedelta
+from typing import Literal
 
+import httpx
 from sqlalchemy import select
 
-from data.db import Activity, Race, Wellness, get_session
+from data.db import Activity, AthleteGoal, Race, Wellness, get_session
+from data.intervals.client import IntervalsAsyncClient
+from data.intervals.dto import EventExDTO
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+from mcp_server.sentry import sentry_tool
+
+logger = logging.getLogger(__name__)
+
+_VALID_CATEGORIES = ("RACE_A", "RACE_B", "RACE_C")
 
 
 def _fmt_time(secs: int | None) -> str | None:
@@ -243,3 +253,310 @@ async def update_race(
         await session.commit()
 
     return {"status": "updated", "activity_id": activity_id, "updates": updates}
+
+
+# ---------------------------------------------------------------------------
+# Future-race creation: suggest_race / delete_race_goal
+# ---------------------------------------------------------------------------
+
+
+_TRIATHLON_DISCIPLINES = {
+    "Triathlon": ["Swim", "Ride", "Run"],
+    "Duathlon": ["Run", "Ride", "Run"],
+    "Aquathlon": ["Swim", "Run"],
+}
+
+
+def _format_preview(
+    *,
+    name: str,
+    category: str,
+    event_date: date,
+    sport: str | None,
+    distance_m: float | None,
+    description: str,
+    ctl_target: float | None,
+    current_ctl: float | None,
+    existing_date: date | None,
+    today: date,
+) -> str:
+    """Render a human-readable dry-run preview for the confirm button."""
+    days_to_race = (event_date - today).days
+    date_str = f"{event_date} ({days_to_race} дн)" if days_to_race >= 0 else str(event_date)
+
+    lines: list[str] = []
+    header_icon = "♻️ Update" if existing_date else "🏁 Preview"
+    lines.append(f"{header_icon}: {name} — {category}")
+    if existing_date and existing_date != event_date:
+        lines.append(f"📅 Было: {existing_date} → Станет: {date_str}")
+    else:
+        lines.append(f"📅 Дата: {date_str}")
+    if sport:
+        sport_line = f"🏃 Вид: {sport}"
+        if distance_m:
+            dist_km = distance_m / 1000
+            sport_line += f", {dist_km:.1f} km" if dist_km >= 1 else f", {int(distance_m)} m"
+        lines.append(sport_line)
+    elif distance_m:
+        dist_km = distance_m / 1000
+        lines.append(f"📏 Distance: {dist_km:.1f} km")
+
+    if ctl_target is not None:
+        ctl_line = f"🎯 Peak CTL: {ctl_target:.0f}"
+        if current_ctl is not None and days_to_race > 0:
+            gap = ctl_target - current_ctl
+            weeks = max(days_to_race / 7, 0.1)
+            ramp = gap / weeks
+            ctl_line += f" (сейчас {current_ctl:.0f}, ramp {ramp:+.1f} TSS/нед)"
+            if ramp > 7:
+                ctl_line += " ⚠️ агрессивно (>7 TSS/нед)"
+        lines.append(ctl_line)
+
+    if description:
+        lines.append(f"📝 {description}")
+
+    lines.append("")
+    action = "обновить" if existing_date else "отправить"
+    lines.append(f"Use suggest_race with dry_run=False or press «Отправить в Intervals» to {action}.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@sentry_tool
+async def suggest_race(
+    name: str,
+    category: Literal["RACE_A", "RACE_B", "RACE_C"],
+    dt: str,
+    sport: str = "",
+    distance_m: float | None = None,
+    description: str = "",
+    ctl_target: float | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Create or update a future race event in Intervals.icu (RACE_A/B/C) and mirror it into
+    athlete_goals. Dry-run returns a preview string; the bot replays the exact same input with
+    dry_run=False on user confirmation — do NOT call dry_run=False yourself.
+
+    Idempotency is (user_id, category) — one active RACE_A / RACE_B / RACE_C per athlete.
+    Repeated calls with a new `dt` move the existing race (update_event), they do NOT
+    create a second row.
+
+    Parameters:
+      name: race name, e.g. "Drina Trail", "Ironman 70.3 Belgrade".
+      category: RACE_A (season goal) / RACE_B (tune-up) / RACE_C (fitness check). Ask if ambiguous.
+      dt: ISO date "YYYY-MM-DD". Must be >= today.
+      sport: Run / Ride / Swim / TrailRun / Triathlon / Duathlon / Aquathlon. Optional — inferred from name if obvious.
+      distance_m: race distance in meters (optional).
+      description: freeform notes — surface, weather, goal time.
+      ctl_target: peak CTL on race day. Pass through only if the athlete named a number.
+        Do not invent one — the preview will show current CTL so the athlete can decide.
+      dry_run: True → preview only, no side-effects.
+    """
+    user_id = get_current_user_id()
+
+    # --- Validation ---------------------------------------------------------
+    if category not in _VALID_CATEGORIES:
+        return f"Error: invalid category {category!r} — must be one of {', '.join(_VALID_CATEGORIES)}."
+
+    try:
+        event_date = date.fromisoformat(dt)
+    except ValueError:
+        return f"Error: invalid date {dt!r} — must be ISO format YYYY-MM-DD."
+
+    today = date.today()
+    if event_date < today:
+        return f"Error: race date {dt} is in the past — use tag_race to log past races."
+
+    # --- Lookup existing (idempotency key = user_id + category) ------------
+    existing_goal = await AthleteGoal.get_by_category(user_id, category)
+    existing_intervals_id = existing_goal.intervals_event_id if existing_goal else None
+    existing_date = existing_goal.event_date if existing_goal else None
+
+    # Current CTL for preview sanity-hints — newest wellness row
+    current_ctl: float | None = None
+    async with get_session() as session:
+        row = (
+            await session.execute(
+                select(Wellness.ctl)
+                .where(Wellness.user_id == user_id, Wellness.ctl.isnot(None))
+                .order_by(Wellness.date.desc())
+                .limit(1)
+            )
+        ).scalar()
+        if row is not None:
+            current_ctl = float(row)
+
+    # --- Dry-run short-circuit ---------------------------------------------
+    if dry_run:
+        return _format_preview(
+            name=name,
+            category=category,
+            event_date=event_date,
+            sport=sport or None,
+            distance_m=distance_m,
+            description=description,
+            ctl_target=ctl_target,
+            current_ctl=current_ctl,
+            existing_date=existing_date,
+            today=today,
+        )
+
+    # --- Fallback idempotency: check Intervals calendar if local row missing.
+    # Covers the recovery path where a previous attempt pushed the event to
+    # Intervals but the local upsert failed — we pick up the existing event_id
+    # and do an update instead of creating a duplicate.
+    if existing_intervals_id is None:
+        try:
+            async with IntervalsAsyncClient.for_user(user_id) as client:
+                remote_events = await client.get_events(oldest=event_date, newest=event_date, category=category)
+                if remote_events:
+                    picked = remote_events[0]
+                    existing_intervals_id = picked.id
+                    if len(remote_events) > 1:
+                        logger.warning(
+                            "suggest_race recovery: %d %s events on %s for user %d, picking id=%s name=%r — "
+                            "others may be orphans from prior failures",
+                            len(remote_events),
+                            category,
+                            event_date,
+                            user_id,
+                            existing_intervals_id,
+                            getattr(picked, "name", None),
+                        )
+                    else:
+                        logger.info(
+                            "suggest_race recovery: using remote event id=%s name=%r for user %d",
+                            existing_intervals_id,
+                            getattr(picked, "name", None),
+                            user_id,
+                        )
+        except Exception:
+            logger.warning("suggest_race: fallback get_events failed", exc_info=True)
+            # Non-fatal — proceed to create path.
+
+    # --- Build Intervals payload -------------------------------------------
+    disciplines = _TRIATHLON_DISCIPLINES.get(sport)
+    payload = EventExDTO(
+        category=category,
+        type=sport or None,
+        name=name,
+        start_date_local=f"{event_date.isoformat()}T00:00:00",
+        description=description or None,
+        distance=distance_m,
+    )
+
+    # --- Push to Intervals -------------------------------------------------
+    try:
+        async with IntervalsAsyncClient.for_user(user_id) as client:
+            if existing_intervals_id:
+                result = await client.update_event(existing_intervals_id, payload)
+                action = "updated"
+            else:
+                result = await client.create_event(payload)
+                action = "created"
+    except Exception as e:
+        logger.exception("suggest_race: Intervals push failed for user %d", user_id)
+        return f"Error pushing to Intervals.icu: {e}"
+
+    intervals_event_id = result.id
+
+    # --- Local upsert (handles race/reopen + backfill ctl_target) ----------
+    try:
+        goal = await AthleteGoal.upsert_from_intervals(
+            user_id=user_id,
+            category=category,
+            event_name=name,
+            event_date=event_date,
+            intervals_event_id=intervals_event_id,
+        )
+    except Exception as e:
+        # Intervals succeeded, DB didn't — idempotent retry will recover (§4.4).
+        logger.exception("suggest_race: local upsert failed after Intervals push, event_id=%s", intervals_event_id)
+        return (
+            f"⚠️ Pushed to Intervals.icu (event {intervals_event_id}) but local save failed: {e}. "
+            "Retry the same request to reconcile."
+        )
+
+    ctl_target_saved = True
+    if ctl_target is not None:
+        try:
+            await AthleteGoal.set_ctl_target(goal.id, ctl_target)
+        except Exception:
+            logger.warning("suggest_race: set_ctl_target failed for goal %d", goal.id, exc_info=True)
+            ctl_target_saved = False
+
+    # --- Fill triathlon disciplines if applicable --------------------------
+    if disciplines and goal.disciplines != disciplines:
+        try:
+            async with get_session() as session:
+                fresh = await session.get(AthleteGoal, goal.id)
+                if fresh is not None:
+                    fresh.disciplines = disciplines
+                    await session.commit()
+        except Exception:
+            logger.warning("suggest_race: disciplines backfill failed for goal %d", goal.id, exc_info=True)
+
+    # --- Response ----------------------------------------------------------
+    days_to_race = (event_date - today).days
+    lines = [
+        f"✅ {category} {action}: {name} — {event_date} ({days_to_race} дн).",
+    ]
+    if ctl_target is not None:
+        if ctl_target_saved:
+            lines.append(f"Peak CTL target: {ctl_target:.0f}.")
+        else:
+            lines.append(f"⚠️ Peak CTL target ({ctl_target:.0f}) failed to save — set it from /settings.")
+    lines.append(f"Event: https://intervals.icu/event/{intervals_event_id}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@sentry_tool
+async def delete_race_goal(category: Literal["RACE_A", "RACE_B", "RACE_C"]) -> str:
+    """Delete a future race by priority category. Removes the event from Intervals.icu
+    and soft-deletes the local athlete_goals row.
+
+    Confirm intent with the athlete before calling — deletion is irreversible from the
+    bot (they'd have to re-add via suggest_race). Idempotent: calling twice in a row
+    returns an informational message on the second call, not an error.
+    """
+    user_id = get_current_user_id()
+
+    if category not in _VALID_CATEGORIES:
+        return f"Error: invalid category {category!r} — must be one of {', '.join(_VALID_CATEGORIES)}."
+
+    existing_goal = await AthleteGoal.get_by_category(user_id, category)
+    if existing_goal is None:
+        return f"Nothing to delete — no active {category} goal."
+
+    event_id = existing_goal.intervals_event_id
+    event_name = existing_goal.event_name
+
+    # 1) Remove from Intervals. 404 = event already gone upstream, continue with
+    # local cleanup so the user can re-create on the same category. Any other
+    # HTTP error or non-HTTP exception bails before we touch the DB.
+    if event_id is not None:
+        try:
+            async with IntervalsAsyncClient.for_user(user_id) as client:
+                await client.delete_event(event_id)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.info("delete_race_goal: Intervals event %s already gone, proceeding", event_id)
+            else:
+                logger.exception("delete_race_goal: Intervals delete failed for event %s", event_id)
+                return f"Error deleting from Intervals.icu: HTTP {e.response.status_code}"
+        except Exception as e:
+            logger.exception("delete_race_goal: Intervals delete failed for event %s", event_id)
+            return f"Error deleting from Intervals.icu: {e}"
+
+    # 2) Soft-delete locally.
+    try:
+        await AthleteGoal.deactivate_by_category(user_id, category)
+    except Exception as e:
+        # Intervals succeeded but local failed — rare but leaves the user in an
+        # inconsistent state that next sync won't auto-recover (event is gone
+        # upstream). Warn so the user can retry.
+        logger.exception("delete_race_goal: local deactivate failed after Intervals delete")
+        return f"⚠️ Deleted from Intervals.icu but local cleanup failed: {e}. " "Retry to reconcile."
+
+    return f"🗑️ {category} deleted: {event_name}."

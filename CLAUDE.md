@@ -159,6 +159,7 @@ Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any a
 /morning    — trigger morning report via dramatiq actor
 /dashboard  — dashboard link (Mini App)
 /workout    — interactive workout generation: sport picker → dry-run preview → "Отправить в Intervals" button
+/race       — lightweight entry point for race creation: sends a priming message; user describes the race in free-form, preview+confirm via `suggest_race` MCP tool
 /web        — one-time code for desktop login (5 min TTL)
 /stick      — increment IQOS stick counter for today (owner only)
 /health     — server diagnostics: system stats, DB/Redis/queues, per-athlete Intervals.icu token check (OAuth/api_key), daily token usage per user, Anthropic (owner only)
@@ -166,16 +167,18 @@ Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any a
 /silent     — toggle silent mode (@user_required — works for viewers too)
 /whoami     — show current user info (chat_id, role)
 /donate     — voluntary support via Telegram Stars (XTR), 3 tiers (50/200/500)
-<text>      — free-form AI chat (stateless, tool-use via MCP, per-user token)
-<photo>     — AI chat with vision (base64 image + caption)
+<text>      — free-form AI chat (stateless, tool-use via MCP, per-user token). Triggers `suggest_race` preview+confirm for race-creation requests.
+<photo>     — AI chat with vision (base64 image + caption). Same `suggest_race` preview+confirm flow as `<text>`.
 <reply>     — reply context included as "[В ответ на: ...]"
 ```
 
-**Callback handlers:** `ramp_test:{sport}` — create ramp test, `update_zones` — update HR zones, `workout:{sport}` / `workout_push` / `workout_cancel` — `/workout` ConversationHandler states, `rpe:{activity_id}:{value}` — single-shot RPE rating from post-activity notification (see `docs/RPE_SPEC.md`), `card:{activity_id}` — generate Instagram workout card PNG (GPS track + metrics + AI text) via `actor_generate_workout_card`.
+**Callback handlers:** `ramp_test:{sport}` — create ramp test, `update_zones` — update HR zones, `workout:{sport}` / `workout_push` / `workout_cancel` — `/workout` ConversationHandler states, `race_push` / `race_cancel` — suggest_race confirm/dismiss in free-form chat (standalone, not in a ConversationHandler), `rpe:{activity_id}:{value}` — single-shot RPE rating from post-activity notification (see `docs/RPE_SPEC.md`), `card:{activity_id}` — generate Instagram workout card PNG (GPS track + metrics + AI text) via `actor_generate_workout_card`.
 
 **Ramp test post-activity flow:** `_actor_send_activity_notification` detects ramp-test activities via `_is_ramp_test_activity` (matches a `ScheduledWorkout` with `"Ramp Test"` in name on same date/sport) and routes to `build_ramp_test_message` (`tasks/formatter.py`) instead of the generic message. HRVT regression in `detect_hrv_thresholds` filters by WORK-segments from `activity_details.intervals` to exclude WU/CD/recovery noise. On detection failure `diagnose_hrv_thresholds` returns a structured `{code, ...}` dict localized in the formatter. The inline `Обновить зоны` button is shown only when drift >5% AND `ActivityHrv.count_hrvt1_samples(user, sport) >= 2` (matching `User.detect_threshold_drift`'s 2-sample minimum, so the button never lies). See `docs/ADAPTIVE_TRAINING_PLAN.md` Фаза 4 for the full protocol.
 
 **`/workout` two-phase flow:** generation calls `suggest_workout` (or `compose_workout` for fitness) with `dry_run=True` / `push_to_intervals=False`. `bot/agent.py:chat()` returns `ChatResult(text, tool_calls, nudge_boundary, request_count)` — `tool_calls` holds every tool_use block Claude emitted (deep-copied), filtered via the `tool_calls_filter` param to `set(_PREVIEWABLE_TOOLS.keys())` to avoid copying unrelated large inputs. The handler stashes the last previewable call in `context.user_data["pending_workout"]`. On "✅ Отправить в Intervals" tap, `workout_push` pops the draft, flips the preview flag, and calls `MCPClient.call_tool` directly **without** re-invoking Claude — so what lands in Intervals.icu is bit-for-bit identical to the preview. Prevents prompt-injection on the state-mutating step and saves one inference round per push. See `bot/main.py:_PREVIEWABLE_TOOLS` for the flag-name mapping.
+
+**Race creation via chat:** same preview/confirm pattern as workouts, for future races. In free-form chat (`handle_chat_message` / `handle_photo_message`) `tool_calls_filter=_RACE_TOOLS` catches `suggest_race(dry_run=True)`, renders a confirm button, and `race_push` replays with `dry_run=False` via direct MCP call — no re-inference, bit-for-bit same event goes to Intervals.icu. Idempotency by `(user_id, category)` — one active RACE_A/B/C per athlete; new date on same category triggers `update_event`, not create. `ctl_target` is local-only (Intervals doesn't store it) — written via `AthleteGoal.set_ctl_target`, which `upsert_from_intervals` deliberately leaves alone so the 30-min sync actor can't overwrite user input. Editable also via Settings UI: `PATCH /api/athlete/goal/{goal_id}` with `ctl_target` / `per_sport_targets` (local-only fields), sentinel-based partial update — see `api/routers/athlete.py`. Deletion via `delete_race_goal(category)` MCP tool (removes event from Intervals + soft-deletes local row).
 
 **Donate nudge:** after every N-th chat request (default N=5), free-form handlers (`handle_chat_message`, `handle_photo_message`) append a nudge as a **separate** Telegram message via `bot/donate_nudge.py:get_nudge_text()`. Policy lives in `should_show_nudge(user, nudge_boundary, request_count)` — agent only reports the raw `nudge_boundary` signal, all suppression rules (owner opt-out, recent donation, daily cap) apply in the handler. `/workout` handlers deliberately skip the nudge (rating limit counted, but not shown — see `DONATE_SPEC.md` §11.6). Suppression after a donation: `User.last_donation_at` is set in `successful_payment_callback` via `User.mark_donation`, and `should_show_nudge` skips for `DONATE_NUDGE_SUPPRESS_DAYS` (default 7 days).
 
@@ -197,6 +200,7 @@ POST /api/auth/demo                     — demo password → JWT with role=demo
 GET  /api/auth/me                       — auth status + language + intervals connection + profile/goal
 GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, audit-logged)
 PUT  /api/auth/language                 — update user language (ru/en)
+PATCH /api/athlete/goal/{goal_id}        — update local-only overlay (ctl_target, per_sport_targets); sentinel-partial
 POST /api/intervals/auth/init            — initiate OAuth (authenticated XHR) → {authorize_url}
 GET  /api/intervals/auth/callback        — OAuth callback: code → token → DB → redirect
 POST /api/intervals/auth/disconnect      — clear OAuth tokens (user can reconnect anytime)
@@ -382,13 +386,13 @@ User sends /morning → @athlete_required resolves User from chat_id
 
 ---
 
-## MCP Server (51 tools + 3 resources)
+## MCP Server (53 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per-user Bearer auth via `User.mcp_token`).
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**51 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**53 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 

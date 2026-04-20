@@ -59,11 +59,13 @@ export default function Settings() {
     css?: number | null
   } | null>(null)
   const [goal, setGoal] = useState<{
+    id?: number | null
     event_name: string
     event_date: string
     ctl_target?: number | null
     per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
   } | null>(null)
+  const [goalSaveError, setGoalSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -102,6 +104,41 @@ export default function Settings() {
     const timer = setTimeout(() => setIntervalsToast(null), 5000)
     return () => clearTimeout(timer)
   }, [])
+
+  // Push a local-only goal edit (ctl_target / per_sport_targets) to the backend.
+  // Applies optimistic update first; on failure rolls back and sets a toast so
+  // the row re-mounts with the original value.
+  const patchGoal = async (
+    patch: Partial<{ ctl_target: number | null; per_sport_targets: Record<string, number | null> }>,
+  ) => {
+    if (!goal?.id) return
+    const prev = goal
+    const next = {
+      ...goal,
+      ...(patch.ctl_target !== undefined ? { ctl_target: patch.ctl_target } : {}),
+      ...(patch.per_sport_targets !== undefined
+        ? {
+            per_sport_targets: {
+              ...(goal.per_sport_targets ?? {}),
+              ...patch.per_sport_targets,
+            },
+          }
+        : {}),
+    }
+    setGoal(next)
+    setGoalSaveError(null)
+    try {
+      await apiFetch(`/api/athlete/goal/${goal.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+    } catch (e) {
+      setGoal(prev)
+      const msg = e instanceof Error ? e.message : String(e)
+      setGoalSaveError(msg || t('settings.goal.save_failed'))
+    }
+  }
 
   // OAuth initiation: XHR POST (so apiFetch attaches auth header) → receive
   // authorize URL → navigate browser. A plain <a href> would NOT send the
@@ -273,14 +310,40 @@ export default function Settings() {
         <Section title="Race Goal" icon="🏁">
           <Row label="Event" value={String(goal.event_name)} />
           <Row label="Date" value={String(goal.event_date)} />
-          {goal.ctl_target && <Row label="CTL Target" value={String(goal.ctl_target)} />}
-          {goal.per_sport_targets && (
-            <>
-              {goal.per_sport_targets.swim != null && <Row label="Swim CTL" value={String(goal.per_sport_targets.swim)} />}
-              {goal.per_sport_targets.ride != null && <Row label="Bike CTL" value={String(goal.per_sport_targets.ride)} />}
-              {goal.per_sport_targets.run != null && <Row label="Run CTL" value={String(goal.per_sport_targets.run)} />}
-            </>
+          <EditableNumberRow
+            label="CTL Target"
+            value={goal.ctl_target ?? null}
+            editHint={t('settings.goal.ctl_edit_hint')}
+            disabled={isDemo || !goal.id}
+            onCommit={next => patchGoal({ ctl_target: next })}
+          />
+          <EditableNumberRow
+            label="Swim CTL"
+            value={goal.per_sport_targets?.swim ?? null}
+            editHint={t('settings.goal.ctl_edit_hint')}
+            disabled={isDemo || !goal.id}
+            onCommit={next => patchGoal({ per_sport_targets: { swim: next } })}
+          />
+          <EditableNumberRow
+            label="Bike CTL"
+            value={goal.per_sport_targets?.ride ?? null}
+            editHint={t('settings.goal.ctl_edit_hint')}
+            disabled={isDemo || !goal.id}
+            onCommit={next => patchGoal({ per_sport_targets: { ride: next } })}
+          />
+          <EditableNumberRow
+            label="Run CTL"
+            value={goal.per_sport_targets?.run ?? null}
+            editHint={t('settings.goal.ctl_edit_hint')}
+            disabled={isDemo || !goal.id}
+            onCommit={next => patchGoal({ per_sport_targets: { run: next } })}
+          />
+          {goalSaveError && (
+            <p className="text-[12px] text-red mt-2">{goalSaveError}</p>
           )}
+          <p className="text-[11px] text-text-dim mt-3 leading-snug">
+            {t('settings.goal.edit_via_chat_hint')}
+          </p>
         </Section>
       )}
 
@@ -388,6 +451,90 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between items-center py-1.5 border-b border-border last:border-b-0">
       <span className="text-[13px] text-text-dim">{label}</span>
       <span className="text-[13px] font-medium">{value}</span>
+    </div>
+  )
+}
+
+// Click-to-edit row for local-only numeric fields (CTL target, per-sport CTL).
+// Optimistic commit: value is pushed upstream via `onCommit(next)`; on error the
+// parent rolls back its state and sets an error toast so the row re-mounts with
+// the original value.
+function EditableNumberRow({
+  label,
+  value,
+  onCommit,
+  editHint,
+  disabled,
+}: {
+  label: string
+  value: number | null | undefined
+  onCommit: (next: number | null) => Promise<void>
+  editHint: string
+  disabled?: boolean
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<string>(value != null ? String(value) : '')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!editing) setDraft(value != null ? String(value) : '')
+  }, [value, editing])
+
+  const commit = async () => {
+    const trimmed = draft.trim()
+    const next = trimmed === '' ? null : Number(trimmed)
+    if (next !== null && Number.isNaN(next)) {
+      setEditing(false)
+      return
+    }
+    if (next === value) {
+      setEditing(false)
+      return
+    }
+    setBusy(true)
+    try {
+      await onCommit(next)
+    } finally {
+      setBusy(false)
+      setEditing(false)
+    }
+  }
+
+  return (
+    <div className="flex justify-between items-center py-1.5 border-b border-border last:border-b-0">
+      <span className="text-[13px] text-text-dim">{label}</span>
+      {editing ? (
+        <input
+          type="number"
+          min={0}
+          max={200}
+          step={1}
+          autoFocus
+          value={draft}
+          disabled={busy}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.key === 'Enter') {
+              ;(e.target as HTMLInputElement).blur()
+            } else if (e.key === 'Escape') {
+              setDraft(value != null ? String(value) : '')
+              setEditing(false)
+            }
+          }}
+          className="text-[13px] font-medium text-right w-20 bg-transparent border border-border rounded px-1 focus:outline-none focus:border-primary"
+        />
+      ) : (
+        <button
+          type="button"
+          disabled={disabled}
+          title={editHint}
+          onClick={() => setEditing(true)}
+          className="text-[13px] font-medium hover:text-primary disabled:cursor-not-allowed"
+        >
+          {value != null ? String(value) : '—'}
+        </button>
+      )}
     </div>
   )
 }
