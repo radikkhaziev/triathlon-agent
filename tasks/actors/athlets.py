@@ -1,7 +1,7 @@
 """Dramatiq actors — athlete settings (sync thresholds, update zones)."""
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import dramatiq
 from pydantic import validate_call
@@ -95,6 +95,10 @@ def _actor_send_goal_notification(
 def actor_sync_athlete_goals(user: UserDTO):
     """Sync RACE_A/B/C events from Intervals.icu → athlete_goals table."""
     today = date.today()
+    # Intervals.icu API drops category-filtered results unless newest is set explicitly —
+    # reproduced on 2026-04-20 with user 5's RACE_A "Drina trail" 2026-05-05: without newest,
+    # `?category=RACE_A` returns []; with newest ~2 years out it returns the event.
+    newest = today + timedelta(days=2 * 365)
 
     existing_ids = {g.intervals_event_id for g in AthleteGoal.get_all(user.id)}
     new_event: ScheduledWorkoutDTO | None = None
@@ -102,7 +106,7 @@ def actor_sync_athlete_goals(user: UserDTO):
 
     with IntervalsSyncClient.for_user(user) as client:
         for category in ("RACE_A", "RACE_B", "RACE_C"):
-            events: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, category=category)
+            events: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, newest=newest, category=category)
             if not events:
                 continue
             event = events[0]
