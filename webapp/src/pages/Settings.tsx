@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import { useAuth } from '../auth/useAuth'
@@ -105,13 +105,22 @@ export default function Settings() {
     return () => clearTimeout(timer)
   }, [])
 
+  // Monotonic request-id so a late failure from an older PATCH doesn't
+  // rollback the state to a value that has since been overwritten by a newer
+  // successful PATCH. We only roll back if the failing request is the most
+  // recent one we've issued.
+  const patchSeq = useRef(0)
+  const lastSuccessfulSeq = useRef(0)
+
   // Push a local-only goal edit (ctl_target / per_sport_targets) to the backend.
-  // Applies optimistic update first; on failure rolls back and sets a toast so
-  // the row re-mounts with the original value.
+  // Applies optimistic update first; on failure rolls back and sets an inline
+  // error message so the row re-mounts with the original value — provided the
+  // failing request is still the latest (see patchSeq above).
   const patchGoal = async (
     patch: Partial<{ ctl_target: number | null; per_sport_targets: Record<string, number | null> }>,
   ) => {
     if (!goal?.id) return
+    const seq = ++patchSeq.current
     const prev = goal
     const next = {
       ...goal,
@@ -133,10 +142,17 @@ export default function Settings() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       })
+      lastSuccessfulSeq.current = Math.max(lastSuccessfulSeq.current, seq)
     } catch (e) {
-      setGoal(prev)
-      const msg = e instanceof Error ? e.message : String(e)
-      setGoalSaveError(msg || t('settings.goal.save_failed'))
+      // Only roll back if this request is still the latest. If a newer PATCH
+      // already succeeded (`seq < lastSuccessfulSeq.current`) or is in-flight
+      // (`seq < patchSeq.current`), keep the current state — our older failure
+      // no longer reflects the user's intent.
+      if (seq === patchSeq.current && seq > lastSuccessfulSeq.current) {
+        setGoal(prev)
+        const msg = e instanceof Error ? e.message : String(e)
+        setGoalSaveError(msg || t('settings.goal.save_failed'))
+      }
     }
   }
 
@@ -456,9 +472,17 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 // Click-to-edit row for local-only numeric fields (CTL target, per-sport CTL).
-// Optimistic commit: value is pushed upstream via `onCommit(next)`; on error the
-// parent rolls back its state and sets an error toast so the row re-mounts with
-// the original value.
+// Optimistic commit: value is pushed upstream via `onCommit(next)`; on error
+// the parent rolls back its state and renders an inline error message so the
+// row re-mounts with the original value.
+//
+// Input constraints (must match server DTO bounds at api/dto.py:
+// `ge=0, le=200`). Out-of-range or non-numeric input is caught in `commit()`
+// BEFORE the PATCH fires — we keep the editor open and show an inline
+// message so the user can correct without a round-trip + rollback flicker.
+const EDITABLE_MIN = 0
+const EDITABLE_MAX = 200
+
 function EditableNumberRow({
   label,
   value,
@@ -475,61 +499,83 @@ function EditableNumberRow({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<string>(value != null ? String(value) : '')
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!editing) setDraft(value != null ? String(value) : '')
+    if (!editing) {
+      setDraft(value != null ? String(value) : '')
+      setError(null)
+    }
   }, [value, editing])
 
   const commit = async () => {
     const trimmed = draft.trim()
     const next = trimmed === '' ? null : Number(trimmed)
+
     if (next !== null && Number.isNaN(next)) {
-      setEditing(false)
+      setError(`Enter a number between ${EDITABLE_MIN} and ${EDITABLE_MAX}.`)
+      return
+    }
+    if (next !== null && (next < EDITABLE_MIN || next > EDITABLE_MAX)) {
+      setError(`Value must be between ${EDITABLE_MIN} and ${EDITABLE_MAX}.`)
       return
     }
     if (next === value) {
       setEditing(false)
+      setError(null)
       return
     }
     setBusy(true)
     try {
       await onCommit(next)
+      setError(null)
+      setEditing(false)
     } finally {
       setBusy(false)
-      setEditing(false)
     }
   }
 
   return (
-    <div className="flex justify-between items-center py-1.5 border-b border-border last:border-b-0">
+    <div className="flex justify-between items-start py-1.5 border-b border-border last:border-b-0">
       <span className="text-[13px] text-text-dim">{label}</span>
       {editing ? (
-        <input
-          type="number"
-          min={0}
-          max={200}
-          step={1}
-          autoFocus
-          value={draft}
-          disabled={busy}
-          onChange={e => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={e => {
-            if (e.key === 'Enter') {
-              ;(e.target as HTMLInputElement).blur()
-            } else if (e.key === 'Escape') {
-              setDraft(value != null ? String(value) : '')
-              setEditing(false)
-            }
-          }}
-          className="text-[13px] font-medium text-right w-20 bg-transparent border border-border rounded px-1 focus:outline-none focus:border-primary"
-        />
+        <div className="flex flex-col items-end">
+          <input
+            type="number"
+            min={EDITABLE_MIN}
+            max={EDITABLE_MAX}
+            step={1}
+            autoFocus
+            value={draft}
+            disabled={busy}
+            onChange={e => {
+              setDraft(e.target.value)
+              if (error) setError(null)
+            }}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                ;(e.target as HTMLInputElement).blur()
+              } else if (e.key === 'Escape') {
+                setDraft(value != null ? String(value) : '')
+                setError(null)
+                setEditing(false)
+              }
+            }}
+            aria-invalid={error ? true : undefined}
+            className="text-[13px] font-medium text-right w-20 bg-transparent border border-border rounded px-1 focus:outline-none focus:border-primary"
+          />
+          {error && <span className="mt-1 text-[11px] text-red">{error}</span>}
+        </div>
       ) : (
         <button
           type="button"
           disabled={disabled}
           title={editHint}
-          onClick={() => setEditing(true)}
+          onClick={() => {
+            setError(null)
+            setEditing(true)
+          }}
           className="text-[13px] font-medium hover:text-primary disabled:cursor-not-allowed"
         >
           {value != null ? String(value) : '—'}

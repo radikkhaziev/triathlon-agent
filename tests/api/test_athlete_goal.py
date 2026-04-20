@@ -96,6 +96,53 @@ class TestPatchAthleteGoal:
         assert "ride" not in per_sport
 
     @pytest.mark.asyncio
+    async def test_audit_log_emitted_on_success(self):
+        """Audit log is emitted via module logger — capture by patching the
+        logger directly rather than relying on caplog, which can miss records
+        when pytest/sentry logger config disables propagation.
+        """
+        body = AthleteGoalPatchRequest(ctl_target=72.0)
+        updated = _goal(ctl_target=72.0)
+        with (
+            patch(
+                "api.routers.athlete.AthleteGoal.update_local_fields",
+                AsyncMock(return_value=updated),
+            ),
+            patch("api.routers.athlete.logger.info") as mock_info,
+        ):
+            await patch_athlete_goal(goal_id=10, body=body, user=_user())
+
+        # At least one .info(...) call contains the goal_id + user_id + field list.
+        calls_rendered = [
+            str(call.args[0]) % call.args[1:] if len(call.args) > 1 else str(call.args[0])
+            for call in mock_info.call_args_list
+        ]
+        assert any("PATCH /api/athlete/goal/10" in r for r in calls_rendered)
+        assert any("user_id=1" in r for r in calls_rendered)
+        assert any("ctl_target" in r for r in calls_rendered)
+
+    @pytest.mark.asyncio
+    async def test_audit_log_emitted_on_404(self):
+        body = AthleteGoalPatchRequest(ctl_target=72.0)
+        with (
+            patch(
+                "api.routers.athlete.AthleteGoal.update_local_fields",
+                AsyncMock(return_value=None),
+            ),
+            patch("api.routers.athlete.logger.info") as mock_info,
+        ):
+            try:
+                await patch_athlete_goal(goal_id=99999, body=body, user=_user())
+            except HTTPException:
+                pass
+
+        calls_rendered = [
+            str(call.args[0]) % call.args[1:] if len(call.args) > 1 else str(call.args[0])
+            for call in mock_info.call_args_list
+        ]
+        assert any("denied" in r for r in calls_rendered)
+
+    @pytest.mark.asyncio
     async def test_ctl_target_rejected_out_of_bounds(self):
         """ge=0 / le=200 clamp on DTO."""
         from pydantic import ValidationError

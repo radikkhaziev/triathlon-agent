@@ -55,8 +55,16 @@ async def patch_athlete_goal(
     data_uid = get_data_user_id(user)
     goal = await AthleteGoal.update_local_fields(goal_id, user_id=data_uid, **kwargs)
     if goal is None:
+        # Log the miss so we can spot probes / foreign-id leaks in prod.
+        logger.info("PATCH /api/athlete/goal/%d denied for user_id=%d (not found or not owned)", goal_id, data_uid)
         raise HTTPException(status_code=404, detail="Goal not found.")
 
+    logger.info(
+        "PATCH /api/athlete/goal/%d by user_id=%d: fields=%s",
+        goal_id,
+        data_uid,
+        sorted(fields_set),
+    )
     return {
         "goal_id": goal.id,
         "ctl_target": goal.ctl_target,

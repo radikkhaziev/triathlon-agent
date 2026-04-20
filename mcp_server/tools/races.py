@@ -280,19 +280,25 @@ def _format_preview(
     existing_date: date | None,
     today: date,
 ) -> str:
-    """Render a human-readable dry-run preview for the confirm button."""
+    """Render a human-readable dry-run preview for the confirm button.
+
+    MCP tools are language-agnostic — Claude reads this preview from the
+    tool result and paraphrases it into the athlete's language before
+    replying. Keep wording concise and consistent (all English) so the
+    model doesn't mix languages downstream.
+    """
     days_to_race = (event_date - today).days
-    date_str = f"{event_date} ({days_to_race} дн)" if days_to_race >= 0 else str(event_date)
+    date_str = f"{event_date} ({days_to_race}d)" if days_to_race >= 0 else str(event_date)
 
     lines: list[str] = []
     header_icon = "♻️ Update" if existing_date else "🏁 Preview"
     lines.append(f"{header_icon}: {name} — {category}")
     if existing_date and existing_date != event_date:
-        lines.append(f"📅 Было: {existing_date} → Станет: {date_str}")
+        lines.append(f"📅 Was: {existing_date} → Now: {date_str}")
     else:
-        lines.append(f"📅 Дата: {date_str}")
+        lines.append(f"📅 Date: {date_str}")
     if sport:
-        sport_line = f"🏃 Вид: {sport}"
+        sport_line = f"🏃 Sport: {sport}"
         if distance_m:
             dist_km = distance_m / 1000
             sport_line += f", {dist_km:.1f} km" if dist_km >= 1 else f", {int(distance_m)} m"
@@ -307,17 +313,17 @@ def _format_preview(
             gap = ctl_target - current_ctl
             weeks = max(days_to_race / 7, 0.1)
             ramp = gap / weeks
-            ctl_line += f" (сейчас {current_ctl:.0f}, ramp {ramp:+.1f} TSS/нед)"
+            ctl_line += f" (current {current_ctl:.0f}, ramp {ramp:+.1f} TSS/wk)"
             if ramp > 7:
-                ctl_line += " ⚠️ агрессивно (>7 TSS/нед)"
+                ctl_line += " ⚠️ aggressive (>7 TSS/wk)"
         lines.append(ctl_line)
 
     if description:
         lines.append(f"📝 {description}")
 
     lines.append("")
-    action = "обновить" if existing_date else "отправить"
-    lines.append(f"Use suggest_race with dry_run=False or press «Отправить в Intervals» to {action}.")
+    action = "update" if existing_date else "submit"
+    lines.append(f"Call suggest_race with dry_run=False or tap «Submit to Intervals» to {action}.")
     return "\n".join(lines)
 
 
@@ -480,7 +486,7 @@ async def suggest_race(
     ctl_target_saved = True
     if ctl_target is not None:
         try:
-            await AthleteGoal.set_ctl_target(goal.id, ctl_target)
+            await AthleteGoal.set_ctl_target(goal.id, ctl_target, user_id=user_id)
         except Exception:
             logger.warning("suggest_race: set_ctl_target failed for goal %d", goal.id, exc_info=True)
             ctl_target_saved = False

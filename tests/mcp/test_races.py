@@ -157,7 +157,10 @@ class TestDryRun:
             )
 
         assert "Update" in out
-        assert "Было:" in out
+        # Preview is now all-English (MCP tools are language-agnostic, Claude
+        # paraphrases). Was: Russian "Было:" before review fix.
+        assert "Was:" in out
+        assert "Now:" in out
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +195,7 @@ class TestPushIdempotency:
         client.create_event.assert_awaited_once()
         client.update_event.assert_not_called()
         upsert.assert_awaited_once()
-        set_ctl.assert_awaited_once_with(10, 40)
+        set_ctl.assert_awaited_once_with(10, 40, user_id=1)
         assert "created" in out
         assert "event/777" in out
 

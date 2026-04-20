@@ -355,12 +355,24 @@ class AthleteGoal(Base):
 
     @classmethod
     @dual
-    def set_ctl_target(cls, goal_id: int, ctl_target: float | None, *, session: Session) -> None:
-        """Overwrite ctl_target for a goal. Kept separate from ``upsert_from_intervals``
-        so the sync actor cannot stomp on user-entered CTL targets (see docstring
-        on :meth:`upsert_from_intervals`).
+    def set_ctl_target(
+        cls,
+        goal_id: int,
+        ctl_target: float | None,
+        *,
+        user_id: int,
+        session: Session,
+    ) -> None:
+        """Overwrite ctl_target for a goal owned by ``user_id``.
+
+        Scoped to ``user_id`` as defense-in-depth — callers already vet ownership
+        (e.g. ``suggest_race`` just created the goal in the same tenant), but
+        a goal_id leaked into the wrong code path would otherwise cross-tenant
+        write here. Kept separate from ``upsert_from_intervals`` so the 30-min
+        sync actor cannot stomp on user-entered CTL targets (see docstring on
+        :meth:`upsert_from_intervals`).
         """
-        session.execute(update(cls).where(cls.id == goal_id).values(ctl_target=ctl_target))
+        session.execute(update(cls).where(cls.id == goal_id, cls.user_id == user_id).values(ctl_target=ctl_target))
         session.commit()
 
     @classmethod
