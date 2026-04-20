@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import html
 import logging
 import os
 import time
@@ -340,7 +341,7 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
         filled = int(pct / 100 * width)
         return "█" * filled + "░" * (width - filled)
 
-    lines.append("```")
+    lines.append("<pre>")
     for i, pct in enumerate(cpu_per_core):
         lines.append(f"CPU{i} [{_bar(pct)}] {pct:5.1f}%")
     mem_str = f"{mem.used / 1024**3:.2f}G/{mem.total / 1024**3:.2f}G"
@@ -351,7 +352,7 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
     lines.append("")
     lines.append(f"Tasks: {tasks}  Load: {load1:.2f} {load5:.2f} {load15:.2f}")
     lines.append(f"Uptime: {up_str}  CPU: {cpu_total}%")
-    lines.append("```")
+    lines.append("</pre>")
 
     # DB + user stats + token usage (single session)
     athletes: list[User] = []
@@ -392,14 +393,16 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
                 )
             ).fetchall()
 
-        lines.append(f"✅ *DB*: ok | 👥 {total_users} users | 🏃 {active_athletes} athletes | ✅ {active_users} active")
-        lines.append(f"🔑 *Auth*: {mcp_tokens} MCP | {oauth_users} OAuth")
+        lines.append(
+            f"✅ <b>DB</b>: ok | 👥 {total_users} users | 🏃 {active_athletes} athletes | ✅ {active_users} active"
+        )
+        lines.append(f"🔑 <b>Auth</b>: {mcp_tokens} MCP | {oauth_users} OAuth")
 
         if usage_rows:
-            lines.append(f"📊 *Tokens today* ({today_str}):")
+            lines.append(f"📊 <b>Tokens today</b> ({today_str}):")
             for row in usage_rows:
-                username = row[0] or "—"
-                role = row[1] or "—"
+                username = html.escape(str(row[0] or "—"))
+                role = html.escape(str(row[1] or "—"))
                 inp = row[2] or 0
                 out = row[3] or 0
                 cache = row[4] or 0
@@ -407,9 +410,9 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
                 total = inp + out
                 lines.append(f"  @{username} ({role}): {total:,}t ({reqs} reqs, {cache:,} cached)")
         else:
-            lines.append("📊 *Tokens today*: no usage")
+            lines.append("📊 <b>Tokens today</b>: no usage")
     except Exception as e:
-        lines.append(f"❌ *DB*: {e}")
+        lines.append(f"❌ <b>DB</b>: {html.escape(str(e))}")
 
     # Redis + Dramatiq queues
     try:
@@ -434,16 +437,16 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
             else:
                 continue
             if size > 0:
-                queue_info.append(f"{key_str.replace('dramatiq:', '')}={size}")
+                queue_info.append(f"{html.escape(key_str.replace('dramatiq:', ''))}={size}")
 
-        redis_line = f"✅ *Redis*: ok | {used} | {db_size} keys"
+        redis_line = f"✅ <b>Redis</b>: ok | {html.escape(str(used))} | {db_size} keys"
         if queue_info:
-            redis_line += f"\n📬 *Queues*: {', '.join(queue_info)}"
+            redis_line += f"\n📬 <b>Queues</b>: {', '.join(queue_info)}"
         else:
-            redis_line += "\n📬 *Queues*: empty"
+            redis_line += "\n📬 <b>Queues</b>: empty"
         lines.append(redis_line)
     except Exception as e:
-        lines.append(f"❌ *Redis*: {e}")
+        lines.append(f"❌ <b>Redis</b>: {html.escape(str(e))}")
 
     # Intervals.icu — reachability + per-athlete credential check
     try:
@@ -451,13 +454,13 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
             resp = await http.get("https://intervals.icu/api/v1/athlete/0", auth=("x", "x"))
             reachable = resp.status_code in (200, 401, 403)
             lines.append(
-                f"{'✅' if reachable else '❌'} *Intervals.icu*: "
+                f"{'✅' if reachable else '❌'} <b>Intervals.icu</b>: "
                 f"{'reachable' if reachable else f'HTTP {resp.status_code}'}"
             )
             for a in athletes:
                 url = f"https://intervals.icu/api/v1/athlete/{a.athlete_id}"
-                name = a.username or f"id={a.id}"
-                method = a.intervals_auth_method
+                name = html.escape(str(a.username or f"id={a.id}"))
+                method = html.escape(str(a.intervals_auth_method))
                 try:
                     if a.intervals_access_token:
                         r = await http.get(
@@ -478,7 +481,7 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
                 except Exception as e:
                     lines.append(f"  ❌ @{name}: {type(e).__name__}")
     except Exception as e:
-        lines.append(f"❌ *Intervals.icu*: {e}")
+        lines.append(f"❌ <b>Intervals.icu</b>: {html.escape(str(e))}")
 
     # Anthropic API (model list — no token cost)
     try:
@@ -491,16 +494,16 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
                 },
             )
             if resp.status_code == 200:
-                lines.append("✅ *Anthropic*: ok")
+                lines.append("✅ <b>Anthropic</b>: ok")
             else:
-                lines.append(f"⚠️ *Anthropic*: HTTP {resp.status_code}")
+                lines.append(f"⚠️ <b>Anthropic</b>: HTTP {resp.status_code}")
     except Exception as e:
-        lines.append(f"❌ *Anthropic*: {str(e)[:50]}")
+        lines.append(f"❌ <b>Anthropic</b>: {html.escape(str(e)[:50])}")
 
     elapsed = round((time.monotonic() - start) * 1000)
     lines.append(f"⏱ Response: {elapsed}ms")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 @athlete_required

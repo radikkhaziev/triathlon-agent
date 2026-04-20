@@ -153,7 +153,12 @@ def actor_generate_workout_card(user: UserDTO, activity_id: str):
 
         # Send to user
         tg = TelegramTool(user=user)
-        tg.send_photo(photo=png, caption=f"📸 {sport_type} card")
+        tg.send_document(
+            document=png,
+            filename=f"{sport_type.lower()}-card-{activity_id}.png",
+            mime_type="image/png",
+            caption=f"📸 {sport_type} card",
+        )
         logger.info("Card sent for activity %s to user %d", activity_id, user.id)
     except Exception as e:
         sentry_sdk.capture_exception(e)
