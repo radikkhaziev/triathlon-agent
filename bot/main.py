@@ -125,11 +125,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@athlete_required
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle /dashboard command — alias for /morning."""
     webapp_url = settings.API_BASE_URL
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Открыть", web_app=WebAppInfo(url=webapp_url))]])
-    await update.message.reply_text("Web Dashboard", reply_markup=keyboard)
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(_("Открыть приложение"), web_app=WebAppInfo(url=webapp_url))]]
+    )
+    await update.message.reply_text(_("Web Dashboard"), reply_markup=keyboard)
 
 
 @athlete_required

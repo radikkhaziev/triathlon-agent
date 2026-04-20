@@ -84,6 +84,14 @@ class TestFormatPace:
     def test_none_returns_none(self):
         assert _format_pace("Swim", None) is None
 
+    def test_run_pace_rounds_not_floors(self):
+        # 3.21 m/s → 311.53 sec/km. int() → 5:11, round() → 5:12.
+        assert _format_pace("Run", 3.21) == "5:12/km"
+
+    def test_swim_pace_rounds_not_floors(self):
+        # 0.76 m/s → 131.58 sec/100m. int() → 2:11, round() → 2:12.
+        assert _format_pace("Swim", 0.76) == "2:12/100m"
+
 
 class TestComposeDescription:
     def test_appends_signature_link(self):
@@ -121,6 +129,16 @@ class TestParseSignatureJson:
     def test_no_json_raises(self):
         with pytest.raises(ValueError):
             _parse_signature_json("no json here")
+
+    def test_trailing_text_with_braces_ignored(self):
+        # raw_decode stops at the end of the first complete JSON object,
+        # so trailing `{note}` must not confuse the parser.
+        out = _parse_signature_json('{"title": "T", "description": "D"} trailing {note}')
+        assert out == {"title": "T", "description": "D"}
+
+    def test_non_object_json_raises(self):
+        with pytest.raises(ValueError):
+            _parse_signature_json('["not", "an", "object"]')
 
 
 class TestAlreadySigned:

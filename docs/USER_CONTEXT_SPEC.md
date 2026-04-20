@@ -28,7 +28,7 @@
 ### Phase 1 (MVP) — делаем сейчас
 
 - Таблица `user_facts` + ORM (append-with-cap, N=3 активных на topic — см. §3).
-- MCP tools: `save_fact`, `list_facts`, `deactivate_fact`, `get_fact_metrics` (owner-only).
+- MCP tools: `save_fact`, `list_facts`, `deactivate_fact`, `get_fact_metrics` (per-user, все атлеты видят свои метрики).
 - Инъекция активных фактов + цели в системный промпт с учётом prompt caching (§5, §6).
 - Undo-кнопка «🗑 Забудь это» после `save_fact` с TTL (§4).
 - TTL фактов через `expires_at` (опционально на факт).
@@ -322,7 +322,7 @@ cached_system = [{"type": "text", "text": system, "cache_control": {"type": "eph
 - [ ] `bot/main.py` — `_UNDOABLE_TOOLS` registry + `handle_chat_message` читает `tool_calls_filter={"save_fact"}` из `ChatResult`, стэш `last_saved_fact_id` + `last_undo_message_id` в `user_data`, inline «🗑 Забудь это».
 - [ ] Callback `fact_undo` — `pop("last_saved_fact_id")` + прямой MCP `deactivate_fact`, без Claude.
 - [ ] TTL на undo-кнопку: `edit_message_reply_markup(None)` при следующем сообщении + `job_queue.run_once(_expire_undo_button, when=600)` fallback.
-- [ ] `get_fact_metrics()` MCP tool (owner-only) — см. §10.
+- [ ] `get_fact_metrics()` MCP tool — per-user, scoped через `get_current_user_id()` как все остальные tool'ы. См. §10.
 - [ ] Unit-тест append-with-cap (4-й факт в topic → 1-й помечен `topic_cap`, не `superseded`).
 - [ ] Unit-тест валидатор: `fact` >300 символов → tool error.
 - [ ] Smoke-тест на owner: подкинуть факт в диалоге, тапнуть undo, убедиться что факт деактивирован; затем сохранить новый факт и проверить что на следующий день он в промпте; проверить что мусорная болтовня («устал сегодня») идёт в `save_mood_checkin`, а не в `save_fact`.
@@ -371,7 +371,9 @@ cached_system = [{"type": "text", "text": system, "cache_control": {"type": "eph
 
 ### Где смотреть
 
-Простой MCP tool `get_fact_metrics()` (owner-only или все — решим позже), который возвращает JSON с полями выше. Вызывается из owner-чата с ботом раз в неделю: «покажи метрики памяти». Dashboard-виджет — Phase 3, не раньше.
+MCP tool `get_fact_metrics()` — **per-user**, как все остальные tool'ы: `get_current_user_id()` из contextvars, атлет получает только свои метрики. Возвращает JSON со списком из таблицы выше. Атлет спрашивает в чате: «что ты запомнил за неделю?» — Claude зовёт `get_fact_metrics` + `list_facts` и рендерит сводку.
+
+Все метрики (включая «триггер Phase 2») считаются per-user, не глобально: у одного атлета может быть `tool_facts_per_100_msgs = 5`, у другого `= 1` — extractor включим избирательно для тех, у кого тул-based подход не сработал. Dashboard-виджет в webapp — Phase 3, не раньше.
 
 ### Алерты
 

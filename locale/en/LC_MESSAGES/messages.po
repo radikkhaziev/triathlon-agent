@@ -49,6 +49,9 @@ msgstr "Morning report is ready."
 msgid "Открыть отчёт"
 msgstr "Open report"
 
+msgid "Web Dashboard"
+msgstr "Web Dashboard"
+
 msgid "Отчёт формируется, подождите пару минут."
 msgstr "Report is being generated, please wait."
 

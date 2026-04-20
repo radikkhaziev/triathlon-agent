@@ -575,10 +575,10 @@ def _format_pace(sport: str | None, pace_m_per_s: float | None) -> str | None:
     if not pace_m_per_s or pace_m_per_s <= 0:
         return None
     if sport == "Swim":
-        sec_per_100m = 100 / pace_m_per_s
-        return f"{int(sec_per_100m) // 60}:{int(sec_per_100m) % 60:02d}/100m"
-    sec_per_km = 1000 / pace_m_per_s
-    return f"{int(sec_per_km) // 60}:{int(sec_per_km) % 60:02d}/km"
+        sec = round(100 / pace_m_per_s)
+        return f"{sec // 60}:{sec % 60:02d}/100m"
+    sec = round(1000 / pace_m_per_s)
+    return f"{sec // 60}:{sec % 60:02d}/km"
 
 
 def _generate_signature_prompt(
@@ -679,10 +679,12 @@ def _parse_signature_json(text: str) -> dict:
             stripped = stripped[4:]
         stripped = stripped.strip()
     start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end == -1:
+    if start == -1:
         raise ValueError("no JSON object in response")
-    return json.loads(stripped[start : end + 1])
+    obj, _ = json.JSONDecoder().raw_decode(stripped[start:])
+    if not isinstance(obj, dict):
+        raise ValueError("expected JSON object")
+    return obj
 
 
 @dramatiq.actor(queue_name="default")
