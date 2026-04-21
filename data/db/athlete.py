@@ -291,19 +291,32 @@ class AthleteGoal(Base):
 
     @classmethod
     @dual
-    def get_by_category(cls, user_id: int, category: str, *, session: Session) -> AthleteGoal | None:
-        """Return the active goal for (user_id, category) or None.
+    def get_by_category(
+        cls,
+        user_id: int,
+        category: str,
+        *,
+        include_past: bool = False,
+        session: Session,
+    ) -> AthleteGoal | None:
+        """Return the nearest-upcoming active goal for (user_id, category) or None.
 
-        Used by ``suggest_race`` to decide create vs update — an athlete has at
-        most one RACE_A / RACE_B / RACE_C, and repeated calls with a new date
-        must rename-in-place, not create a second row.
+        Athletes routinely have multiple races per category in a season (e.g.
+        two A-races — Ironman 70.3 in September + Oceanlava in October), so
+        ``(user_id, category)`` is **not** a unique key. When ``suggest_race``
+        asks "move my RACE_A", we default to the nearest future race —
+        matching the most common interpretation of the bare command. Callers
+        that need a specific race must disambiguate by ``intervals_event_id``
+        or by passing the exact date.
 
-        There is no DB unique constraint enforcing the one-active-per-category
-        invariant (a crash mid-soft-delete could leave two actives), so we
-        explicitly pick the most recently inserted row instead of letting
-        ``scalar_one_or_none`` raise. Log if duplicates are seen — that's a
-        signal to run a cleanup.
+        By default past races (``event_date < today``) are filtered out —
+        they can't be "moved forward". Pass ``include_past=True`` to fall
+        back to the most recent past active row when no upcoming exists;
+        used by ``delete_race_goal`` so athletes can still remove a stale
+        ``is_active=True`` row left behind by the sync actor after the
+        race date has passed.
         """
+        today = date.today()
         rows = (
             session.execute(
                 select(cls)
@@ -311,41 +324,59 @@ class AthleteGoal(Base):
                     cls.user_id == user_id,
                     cls.category == category,
                     cls.is_active.is_(True),
+                    cls.event_date >= today,
                 )
-                .order_by(cls.id.desc())
+                .order_by(cls.event_date.asc())
             )
             .scalars()
             .all()
         )
         if len(rows) > 1:
-            logger.warning(
-                "AthleteGoal.get_by_category: %d active rows for user_id=%d category=%s — picking id=%d",
+            logger.info(
+                "AthleteGoal.get_by_category: %d upcoming %s rows for user_id=%d — picking nearest (id=%d date=%s)",
                 len(rows),
-                user_id,
                 category,
+                user_id,
                 rows[0].id,
+                rows[0].event_date,
             )
-        return rows[0] if rows else None
+        if rows:
+            return rows[0]
 
-    @classmethod
-    @dual
-    def deactivate_by_category(cls, user_id: int, category: str, *, session: Session) -> AthleteGoal | None:
-        """Soft-delete the active goal for (user_id, category). Scheduler sync
-        matches by ``intervals_event_id``, so once the underlying Intervals.icu
-        event is deleted too, the deactivated row stays dormant and a future
-        ``suggest_race`` on the same category creates a fresh record.
+        if not include_past:
+            return None
 
-        Returns the deactivated row or None if nothing was active.
-        """
-        goal = session.execute(
+        past = session.execute(
             select(cls)
             .where(
                 cls.user_id == user_id,
                 cls.category == category,
                 cls.is_active.is_(True),
+                cls.event_date < today,
             )
-            .order_by(cls.id.desc())
+            .order_by(cls.event_date.desc())
             .limit(1)
+        ).scalar_one_or_none()
+        return past
+
+    @classmethod
+    @dual
+    def deactivate_by_id(cls, goal_id: int, user_id: int, *, session: Session) -> AthleteGoal | None:
+        """Soft-delete a goal by id, scoped to ``user_id`` as defense-in-depth.
+
+        Callers already vet ownership (``delete_race_goal`` resolves the goal
+        via ``get_by_category`` on the same tenant), but a leaked goal_id would
+        otherwise cross-tenant write here.
+
+        Preferred over :meth:`deactivate_by_category` when the exact target row
+        is already known — with multiple races per category, picking "some
+        active row" by id-desc can diverge from the row shown in the preview
+        and actually deleted from Intervals.
+
+        Returns the deactivated row or None if nothing matched.
+        """
+        goal = session.execute(
+            select(cls).where(cls.id == goal_id, cls.user_id == user_id, cls.is_active.is_(True))
         ).scalar_one_or_none()
         if goal is None:
             return None

@@ -235,21 +235,23 @@ async def handle_rpe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         await session.commit()
 
+    # Strip the RPE-scale rows from the current markup, keeping any other
+    # buttons (📸 Card, etc.) intact — issue #230: tapping RPE removed the Card
+    # button too because we used to pass ``reply_markup=None``.
+    remaining_markup = _strip_rows_with_prefix(query.message.reply_markup if query.message else None, "rpe:")
+
     if result.rowcount == 0:
         await query.answer(_("Уже оценено"))
-        # Best-effort: clear the stale keyboard on this message too. If a
-        # previous tap succeeded in writing the DB but failed mid-edit, or
-        # if the user is tapping on an older duplicate notification, the
-        # message still has clickable buttons that generate noisy callbacks.
-        # Clearing them turns this into a one-shot no-op.
+        # Best-effort: clear the stale RPE scale so repeat taps become no-ops.
+        # Keep the rest of the keyboard (e.g. 📸 Card) so it remains usable.
         try:
-            await query.edit_message_reply_markup(reply_markup=None)
+            await query.edit_message_reply_markup(reply_markup=remaining_markup)
         except TelegramError:
             pass
         return
 
     await query.answer()
-    # Prefer a single round-trip: update the text AND drop the keyboard in
+    # Prefer a single round-trip: update the text AND swap the keyboard in
     # one call. Fall back to `edit_message_reply_markup` only when there's
     # no text to update (shouldn't happen — the notification always has a
     # body — but defensive).
@@ -258,16 +260,39 @@ async def handle_rpe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         new_text = f"{query.message.text}\nRPE: {rpe_label_with_emoji(value)}"
     try:
         if new_text is not None:
-            await query.edit_message_text(new_text, reply_markup=None)
+            await query.edit_message_text(new_text, reply_markup=remaining_markup)
         else:
-            await query.edit_message_reply_markup(reply_markup=None)
+            await query.edit_message_reply_markup(reply_markup=remaining_markup)
     except TelegramError:
         logger.warning("handle_rpe_callback: failed to update message", exc_info=True)
 
 
+def _strip_rows_with_prefix(markup: InlineKeyboardMarkup | None, callback_prefix: str) -> InlineKeyboardMarkup | None:
+    """Return a new markup with rows containing a matching callback removed.
+
+    A row is dropped if **any** button in it has ``callback_data`` starting
+    with ``callback_prefix``. Used by the post-activity notification to take
+    a one-shot button out of circulation (RPE 1-10 scale, 📸 Card) without
+    wiping the rest of the keyboard — issue #230 originally conflated the two.
+    Returns ``None`` when nothing is left so Telegram drops the keyboard.
+    """
+    if markup is None or not markup.inline_keyboard:
+        return None
+    kept = [
+        row
+        for row in markup.inline_keyboard
+        if not any((btn.callback_data or "").startswith(callback_prefix) for btn in row)
+    ]
+    return InlineKeyboardMarkup(kept) if kept else None
+
+
 @athlete_required
 async def handle_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
-    """Handle 📸 Card button — dispatch workout card generation."""
+    """Handle 📸 Card button — dispatch workout card generation.
+
+    Single-shot: remove the Card row from the keyboard on tap to prevent
+    double-generation. RPE scale (if still present) stays clickable.
+    """
     from tasks.actors import actor_generate_workout_card
 
     query = update.callback_query
@@ -277,9 +302,19 @@ async def handle_card_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     activity_id = parts[1]
+    await query.answer("📸 Generating card...")
+
+    # Strip the Card button BEFORE dispatching so a rapid second tap (or a
+    # retry after a flaky edit) can't queue a duplicate generation. Any other
+    # rows (RPE scale) remain intact.
+    remaining_markup = _strip_rows_with_prefix(query.message.reply_markup if query.message else None, "card:")
+    try:
+        await query.edit_message_reply_markup(reply_markup=remaining_markup)
+    except TelegramError:
+        logger.warning("handle_card_callback: failed to strip Card button", exc_info=True)
+
     user_dto = UserDTO.model_validate(user)
     actor_generate_workout_card.send(user=user_dto, activity_id=activity_id)
-    await query.answer("📸 Generating card...")
 
 
 @athlete_required

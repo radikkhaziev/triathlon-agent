@@ -93,7 +93,13 @@ def _actor_send_goal_notification(
 @dramatiq.actor(queue_name="default")
 @validate_call
 def actor_sync_athlete_goals(user: UserDTO):
-    """Sync RACE_A/B/C events from Intervals.icu → athlete_goals table."""
+    """Sync RACE_A/B/C events from Intervals.icu → athlete_goals table.
+
+    Athletes routinely have multiple races per category (e.g. two A-races in a
+    season), so we upsert every event returned by Intervals, keyed on
+    ``intervals_event_id``. Each genuinely new event triggers its own Telegram
+    notification.
+    """
     today = date.today()
     # Intervals.icu API drops category-filtered results unless newest is set explicitly —
     # reproduced on 2026-04-20 with user 5's RACE_A "Drina trail" 2026-05-05: without newest,
@@ -101,33 +107,33 @@ def actor_sync_athlete_goals(user: UserDTO):
     newest = today + timedelta(days=2 * 365)
 
     existing_ids = {g.intervals_event_id for g in AthleteGoal.get_all(user.id)}
-    new_event: ScheduledWorkoutDTO | None = None
-    new_category: str | None = None
+    new_events: list[tuple[str, ScheduledWorkoutDTO]] = []
 
     with IntervalsSyncClient.for_user(user) as client:
         for category in ("RACE_A", "RACE_B", "RACE_C"):
             events: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, newest=newest, category=category)
-            if not events:
-                continue
-            event = events[0]
-            if event.id not in existing_ids:
-                new_event = event
-                new_category = category
-            AthleteGoal.upsert_from_intervals(
-                user_id=user.id,
-                category=category,
-                event_name=event.name or f"{category} event",
-                event_date=event.start_date_local,
-                intervals_event_id=event.id,
-            )
-            logger.info("Synced goal %s for user %d: %s %s", category, user.id, event.name, event.start_date_local)
+            for event in events:
+                if event.id not in existing_ids:
+                    new_events.append((category, event))
+                    # Guard against the same event.id appearing under more than
+                    # one category — without this, a second pass would notify
+                    # twice for the same race.
+                    existing_ids.add(event.id)
+                AthleteGoal.upsert_from_intervals(
+                    user_id=user.id,
+                    category=category,
+                    event_name=event.name or f"{category} event",
+                    event_date=event.start_date_local,
+                    intervals_event_id=event.id,
+                )
+                logger.info("Synced goal %s for user %d: %s %s", category, user.id, event.name, event.start_date_local)
 
-    if new_event:
+    for category, event in new_events:
         _actor_send_goal_notification.send(
             user=user,
-            event_name=new_event.name or new_category,
-            event_date=new_event.start_date_local,
-            category=new_category,
+            event_name=event.name or category,
+            event_date=event.start_date_local,
+            category=category,
         )
 
 

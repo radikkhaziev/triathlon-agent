@@ -277,6 +277,7 @@ def _format_preview(
     description: str,
     ctl_target: float | None,
     current_ctl: float | None,
+    existing_name: str | None,
     existing_date: date | None,
     today: date,
 ) -> str:
@@ -291,8 +292,14 @@ def _format_preview(
     date_str = f"{event_date} ({days_to_race}d)" if days_to_race >= 0 else str(event_date)
 
     lines: list[str] = []
-    header_icon = "♻️ Update" if existing_date else "🏁 Preview"
+    is_update = existing_date is not None
+    header_icon = "♻️ Update" if is_update else "🏁 Preview"
     lines.append(f"{header_icon}: {name} — {category}")
+    # When there are multiple RACE_A (or B/C) upcoming, get_by_category picks
+    # the nearest one — show which existing race is being overwritten so the
+    # athlete can catch a mis-targeted update before confirming.
+    if is_update and existing_name and existing_name != name:
+        lines.append(f"🔁 Replaces: {existing_name}")
     if existing_date and existing_date != event_date:
         lines.append(f"📅 Was: {existing_date} → Now: {date_str}")
     else:
@@ -343,9 +350,12 @@ async def suggest_race(
     athlete_goals. Dry-run returns a preview string; the bot replays the exact same input with
     dry_run=False on user confirmation — do NOT call dry_run=False yourself.
 
-    Idempotency is (user_id, category) — one active RACE_A / RACE_B / RACE_C per athlete.
-    Repeated calls with a new `dt` move the existing race (update_event), they do NOT
-    create a second row.
+    Idempotency key is ``intervals_event_id`` — an athlete may have multiple active
+    RACE_A / RACE_B / RACE_C in a season (e.g. two A-races: Ironman 70.3 in September
+    + Oceanlava in October). This tool targets the **nearest upcoming** race in the
+    given category: if one exists it is updated, otherwise a new event is created
+    alongside any far-future races already on the calendar. The preview ("🔁 Replaces:
+    …" vs. "🆕 New race") makes the branch explicit so the athlete can confirm.
 
     Parameters:
       name: race name, e.g. "Drina Trail", "Ironman 70.3 Belgrade".
@@ -377,6 +387,7 @@ async def suggest_race(
     existing_goal = await AthleteGoal.get_by_category(user_id, category)
     existing_intervals_id = existing_goal.intervals_event_id if existing_goal else None
     existing_date = existing_goal.event_date if existing_goal else None
+    existing_name = existing_goal.event_name if existing_goal else None
 
     # Current CTL for preview sanity-hints — newest wellness row
     current_ctl: float | None = None
@@ -403,6 +414,7 @@ async def suggest_race(
             description=description,
             ctl_target=ctl_target,
             current_ctl=current_ctl,
+            existing_name=existing_name,
             existing_date=existing_date,
             today=today,
         )
@@ -531,7 +543,10 @@ async def delete_race_goal(category: Literal["RACE_A", "RACE_B", "RACE_C"]) -> s
     if category not in _VALID_CATEGORIES:
         return f"Error: invalid category {category!r} — must be one of {', '.join(_VALID_CATEGORIES)}."
 
-    existing_goal = await AthleteGoal.get_by_category(user_id, category)
+    # include_past=True so a stale is_active=True row left over after the race
+    # date passed (see AthleteGoal.upsert_from_intervals — post-race sync
+    # reactivates rows) is still reachable here.
+    existing_goal = await AthleteGoal.get_by_category(user_id, category, include_past=True)
     if existing_goal is None:
         return f"Nothing to delete — no active {category} goal."
 
@@ -555,9 +570,12 @@ async def delete_race_goal(category: Literal["RACE_A", "RACE_B", "RACE_C"]) -> s
             logger.exception("delete_race_goal: Intervals delete failed for event %s", event_id)
             return f"Error deleting from Intervals.icu: {e}"
 
-    # 2) Soft-delete locally.
+    # 2) Soft-delete locally — scope by id so the row shown in preview and
+    # sent to Intervals is exactly the row deactivated here. Picking by
+    # (user_id, category) alone can diverge when the user has multiple
+    # active races in the same category (e.g. stale past row + upcoming).
     try:
-        await AthleteGoal.deactivate_by_category(user_id, category)
+        await AthleteGoal.deactivate_by_id(existing_goal.id, user_id)
     except Exception as e:
         # Intervals succeeded but local failed — rare but leaves the user in an
         # inconsistent state that next sync won't auto-recover (event is gone
