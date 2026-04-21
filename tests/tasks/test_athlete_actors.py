@@ -224,7 +224,7 @@ class TestActorSyncAthleteGoals:
         )
 
         mock_client = MagicMock()
-        mock_client.get_events.side_effect = lambda oldest, category: ([event] if category == "RACE_A" else [])
+        mock_client.get_events.side_effect = lambda oldest, newest, category: ([event] if category == "RACE_A" else [])
 
         with (
             patch("tasks.actors.athlets.IntervalsSyncClient") as mock_isc,
@@ -258,7 +258,7 @@ class TestActorSyncAthleteGoals:
         existing_goal.intervals_event_id = 999
 
         mock_client = MagicMock()
-        mock_client.get_events.side_effect = lambda oldest, category: ([event] if category == "RACE_A" else [])
+        mock_client.get_events.side_effect = lambda oldest, newest, category: ([event] if category == "RACE_A" else [])
 
         with (
             patch("tasks.actors.athlets.IntervalsSyncClient") as mock_isc,
@@ -273,6 +273,34 @@ class TestActorSyncAthleteGoals:
 
         mock_goal.upsert_from_intervals.assert_called_once()
         mock_notify.send.assert_not_called()
+
+    def test_syncs_multiple_events_per_category(self):
+        """Two RACE_A events (e.g. IM 70.3 + Oceanlava) → both upserted, both notified."""
+        from tasks.actors.athlets import actor_sync_athlete_goals
+
+        ev1 = ScheduledWorkoutDTO(id=101, name="Ironman 70.3", start_date_local=date(2026, 9, 15))
+        ev2 = ScheduledWorkoutDTO(id=102, name="Oceanlava", start_date_local=date(2026, 10, 10))
+
+        mock_client = MagicMock()
+        mock_client.get_events.side_effect = lambda oldest, newest, category: (
+            [ev1, ev2] if category == "RACE_A" else []
+        )
+
+        with (
+            patch("tasks.actors.athlets.IntervalsSyncClient") as mock_isc,
+            patch("tasks.actors.athlets.AthleteGoal") as mock_goal,
+            patch("tasks.actors.athlets._actor_send_goal_notification") as mock_notify,
+        ):
+            mock_isc.for_user.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_isc.for_user.return_value.__exit__ = MagicMock(return_value=False)
+            mock_goal.get_all.return_value = []
+
+            actor_sync_athlete_goals(_user())
+
+        assert mock_goal.upsert_from_intervals.call_count == 2
+        event_ids = {c.kwargs["intervals_event_id"] for c in mock_goal.upsert_from_intervals.call_args_list}
+        assert event_ids == {101, 102}
+        assert mock_notify.send.call_count == 2
 
     def test_no_events_found(self):
         from tasks.actors.athlets import actor_sync_athlete_goals

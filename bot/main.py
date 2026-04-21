@@ -306,17 +306,19 @@ async def handle_card_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     activity_id = parts[1]
-    user_dto = UserDTO.model_validate(user)
-    actor_generate_workout_card.send(user=user_dto, activity_id=activity_id)
     await query.answer("📸 Generating card...")
 
-    # Take the Card button out of circulation so a second tap doesn't queue a
-    # duplicate generation. Any other rows (RPE scale) remain intact.
+    # Strip the Card button BEFORE dispatching so a rapid second tap (or a
+    # retry after a flaky edit) can't queue a duplicate generation. Any other
+    # rows (RPE scale) remain intact.
     remaining_markup = _strip_rows_with_prefix(query.message.reply_markup if query.message else None, "card:")
     try:
         await query.edit_message_reply_markup(reply_markup=remaining_markup)
     except TelegramError:
         logger.warning("handle_card_callback: failed to strip Card button", exc_info=True)
+
+    user_dto = UserDTO.model_validate(user)
+    actor_generate_workout_card.send(user=user_dto, activity_id=activity_id)
 
 
 @athlete_required

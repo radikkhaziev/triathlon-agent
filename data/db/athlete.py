@@ -291,7 +291,14 @@ class AthleteGoal(Base):
 
     @classmethod
     @dual
-    def get_by_category(cls, user_id: int, category: str, *, session: Session) -> AthleteGoal | None:
+    def get_by_category(
+        cls,
+        user_id: int,
+        category: str,
+        *,
+        include_past: bool = False,
+        session: Session,
+    ) -> AthleteGoal | None:
         """Return the nearest-upcoming active goal for (user_id, category) or None.
 
         Athletes routinely have multiple races per category in a season (e.g.
@@ -302,9 +309,12 @@ class AthleteGoal(Base):
         that need a specific race must disambiguate by ``intervals_event_id``
         or by passing the exact date.
 
-        Past races (``event_date < today``) are filtered out — they can't be
-        "moved forward", and old rows keep hanging around with
-        ``is_active=True`` until the next post-race cleanup.
+        By default past races (``event_date < today``) are filtered out —
+        they can't be "moved forward". Pass ``include_past=True`` to fall
+        back to the most recent past active row when no upcoming exists;
+        used by ``delete_race_goal`` so athletes can still remove a stale
+        ``is_active=True`` row left behind by the sync actor after the
+        race date has passed.
         """
         today = date.today()
         rows = (
@@ -330,7 +340,24 @@ class AthleteGoal(Base):
                 rows[0].id,
                 rows[0].event_date,
             )
-        return rows[0] if rows else None
+        if rows:
+            return rows[0]
+
+        if not include_past:
+            return None
+
+        past = session.execute(
+            select(cls)
+            .where(
+                cls.user_id == user_id,
+                cls.category == category,
+                cls.is_active.is_(True),
+                cls.event_date < today,
+            )
+            .order_by(cls.event_date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        return past
 
     @classmethod
     @dual
