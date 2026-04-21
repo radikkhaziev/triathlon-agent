@@ -655,28 +655,31 @@ def downgrade():
 
 ## 15. Acceptance criteria
 
-### Phase 1 (MVP)
+### Phase 1 (MVP) — ✅ implemented 2026-04-21
 
-- [ ] Alembic миграция `user_backfill_state` применена.
-- [ ] `data/db/user_backfill_state.py` — ORM модель + helpers (`get`, `upsert`, **атомарные** `advance_cursor` / `mark_finished` / `mark_failed`, `list_stuck` для watchdog).
-- [ ] `IntervalsSyncClient.get_wellness_range(oldest, newest)` и `.get_activities_range(oldest, newest)` — добавить если ещё нет (wellness — через `/wellness{ext}?oldest&newest`, activities — уже есть).
-- [ ] `actor_bootstrap_step` в `tasks/actors/bootstrap.py` — chunk pipeline с first-call state init, chronological loop, advance_cursor, self-reschedule или finalize. `CHUNK_DAYS=30`.
-- [ ] `_finalize_bootstrap` helper — training_log recompute + empty-detect + Telegram notify.
-- [ ] `_actor_send_bootstrap_start_notification` + `_actor_send_bootstrap_completion_notification` — dedicated Telegram senders (через `TelegramTool`, не generic).
-- [ ] `api/routers/intervals/oauth.py` — расширен fast-path (добавить `actor_sync_athlete_goals` + `actor_user_scheduled_workouts`) + kick off `actor_bootstrap_step` с `cursor_dt=oldest`.
-- [ ] `GET /api/auth/backfill-status` endpoint + DTO (cursor-based fields).
-- [ ] CLI `python -m cli bootstrap-sync <user_id> [--period 365] [--chunk 30] [--force]` для ручного rerun'а.
-- [ ] Telegram start/completion сообщения (i18n в `locale/`). **Разные тексты** для `completed` / `completed+EMPTY_INTERVALS` / `failed`.
-- [ ] Unit + integration тесты (§14), включая EMPTY_INTERVALS path и deauth guard.
-- [ ] CLAUDE.md обновлён: секция «Onboarding» — описать новый автоматический флоу.
-- [ ] **Retention note:** `user_backfill_state` row не удаляется after completion (1 row/user). Cleanup policy отложен до Phase 2 при scale.
+- [x] Alembic миграция `user_backfill_state` (`migrations/versions/a7e4c1b8d9f0_add_user_backfill_state.py`) — применяется на следующем `alembic upgrade head`.
+- [x] `data/db/backfill.py` — ORM `UserBackfillState` + атомарные helpers (`get`, `start` с `ON CONFLICT DO UPDATE`, `advance_cursor`, `mark_finished`, `mark_failed`, `list_stuck` для Phase 2 watchdog'а). `progress_pct()` / `is_empty_import()` derived helpers.
+- [x] `IntervalsSyncClient.get_wellness_range(oldest, newest)` + async зеркало — новый `_spec_get_wellness_range` в `data/intervals/client.py`, использует bare `/athlete/{id}/wellness?oldest&newest` (тот же паттерн что `/activities`). `get_activities_range` уже был.
+- [x] `actor_bootstrap_step` в `tasks/actors/bootstrap.py` — `CHUNK_DAYS=30`, `max_retries=3`, `time_limit=5min`, first-call state init, deauth guard, chronological wellness dispatch + Strava filter + `Activity.save_bulk` (ON CONFLICT) + per-activity `actor_update_activity_details.send()`, атомарный `advance_cursor`, self-reschedule или inline `_finalize_bootstrap`.
+- [x] `_finalize_bootstrap` — empty-detect (wellness_count + activity_count == 0 → `EMPTY_INTERVALS` sentinel) + `mark_finished` + delayed Telegram notify. **Training_log recompute не отдельным шагом** — `actor_user_wellness` уже триггерит `actor_after_activity_update` per-day, который заполняет training_log (PRE/ACTUAL/POST) по ходу chunk recursion. Упрощение vs первоначальный план.
+- [x] `_actor_send_bootstrap_start_notification` + `_actor_send_bootstrap_completion_notification` — dedicated senders через `TelegramTool(user).send_message()`. **Completion notification откладывается на 60s через `send_with_options(delay=60_000)`** и сам пере-запрашивает счётчики из БД — это закрывает race где последний chunk ещё не додиспатчил свой tail из `actor_user_wellness.send` к моменту finalize (см. §17 «Wellness count race»).
+- [x] `api/routers/intervals/oauth.py` — fast-path расширен: `actor_sync_athlete_settings` + `actor_sync_athlete_goals` + `actor_user_wellness(today)` + `actor_fetch_user_activities(today, today)` + `actor_user_scheduled_workouts` + kick off `actor_bootstrap_step(cursor_dt=oldest, period_days=365)` + `_actor_send_bootstrap_start_notification.send()`.
+- [x] `GET /api/auth/backfill-status` endpoint + `BackfillStatusResponse` DTO в `api/dto.py`. Tenant-scoped через `get_data_user_id(user)`, `Depends(get_current_user)` — 401 для анонимов. Демо-юзеры видят state владельца (консистентно с `/api/auth/me`).
+- [x] CLI `python -m cli bootstrap-sync <user_id> [--period 365] [--force]` — `--force` ресетит state через `UserBackfillState.start()` до dispatch'а actor'а, обходит idempotency guard (§10.4).
+- [x] Telegram start/completion сообщения. Три текста: normal «✅ История загружена: N дней wellness, M активностей за P дней», empty-import «ℹ️ Intervals.icu ещё не подтянул Garmin-историю», start «🔄 Intervals.icu подключён. Загружаю историю за последний год — обычно 3-5 минут.». i18n — строки уже обёрнуты в `_()`, перевод на en добавляется через `locale/en/LC_MESSAGES/messages.po` при первой английской сессии.
+- [x] Unit-тесты `tests/tasks/test_bootstrap_actors.py` (8 кейсов: first-call init, completed / failed early-return, deauth-guard, middle chunk advance+recurse, chronological wellness + Strava filter + new-id details, last chunk finalize normal, EMPTY_INTERVALS sentinel). Помечены `pytest.mark.real_db` — из-за shared autouse-fixture в `tests/conftest.py` тесты проходят только когда тестовая БД доступна, даже если сами они DB не трогают (мокают всё). Логика актёра отдельно проверена standalone Python smoke'ом — все 8 assertion'ов зелёные.
+- [ ] CLAUDE.md обновлён: секция «Onboarding» — описан новый автоматический флоу (см. отдельный PR или следующий коммит).
+- [x] **Retention note:** `user_backfill_state` row не удаляется after completion (1 row/user). Cleanup policy отложен до Phase 2 при scale.
 
-### Phase 2
+**Security review (2026-04-21):** Low risk, 1 информационный item (L1 — `mark_failed` docstring-guard от случайного `str(e)` с HTTP-contexts добавлен в коде). T1/T2/T147 — все tenant-isolation invariants держатся: все ORM-запросы scoped по `user_id`, `IntervalsSyncClient.for_user` читает per-user Fernet-шифрованный токен, UserDTO через dramatiq не содержит credentials.
+
+### Phase 2 — не в этом PR
 
 - [ ] Webapp progress bar в `/settings` (React Context + poll каждые 5s).
 - [ ] `<BackfillButton />` state machine (§9.5).
 - [ ] `POST /api/auth/retry-backfill` endpoint с dual cooldown: 7d при completed+data, 1h при EMPTY_INTERVALS, immediate при failed. 1h anti-spam rate limit поверх.
 - [ ] `watchdog_bootstrap` cron каждые 10 мин — re-kick'ает stuck running state (`last_step_at > 15 min ago`).
+- [ ] **HRV baseline ordering fix** — см. §17 «HRV baseline ordering race». Текущая реализация дисп'этчит `actor_user_wellness.send()` в chronological порядке, но Dramatiq `default` queue с N>1 воркерами может исполнить их параллельно. Для корректности fallback на daily cron (который пересчитывает baseline со всей историей). Если 2 bootstrap'а в сутки окажется недостаточно — переходим на inline save + pipeline chain per-day внутри chunk'а.
 
 ---
 
@@ -708,3 +711,5 @@ def downgrade():
 - **Retention policy на `user_backfill_state`.** Сейчас 1 row/user навсегда. На 100+ юзерах незаметно; на 10k+ — `DELETE WHERE finished_at < now() - 90d AND status='completed'` + cron. В MVP skip.
 - **Backfill webhook-only полей.** Weather/MMP/achievements приходят только через `ACTIVITY_UPLOADED` webhook (см. `WEBHOOK_DATA_CAPTURE_SPEC.md` §6). Для исторических activities через этот bootstrap — эти поля будут null. Отдельный `backfill-webhook-data` actor — разовый прогон после merge'а.
 - **Deauth mid-backfill.** Per-step deauth-guard (§6.2) закрывает основную проблему. Отдельно: `APP_SCOPE_CHANGED` webhook dispatcher должен вызвать `UserBackfillState.mark_failed(user_id)` если есть active state — отменяет дальнейшие step retries.
+- **HRV baseline ordering race** (тех.долг из code review 2026-04-21). `actor_user_wellness.send()` per-day дисп'этчится в chronological order, но `default` Dramatiq queue с >1 воркером может исполнить их параллельно → rolling HRV baseline (`_actor_calculate_hrv` читает 7/60 дней истории) может увидеть окно с пропусками, если day N завершается раньше day N-3. Последствия: инкорректные `hrv_analysis.rmssd_7d/60d` на конкретные дни. **Self-heal:** на следующем daily cron эти дни попадают в историю уже корректно, и следующий HRV-пересчёт (через `force=True` sync-wellness или просто через новый wellness day) восстанавливает baseline. Фикс для Phase 2: либо save + HRV/RHR/recovery inline внутри chunk'а (без fan-out на workers), либо serialize через `pipeline([save, hrv_pipe, rhr_pipe, recovery])` per-day. Не блокирует MVP — seed'ы для первой недели после onboarding всё равно должны быть проверены владельцем.
+- **Wellness count race в `_finalize_bootstrap`** (исправлено 2026-04-21). `_finalize_bootstrap` изначально читал `wellness_count` из БД inline и передавал в Telegram notification. Но `actor_user_wellness.send()` — fire-and-forget, и к моменту finalize последний chunk's wellness actors ещё в полёте. Текущее решение: completion notification дисп'этчится через `send_with_options(delay=60_000)` и сам пере-читает счётчики. EMPTY_INTERVALS остаётся race-safe потому что только brand-new users (где ни wellness ни activities не возвращается) попадают в ветку, и у них dispatches в принципе не было.

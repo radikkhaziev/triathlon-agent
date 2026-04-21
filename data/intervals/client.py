@@ -196,6 +196,24 @@ class IntervalsClientBase:
         date_str = (dt or date.today()).strftime("%Y-%m-%d")
         return RequestSpec("GET", f"/athlete/{self._athlete_id}/wellness/{date_str}", parser=WellnessDTO)
 
+    def _spec_get_wellness_range(self, oldest: date, newest: date) -> RequestSpec:
+        """List wellness records over a date range (Intervals.icu listWellnessRecords).
+
+        Maps to ``GET /athlete/{id}/wellness?oldest=...&newest=...``. The OpenAPI
+        path template is ``/wellness{ext}`` but the bare path serves JSON by default
+        (mirrors how ``/activities`` behaves without an extension).
+        """
+        params = {
+            "oldest": oldest.strftime("%Y-%m-%d"),
+            "newest": newest.strftime("%Y-%m-%d"),
+        }
+        return RequestSpec(
+            "GET",
+            f"/athlete/{self._athlete_id}/wellness",
+            kwargs={"params": params},
+            parser=WellnessDTO,
+        )
+
     def _spec_get_activities(self, oldest: date | None = None, newest: date | None = None) -> RequestSpec:
         if oldest is None:
             oldest = date.today() - timedelta(days=90)
@@ -398,6 +416,9 @@ class IntervalsAsyncClient(IntervalsClientBase):
     async def get_wellness(self, dt: date | datetime | None = None) -> WellnessDTO:
         return await self._execute(self._spec_get_wellness(dt))
 
+    async def get_wellness_range(self, oldest: date, newest: date) -> list[WellnessDTO]:
+        return await self._execute(self._spec_get_wellness_range(oldest, newest))
+
     async def get_activities(self, oldest: date | None = None, newest: date | None = None) -> list[ActivityDTO]:
         return await self._execute(self._spec_get_activities(oldest, newest))
 
@@ -525,6 +546,9 @@ class IntervalsSyncClient(IntervalsClientBase):
 
     def get_wellness(self, dt: date | datetime | None = None) -> WellnessDTO:
         return self._execute(self._spec_get_wellness(dt))
+
+    def get_wellness_range(self, oldest: date, newest: date) -> list[WellnessDTO]:
+        return self._execute(self._spec_get_wellness_range(oldest, newest))
 
     def get_activities(self, oldest: date | None = None, newest: date | None = None) -> list[ActivityDTO]:
         return self._execute(self._spec_get_activities(oldest, newest))
