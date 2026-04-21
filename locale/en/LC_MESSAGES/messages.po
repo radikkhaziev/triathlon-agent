@@ -270,3 +270,6 @@ msgstr "interpolated thresholds out of range (HRVT1={hrvt1}, HRVT2={hrvt2})"
 
 msgid "неизвестная причина"
 msgstr "unknown reason"
+
+msgid "🏁 Опиши гонку одним сообщением: название, приоритет (A/B/C), дату, опционально вид (Run / Ride / Swim / Triathlon), дистанцию и target CTL.\n\nПример: «Ironman 70.3 Belgrade 15 сентября, RACE A, триатлон, CTL target 75».\n\nЧтобы удалить гонку — напиши «удали RACE_A» (или B / C)."
+msgstr "🏁 Describe the race in one message: name, priority (A/B/C), date, optionally sport (Run / Ride / Swim / Triathlon), distance and target CTL.\n\nExample: «Ironman 70.3 Belgrade, September 15, RACE A, triathlon, CTL target 75».\n\nTo delete a race — type «delete RACE_A» (or B / C)."
