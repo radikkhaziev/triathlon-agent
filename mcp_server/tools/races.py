@@ -277,6 +277,7 @@ def _format_preview(
     description: str,
     ctl_target: float | None,
     current_ctl: float | None,
+    existing_name: str | None,
     existing_date: date | None,
     today: date,
 ) -> str:
@@ -291,8 +292,14 @@ def _format_preview(
     date_str = f"{event_date} ({days_to_race}d)" if days_to_race >= 0 else str(event_date)
 
     lines: list[str] = []
-    header_icon = "♻️ Update" if existing_date else "🏁 Preview"
+    is_update = existing_date is not None
+    header_icon = "♻️ Update" if is_update else "🏁 Preview"
     lines.append(f"{header_icon}: {name} — {category}")
+    # When there are multiple RACE_A (or B/C) upcoming, get_by_category picks
+    # the nearest one — show which existing race is being overwritten so the
+    # athlete can catch a mis-targeted update before confirming.
+    if is_update and existing_name and existing_name != name:
+        lines.append(f"🔁 Replaces: {existing_name}")
     if existing_date and existing_date != event_date:
         lines.append(f"📅 Was: {existing_date} → Now: {date_str}")
     else:
@@ -377,6 +384,7 @@ async def suggest_race(
     existing_goal = await AthleteGoal.get_by_category(user_id, category)
     existing_intervals_id = existing_goal.intervals_event_id if existing_goal else None
     existing_date = existing_goal.event_date if existing_goal else None
+    existing_name = existing_goal.event_name if existing_goal else None
 
     # Current CTL for preview sanity-hints — newest wellness row
     current_ctl: float | None = None
@@ -403,6 +411,7 @@ async def suggest_race(
             description=description,
             ctl_target=ctl_target,
             current_ctl=current_ctl,
+            existing_name=existing_name,
             existing_date=existing_date,
             today=today,
         )
@@ -531,7 +540,10 @@ async def delete_race_goal(category: Literal["RACE_A", "RACE_B", "RACE_C"]) -> s
     if category not in _VALID_CATEGORIES:
         return f"Error: invalid category {category!r} — must be one of {', '.join(_VALID_CATEGORIES)}."
 
-    existing_goal = await AthleteGoal.get_by_category(user_id, category)
+    # include_past=True so a stale is_active=True row left over after the race
+    # date passed (see AthleteGoal.upsert_from_intervals — post-race sync
+    # reactivates rows) is still reachable here.
+    existing_goal = await AthleteGoal.get_by_category(user_id, category, include_past=True)
     if existing_goal is None:
         return f"Nothing to delete — no active {category} goal."
 
