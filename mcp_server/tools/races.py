@@ -350,9 +350,12 @@ async def suggest_race(
     athlete_goals. Dry-run returns a preview string; the bot replays the exact same input with
     dry_run=False on user confirmation — do NOT call dry_run=False yourself.
 
-    Idempotency is (user_id, category) — one active RACE_A / RACE_B / RACE_C per athlete.
-    Repeated calls with a new `dt` move the existing race (update_event), they do NOT
-    create a second row.
+    Idempotency key is ``intervals_event_id`` — an athlete may have multiple active
+    RACE_A / RACE_B / RACE_C in a season (e.g. two A-races: Ironman 70.3 in September
+    + Oceanlava in October). This tool targets the **nearest upcoming** race in the
+    given category: if one exists it is updated, otherwise a new event is created
+    alongside any far-future races already on the calendar. The preview ("🔁 Replaces:
+    …" vs. "🆕 New race") makes the branch explicit so the athlete can confirm.
 
     Parameters:
       name: race name, e.g. "Drina Trail", "Ironman 70.3 Belgrade".
@@ -567,9 +570,12 @@ async def delete_race_goal(category: Literal["RACE_A", "RACE_B", "RACE_C"]) -> s
             logger.exception("delete_race_goal: Intervals delete failed for event %s", event_id)
             return f"Error deleting from Intervals.icu: {e}"
 
-    # 2) Soft-delete locally.
+    # 2) Soft-delete locally — scope by id so the row shown in preview and
+    # sent to Intervals is exactly the row deactivated here. Picking by
+    # (user_id, category) alone can diverge when the user has multiple
+    # active races in the same category (e.g. stale past row + upcoming).
     try:
-        await AthleteGoal.deactivate_by_category(user_id, category)
+        await AthleteGoal.deactivate_by_id(existing_goal.id, user_id)
     except Exception as e:
         # Intervals succeeded but local failed — rare but leaves the user in an
         # inconsistent state that next sync won't auto-recover (event is gone

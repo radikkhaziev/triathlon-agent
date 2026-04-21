@@ -115,6 +115,10 @@ def actor_sync_athlete_goals(user: UserDTO):
             for event in events:
                 if event.id not in existing_ids:
                     new_events.append((category, event))
+                    # Guard against the same event.id appearing under more than
+                    # one category — without this, a second pass would notify
+                    # twice for the same race.
+                    existing_ids.add(event.id)
                 AthleteGoal.upsert_from_intervals(
                     user_id=user.id,
                     category=category,

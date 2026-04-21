@@ -9,7 +9,7 @@ mcp = FastMCP(
     "All CTL/ATL/TSB values come from Intervals.icu and thresholds are calibrated for its model.",
     streamable_http_path="/",
     # Stateless HTTP: each request is self-contained, no in-memory session_id dict.
-    # Why: statefull mode hands out a session_id on first POST, stores
+    # Why: stateful mode hands out a session_id on first POST, stores
     # {session_id: transport} in process memory. An `api` container restart
     # (deploy / OOM / scale) drops that dict; clients holding a cached
     # Mcp-Session-Id (mcp-remote stores it in ~/.mcp-auth) then hit 404

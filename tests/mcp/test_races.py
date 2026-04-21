@@ -311,13 +311,13 @@ class TestDeleteRaceGoal:
         with (
             patch(f"{_MODULE}.get_current_user_id", return_value=1),
             patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=existing)),
-            patch(f"{_MODULE}.AthleteGoal.deactivate_by_category", deactivate),
+            patch(f"{_MODULE}.AthleteGoal.deactivate_by_id", deactivate),
             patch(f"{_MODULE}.IntervalsAsyncClient.for_user", for_user),
         ):
             out = await delete_race_goal(category="RACE_A")
 
         client.delete_event.assert_awaited_once_with(555)
-        deactivate.assert_awaited_once_with(1, "RACE_A")
+        deactivate.assert_awaited_once_with(existing.id, 1)
         assert out.startswith("🗑️")
         assert "RACE_A" in out
 
@@ -369,7 +369,7 @@ class TestDeleteRaceGoal:
         with (
             patch(f"{_MODULE}.get_current_user_id", return_value=1),
             patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=existing)),
-            patch(f"{_MODULE}.AthleteGoal.deactivate_by_category", deactivate),
+            patch(f"{_MODULE}.AthleteGoal.deactivate_by_id", deactivate),
             patch(f"{_MODULE}.IntervalsAsyncClient.for_user", for_user),
         ):
             out = await delete_race_goal(category="RACE_A")
@@ -398,13 +398,39 @@ class TestDeleteRaceGoal:
         with (
             patch(f"{_MODULE}.get_current_user_id", return_value=1),
             patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=existing)),
-            patch(f"{_MODULE}.AthleteGoal.deactivate_by_category", deactivate),
+            patch(f"{_MODULE}.AthleteGoal.deactivate_by_id", deactivate),
             patch(f"{_MODULE}.IntervalsAsyncClient.for_user", for_user),
         ):
             out = await delete_race_goal(category="RACE_A")
 
         deactivate.assert_not_called()
         assert "500" in out or "HTTP" in out
+
+    @pytest.mark.asyncio
+    async def test_local_deactivate_targets_previewed_goal_id(self):
+        """Regression: with multiple active rows per category, deactivation
+        must target the same row shown in preview and sent to Intervals —
+        not "some active row picked by id DESC".
+        """
+        from mcp_server.tools.races import delete_race_goal
+
+        previewed = _goal(id=250, intervals_event_id=555)
+        client = MagicMock()
+        client.delete_event = AsyncMock()
+        for_user = MagicMock(return_value=_async_ctx(client))
+
+        deactivate = AsyncMock(return_value=previewed)
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=previewed)),
+            patch(f"{_MODULE}.AthleteGoal.deactivate_by_id", deactivate),
+            patch(f"{_MODULE}.IntervalsAsyncClient.for_user", for_user),
+        ):
+            out = await delete_race_goal(category="RACE_A")
+
+        client.delete_event.assert_awaited_once_with(555)
+        deactivate.assert_awaited_once_with(250, 1)
+        assert out.startswith("🗑️")
 
     @pytest.mark.asyncio
     async def test_intervals_generic_exception_bails_before_local(self):
@@ -422,7 +448,7 @@ class TestDeleteRaceGoal:
         with (
             patch(f"{_MODULE}.get_current_user_id", return_value=1),
             patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=existing)),
-            patch(f"{_MODULE}.AthleteGoal.deactivate_by_category", deactivate),
+            patch(f"{_MODULE}.AthleteGoal.deactivate_by_id", deactivate),
             patch(f"{_MODULE}.IntervalsAsyncClient.for_user", for_user),
         ):
             out = await delete_race_goal(category="RACE_A")

@@ -238,7 +238,7 @@ async def handle_rpe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Strip the RPE-scale rows from the current markup, keeping any other
     # buttons (📸 Card, etc.) intact — issue #230: tapping RPE removed the Card
     # button too because we used to pass ``reply_markup=None``.
-    remaining_markup = _strip_rpe_rows(query.message.reply_markup if query.message else None)
+    remaining_markup = _strip_rows_with_prefix(query.message.reply_markup if query.message else None, "rpe:")
 
     if result.rowcount == 0:
         await query.answer(_("Уже оценено"))
@@ -284,10 +284,6 @@ def _strip_rows_with_prefix(markup: InlineKeyboardMarkup | None, callback_prefix
         if not any((btn.callback_data or "").startswith(callback_prefix) for btn in row)
     ]
     return InlineKeyboardMarkup(kept) if kept else None
-
-
-def _strip_rpe_rows(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
-    return _strip_rows_with_prefix(markup, "rpe:")
 
 
 @athlete_required

@@ -361,23 +361,22 @@ class AthleteGoal(Base):
 
     @classmethod
     @dual
-    def deactivate_by_category(cls, user_id: int, category: str, *, session: Session) -> AthleteGoal | None:
-        """Soft-delete the active goal for (user_id, category). Scheduler sync
-        matches by ``intervals_event_id``, so once the underlying Intervals.icu
-        event is deleted too, the deactivated row stays dormant and a future
-        ``suggest_race`` on the same category creates a fresh record.
+    def deactivate_by_id(cls, goal_id: int, user_id: int, *, session: Session) -> AthleteGoal | None:
+        """Soft-delete a goal by id, scoped to ``user_id`` as defense-in-depth.
 
-        Returns the deactivated row or None if nothing was active.
+        Callers already vet ownership (``delete_race_goal`` resolves the goal
+        via ``get_by_category`` on the same tenant), but a leaked goal_id would
+        otherwise cross-tenant write here.
+
+        Preferred over :meth:`deactivate_by_category` when the exact target row
+        is already known — with multiple races per category, picking "some
+        active row" by id-desc can diverge from the row shown in the preview
+        and actually deleted from Intervals.
+
+        Returns the deactivated row or None if nothing matched.
         """
         goal = session.execute(
-            select(cls)
-            .where(
-                cls.user_id == user_id,
-                cls.category == category,
-                cls.is_active.is_(True),
-            )
-            .order_by(cls.id.desc())
-            .limit(1)
+            select(cls).where(cls.id == goal_id, cls.user_id == user_id, cls.is_active.is_(True))
         ).scalar_one_or_none()
         if goal is None:
             return None
