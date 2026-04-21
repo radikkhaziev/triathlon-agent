@@ -292,18 +292,21 @@ class AthleteGoal(Base):
     @classmethod
     @dual
     def get_by_category(cls, user_id: int, category: str, *, session: Session) -> AthleteGoal | None:
-        """Return the active goal for (user_id, category) or None.
+        """Return the nearest-upcoming active goal for (user_id, category) or None.
 
-        Used by ``suggest_race`` to decide create vs update — an athlete has at
-        most one RACE_A / RACE_B / RACE_C, and repeated calls with a new date
-        must rename-in-place, not create a second row.
+        Athletes routinely have multiple races per category in a season (e.g.
+        two A-races — Ironman 70.3 in September + Oceanlava in October), so
+        ``(user_id, category)`` is **not** a unique key. When ``suggest_race``
+        asks "move my RACE_A", we default to the nearest future race —
+        matching the most common interpretation of the bare command. Callers
+        that need a specific race must disambiguate by ``intervals_event_id``
+        or by passing the exact date.
 
-        There is no DB unique constraint enforcing the one-active-per-category
-        invariant (a crash mid-soft-delete could leave two actives), so we
-        explicitly pick the most recently inserted row instead of letting
-        ``scalar_one_or_none`` raise. Log if duplicates are seen — that's a
-        signal to run a cleanup.
+        Past races (``event_date < today``) are filtered out — they can't be
+        "moved forward", and old rows keep hanging around with
+        ``is_active=True`` until the next post-race cleanup.
         """
+        today = date.today()
         rows = (
             session.execute(
                 select(cls)
@@ -311,19 +314,21 @@ class AthleteGoal(Base):
                     cls.user_id == user_id,
                     cls.category == category,
                     cls.is_active.is_(True),
+                    cls.event_date >= today,
                 )
-                .order_by(cls.id.desc())
+                .order_by(cls.event_date.asc())
             )
             .scalars()
             .all()
         )
         if len(rows) > 1:
-            logger.warning(
-                "AthleteGoal.get_by_category: %d active rows for user_id=%d category=%s — picking id=%d",
+            logger.info(
+                "AthleteGoal.get_by_category: %d upcoming %s rows for user_id=%d — picking nearest (id=%d date=%s)",
                 len(rows),
-                user_id,
                 category,
+                user_id,
                 rows[0].id,
+                rows[0].event_date,
             )
         return rows[0] if rows else None
 

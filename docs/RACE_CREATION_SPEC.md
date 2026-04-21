@@ -149,16 +149,21 @@ async def suggest_race(
 
 ### 4.3. Идемпотентность
 
-**Уникальность по `(user_id, category)`** — один атлет имеет максимум одну RACE_A, одну RACE_B, одну RACE_C. `event_date` — изменяемое поле той же записи (перенос гонки). Dedupe ключ — **не** тройка `(user_id, category, event_date)`: повторный вызов с новой датой должен обновить существующую, а не создать вторую RACE_A.
+**Уникальность по `intervals_event_id`** — один атлет может иметь **несколько** RACE_A / RACE_B / RACE_C в сезоне (типичный кейс: две A-гонки на год, Ironman 70.3 в сентябре + Oceanlava в октябре; подтверждено реальными данными user 1 на 2026-04-21). Dedupe ключ — `(user_id, intervals_event_id)`, одна строка на event. `category` — не часть уникальности.
 
-Логика lookup:
+**Что делает `suggest_race` при ambiguous запросе** («перенеси мой RACE_A» при двух RACE_A):
+- `get_by_category` возвращает **ближайшую предстоящую** гонку (ORDER BY event_date ASC, WHERE event_date >= today). Это совпадает с дефолтным пользовательским ожиданием: «RACE_A» → ближайшая, не далёкая.
+- При >1 upcoming — INFO-лог «N upcoming %s rows, picking nearest».
+- Для явного targeting'а конкретной гонки из нескольких — Claude должен передать `intervals_event_id` напрямую (Phase 2 расширение signature, см. §2 и §17 open questions). В MVP `suggest_race` принимает `category` → берём ближайшую.
 
-1. **Local first:** `existing_goal = AthleteGoal.get_by_category(user_id, category)` (см. §7.1).
+Логика lookup в `suggest_race(dry_run=False)`:
+
+1. **Local first:** `existing_goal = AthleteGoal.get_by_category(user_id, category)` — возвращает ближайшую upcoming по этой категории.
 2. Если `existing_goal` есть → `existing_intervals_id = existing_goal.intervals_event_id`.
-3. Если `existing_goal` нет → сверить с Intervals через `get_events(oldest=date, newest=date, category=category)` — перестраховка от случая, когда локальная запись потерялась, но event в Intervals остался.
-4. Итого: `existing_intervals_id is not None` → `update_event`, иначе → `create_event`.
+3. Если `existing_goal` нет → сверить с Intervals через `get_events(oldest=date, newest=date, category=category)` — перестраховка от случая когда локальная запись потерялась, но event в Intervals остался.
+4. Итого: `existing_intervals_id is not None` → `update_event` (обновит существующую ближайшую), иначе → `create_event` (создаст **вторую** A/B/C, если на разную дату).
 
-Intervals API возвращает тот же `event.id` при update — dedup в `athlete_goals` через `intervals_event_id` unique constraint (уже есть).
+**`actor_sync_athlete_goals`** (`tasks/actors/athlets.py:95`) — итерируется по **всем** events из Intervals в каждой категории, не только `events[0]`. Каждый event с новым `intervals_event_id` триггерит отдельный `_actor_send_goal_notification`.
 
 ### 4.4. Атомарная запись
 
@@ -344,12 +349,25 @@ the next 30-min sync. Do NOT try to work around this with `suggest_race` — the
 def get_by_category(
     cls, user_id: int, category: str, *, session: Session
 ) -> AthleteGoal | None:
-    """Return the single active goal for (user_id, category) or None.
-    Used by suggest_race for (user_id, category) idempotency lookup — §4.3.
+    """Return the nearest-upcoming active goal for (user_id, category), or None.
+
+    `(user_id, category)` is NOT unique — athletes may have two A-races per
+    season. We return the soonest upcoming race as the default "which one does
+    suggest_race target on bare command" — see §4.3 for the disambiguation
+    policy.
+
+    Filters: is_active=True, event_date >= today. Ordered by event_date ASC.
     """
-    return session.execute(
-        select(cls).where(cls.user_id == user_id, cls.category == category)
-    ).scalar_one_or_none()
+    today = date.today()
+    rows = session.execute(
+        select(cls).where(
+            cls.user_id == user_id,
+            cls.category == category,
+            cls.is_active.is_(True),
+            cls.event_date >= today,
+        ).order_by(cls.event_date.asc())
+    ).scalars().all()
+    return rows[0] if rows else None
 
 
 @classmethod
@@ -388,7 +406,9 @@ EventExDTO(
 
 | Сценарий | Поведение |
 |---|---|
-| Юзер просит RACE_A, но у него уже есть RACE_A на другую дату | Intervals позволит — он не enforce'ит «одна RACE_A в сезон». Мы делаем `update_event` по существующему (§4.3). Preview явно показывает «было X, станет Y». |
+| Юзер просит RACE_A, у него уже есть одна RACE_A (рядом по времени) | `get_by_category` возвращает её → `update_event` по existing `intervals_event_id` (§4.3). Preview явно показывает «было X, станет Y». |
+| Юзер просит RACE_A, у него уже есть **несколько** RACE_A (реальный кейс user 1: Ironman 70.3 сен + Oceanlava окт) | `get_by_category` возвращает **ближайшую upcoming** (§4.3). Preview показывает «обновляю X (не Y)» — юзер видит target. Если нужна дальняя — уточняет с `name` или явным `intervals_event_id` (Phase 2 signature extension). INFO-лог про неоднозначность в actor'е. |
+| Юзер создаёт **вторую** RACE_A на **новую** дату (напр. «добавь Ironman Nice 2027-06-20» при существующей Ironman 70.3 2026-09-15) | Локально `get_by_category` **не** вернёт Nice (далеко, но upcoming ближе 70.3) → fallback `get_events(category, newest=date)` не найдёт по дате → `create_event` создаст новый. В БД появится вторая RACE_A строка. **Это фича, не баг.** |
 | Дата в прошлом | Tool отклоняет: `Error: race date {date} is in the past — use tag_race to log past races`. |
 | CTL target нереалистичный (ramp > 10 TSS/week) | Preview показывает yellow warning, не блокирует. |
 | OAuth нет / 401 от Intervals | `Error pushing: unauthorized — reconnect Intervals in /settings`. |
@@ -587,3 +607,5 @@ Phase 2 подсвечивать несогласованность warning'ом
 - **Должны ли мы требовать `goal_time_sec` на preview?** Пока хранится внутри `description` (freeform). Если станет полезным для Claude при `suggest_workout` — вынесем в отдельный параметр в Phase 2.
 - **`disciplines` для триатлона.** §4.1 signature не содержит `disciplines` — поле **не** выставляется наружу, а **автогенерится внутри tool'а** из `sport`: `Triathlon` → `["Swim","Ride","Run"]`, `Duathlon` → `["Run","Ride","Run"]`, иначе — не заполняется. Claude этот параметр не видит и не спрашивает. Если будущие нестандарты потребуют override — добавим параметр и обновим §4.1.
 - ~~**Ошибка push, локальная запись не создалась** — нужен ли compensating delete?~~ Решено в §4.4: нет, consistency восстанавливается idempotency-retry'ем.
+- **Targeting конкретной гонки при multiple same-category (Phase 2).** Сейчас `get_by_category` возвращает ближайшую upcoming. Для явного targeting'а дальней — Claude должен уметь передать `intervals_event_id` или `name` как disambiguator. Варианты: (a) расширить `suggest_race` signature новым опциональным `event_id: int | None = None`; (b) добавить `suggest_race_update(event_id, ...)` отдельный tool; (c) оставить как есть, юзер перетаскивает дальнюю руками в Intervals UI. **Предлагаю (a):** если `event_id` задан — используем его напрямую, иначе текущий лукап по category. Решать когда реально понадобится (у user 1 две RACE_A — пока обходим через name matching в prompt'е).
+- ~~**«Одна RACE_A на юзера» как инвариант»**~~ Отменено. БД не enforce'ит (нет UNIQUE constraint на `(user_id, category)`), реальные атлеты имеют 2+ гонок той же priority за сезон, `actor_sync_athlete_goals` после bugfix 2026-04-21 корректно пишет все events. Смотри §4.3 и §8 edge cases.
