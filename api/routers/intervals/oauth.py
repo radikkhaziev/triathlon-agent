@@ -19,12 +19,12 @@ from data.db import User, UserDTO, get_session
 from tasks.actors import (
     actor_bootstrap_step,
     actor_fetch_user_activities,
+    actor_send_bootstrap_start_notification,
     actor_sync_athlete_goals,
     actor_sync_athlete_settings,
     actor_user_scheduled_workouts,
     actor_user_wellness,
 )
-from tasks.actors.bootstrap import _actor_send_bootstrap_start_notification
 
 from . import router
 
@@ -235,7 +235,7 @@ async def intervals_oauth_callback(
                 period_days=period_days,
             )
 
-            _actor_send_bootstrap_start_notification.send(user=user_dto)
+            actor_send_bootstrap_start_notification.send(user=user_dto)
             logger.info(
                 "Dispatched OAuth fast-path + bootstrap for user_id=%d (period=%dd)",
                 user_id,

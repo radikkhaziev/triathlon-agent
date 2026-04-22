@@ -73,6 +73,29 @@ def actor_bootstrap_step(
             return
 
         newest_dt = state.newest_dt
+        state_cursor = state.cursor_dt
+
+    # Cursor CAS — the message argument ``cursor_dt`` is what Dramatiq re-delivers
+    # on retry, but the DB cursor may have already advanced past it (e.g. the step
+    # crashed after ``advance_cursor`` committed but before ``.send(next)``).
+    # Trust the DB as source of truth: skip the chunk, re-enqueue with the current
+    # ``state.cursor_dt`` so the chain continues exactly once from where it really is.
+    if state_cursor != cursor_dt:
+        logger.info(
+            "bootstrap_step: retry with stale cursor arg=%s state=%s user=%d — " "re-enqueuing from state cursor",
+            cursor_dt,
+            state_cursor,
+            user.id,
+        )
+        if state_cursor > newest_dt:
+            _finalize_bootstrap(user)
+            return
+        actor_bootstrap_step.send(
+            user=user,
+            cursor_dt=state_cursor,
+            period_days=period_days,
+        )
+        return
 
     if cursor_dt > newest_dt:
         # Shouldn't happen, but a defensive short-circuit keeps us from looping
@@ -210,13 +233,22 @@ def _finalize_bootstrap(user: UserDTO) -> None:
 
 @dramatiq.actor(queue_name="default")
 @validate_call
-def _actor_send_bootstrap_start_notification(user: UserDTO) -> None:
+def actor_send_bootstrap_start_notification(user: UserDTO) -> None:
+    """Telegram ping sent right after the OAuth callback, while the bootstrap
+    chain is being enqueued. Public name — called from `api/routers/intervals/oauth.py`
+    via `tasks.actors` package import."""
     set_language(user.language or "ru")
     text = _(
         "🔄 Intervals.icu подключён. Загружаю историю за последний год — обычно 3-5 минут.\n"
         "Пришлю уведомление когда закончу."
     )
     TelegramTool(user=user).send_message(text=text)
+
+
+# Backwards-compat alias — keep the old name so no caller that already grabbed
+# it from `tasks.actors.bootstrap` directly breaks. New callers should use the
+# non-underscored name.
+_actor_send_bootstrap_start_notification = actor_send_bootstrap_start_notification
 
 
 @dramatiq.actor(queue_name="default")

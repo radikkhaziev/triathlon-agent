@@ -61,6 +61,12 @@ class UserBackfillState(Base):
         Uses PostgreSQL ``INSERT ... ON CONFLICT`` so a previously-finished row
         is overwritten atomically — ``status='running'`` and ``cursor_dt=oldest``
         always match after this returns.
+
+        ``last_step_at`` is seeded to ``now()`` here (not NULL) so that the
+        Phase 2 watchdog's ``list_stuck(cls.last_step_at < cutoff)`` filter can
+        still detect this row if the first chunk crashes before the initial
+        ``advance_cursor`` fires — otherwise a row stuck with NULL ``last_step_at``
+        would be invisible to the watchdog forever.
         """
         stmt = (
             insert(cls)
@@ -74,7 +80,7 @@ class UserBackfillState(Base):
                 chunks_done=0,
                 started_at=func.now(),
                 finished_at=None,
-                last_step_at=None,
+                last_step_at=func.now(),
                 last_error=None,
             )
             .on_conflict_do_update(
@@ -88,7 +94,7 @@ class UserBackfillState(Base):
                     "chunks_done": 0,
                     "started_at": func.now(),
                     "finished_at": None,
-                    "last_step_at": None,
+                    "last_step_at": func.now(),
                     "last_error": None,
                 },
             )

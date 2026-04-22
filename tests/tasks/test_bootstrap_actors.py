@@ -213,6 +213,38 @@ class TestDeauthGuard:
 
 
 # ---------------------------------------------------------------------------
+# Cursor CAS — message-arg vs DB-cursor mismatch (retry after partial commit)
+# ---------------------------------------------------------------------------
+
+
+class TestCursorCAS:
+    def test_stale_cursor_arg_reenqueues_from_state(self, bootstrap_mocks):
+        """When Dramatiq retries a step whose ``advance_cursor`` already committed,
+        the actor must NOT reprocess the stale chunk — it re-enqueues with the
+        current ``state.cursor_dt`` so the chain continues exactly once."""
+        from tasks.actors.bootstrap import CHUNK_DAYS, actor_bootstrap_step
+
+        user = _user()
+        today = date.today()
+        oldest = today - timedelta(days=365)
+        newest = today - timedelta(days=1)
+        stale_arg = oldest  # what Dramatiq re-delivers on retry
+        advanced = oldest + timedelta(days=CHUNK_DAYS)  # DB cursor already advanced
+
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, newest_dt=newest, cursor_dt=advanced)
+
+        actor_bootstrap_step(user.model_dump(), cursor_dt=stale_arg.isoformat(), period_days=365)
+
+        # No HTTP fetch, no second advance, no duplicate downstream dispatch.
+        bootstrap_mocks.client_cls.for_user.assert_not_called()
+        bootstrap_mocks.state_cls.advance_cursor.assert_not_called()
+        # Re-enqueue exactly once, pointing at the DB cursor.
+        bootstrap_mocks.actor_self.send.assert_called_once()
+        kwargs = bootstrap_mocks.actor_self.send.call_args.kwargs
+        assert kwargs["cursor_dt"] == advanced
+
+
+# ---------------------------------------------------------------------------
 # Middle chunk — advance + recursive send
 # ---------------------------------------------------------------------------
 
