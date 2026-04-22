@@ -108,6 +108,11 @@ class UserBackfillState(Base):
     def advance_cursor(cls, user_id: int, cursor_dt: date, *, session: Session) -> None:
         """Atomic cursor advance + chunks_done bump + last_step_at touch.
 
+        Also clears ``last_error`` — during ``status='running'`` the only thing
+        that writes to it is the watchdog's ``watchdog_kick_N`` counter, and
+        a successful advance means the chain recovered and we shouldn't treat
+        future stuck events as continuing the same kick streak.
+
         Guarded by ``status='running'`` so a concurrent mark_failed/mark_finished
         cannot be silently undone.
         """
@@ -118,6 +123,7 @@ class UserBackfillState(Base):
                 cursor_dt=cursor_dt,
                 chunks_done=cls.chunks_done + 1,
                 last_step_at=func.now(),
+                last_error=None,
             )
         )
         session.commit()
@@ -136,6 +142,26 @@ class UserBackfillState(Base):
             update(cls)
             .where(cls.user_id == user_id, cls.status == "running")
             .values(status=status, finished_at=func.now(), last_error=last_error)
+        )
+        session.commit()
+
+    @classmethod
+    @dual
+    def bump_watchdog_kick(cls, user_id: int, kick_number: int, *, session: Session) -> None:
+        """Record that the watchdog re-dispatched a stuck running row.
+
+        We reuse ``last_error`` as a counter (``watchdog_kick_N``) instead of
+        adding a new column — keeps Phase 2 schemaless. The caller decides
+        when ``N`` exceeds the retry budget and transitions to ``mark_failed``
+        with the ``watchdog_exhausted`` sentinel.
+
+        Guarded by ``status='running'`` so a concurrent ``mark_finished`` /
+        ``mark_failed`` cannot be silently reopened.
+        """
+        session.execute(
+            update(cls)
+            .where(cls.user_id == user_id, cls.status == "running")
+            .values(last_error=f"watchdog_kick_{kick_number}")
         )
         session.commit()
 

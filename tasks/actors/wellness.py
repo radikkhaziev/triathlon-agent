@@ -2,6 +2,7 @@
 
 import logging
 import statistics
+from datetime import date
 from typing import Literal
 
 import dramatiq
@@ -20,7 +21,7 @@ from data.metrics import (
 )
 from tasks.dto import ORMDTO, DateDTO
 
-from .common import CATEGORY_TO_READINESS, actor_after_activity_update
+from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,48 @@ def _actor_update_recovery_score(
         _wellness_row.readiness_level = CATEGORY_TO_READINESS.get(recovery.category, "yellow")
 
         session.commit()
+
+
+def process_wellness_analysis_sync(user: UserDTO, wellness: WellnessDTO) -> None:
+    """Synchronous wellness analysis chain for contexts that need strict
+    chronological ordering — specifically the OAuth bootstrap backfill.
+
+    The normal ``actor_user_wellness`` actor dispatches the RHR / HRV / recovery
+    work as a Dramatiq group which runs on workers in parallel. That's fine
+    for daily cron (days arrive one at a time) but breaks during backfill where
+    30 days from a single chunk are fanned out simultaneously — day N+5's HRV
+    baseline reads a 7-day history that may not yet include day N's committed
+    row.
+
+    This helper runs the same computation inline in the caller's transaction
+    order: save wellness → RHR → HRV → Banister ESS → recovery score. Everything
+    commits before return, so the next day's call sees a fully-analyzed prior
+    day. Post-activity enrichment (sport CTL, training_log) and athlete-settings
+    sync still fan out async — those have no cross-day ordering dependency.
+    """
+    from .athlets import actor_sync_athlete_settings
+
+    result: ORMDTO = Wellness.save(user_id=user.id, wellness=wellness)
+    dt: date = date.fromisoformat(wellness.id) if wellness.id else date.today()
+
+    if not result.is_changed:
+        # Still trigger training_log recompute for the day so activities get
+        # PRE/ACTUAL/POST filled in even when wellness hasn't changed between
+        # retries. Fan-out — no ordering dep here.
+        actor_after_activity_update.send(user=user, dt=dt)
+        return
+
+    rhr_status = _actor_calculate_rhr(user=user, dt=dt)
+    _actor_update_rhr_analysis(rhr_status, user=user, dt=dt)
+
+    hrv_status = _actor_calculate_hrv(user=user, dt=dt)
+    _actor_update_hrv_analysis(hrv_status, user=user, dt=dt)
+
+    _actor_update_banister_ess(user=user, dt=dt)
+    _actor_update_recovery_score(user=user, dt=dt)
+
+    actor_sync_athlete_settings.send(user=user)
+    actor_after_activity_update.send(user=user, dt=dt)
 
 
 @dramatiq.actor(queue_name="default")

@@ -166,6 +166,23 @@
       "url_label": "URL",
       "token_label": "Bearer Token",
       "json_config": "JSON конфиг"
+    },
+    "backfill": {
+      "in_progress_desc": "Загружаю историю тренировок за последний год...",
+      "chunks_done": "чанков: {{done}}",
+      "completed": "История загружена",
+      "button_first": "Загрузить историю",
+      "button_resync": "Пересинхронизировать",
+      "button_empty_retry": "Повторить импорт",
+      "button_failed": "Попробовать снова",
+      "available_in_seconds": "Доступно через {{seconds}} сек",
+      "available_in_minutes": "Доступно через {{minutes}} мин",
+      "available_in_hours": "Доступно через {{hours}} ч",
+      "available_in_days": "Доступно через {{days}} дн",
+      "retry_failed": "Не удалось запустить повторный импорт",
+      "error_watchdog_exhausted": "Импорт не удался после нескольких попыток. Проверь подключение Intervals.icu и попробуй ещё раз.",
+      "error_oauth_revoked": "Подключение к Intervals.icu было отозвано. Подключись заново.",
+      "error_generic": "Что-то пошло не так. Попробуй запустить импорт ещё раз."
     }
   },
   "onboarding": {

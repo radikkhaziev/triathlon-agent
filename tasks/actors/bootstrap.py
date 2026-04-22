@@ -14,6 +14,7 @@ import logging
 from datetime import date, timedelta
 
 import dramatiq
+import sentry_sdk
 from pydantic import validate_call
 from sqlalchemy import func, select
 
@@ -25,7 +26,7 @@ from tasks.dto import DateDTO
 from tasks.tools import TelegramTool
 
 from .activities import actor_update_activity_details
-from .wellness import actor_user_wellness
+from .wellness import process_wellness_analysis_sync
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def actor_bootstrap_step(
     # ``state.cursor_dt`` so the chain continues exactly once from where it really is.
     if state_cursor != cursor_dt:
         logger.info(
-            "bootstrap_step: retry with stale cursor arg=%s state=%s user=%d — " "re-enqueuing from state cursor",
+            "bootstrap_step: retry with stale cursor arg=%s state=%s user=%d — re-enqueuing from state cursor",
             cursor_dt,
             state_cursor,
             user.id,
@@ -131,11 +132,53 @@ def actor_bootstrap_step(
     # dispatch activity-details only for fresh rows (idempotent re-chunk = no-op).
     new_activity_ids: list[str] = Activity.save_bulk(user, activities=activity_rows) if activity_rows else []
 
-    # Wellness is dispatched per-day via actor_user_wellness — that reuses the
-    # existing save + HRV/RHR/recovery/banister/training_log pipeline verbatim,
-    # ordered chronologically so rolling baselines consume prior days from DB.
-    for w in sorted(wellness_rows, key=lambda row: row.id or ""):
-        actor_user_wellness.send(user=user, wellness=w)
+    # Wellness is processed *inline and chronologically* via the sync helper.
+    # Fanning out ``actor_user_wellness.send`` (original design) races the
+    # rolling HRV/RHR baselines across workers — day N+5's 7-day window can
+    # miss day N if the day-N message hasn't drained yet. ``process_wellness_
+    # analysis_sync`` commits the full analysis chain for each day before the
+    # next iteration starts, so rolling baselines always read a complete prior
+    # history. See docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md §17.
+    #
+    # Sort key is a real ``date``, not the raw string — Intervals.icu happens
+    # to return ISO-formatted IDs today (lexicographic == chronological), but
+    # we don't want the ordering invariant coupled to that accident. Rows
+    # with a missing/unparseable ID are pushed to the end so a malformed
+    # single row doesn't break the whole chunk's ordering.
+    def _sort_key(row: WellnessDTO) -> date:
+        try:
+            return date.fromisoformat(row.id) if row.id else date.max
+        except ValueError:
+            logger.warning("bootstrap: unparseable wellness id=%r for user=%d", row.id, user.id)
+            return date.max
+
+    failures = 0
+    for w in sorted(wellness_rows, key=_sort_key):
+        try:
+            process_wellness_analysis_sync(user, w)
+        except Exception:
+            # Swallowing here is deliberate — we want the chunk to finish and
+            # the cursor to advance even if one day's analysis fails. But we
+            # capture to Sentry so these don't disappear into log noise, and
+            # a gap in day N means day N+1's rolling baseline reads an
+            # incomplete history (silent quality degradation).
+            failures += 1
+            logger.exception(
+                "bootstrap: wellness analysis failed user=%d date=%s — continuing chunk",
+                user.id,
+                w.id,
+            )
+            sentry_sdk.capture_exception()
+
+    if failures:
+        logger.warning(
+            "bootstrap: %d/%d wellness-day(s) failed in chunk [%s..%s] for user=%d",
+            failures,
+            len(wellness_rows),
+            cursor_dt,
+            chunk_end,
+            user.id,
+        )
 
     for aid in new_activity_ids:
         actor_update_activity_details.send(user=user, activity_id=aid)
@@ -243,12 +286,6 @@ def actor_send_bootstrap_start_notification(user: UserDTO) -> None:
         "Пришлю уведомление когда закончу."
     )
     TelegramTool(user=user).send_message(text=text)
-
-
-# Backwards-compat alias — keep the old name so no caller that already grabbed
-# it from `tasks.actors.bootstrap` directly breaks. New callers should use the
-# non-underscored name.
-_actor_send_bootstrap_start_notification = actor_send_bootstrap_start_notification
 
 
 @dramatiq.actor(queue_name="default")

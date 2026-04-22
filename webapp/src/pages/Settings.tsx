@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
+import BackfillSection from '../components/BackfillSection'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../api/client'
 import type { AuthMeResponse, IntervalsStatus } from '../api/types'
@@ -274,6 +275,9 @@ export default function Settings() {
               {intervals.scope && (
                 <Row label={t('settings.intervals.scope')} value={intervals.scope} />
               )}
+              <div className="mt-3">
+                <BackfillSection />
+              </div>
               <button
                 type="button"
                 onClick={async () => {
