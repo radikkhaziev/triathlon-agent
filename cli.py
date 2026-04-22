@@ -76,6 +76,16 @@ def main() -> None:
     )
     p_bm.add_argument("--dry-run", action="store_true", help="List recipients without sending")
 
+    p_bs = sub.add_parser(
+        "bootstrap-sync",
+        help="Trigger OAuth bootstrap backfill manually. With --force, resets any existing state "
+        "(cursor back to oldest) so re-run overwrites a completed/failed row. "
+        "See docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md §10.4.",
+    )
+    p_bs.add_argument("user_id", type=int)
+    p_bs.add_argument("--period", type=int, default=365, help="How many days of history to load (default: 365)")
+    p_bs.add_argument("--force", action="store_true", help="Overwrite existing state even if recently completed")
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -94,6 +104,8 @@ def main() -> None:
         _backfill_races(args.user_id, args.period)
     elif args.command == "broadcast-migration":
         _broadcast_migration(dry_run=args.dry_run)
+    elif args.command == "bootstrap-sync":
+        _bootstrap_sync(args.user_id, period_days=args.period, force=args.force)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -489,6 +501,43 @@ def _broadcast_migration(dry_run: bool) -> None:
     if failed:
         for uid, reason in failed:
             print(f"  - user {uid}: {reason}")
+
+
+def _bootstrap_sync(user_id: int, period_days: int, force: bool) -> None:
+    """Kick off the chunk-recursive bootstrap for an existing user.
+
+    Idempotency lives in the actor (§7 in spec). With ``--force`` we reset the
+    state row here so the actor's "status != 'running' → skip" guard fires on
+    a fresh ``running`` row, matching the OAuth-callback call shape.
+    """
+    from datetime import datetime, timezone
+
+    from data.db import UserBackfillState
+    from tasks.actors.bootstrap import actor_bootstrap_step
+
+    user = _resolve_user(user_id)
+    today = date.today()
+    oldest = today - timedelta(days=period_days)
+    newest = today - timedelta(days=1)
+
+    if force:
+        with get_sync_session() as session:
+            UserBackfillState.start(
+                user_id=user_id,
+                period_days=period_days,
+                oldest_dt=oldest,
+                newest_dt=newest,
+                session=session,
+            )
+        print(f"bootstrap-sync: reset state for user {user_id} (period={period_days}d, {oldest} → {newest})")
+
+    actor_bootstrap_step.send(
+        user=user,
+        cursor_dt=oldest.isoformat(),
+        period_days=period_days,
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    print(f"bootstrap-sync: queued at {now_iso} (user={user_id}, period={period_days}d)")
 
 
 def _shell() -> None:

@@ -104,6 +104,28 @@ class IntervalsAuthInitResponse(BaseModel):
     authorize_url: str
 
 
+class BackfillStatusResponse(BaseModel):
+    """Shape of `GET /api/auth/backfill-status` — cursor-based progress for
+    the OAuth bootstrap. ``status='none'`` means the user has never triggered
+    a backfill (no row in ``user_backfill_state``).
+
+    UI reads this + ``finished_at`` + ``last_error`` and renders one of the
+    buttons in the state machine described in
+    ``docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`` §9.5.
+    """
+
+    status: str  # running | completed | failed | none
+    cursor_dt: str | None = None
+    oldest_dt: str | None = None
+    newest_dt: str | None = None
+    progress_pct: float = 0.0
+    chunks_done: int = 0
+    period_days: int | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    last_error: str | None = None
+
+
 class IntervalsWebhookEvent(BaseModel):
     """Single event inside an Intervals.icu webhook payload. Forward-compat:
     `extra='allow'` so new fields added by Intervals.icu don't break parsing.

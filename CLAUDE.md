@@ -50,7 +50,7 @@ triathlon-agent/
 
 ## Database Schema
 
-31 tables. Full column specs in `data/db/`. Key tables:
+32 tables. Full column specs in `data/db/`. Key tables:
 
 **Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `api/routers/intervals/oauth.py`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
@@ -58,7 +58,7 @@ triathlon-agent/
 
 **Training:** `scheduled_workouts`, `activities` (incl. `is_race`/`sub_type`/`rpe` — Borg CR-10 1-10 with `CHECK` constraint, see `docs/RPE_SPEC.md`), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot). See `docs/RACE_TAGGING.md`.
 
-**Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`, `star_transactions` (Telegram Stars donation ledger, `UNIQUE(charge_id)` for webhook idempotency, `refunded_at` nullable — see `docs/DONATE_SPEC.md`).
+**Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`, `star_transactions` (Telegram Stars donation ledger, `UNIQUE(charge_id)` for webhook idempotency, `refunded_at` nullable — see `docs/DONATE_SPEC.md`), `user_backfill_state` (1 row/user, cursor-based bootstrap progress: `oldest_dt`/`newest_dt`/`cursor_dt`/`chunks_done`/`status`+`last_error` — see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`).
 
 **Garmin (9 tables):** `garmin_sleep`, `garmin_daily_summary`, `garmin_training_readiness`, `garmin_health_status`, `garmin_training_load`, `garmin_fitness_metrics`, `garmin_race_predictions`, `garmin_bio_metrics`, `garmin_abnormal_hr_events`.
 
@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag — renames Intervals.icu activities on `ACTIVITY_UPLOADED` with `{sport_emoji} {descriptor}` title (e.g. `🏃 Easy Run 10k`) and a 2-3 sentence AI description (Instagram-card tone) ending with `→ endurai.me`; idempotent via `_SIGNATURE_MARKERS` (`"endurai.me"`, legacy `"Readiness"`). Workout card PNG generator: Pillow-based renderer with GPS polyline, AI text via Claude, sport-specific metrics (Run=pace, Ride=power, Swim=pace/100m), endurai.me branding — triggered via inline button in activity notification; sent via `sendDocument` (not `sendPhoto`) so Telegram preserves PNG transparency. Pending: personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars.
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). OAuth bootstrap backfill Phase 1 complete (chunk-recursive `actor_bootstrap_step`, `CHUNK_DAYS=30`, cursor state in `user_backfill_state`, fast-path today+settings+goals+14d-workouts + year-long slow-path, `GET /api/auth/backfill-status`, CLI `bootstrap-sync`, empty-import sentinel with 1h cooldown — see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag — renames Intervals.icu activities on `ACTIVITY_UPLOADED` with `{sport_emoji} {descriptor}` title (e.g. `🏃 Easy Run 10k`) and a 2-3 sentence AI description (Instagram-card tone) ending with `→ endurai.me`; idempotent via `_SIGNATURE_MARKERS` (`"endurai.me"`, legacy `"Readiness"`). Workout card PNG generator: Pillow-based renderer with GPS polyline, AI text via Claude, sport-specific metrics (Run=pace, Ride=power, Swim=pace/100m), endurai.me branding — triggered via inline button in activity notification; sent via `sendDocument` (not `sendPhoto`) so Telegram preserves PNG transparency. Pending: bootstrap Phase 2 (webapp progress bar + retry endpoint + watchdog cron), personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars.
 
 **Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 
@@ -205,6 +205,7 @@ POST /api/intervals/auth/init            — initiate OAuth (authenticated XHR) 
 GET  /api/intervals/auth/callback        — OAuth callback: code → token → DB → redirect
 POST /api/intervals/auth/disconnect      — clear OAuth tokens (user can reconnect anytime)
 POST /api/intervals/webhook              — Intervals.icu push webhooks: secret verification, DTO parsing, Sentry monitoring. 10/10 event types researched (see docs/INTERVALS_WEBHOOKS_RESEARCH.md)
+GET  /api/auth/backfill-status           — cursor-based progress of the OAuth bootstrap backfill (status/cursor_dt/progress_pct/chunks_done), tenant-scoped
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
@@ -246,6 +247,7 @@ python -m cli sync-activities <user_id> [period] [--force]       # force re-sync
 python -m cli sync-training-log <user_id> [period]               # recalculate training log from existing activities
 python -m cli import-garmin <user_id> <source> [--types] [--period] [--force] [--dry-run]  # import Garmin GDPR export
 python -m cli backfill-races <user_id> [period]                  # create Race records for historical race activities
+python -m cli bootstrap-sync <user_id> [--period 365] [--force]  # chunk-recursive OAuth bootstrap backfill (wellness + activities)
 ```
 
 ### Period formats for `sync-wellness` and `sync-activities`
@@ -285,6 +287,20 @@ Migrations run automatically on deploy via the `migrate` service in `docker-comp
 ---
 
 ## Onboarding a New User
+
+### Automatic OAuth onboarding (default path — public users)
+
+1. User sends `/start` to the bot → `User` row created with `role=viewer`, no `athlete_id`.
+2. `/start` returns a WebApp button "🔗 Подключить Intervals.icu" → opens `/settings` page.
+3. User taps "Connect Intervals.icu" → frontend XHR `POST /api/intervals/auth/init` → redirect to Intervals.icu consent.
+4. OAuth callback (`GET /api/intervals/auth/callback`): stores OAuth token, promotes viewer → athlete, generates `mcp_token`, then **auto-dispatches**:
+   - **Fast-path (<2s, non-blocking):** `actor_sync_athlete_settings` + `actor_sync_athlete_goals` + `actor_user_wellness(today)` + `actor_fetch_user_activities(today, today)` + `actor_user_scheduled_workouts` + Telegram start notification. Webapp shows non-empty state within ~30s.
+   - **Slow-path:** `actor_bootstrap_step(cursor_dt=oldest, period_days=365)` — chunk-recursive backfill of 1 year of wellness + activities. Chunks of 30 days, ~3-5 min wall-clock. Progress visible via `GET /api/auth/backfill-status` (polls every 5s when `status='running'`). Telegram sends completion notification with final counts after +60s delay (allows last chunk's wellness fan-out to drain).
+5. State lives in `user_backfill_state` (1 row/user, cursor-based: `oldest_dt`/`newest_dt`/`cursor_dt`/`chunks_done`/`status`). Idempotency: 7-day cooldown on `completed`, 1-hour cooldown on empty-import (`last_error='EMPTY_INTERVALS'`). See `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`.
+
+### Manual CLI onboarding (legacy / admin path)
+
+Used for existing athletes migrated from api-key, or to pre-seed an account before user connects.
 
 ### Step 1: User sends /start to the bot
 
@@ -335,6 +351,16 @@ For each day: fetches wellness data (HRV, CTL, sleep) and activities from Interv
 ```bash
 python -m bot.cli onboard <user_id> --days 180
 ```
+
+### Re-run the automatic OAuth bootstrap manually
+
+For existing athletes whose row in `user_backfill_state` is stale or failed:
+
+```bash
+python -m cli bootstrap-sync <user_id> [--period 365] [--force]
+```
+
+`--force` resets the state row (cursor → oldest, status → running) so the actor's `status != 'running'` guard fires on a fresh row. Without `--force` and an existing `completed` row, the actor short-circuits with a log line.
 
 Runs sequentially: sync wellness → sync activities → sync details → sync workouts.
 

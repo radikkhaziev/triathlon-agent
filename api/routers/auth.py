@@ -7,9 +7,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
 from api.deps import get_current_user, get_data_user_id
-from api.dto import DemoAuthRequest, SetLanguageRequest, TelegramWidgetAuthRequest, VerifyCodeRequest
+from api.dto import (
+    BackfillStatusResponse,
+    DemoAuthRequest,
+    SetLanguageRequest,
+    TelegramWidgetAuthRequest,
+    VerifyCodeRequest,
+)
 from config import settings
-from data.db import AthleteGoal, AthleteSettings, User, get_session
+from data.db import AthleteGoal, AthleteSettings, User, UserBackfillState, get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -245,3 +251,35 @@ async def auth_mcp_config(request: Request, user: User | None = Depends(get_curr
         "url": f"{settings.API_BASE_URL.rstrip('/')}/mcp/",
         "token": user.mcp_token,
     }
+
+
+@router.get("/api/auth/backfill-status", response_model=BackfillStatusResponse)
+async def auth_backfill_status(user: User | None = Depends(get_current_user)) -> BackfillStatusResponse:
+    """Progress of the OAuth bootstrap backfill for the current user.
+
+    Tenant-scoped: reads by ``current_user.id``, never by query parameter.
+    Returns ``status='none'`` when the user has never triggered a backfill.
+    Demo-safe: demo users resolve to the owner via ``get_data_user_id``, but
+    we report the owner's real state here — same behavior as other read-only
+    endpoints exposed to demo.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    data_uid = get_data_user_id(user)
+    state = await UserBackfillState.get(data_uid)
+    if state is None:
+        return BackfillStatusResponse(status="none")
+
+    return BackfillStatusResponse(
+        status=state.status,
+        cursor_dt=state.cursor_dt.isoformat(),
+        oldest_dt=state.oldest_dt.isoformat(),
+        newest_dt=state.newest_dt.isoformat(),
+        progress_pct=round(state.progress_pct(), 1),
+        chunks_done=state.chunks_done,
+        period_days=state.period_days,
+        started_at=state.started_at.isoformat() if state.started_at else None,
+        finished_at=state.finished_at.isoformat() if state.finished_at else None,
+        last_error=state.last_error,
+    )

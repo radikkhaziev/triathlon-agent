@@ -16,7 +16,15 @@ from api.deps import require_viewer
 from api.dto import IntervalsAuthInitResponse
 from config import settings
 from data.db import User, UserDTO, get_session
-from tasks.actors import actor_sync_athlete_settings, actor_user_wellness
+from tasks.actors import (
+    actor_bootstrap_step,
+    actor_fetch_user_activities,
+    actor_send_bootstrap_start_notification,
+    actor_sync_athlete_goals,
+    actor_sync_athlete_settings,
+    actor_user_scheduled_workouts,
+    actor_user_wellness,
+)
 
 from . import router
 
@@ -199,13 +207,42 @@ async def intervals_oauth_callback(
         user_dto = UserDTO.model_validate(db_user)
 
     # Auto-dispatch initial sync for newly connected athletes.
+    #
+    # Fast-path (non-blocking sends, ≤2s): today's data + settings + goals +
+    # next 14 days of planned workouts so the webapp renders a non-empty
+    # state within ~30 seconds of the redirect.
+    #
+    # Slow-path: year-long chunk-recursive bootstrap (~3-5 min wall-clock).
+    # See docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md.
     if was_new:
         try:
+            today = datetime.now(timezone.utc).date()
             actor_sync_athlete_settings.send(user=user_dto)
-            actor_user_wellness.send(user=user_dto)
-            logger.info("Dispatched initial sync for new athlete user_id=%d", user_id)
+            actor_sync_athlete_goals.send(user=user_dto)
+            actor_user_wellness.send(user=user_dto, dt=today.isoformat())
+            actor_fetch_user_activities.send(
+                user=user_dto,
+                oldest=today.isoformat(),
+                newest=today.isoformat(),
+            )
+            actor_user_scheduled_workouts.send(user=user_dto)
+
+            period_days = 365
+            oldest = (today - timedelta(days=period_days)).isoformat()
+            actor_bootstrap_step.send(
+                user=user_dto,
+                cursor_dt=oldest,
+                period_days=period_days,
+            )
+
+            actor_send_bootstrap_start_notification.send(user=user_dto)
+            logger.info(
+                "Dispatched OAuth fast-path + bootstrap for user_id=%d (period=%dd)",
+                user_id,
+                period_days,
+            )
         except Exception:
-            logger.exception("Failed to dispatch initial sync for user_id=%d", user_id)
+            logger.exception("Failed to dispatch bootstrap for user_id=%d", user_id)
 
     return RedirectResponse(f"{settings_url}?connected=intervals", status_code=302)
 

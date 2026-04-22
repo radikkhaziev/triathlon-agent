@@ -253,7 +253,7 @@ Polarization Index (см. отдельный spec) — shared infra для вс�
 - [x] Dramatiq actor `actor_retrain_progression_model` + weekly cron (Sunday 16:00).
 - [x] MCP tool `get_progression_analysis(sport='Ride')` (51-й tool).
 - [x] SHAP top-5 factors в weekly report (секция "ML insights").
-- [ ] Dashboard widget в webapp — отложен.
+- [x] Webapp widget — `ProgressionWidget` на `/progress` (Ride), `/api/progression` endpoint.
 
 ### Phase 3 (Coaching) — ✅ Завершён
 - [x] Weekly report enrichment — `get_progression_analysis` в tool sequence + секция "ML insights".
