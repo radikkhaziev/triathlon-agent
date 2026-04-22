@@ -1,9 +1,11 @@
 import hmac
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 
 import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import TypeAdapter
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
 from api.deps import get_current_user, get_data_user_id
@@ -15,7 +17,8 @@ from api.dto import (
     VerifyCodeRequest,
 )
 from config import settings
-from data.db import AthleteGoal, AthleteSettings, User, UserBackfillState, get_session
+from data.db import AthleteGoal, AthleteSettings, User, UserBackfillState, UserDTO, get_session
+from tasks.actors import actor_bootstrap_step
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,6 +41,80 @@ _MCP_ALLOWED_ROLES = {"athlete", "owner"}
 _DEMO_RATE_WINDOW_SEC = 300.0
 _DEMO_MAX_ATTEMPTS = 5
 _demo_attempts: dict[str, list[float]] = {}
+
+# Retry-backfill anti-spam rate limit — one successful call per hour per user.
+# Separate from the business cooldowns in `_backfill_retry_retry_after`:
+# - business cooldown reflects "is there any point retrying right now?"
+#   (7d after data completed, 1h after EMPTY_INTERVALS)
+# - this rate limit is an endpoint-level guard against retry-button spamming
+#   regardless of state, so a user who hits "Попробовать снова" repeatedly
+#   after a `failed` state can't queue dozens of bootstrap chains.
+#
+# SINGLE-WORKER ASSUMPTION: this dict lives in one process's memory, so the
+# guard holds only with a single uvicorn worker (current deployment). Adding
+# `--workers N` silently partitions users across processes, letting a user
+# bypass the hourly budget by round-robining workers. Before scaling out,
+# move this to Redis INCR+EXPIRE keyed on user_id. Same caveat as
+# `_mcp_config_last_access` above — keep both in sync when that migrates.
+#
+# Lazy cleanup in `_retry_backfill_check_and_record` keeps the dict bounded
+# to users who retried within the last window.
+_RETRY_BACKFILL_RATE_WINDOW_SEC = 3600.0
+_retry_backfill_last_success: dict[int, float] = {}
+
+# Business cooldowns — how long after finished_at before a retry is meaningful.
+_COMPLETED_DATA_COOLDOWN = timedelta(days=7)
+_EMPTY_INTERVALS_COOLDOWN = timedelta(hours=1)
+_DEFAULT_BOOTSTRAP_PERIOD_DAYS = 365
+
+_UserDTOAdapter = TypeAdapter(UserDTO)
+
+# Allowlist of ``last_error`` values safe to return to the webapp. Everything
+# else is collapsed into a generic sentinel before leaving the server —
+# defensive against a future caller accidentally passing raw ``str(e)`` to
+# ``UserBackfillState.mark_failed`` (httpx exceptions can embed request URLs
+# with query params, see the docstring on ``mark_failed``). The UI renders
+# these sentinels via i18n, so adding a new one here requires a webapp key too.
+_LAST_ERROR_ALLOWLIST = frozenset(
+    {
+        "EMPTY_INTERVALS",
+        "watchdog_exhausted",
+        "OAuth revoked during backfill",
+    }
+)
+_LAST_ERROR_WATCHDOG_PREFIX = "watchdog_kick_"
+_LAST_ERROR_INTERNAL = "internal"
+
+
+def _sanitize_last_error(raw: str | None) -> str | None:
+    """Collapse anything outside the allowlist to ``"internal"``. Returns
+    ``None`` for in-flight watchdog kicks (``watchdog_kick_N``) — they're
+    bookkeeping, not a user-facing error state."""
+    if raw is None:
+        return None
+    if raw.startswith(_LAST_ERROR_WATCHDOG_PREFIX):
+        return None
+    if raw in _LAST_ERROR_ALLOWLIST:
+        return raw
+    return _LAST_ERROR_INTERNAL
+
+
+def _backfill_retry_retry_after(state: UserBackfillState, now: datetime) -> int | None:
+    """Business cooldown: how many seconds the user must wait before a retry
+    makes sense, or ``None`` if a retry is allowed right now.
+
+    * ``completed`` + data + less than 7d ago → block (webhooks cover deltas)
+    * ``completed`` + ``EMPTY_INTERVALS`` + less than 1h ago → block (Intervals
+      hasn't ingested Garmin yet; no point hammering)
+    * ``failed`` / ``completed`` older than the window / any other status → allow
+    """
+    if state.status != "completed" or state.finished_at is None:
+        return None
+    cooldown = _EMPTY_INTERVALS_COOLDOWN if state.is_empty_import() else _COMPLETED_DATA_COOLDOWN
+    expires_at = state.finished_at + cooldown
+    if now >= expires_at:
+        return None
+    return max(1, int((expires_at - now).total_seconds()))
 
 
 @router.post("/api/auth/demo")
@@ -281,5 +358,99 @@ async def auth_backfill_status(user: User | None = Depends(get_current_user)) ->
         period_days=state.period_days,
         started_at=state.started_at.isoformat() if state.started_at else None,
         finished_at=state.finished_at.isoformat() if state.finished_at else None,
-        last_error=state.last_error,
+        last_error=_sanitize_last_error(state.last_error),
     )
+
+
+@router.post("/api/auth/retry-backfill")
+async def auth_retry_backfill(user: User | None = Depends(get_current_user)) -> dict:
+    """Manually re-run the OAuth bootstrap for the authenticated athlete.
+
+    Two independent guards:
+
+    1. **Business cooldown** (``_backfill_retry_retry_after``) — "is a retry
+       meaningful right now?" 7d after a successful backfill, 1h after an
+       EMPTY_INTERVALS result (Intervals.icu still catching up on Garmin).
+    2. **Anti-spam rate limit** — 1 successful call per hour per user_id,
+       regardless of state. A user stuck in ``failed`` could otherwise queue
+       dozens of bootstrap chains by mashing the button.
+
+    On success: ``UserBackfillState.start`` resets the row to
+    ``status='running'``, ``cursor_dt=oldest``, then dispatches the chunk-
+    recursive actor. The OAuth callback's fast-path sync of today/settings/
+    goals is *not* repeated — those rows are already fresh from ongoing
+    webhooks/scheduler.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Demo reject MUST come before any rate-limit lookup keyed by `user.id`.
+    # Demo requests resolve to the owner's `user.id` via `get_data_user_id`,
+    # so letting them touch the rate-limit dict would let a demo session
+    # starve (or share the budget of) the actual owner.
+    if user.role == "demo":
+        raise HTTPException(status_code=403, detail="Read-only demo mode")
+    if not user.athlete_id:
+        raise HTTPException(status_code=400, detail="No Intervals.icu account connected")
+    if user.intervals_auth_method == "none":
+        raise HTTPException(status_code=400, detail="Intervals.icu not connected")
+
+    now_mono = time.monotonic()
+    # Lazy prune — drop entries older than the rate window so the dict stays
+    # bounded to "users who retried within the last hour". O(n) on cleanup,
+    # triggered sparsely when the dict exceeds a watermark.
+    if len(_retry_backfill_last_success) > 512:
+        cutoff = now_mono - _RETRY_BACKFILL_RATE_WINDOW_SEC
+        stale = [uid for uid, ts in _retry_backfill_last_success.items() if ts <= cutoff]
+        for uid in stale:
+            _retry_backfill_last_success.pop(uid, None)
+
+    last_success = _retry_backfill_last_success.get(user.id)
+    if last_success is not None and now_mono - last_success < _RETRY_BACKFILL_RATE_WINDOW_SEC:
+        retry_in = int(_RETRY_BACKFILL_RATE_WINDOW_SEC - (now_mono - last_success)) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit: try again in {retry_in}s",
+            headers={"Retry-After": str(retry_in)},
+        )
+
+    state = await UserBackfillState.get(user.id)
+    now_utc = datetime.now(timezone.utc)
+
+    if state is not None and state.status == "running":
+        raise HTTPException(status_code=409, detail="already_running")
+
+    if state is not None:
+        retry_after = _backfill_retry_retry_after(state, now_utc)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="cooldown",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    today = now_utc.date()
+    oldest = today - timedelta(days=_DEFAULT_BOOTSTRAP_PERIOD_DAYS)
+    newest = today - timedelta(days=1)
+
+    async with get_session() as session:
+        db_user = await session.get(User, user.id)
+        if db_user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        user_dto = _UserDTOAdapter.validate_python(db_user)
+
+    await UserBackfillState.start(
+        user_id=user.id,
+        period_days=_DEFAULT_BOOTSTRAP_PERIOD_DAYS,
+        oldest_dt=oldest,
+        newest_dt=newest,
+    )
+    actor_bootstrap_step.send(
+        user=user_dto,
+        cursor_dt=oldest.isoformat(),
+        period_days=_DEFAULT_BOOTSTRAP_PERIOD_DAYS,
+    )
+
+    _retry_backfill_last_success[user.id] = now_mono
+    logger.info("retry-backfill dispatched user_id=%d period=%dd", user.id, _DEFAULT_BOOTSTRAP_PERIOD_DAYS)
+
+    return {"status": "running", "started_at": now_utc.isoformat()}

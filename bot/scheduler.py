@@ -4,10 +4,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from dramatiq import group
+from pydantic import TypeAdapter
 
 from config import settings
-from data.db import UserDTO
+from data.db import User, UserBackfillState, UserDTO, get_session
 from tasks.actors import (
+    actor_bootstrap_step,
     actor_compose_user_evening_report,
     actor_compose_weekly_report,
     actor_fetch_user_activities,
@@ -20,6 +22,31 @@ from tasks.actors import (
 from .decorator import with_athletes, with_legacy_athletes
 
 logger = logging.getLogger(__name__)
+
+_UserAdapter = TypeAdapter(UserDTO)
+_BOOTSTRAP_STUCK_THRESHOLD_MIN = 15
+
+# After this many consecutive watchdog re-kicks without the cursor advancing
+# we give up and mark the row failed. Each kick is ~10 min apart, so 3 kicks
+# ~= 30 min of bootstrap making zero progress. Prevents infinite re-kick of a
+# chain that Dramatiq exhausted retries on (e.g. persistent Intervals 5xx on
+# one date range) — see code review M1 + docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md §17.
+_BOOTSTRAP_MAX_WATCHDOG_KICKS = 3
+_WATCHDOG_KICK_PREFIX = "watchdog_kick_"
+_WATCHDOG_EXHAUSTED_SENTINEL = "watchdog_exhausted"
+
+
+def _parse_kick_count(last_error: str | None) -> int:
+    """Extract the watchdog kick counter from ``last_error``. Returns 0 for
+    any other value — including None, sentinels like ``EMPTY_INTERVALS``, or
+    unrelated error strings (we never overwrite those; instead we skip the
+    row since it's not in a watchdog-retriable state)."""
+    if not last_error or not last_error.startswith(_WATCHDOG_KICK_PREFIX):
+        return 0
+    try:
+        return int(last_error[len(_WATCHDOG_KICK_PREFIX) :])
+    except ValueError:
+        return 0
 
 
 @with_legacy_athletes
@@ -71,6 +98,71 @@ async def scheduler_progression_model_job(athletes: list[UserDTO]) -> None:
 async def scheduler_sync_goals_job(athletes: list[UserDTO]) -> None:
     _group = group([actor_sync_athlete_goals.message(user=a) for a in athletes])
     _group.run()
+
+
+async def scheduler_watchdog_bootstrap() -> None:
+    """Re-kick bootstrap chains that stalled after Dramatiq exhausted retries.
+
+    Rows with ``status='running'`` AND ``last_step_at`` older than 15 min are
+    stuck — either the worker died mid-step, or all retries of the ``send(next)``
+    call after ``advance_cursor`` failed to persist in Redis. We re-dispatch
+    ``actor_bootstrap_step`` with the DB cursor; the actor's cursor CAS guard
+    will pick up from the last committed position and continue the chain.
+
+    Escalation: after ``_BOOTSTRAP_MAX_WATCHDOG_KICKS`` consecutive kicks
+    without the cursor advancing (tracked via the ``watchdog_kick_N`` counter
+    in ``last_error``), we give up on the row and ``mark_failed``. Prevents
+    infinite re-kick of a chain Dramatiq can never complete — a persistent
+    Intervals 5xx on one date range would otherwise spin forever at our
+    upstream's expense.
+    """
+    stuck = await UserBackfillState.list_stuck(threshold_min=_BOOTSTRAP_STUCK_THRESHOLD_MIN)
+    if not stuck:
+        return
+
+    async with get_session() as session:
+        for state in stuck:
+            prev_kicks = _parse_kick_count(state.last_error)
+            if prev_kicks >= _BOOTSTRAP_MAX_WATCHDOG_KICKS:
+                logger.error(
+                    "watchdog_bootstrap: exhausted user=%d cursor=%s kicks=%d — marking failed",
+                    state.user_id,
+                    state.cursor_dt,
+                    prev_kicks,
+                )
+                await UserBackfillState.mark_failed(
+                    user_id=state.user_id,
+                    error=_WATCHDOG_EXHAUSTED_SENTINEL,
+                )
+                continue
+
+            db_user = await session.get(User, state.user_id)
+            if db_user is None or not db_user.is_active:
+                logger.warning(
+                    "watchdog_bootstrap: skip user_id=%d (missing or inactive)",
+                    state.user_id,
+                )
+                continue
+
+            user_dto = _UserAdapter.validate_python(db_user)
+            next_kicks = prev_kicks + 1
+            logger.warning(
+                "watchdog_bootstrap: re-kick user=%d cursor=%s chunks_done=%d kick=%d/%d",
+                state.user_id,
+                state.cursor_dt,
+                state.chunks_done,
+                next_kicks,
+                _BOOTSTRAP_MAX_WATCHDOG_KICKS,
+            )
+            await UserBackfillState.bump_watchdog_kick(
+                user_id=state.user_id,
+                kick_number=next_kicks,
+            )
+            actor_bootstrap_step.send(
+                user=user_dto,
+                cursor_dt=state.cursor_dt.isoformat(),
+                period_days=state.period_days,
+            )
 
 
 async def create_scheduler() -> AsyncIOScheduler:
@@ -129,6 +221,13 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_progression_model_job,
         trigger=CronTrigger(day_of_week="sun", hour=16, minute=0, timezone=settings.TIMEZONE),
         id="scheduler_progression_model_job",
+    )
+
+    scheduler.add_job(
+        scheduler_watchdog_bootstrap,
+        trigger="cron",
+        minute="*/10",
+        id="scheduler_watchdog_bootstrap",
     )
 
     return scheduler

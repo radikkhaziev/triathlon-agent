@@ -166,6 +166,23 @@
       "url_label": "URL",
       "token_label": "Bearer Token",
       "json_config": "JSON config"
+    },
+    "backfill": {
+      "in_progress_desc": "Loading the last year of training history...",
+      "chunks_done": "chunks: {{done}}",
+      "completed": "History loaded",
+      "button_first": "Load history",
+      "button_resync": "Re-sync",
+      "button_empty_retry": "Retry import",
+      "button_failed": "Try again",
+      "available_in_seconds": "Available in {{seconds}}s",
+      "available_in_minutes": "Available in {{minutes}}m",
+      "available_in_hours": "Available in {{hours}}h",
+      "available_in_days": "Available in {{days}}d",
+      "retry_failed": "Failed to start re-import",
+      "error_watchdog_exhausted": "Import failed after several retries. Check your Intervals.icu connection and try again.",
+      "error_oauth_revoked": "Intervals.icu connection was revoked. Reconnect your account.",
+      "error_generic": "Something went wrong. Try starting the import again."
     }
   },
   "onboarding": {

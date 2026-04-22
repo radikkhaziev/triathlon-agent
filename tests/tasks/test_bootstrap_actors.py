@@ -82,7 +82,7 @@ def bootstrap_mocks():
         patch("tasks.actors.bootstrap.UserBackfillState") as mock_state_cls,
         patch("tasks.actors.bootstrap.IntervalsSyncClient") as mock_client_cls,
         patch("tasks.actors.bootstrap.Activity.save_bulk") as mock_save_bulk,
-        patch("tasks.actors.bootstrap.actor_user_wellness") as mock_actor_wellness,
+        patch("tasks.actors.bootstrap.process_wellness_analysis_sync") as mock_actor_wellness,
         patch("tasks.actors.bootstrap.actor_update_activity_details") as mock_actor_details,
         patch("tasks.actors.bootstrap.actor_bootstrap_step") as mock_self,
         patch("tasks.actors.bootstrap._actor_send_bootstrap_completion_notification") as mock_notify,
@@ -306,11 +306,14 @@ class TestMiddleChunk:
         passed_activities = save_kwargs.get("activities") if "activities" in save_kwargs else save_args[1]
         assert [a.id for a in passed_activities] == ["a1"]
 
-        # Wellness dispatched in chronological order
-        calls = bootstrap_mocks.actor_wellness.send.call_args_list
+        # Wellness processed inline + in chronological order (previously
+        # `actor_user_wellness.send` — now direct `process_wellness_analysis_sync`
+        # call to fix HRV baseline ordering race, see spec §17).
+        calls = bootstrap_mocks.actor_wellness.call_args_list
         assert len(calls) == 2
-        assert calls[0].kwargs["wellness"].id == "2025-05-01"
-        assert calls[1].kwargs["wellness"].id == "2025-05-02"
+        # Positional args: (user_dto, wellness_dto)
+        assert calls[0].args[1].id == "2025-05-01"
+        assert calls[1].args[1].id == "2025-05-02"
 
         # activity details dispatched only for NEW ids
         bootstrap_mocks.actor_details.send.assert_called_once()
@@ -383,3 +386,83 @@ class TestLastChunk:
         assert call.kwargs["delay"] == 60_000
         n_kwargs = call.kwargs["kwargs"]
         assert n_kwargs["empty_import"] is True
+
+
+# ---------------------------------------------------------------------------
+# Wellness ordering + error resilience (code review fixes)
+# ---------------------------------------------------------------------------
+
+
+class TestWellnessOrderingResilience:
+    def test_sort_uses_real_date_not_lexicographic(self, bootstrap_mocks):
+        """Sort key is ``date.fromisoformat`` so a future Intervals ID format
+        (non-ISO) doesn't silently break chronological order. Today's IDs are
+        ISO dates — test still passes via that path; if an ID ever fails to
+        parse, ``date.max`` sink pushes it to the end."""
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        today = date.today()
+        oldest = today - timedelta(days=365)
+        newest = today - timedelta(days=1)
+
+        wellness_rows = [
+            SimpleNamespace(id="2025-05-03"),
+            SimpleNamespace(id="not-a-date"),  # unparseable → sinks to end
+            SimpleNamespace(id="2025-05-01"),
+            SimpleNamespace(id="2025-05-02"),
+        ]
+        client = _mock_client_ctx(wellness=wellness_rows)
+        bootstrap_mocks.client_cls.for_user.return_value = client
+        bootstrap_mocks.state_cls.get.return_value = _state(
+            oldest_dt=oldest,
+            newest_dt=newest,
+            cursor_dt=oldest,
+        )
+
+        actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat(), period_days=365)
+
+        processed_ids = [c.args[1].id for c in bootstrap_mocks.actor_wellness.call_args_list]
+        # Parsed dates first in chronological order, unparseable last.
+        assert processed_ids == ["2025-05-01", "2025-05-02", "2025-05-03", "not-a-date"]
+
+    def test_per_day_failure_swallowed_and_captured(self, bootstrap_mocks):
+        """A single day raising should NOT abort the chunk — cursor still
+        advances, other days still process. Sentry captures the exception so
+        the silent quality degradation (HRV baseline gap) is observable."""
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        today = date.today()
+        oldest = today - timedelta(days=365)
+        newest = today - timedelta(days=1)
+
+        wellness_rows = [
+            SimpleNamespace(id="2025-05-01"),
+            SimpleNamespace(id="2025-05-02"),  # this one explodes
+            SimpleNamespace(id="2025-05-03"),
+        ]
+        client = _mock_client_ctx(wellness=wellness_rows)
+        bootstrap_mocks.client_cls.for_user.return_value = client
+        bootstrap_mocks.state_cls.get.return_value = _state(
+            oldest_dt=oldest,
+            newest_dt=newest,
+            cursor_dt=oldest,
+        )
+
+        # Second day raises
+        def _side_effect(_user, w):
+            if w.id == "2025-05-02":
+                raise RuntimeError("synthetic failure")
+
+        bootstrap_mocks.actor_wellness.side_effect = _side_effect
+
+        with patch("tasks.actors.bootstrap.sentry_sdk.capture_exception") as capture:
+            actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat(), period_days=365)
+
+        # All three days attempted (none short-circuits the loop)
+        assert bootstrap_mocks.actor_wellness.call_count == 3
+        # Cursor still advanced
+        bootstrap_mocks.state_cls.advance_cursor.assert_called_once()
+        # Sentry captured the one failure
+        capture.assert_called_once()
