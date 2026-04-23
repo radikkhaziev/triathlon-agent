@@ -2,9 +2,17 @@
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
-from data.intervals.client import RETRY_MAX_DELAY, IntervalsClientBase
+from data.intervals.client import (
+    BASE_URL,
+    MAX_RETRIES,
+    RETRY_MAX_DELAY,
+    IntervalsAsyncClient,
+    IntervalsClientBase,
+    IntervalsSyncClient,
+)
 
 
 @pytest.fixture
@@ -91,3 +99,73 @@ class TestSpecGetActivityStreams:
     def test_different_activity_id(self, client):
         spec = client._spec_get_activity_streams("xyz999")
         assert "xyz999" in spec.path
+
+
+# ---------------------------------------------------------------------------
+#  Transport-error retry (TLS handshake, connect reset, read error)
+# ---------------------------------------------------------------------------
+
+
+class TestTransportErrorRetry:
+    """_request retries transient transport errors, not just bad HTTP statuses."""
+
+    def test_sync_retries_then_succeeds(self, monkeypatch):
+        monkeypatch.setattr("data.intervals.client.time.sleep", lambda s: None)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("tls handshake failed")
+            return httpx.Response(200, json={"ok": True})
+
+        client = IntervalsSyncClient(athlete_id="i1", api_key="k")
+        client._client.close()
+        client._client = httpx.Client(base_url=BASE_URL, transport=httpx.MockTransport(handler))
+        try:
+            resp = client._request("GET", "/ping")
+            assert resp.status_code == 200
+            assert calls["n"] == 2
+        finally:
+            client._client.close()
+
+    def test_sync_raises_after_all_attempts_fail(self, monkeypatch):
+        monkeypatch.setattr("data.intervals.client.time.sleep", lambda s: None)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            raise httpx.ConnectError("tls handshake failed")
+
+        client = IntervalsSyncClient(athlete_id="i1", api_key="k")
+        client._client.close()
+        client._client = httpx.Client(base_url=BASE_URL, transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(httpx.ConnectError):
+                client._request("GET", "/ping")
+            assert calls["n"] == MAX_RETRIES
+        finally:
+            client._client.close()
+
+    async def test_async_retries_then_succeeds(self, monkeypatch):
+        async def _no_sleep(_):
+            return None
+
+        monkeypatch.setattr("data.intervals.client.asyncio.sleep", _no_sleep)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("tls handshake failed")
+            return httpx.Response(200, json={"ok": True})
+
+        client = IntervalsAsyncClient(athlete_id="i1", api_key="k")
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(handler))
+        try:
+            resp = await client._request("GET", "/ping")
+            assert resp.status_code == 200
+            assert calls["n"] == 2
+        finally:
+            await client._client.aclose()
