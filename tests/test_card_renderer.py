@@ -291,7 +291,7 @@ class TestRenderWorkoutCard:
         assert height == 1920
 
     def test_without_gps_data(self):
-        """No GPS: sport label is drawn in the track area, still valid PNG."""
+        """No GPS: track area stays empty, rest of the layout still renders."""
         data = WorkoutCardData(
             sport_type="Ride",
             distance_m=40000.0,
