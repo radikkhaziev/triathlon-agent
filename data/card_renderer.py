@@ -33,6 +33,16 @@ SPORT_LABEL = {
     "Other": "WORKOUT",
 }
 
+# Monochrome emoji fallback for the track area when GPS data is absent
+# (indoor trainer, pool swim, gym). Rendered white via NotoEmoji-Regular,
+# same visual weight as the rest of the card typography.
+SPORT_EMOJI = {
+    "Swim": "\U0001f3ca",  # 🏊 swimmer
+    "Ride": "\U0001f6b4",  # 🚴 cyclist
+    "Run": "\U0001f3c3",  # 🏃 runner
+    "Other": "\U0001f4aa",  # 💪 flexed biceps
+}
+
 TEXT_WHITE = "#FFFFFF"
 TEXT_DIM = "#6B7280"  # legacy — kept for any non-label dimmed text
 TEXT_LIGHT = "#D1D5DB"
@@ -68,6 +78,21 @@ def _font(weight: str, size: int) -> ImageFont.FreeTypeFont:
     if not path.exists():
         logger.warning("Font not found: %s, falling back to default", path)
         return ImageFont.load_default()
+    return ImageFont.truetype(str(path), size)
+
+
+@lru_cache(maxsize=4)
+def _emoji_font(size: int) -> ImageFont.FreeTypeFont | None:
+    """NotoEmoji-Regular (monochrome) — loaded lazily, cached by size.
+
+    Returns ``None`` if the font file is missing so callers can skip
+    emoji rendering rather than crash. Used only for the no-GPS
+    track-area fallback.
+    """
+    path = _FONT_DIR / "NotoEmoji-Regular.ttf"
+    if not path.exists():
+        logger.warning("NotoEmoji font not found: %s, skipping emoji fallback", path)
+        return None
     return ImageFont.truetype(str(path), size)
 
 
@@ -309,8 +334,6 @@ def _draw_metrics(draw: ImageDraw.ImageDraw, data: WorkoutCardData, y: int, w: i
 def _render_story(data: WorkoutCardData) -> bytes:
     """Render 1080x1920 story card, laid out inside the Story safe zones."""
     W, H = 1080, 1920
-    accent = _get_sport_color(data.sport_type)
-    label = SPORT_LABEL.get(data.sport_type, "WORKOUT")
 
     # Transparent background — the card composites onto the user's Story
     # photo (or the solid Telegram chat background when sent as a document).
@@ -337,8 +360,22 @@ def _render_story(data: WorkoutCardData) -> bytes:
     if data.latlng and len(data.latlng) >= 2:
         _render_polyline(draw, data.latlng, (40, track_top, W - 40, track_bottom), track_color, line_width=9)
     else:
-        big_font = _font("Bold", 120)
-        draw.text((W // 2, (track_top + track_bottom) // 2), label, font=big_font, fill=accent, anchor="mm")
+        # No GPS (indoor trainer, pool swim, gym) — fill the track area with a
+        # big white sport emoji so the upper half of the card has visual mass
+        # that balances the metrics + blurb stack below. Monochrome NotoEmoji
+        # rendered via ``fill=TEXT_WHITE`` keeps it consistent with the rest
+        # of the typography; if the font file is missing we skip silently and
+        # the track area stays empty (same as before).
+        emoji_char = SPORT_EMOJI.get(data.sport_type, SPORT_EMOJI["Other"])
+        emoji_font = _emoji_font(400)
+        if emoji_font is not None:
+            draw.text(
+                (W // 2, (track_top + track_bottom) // 2),
+                emoji_char,
+                font=emoji_font,
+                fill=TEXT_WHITE,
+                anchor="mm",
+            )
 
     # Brand wordmark — "ENDURAI" at 96 px Inter Black (900) with tracking.
     # Wordmark-only (no app icon) — see `_draw_brand` for rationale.
