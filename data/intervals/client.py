@@ -137,6 +137,25 @@ class IntervalsClientBase:
             level="warning",
         )
 
+    def _log_transport_retry(
+        self, method: str, path: str, exc: httpx.TransportError, attempt: int, delay: float
+    ) -> None:
+        name = exc.__class__.__name__
+        logger.warning(
+            "Intervals.icu %s %s → %s, retry %d/%d in %.0fs",
+            method,
+            path,
+            name,
+            attempt + 1,
+            MAX_RETRIES,
+            delay,
+        )
+        sentry_sdk.add_breadcrumb(
+            category="intervals_icu",
+            message=f"Retry {attempt + 1}/{MAX_RETRIES} for {path}: {name}",
+            level="warning",
+        )
+
     @staticmethod
     def _start_span(method: str, path: str):
         return sentry_sdk.start_span(op="http.client", description=f"{method} intervals.icu{path}")
@@ -382,8 +401,16 @@ class IntervalsAsyncClient(IntervalsClientBase):
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         with self._start_span(method, path) as span:
             span.set_data("http.method", method)
+            last_exc: httpx.TransportError | None = None
             for attempt in range(MAX_RETRIES):
-                resp = await self._client.request(method, path, **kwargs)
+                try:
+                    resp = await self._client.request(method, path, **kwargs)
+                except httpx.TransportError as e:
+                    last_exc = e
+                    delay = min(2**attempt * 10, RETRY_MAX_DELAY)
+                    self._log_transport_retry(method, path, e, attempt, delay)
+                    await asyncio.sleep(delay)
+                    continue
                 if resp.status_code not in RETRY_STATUSES:
                     resp.raise_for_status()
                     span.set_data("http.status_code", resp.status_code)
@@ -391,6 +418,8 @@ class IntervalsAsyncClient(IntervalsClientBase):
                 delay = self._compute_retry_delay(resp, attempt)
                 self._log_retry(method, path, resp.status_code, attempt, delay)
                 await asyncio.sleep(delay)
+            if last_exc is not None:
+                raise last_exc
             resp.raise_for_status()
             return resp  # unreachable
 
@@ -513,8 +542,16 @@ class IntervalsSyncClient(IntervalsClientBase):
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         with self._start_span(method, path) as span:
             span.set_data("http.method", method)
+            last_exc: httpx.TransportError | None = None
             for attempt in range(MAX_RETRIES):
-                resp = self._client.request(method, path, **kwargs)
+                try:
+                    resp = self._client.request(method, path, **kwargs)
+                except httpx.TransportError as e:
+                    last_exc = e
+                    delay = min(2**attempt * 10, RETRY_MAX_DELAY)
+                    self._log_transport_retry(method, path, e, attempt, delay)
+                    time.sleep(delay)
+                    continue
                 if resp.status_code not in RETRY_STATUSES:
                     resp.raise_for_status()
                     span.set_data("http.status_code", resp.status_code)
@@ -522,6 +559,8 @@ class IntervalsSyncClient(IntervalsClientBase):
                 delay = self._compute_retry_delay(resp, attempt)
                 self._log_retry(method, path, resp.status_code, attempt, delay)
                 time.sleep(delay)
+            if last_exc is not None:
+                raise last_exc
             resp.raise_for_status()
             return resp  # unreachable
 
