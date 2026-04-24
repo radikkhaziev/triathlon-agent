@@ -116,6 +116,10 @@ class UserFact(Base):
 
         # Lock the topic's active slice before the count so the post-insert
         # eviction sees a consistent view across concurrent writers.
+        # ``expires_at > now()`` matches ``list_active`` — a row that's
+        # lapsed but not yet cleaned up by the expired-cron (issue #244)
+        # shouldn't count toward the cap or it'd kick out a healthy fact
+        # before a reader ever shows the expired ghost.
         active_in_topic = (
             session.execute(
                 select(cls)
@@ -123,6 +127,7 @@ class UserFact(Base):
                     cls.user_id == user_id,
                     cls.topic == topic,
                     cls.deactivated_at.is_(None),
+                    or_(cls.expires_at.is_(None), cls.expires_at > func.now()),
                 )
                 .order_by(cls.created_at.asc())
                 .with_for_update()
@@ -175,7 +180,11 @@ class UserFact(Base):
             oldest_active = (
                 session.execute(
                     select(cls)
-                    .where(cls.user_id == user_id, cls.deactivated_at.is_(None))
+                    .where(
+                        cls.user_id == user_id,
+                        cls.deactivated_at.is_(None),
+                        or_(cls.expires_at.is_(None), cls.expires_at > func.now()),
+                    )
                     .order_by(cls.created_at.asc())
                     .limit(hard_overflow)
                 )
@@ -323,9 +332,16 @@ class UserFact(Base):
 
 def _count_active(cls, user_id: int, session: Session) -> int:
     """Shared count helper — pulled out so internal ``save_with_cap`` paths
-    and the public ``count_active`` hit the same query shape."""
+    and the public ``count_active`` hit the same query shape. Mirrors the
+    reader-side filter (``list_active``) so expired-but-not-yet-deactivated
+    rows don't inflate soft/hard cap decisions.
+    """
     return int(
         session.execute(
-            select(func.count(cls.id)).where(cls.user_id == user_id, cls.deactivated_at.is_(None))
+            select(func.count(cls.id)).where(
+                cls.user_id == user_id,
+                cls.deactivated_at.is_(None),
+                or_(cls.expires_at.is_(None), cls.expires_at > func.now()),
+            )
         ).scalar_one()
     )

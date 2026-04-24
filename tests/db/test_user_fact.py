@@ -219,6 +219,62 @@ class TestFactValidator:
             await UserFact.save_with_cap(user_id=1, topic=" ", fact="some fact")
 
 
+class TestExpiredFactsSkipCapAccounting:
+    """Expired-but-not-yet-deactivated rows (no expired-cron yet) must NOT
+    inflate cap counters. Otherwise ``save_with_cap`` would kick out a fresh
+    healthy fact before the expired ghost ever shows up to the reader, and
+    the soft-warning / hard-cap would fire earlier than policy allows.
+    """
+
+    async def test_expired_row_does_not_block_topic_cap(self, _test_db):
+        """Cap=3 on ``preference``. Seed 3 facts, mark one already expired,
+        save a 4th — nothing should be evicted (expired slot counted as free).
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from data.db.common import get_session
+
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        future = datetime.now(timezone.utc) + timedelta(days=30)
+
+        # Seed 2 living + 1 expired — keeps schema-level write path (ValueError
+        # on empty fact etc.) honest; expires_at injected directly via session.
+        ids: list[int] = []
+        for i in range(3):
+            r = await UserFact.save_with_cap(user_id=1, topic="preference", fact=f"seed #{i}", expires_at=future)
+            ids.append(r["fact_id"])
+
+        # Flip one of them to already-expired (simulates a fact past its TTL
+        # but not yet reaped by the cron — issue #244 follow-up).
+        async with get_session() as s:
+            fact = await s.get(UserFact, ids[0])
+            fact.expires_at = past
+            await s.commit()
+
+        # save_with_cap must see 2 non-expired + the insert → no eviction.
+        result = await UserFact.save_with_cap(user_id=1, topic="preference", fact="fresh #0")
+        assert result["evicted_ids"] == [], "expired fact inflated cap, healthy row got evicted"
+
+    async def test_expired_row_excluded_from_count_active(self, _test_db):
+        """``count_active`` must match ``list_active`` — expired row not
+        counted, so soft-warning / hard-cap decisions stay honest.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from data.db.common import get_session
+
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        r = await UserFact.save_with_cap(user_id=1, topic="preference", fact="will expire")
+        async with get_session() as s:
+            fact = await s.get(UserFact, r["fact_id"])
+            fact.expires_at = past
+            await s.commit()
+
+        count = await UserFact.count_active(user_id=1)
+        visible = await UserFact.list_active(user_id=1)
+        assert count == len(visible), "count_active diverges from list_active — cap math will drift"
+
+
 class TestPromptInjectionTenantIsolation:
     """``render_athlete_block`` must show only the requesting user's facts.
 
@@ -263,12 +319,21 @@ class TestPromptInjectionTenantIsolation:
         assert "What I remember about you" not in rendered
 
     async def test_facts_heading_localized_by_language(self, _test_db):
-        """en vs ru heading picked from ``language`` arg — spec §11.1."""
+        """Heading mirrors ``_lang_name``: "en" → English, everything else →
+        Russian. Tested with ``sr`` specifically since that's the next locale
+        the spec (§11.1) anticipates — guard against drift between heading
+        and the "Respond in …" directive.
+        """
         from bot.prompts import render_athlete_block
 
         await UserFact.save_with_cap(user_id=1, topic="injury", fact="локализация работает")
 
         rendered_ru = await render_athlete_block(user_id=1, language="ru")
         rendered_en = await render_athlete_block(user_id=1, language="en")
+        rendered_sr = await render_athlete_block(user_id=1, language="sr")
+
         assert "## Что я помню о тебе" in rendered_ru
         assert "## What I remember about you" in rendered_en
+        # Non-en falls back to Russian heading to match ``_lang_name`` semantics.
+        assert "## Что я помню о тебе" in rendered_sr
+        assert "## What I remember about you" not in rendered_sr

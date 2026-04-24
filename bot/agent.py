@@ -111,13 +111,18 @@ class ClaudeAgent:
                     input_snapshot = copy.deepcopy(block.input) if recorded else None
                     result = await mcp.call_tool(block.name, block.input)
                     if recorded:
+                        # Freeze any JSON-like mutable result (dict / list /
+                        # tuple / set). Scalars are immutable, skip the copy.
+                        frozen_result = (
+                            copy.deepcopy(result) if isinstance(result, (dict, list, tuple, set)) else result
+                        )
                         tool_calls.append(
                             {
                                 "name": block.name,
                                 "input": input_snapshot,
                                 # `result` is mainly for post-commit ids (save_fact.fact_id)
                                 # — replay-a-preview callers ignore it.
-                                "result": copy.deepcopy(result) if isinstance(result, dict) else result,
+                                "result": frozen_result,
                             }
                         )
                     tool_results.append(

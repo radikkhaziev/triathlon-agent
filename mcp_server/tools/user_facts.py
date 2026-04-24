@@ -32,8 +32,10 @@ def _parse_expires_at(raw: str | None) -> datetime | None:
         raise ValueError(f"expires_at must be ISO-8601 date or datetime, got {raw!r}") from e
     if parsed.tzinfo is None:
         # Date-only inputs come back as midnight naive — push to EoD UTC.
+        # Include microseconds so the last tick of the day stays "active"
+        # (``expires_at > now()`` filter in ``list_active`` is strict).
         if len(raw) == 10:
-            parsed = parsed.replace(hour=23, minute=59, second=59)
+            parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
 

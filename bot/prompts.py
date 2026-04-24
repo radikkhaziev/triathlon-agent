@@ -429,10 +429,14 @@ def _facts_block(facts: list, language: str) -> str:
 
     Empty string when the athlete has zero active facts — no negative-prompt
     "you don't know anything yet" line (wastes tokens, invites hallucination).
+
+    Heading picks Russian for anything that isn't ``"en"``, mirroring
+    ``_lang_name`` so a user on ``"sr"`` / future locales gets a consistent
+    block — heading and ``Respond in …`` directive won't contradict each other.
     """
     if not facts:
         return ""
-    heading = "## Что я помню о тебе" if language == "ru" else "## What I remember about you"
+    heading = "## What I remember about you" if language == "en" else "## Что я помню о тебе"
     lines = [heading]
     lines.extend(f"- [{f.topic}] {f.fact}" for f in facts)
     return "\n".join(lines)

@@ -1005,8 +1005,10 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["pending_workout"] = _extract_pending_preview(tool_calls, _WORKOUT_TOOLS)
 
     undoable = _extract_pending_undoable(tool_calls)
-    if undoable is not None:
-        await _clear_prior_undo_button(context, query.message.chat_id)
+    # Unconditional: next-message TTL for undo must fire whether or not
+    # THIS turn produced a new undoable. Otherwise a previous turn's undo
+    # button hangs around forever if the user keeps advancing the dialog.
+    await _clear_prior_undo_button(context, query.message.chat_id)
 
     keyboard_rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
@@ -1067,8 +1069,9 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["pending_workout"] = _extract_pending_preview(tool_calls, _WORKOUT_TOOLS)
 
     undoable = _extract_pending_undoable(tool_calls)
-    if undoable is not None:
-        await _clear_prior_undo_button(context, update.effective_chat.id)
+    # Unconditional: see workout_sport_chosen for rationale (next-message
+    # TTL for undo must fire whether or not THIS turn produced a new undoable).
+    await _clear_prior_undo_button(context, update.effective_chat.id)
 
     keyboard_rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
