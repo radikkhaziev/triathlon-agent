@@ -194,24 +194,28 @@ def get_system_prompt_v2(user_id: int, language: str = "ru") -> str:
 # Chat — free-form Telegram chat (MCP Phase 3)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT_CHAT = """
+# ---------------------------------------------------------------------------
+# Chat prompt — two-segment cache layout (USER_CONTEXT_SPEC §5 & §6):
+#
+#   _STATIC_PROMPT_CHAT         ← cache segment #1, invariant across users/days
+#   _ATHLETE_BLOCK_TEMPLATE     ← cache segment #2, per-user + per-day tail
+#                                 (today, profile, zones, facts, language)
+#
+# Any save_fact / goal update invalidates only the tail. Any per-user chat
+# request still hits the static cache. The split lives here; the two
+# cache_control markers that actually drive Anthropic's prefix-hash caching
+# live in `bot/agent.py:_run_tool_use_loop`.
+# ---------------------------------------------------------------------------
+
+_STATIC_PROMPT_CHAT = """
 You are a personal AI sports coach available via Telegram chat.
 Answer the athlete's question concisely. Use tools to fetch current data when needed.
-
-Today's date: {today}
-
-Athlete profile:
-- Age {athlete_age}
-- Goal: {goal_event} ({goal_date})
-- LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
-- Data source: Intervals.icu (Garmin wearable sync)
 
 Important:
 - CTL, ATL, TSB come from Intervals.icu (τ_CTL=42d, τ_ATL=7d). NOT TrainingPeaks.
 - Use tools to get actual data — don't guess or assume values.
 - If the question doesn't require data (e.g. general training advice), answer directly without tools.
 - Keep answers short: 2-5 sentences for simple questions, up to 10 for analysis.
-- Respond in {response_language}.
 - Format for Telegram: use Markdown (bold, italic), no headers, no long lists.
 - Garmin tools (`get_garmin_*`) return a `freshness_warning` + `days_stale` —
   GDPR export lags 7+ days. Never present Garmin data as current state; use
@@ -225,7 +229,14 @@ progression, or race-day fitness context.
 
 ## Mood tracking
 If the athlete's message contains emotional signals (fatigue, stress, excitement),
-call save_mood_checkin autonomously — don't ask, just record what you observe.
+call save_mood_checkin_tool autonomously — don't ask, just record what you observe.
+
+## Long-term memory
+Use `save_fact` when the athlete reveals a LASTING trait (injury, schedule, family,
+preference, equipment, travel, job, health) — something still relevant in 2+ weeks.
+Do not use it for transient moods — those go to `save_mood_checkin_tool`.
+Call `list_facts` before saving if the same topic may already be recorded;
+prefer `deactivate_fact` on a stale fact over adding a near-duplicate.
 
 ## Workout generation
 Before calling `suggest_workout` or `compose_workout`, always call `get_activities` for the
@@ -237,7 +248,6 @@ explicitly asks for today.
 **Every step must carry an intensity target** so Garmin/Wahoo watches alert on the HR/power/pace
 corridor. Never emit text-only steps (`Z2` label + duration with nothing else) — the watch will
 run the step without beeping and the athlete runs blind.
-{zones_block}
   - For repeat groups (`reps` + sub-`steps`), the target goes on each sub-step, not the wrapper.
 
 ## Race creation & deletion
@@ -248,7 +258,29 @@ Flow: always call with dry_run=True first — bot shows a confirm button and rep
 dry_run=False itself. Never call dry_run=False yourself. Use `tag_race` only for PAST activities.
 To remove a future race («удали RACE_A», «отмени гонку»), use `delete_race_goal(category)` —
 confirm intent with the athlete first, it's irreversible from the bot.
-"""
+""".strip()
+
+
+_ATHLETE_BLOCK_TEMPLATE = """\
+Today's date: {today}
+
+Athlete profile:
+- Age {athlete_age}
+- Goal: {goal_event} ({goal_date})
+- LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
+- Data source: Intervals.icu (Garmin wearable sync)
+
+## Zones
+{zones_block}
+{facts_block}
+Respond in {response_language}."""
+
+
+# Back-compat alias so existing imports still resolve to a non-empty template
+# (some callers concat it for logging / tests patch the full prompt path).
+# The live chat path uses the split pair above — this constant is no longer
+# .format()-ed anywhere in the live code path.
+SYSTEM_PROMPT_CHAT = _STATIC_PROMPT_CHAT + "\n\n" + _ATHLETE_BLOCK_TEMPLATE
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +414,45 @@ def _zones_block(settings_by_sport: dict[str, AthleteSettings], t: AthleteThresh
     return "\n".join(lines)
 
 
-async def get_system_prompt_chat(user_id: int, language: str = "ru") -> str:
+def get_static_system_prompt() -> str:
+    """Return the invariant chat prompt — the first of two cache segments.
+
+    Constant across users, days, and fact changes; lives in the long-lived
+    Anthropic prefix cache. See USER_CONTEXT_SPEC §5 & §6 for the split
+    rationale. The second segment comes from ``render_athlete_block``.
+    """
+    return _STATIC_PROMPT_CHAT
+
+
+def _facts_block(facts: list, language: str) -> str:
+    """Render the active-facts section for the athlete block.
+
+    Empty string when the athlete has zero active facts — no negative-prompt
+    "you don't know anything yet" line (wastes tokens, invites hallucination).
+    """
+    if not facts:
+        return ""
+    heading = "## Что я помню о тебе" if language == "ru" else "## What I remember about you"
+    lines = [heading]
+    lines.extend(f"- [{f.topic}] {f.fact}" for f in facts)
+    return "\n".join(lines)
+
+
+async def render_athlete_block(
+    user_id: int,
+    language: str = "ru",
+    *,
+    include_facts: bool = True,
+) -> str:
+    """Build the per-user tail: today + thresholds + zones + facts + language.
+
+    This is the second of two cache segments — it invalidates whenever the
+    athlete's profile, goal, zones, or facts change. Morning/evening report
+    actors can reuse it with ``include_facts=False`` when a fact-aware tail
+    is not wanted (facts are conversational context, not analysis input).
+    """
+    from data.db import UserFact  # local import — avoids circular on boot
+
     t: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
     all_settings = await AthleteSettings.get_all(user_id)
@@ -391,7 +461,13 @@ async def get_system_prompt_chat(user_id: int, language: str = "ru") -> str:
     tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
     today = datetime.now(tz).strftime("%Y-%m-%d")
 
-    return SYSTEM_PROMPT_CHAT.format(
+    facts_section = ""
+    if include_facts:
+        facts = await UserFact.list_active(user_id=user_id)
+        block = _facts_block(facts, language)
+        facts_section = f"\n{block}\n" if block else ""
+
+    return _ATHLETE_BLOCK_TEMPLATE.format(
         today=today,
         athlete_age=t.age or 0,
         goal_event=g.event_name if g else "не задана",
@@ -401,5 +477,17 @@ async def get_system_prompt_chat(user_id: int, language: str = "ru") -> str:
         ftp=t.ftp or "—",
         css=t.css or "—",
         zones_block=_zones_block(settings_by_sport, t),
+        facts_block=facts_section,
         response_language=_lang_name(language),
     )
+
+
+async def get_system_prompt_chat(user_id: int, language: str = "ru") -> str:
+    """Back-compat concat of the two cache segments.
+
+    Still used by tests that patch ``bot.agent.get_system_prompt_chat`` with
+    a single string. The live chat path in ``bot/agent.py`` now calls
+    ``get_static_system_prompt()`` and ``render_athlete_block()`` separately
+    so each half gets its own ``cache_control`` marker.
+    """
+    return get_static_system_prompt() + "\n\n" + await render_athlete_block(user_id, language)

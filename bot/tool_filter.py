@@ -34,6 +34,11 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "save_mood_checkin_tool",
         "get_mood_checkins_tool",
         "get_iqos_sticks",
+        "save_fact",
+        "list_facts",
+        "deactivate_fact",
+        "reactivate_fact",
+        "get_fact_metrics",
     ],
     "analysis": [
         "get_activity_details",

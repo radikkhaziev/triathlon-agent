@@ -207,6 +207,18 @@
   - Token exchange через POST body (не URL) — не в access logs Caddy/nginx
   - **Phase 2 TODO:** rate limit `POST /api/intervals/auth/init` (5 req / 5 min per user), иначе злоумышленник с валидной session может flood'ить OAuth initiation (abuse → блок IP со стороны Intervals.icu)
 
+#### T17. User Memory — Vendor-Side Retention of Prose PII (Information Disclosure)
+
+- **Что:** `user_facts` хранит свободно-текстовые свойства атлета, включая `topic='health'` (астма, аллергии, приём лекарств) и `topic='family'` (беременность, дети, семейные обстоятельства). `bot/prompts.py:render_athlete_block` инжектит активные факты в system prompt на каждом chat-запросе. System prompt уходит в Anthropic API и подпадает под их retention policy: по умолчанию Anthropic хранит prompts/completions до **30 дней** для abuse monitoring (ToS), zero-retention доступна только на Tier 3 / enterprise agreements.
+- **Где:** `bot/prompts.py:render_athlete_block` (reader) + `data/db/user_fact.py:UserFact` (storage). Body факта попадает в outbound API body (Anthropic Messages API, `system=[{"text": ..., ...}]` segment 2).
+- **Severity:** Low-Medium (impact = leak чувствительного текста на стороне vendor'а, не кредиты/PAN/health records в регулируемом смысле; recipient — Anthropic, с публичной privacy policy; retention bounded ≤30d)
+- **Mitigation:**
+  - **Локально:** Sentry стримфрейм-скраббер (`sentry_config.py:SENSITIVE_KEYS`) включает `"fact"` с 2026-04 — исключение в `save_with_cap` / `save_fact` больше не опубликует body factа в captured event frames. См. USER_CONTEXT_SPEC §11.5.
+  - **Vendor retention:** осознанный trade-off, задокументирован в USER_CONTEXT_SPEC §11.6. Self-hosted LLM сравнимого качества стоит 10×+ и сейчас недоступен; миграция на enterprise-tier Anthropic contract возможна при первом non-owner athlete onboard, где контракт explicitly даёт zero-retention.
+  - **User control:** inline "🗑 Забудь это" кнопка даёт возможность отозвать факт в течение 10 мин + `/forget` Phase 3 webapp UI для phase-out старых.
+  - **Scope limit:** `save_fact` docstring запрещает сохранение транзиентных moods (→ `save_mood_checkin_tool` вместо факта) и данных уже присутствующих в `athlete_settings`/`athlete_goals`. Модель направляется избегать "case history" — только тренировочно-релевантные traits.
+  - **Phase 2 (async extractor) trigger controlled** per-user через `get_fact_metrics.tool_facts_per_100_msgs_30d`; extractor не включается по умолчанию и не расширяет retention surface для юзеров у которых tool-based подход работает.
+
 ---
 
 ## 3. Data Isolation Strategy

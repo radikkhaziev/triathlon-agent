@@ -559,34 +559,55 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        # Free-form chat watches only for race-creation previews — workouts come
-        # through the /workout ConversationHandler, not here. Filtering narrowly
-        # keeps tool_calls deep-copy cost minimal.
+        # Free-form chat watches race-creation previews + memory mutations.
+        # Workout previews come through the /workout ConversationHandler, not
+        # here. Filtering narrowly keeps tool_calls deep-copy cost minimal.
         result = await agent.chat(
             user_text,
             mcp_token=user.mcp_token,
             user_id=user.id,
             language=user.language,
-            tool_calls_filter=_RACE_TOOLS,
+            tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
         )
 
         pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
         context.user_data["pending_race"] = pending_race
 
-        race_markup = None
+        undoable = _extract_pending_undoable(result.tool_calls)
+
+        # Next-message TTL: clear the previous undo button before sending the
+        # new response so stale buttons don't linger across turns.
+        await _clear_prior_undo_button(context, update.effective_chat.id)
+
+        rows: list[list[InlineKeyboardButton]] = []
         if pending_race is not None:
-            race_markup = InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")],
-                    [InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")],
-                ]
-            )
+            rows.append([InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")])
+            rows.append([InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")])
+        if undoable is not None:
+            payload, cfg = undoable
+            rows.append([_undo_button(cfg.button_text)])
+        reply_markup = InlineKeyboardMarkup(rows) if rows else None
 
         # Telegram Markdown is fragile — fallback to plain text on parse error
         try:
-            await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=race_markup)
+            sent = await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
-            await update.message.reply_text(result.text, reply_markup=race_markup)
+            sent = await update.message.reply_text(result.text, reply_markup=reply_markup)
+
+        if undoable is not None:
+            payload, _cfg = undoable
+            context.user_data[_LAST_UNDOABLE_KEY] = payload
+            context.user_data[_LAST_UNDO_MSG_ID_KEY] = sent.message_id
+            if context.job_queue is not None:
+                context.job_queue.run_once(
+                    _expire_undo_button,
+                    when=_UNDO_EXPIRE_SECONDS,
+                    data={
+                        "chat_id": sent.chat_id,
+                        "message_id": sent.message_id,
+                        "tg_user_id": update.effective_user.id,
+                    },
+                )
 
         if should_show_nudge(user, result.nudge_boundary, result.request_count):
             # Nudge send is best-effort — never let it surface an outer error
@@ -639,25 +660,43 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
             language=user.language,
             image_data=bytes(photo_bytes),
             image_url=image_url,
-            tool_calls_filter=_RACE_TOOLS,
+            tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
         )
 
         pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
         context.user_data["pending_race"] = pending_race
 
-        race_markup = None
+        undoable = _extract_pending_undoable(result.tool_calls)
+        await _clear_prior_undo_button(context, update.effective_chat.id)
+
+        rows: list[list[InlineKeyboardButton]] = []
         if pending_race is not None:
-            race_markup = InlineKeyboardMarkup(
-                [
-                    [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")],
-                    [InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")],
-                ]
-            )
+            rows.append([InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")])
+            rows.append([InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")])
+        if undoable is not None:
+            _payload, cfg = undoable
+            rows.append([_undo_button(cfg.button_text)])
+        reply_markup = InlineKeyboardMarkup(rows) if rows else None
 
         try:
-            await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=race_markup)
+            sent = await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception:
-            await update.message.reply_text(result.text, reply_markup=race_markup)
+            sent = await update.message.reply_text(result.text, reply_markup=reply_markup)
+
+        if undoable is not None:
+            payload, _cfg = undoable
+            context.user_data[_LAST_UNDOABLE_KEY] = payload
+            context.user_data[_LAST_UNDO_MSG_ID_KEY] = sent.message_id
+            if context.job_queue is not None:
+                context.job_queue.run_once(
+                    _expire_undo_button,
+                    when=_UNDO_EXPIRE_SECONDS,
+                    data={
+                        "chat_id": sent.chat_id,
+                        "message_id": sent.message_id,
+                        "tg_user_id": update.effective_user.id,
+                    },
+                )
 
         if should_show_nudge(user, result.nudge_boundary, result.request_count):
             nudge_text = get_nudge_text()
@@ -729,6 +768,122 @@ _PREVIEWABLE_TOOLS: dict[str, PreviewableTool] = {
 
 _WORKOUT_TOOLS = {"suggest_workout", "compose_workout"}
 _RACE_TOOLS = {"suggest_race"}
+
+
+# ---------------------------------------------------------------------------
+# Undoable tools — post-commit mutations that show an inline undo button.
+# See USER_CONTEXT_SPEC §4. Differs from _PREVIEWABLE_TOOLS: there's no
+# preview/confirm stage, the tool has already committed to the DB by the time
+# we render the button. The button simply invokes a compensating tool.
+# ---------------------------------------------------------------------------
+
+
+class UndoableTool(NamedTuple):
+    """Config for a tool whose mutation can be reversed by a single tap."""
+
+    # (input, result) → fact_id for the undo. ``save_fact`` reads ``result``;
+    # ``deactivate_fact`` reads ``input`` (id is in the args the model passed).
+    extract_id: Callable[[dict, dict | None], int | None]
+    undo_tool: str  # MCP tool to call on tap
+    undo_args: Callable[[int], dict]
+    button_text: str  # Telegram button label
+
+
+_UNDOABLE_TOOLS: dict[str, UndoableTool] = {
+    "save_fact": UndoableTool(
+        extract_id=lambda inp, res: (res or {}).get("fact_id"),
+        undo_tool="deactivate_fact",
+        undo_args=lambda fid: {"fact_id": fid, "reason": "user_request"},
+        button_text="🗑 Забудь это",
+    ),
+    "deactivate_fact": UndoableTool(
+        extract_id=lambda inp, res: inp.get("fact_id"),
+        undo_tool="reactivate_fact",
+        undo_args=lambda fid: {"fact_id": fid},
+        button_text="↩️ Вернуть",
+    ),
+}
+
+_UNDOABLE_TOOL_NAMES: set[str] = set(_UNDOABLE_TOOLS.keys())
+
+# Stash keys for the inline-undo state machine on context.user_data.
+# - ``last_undoable``    : ``{"fact_id": int, "tool": str}`` — payload for the callback
+# - ``last_undo_msg_id`` : int — message id hosting the button, so the NEXT chat
+#                                message can clear the markup before sending.
+_LAST_UNDOABLE_KEY = "last_undoable"
+_LAST_UNDO_MSG_ID_KEY = "last_undo_msg_id"
+_UNDO_EXPIRE_SECONDS = 600  # 10 min fallback if user never sends another message
+_UNDO_CALLBACK_DATA = "fact_undo"
+
+
+def _extract_pending_undoable(tool_calls: list[dict]) -> tuple[dict, UndoableTool] | None:
+    """Find the most recent undoable mutation in the turn's tool calls.
+
+    Scans reverse so if Claude saved twice in one turn we point at the second
+    save (only its undo button is coherent with the committed state). Returns
+    ``({"fact_id": int, "tool": str}, cfg)`` or None.
+    """
+    for call in reversed(tool_calls):
+        name = call.get("name")
+        cfg = _UNDOABLE_TOOLS.get(name) if isinstance(name, str) else None
+        if cfg is None:
+            continue
+        fact_id = cfg.extract_id(call.get("input") or {}, call.get("result"))
+        if isinstance(fact_id, int):
+            return {"fact_id": fact_id, "tool": name}, cfg
+    return None
+
+
+async def _clear_prior_undo_button(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    """Remove the inline undo button from the previous bot message (if any).
+
+    Called before sending a new chat response so old undo buttons don't
+    survive on stale messages where the user might tap them days later and
+    silently lose a fact the bot has since cited in other contexts.
+    """
+    prev_msg_id = context.user_data.pop(_LAST_UNDO_MSG_ID_KEY, None)
+    context.user_data.pop(_LAST_UNDOABLE_KEY, None)
+    if not prev_msg_id:
+        return
+    try:
+        await context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=prev_msg_id, reply_markup=None)
+    except TelegramError:
+        # Message may be older than 48h, deleted, or already cleared — ignore.
+        pass
+
+
+async def _expire_undo_button(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Job-queue callback: strip the undo button after ``_UNDO_EXPIRE_SECONDS``.
+
+    Looks up the PTB user_data dict via ``context.application.user_data[tg_user_id]``
+    rather than carrying a live reference in ``job.data`` — a live reference
+    would be pickled by a persistent JobStore (RedisJobStore / SQLAlchemyJobStore)
+    and either crash or snapshot the whole user_data. This keeps the job data
+    to 3 ints which are portable across process boundaries.
+    """
+    job = context.job
+    data = job.data or {}
+    chat_id = data.get("chat_id")
+    message_id = data.get("message_id")
+    tg_user_id = data.get("tg_user_id")
+    if not (chat_id and message_id and tg_user_id):
+        return
+    user_data = context.application.user_data.get(tg_user_id)
+    if user_data is not None:
+        # Pop only if the stash still points at THIS message — if the user
+        # already sent another chat and got a new undo, user_data was rotated
+        # and we must not clobber the fresh state.
+        if user_data.get(_LAST_UNDO_MSG_ID_KEY) == message_id:
+            user_data.pop(_LAST_UNDO_MSG_ID_KEY, None)
+            user_data.pop(_LAST_UNDOABLE_KEY, None)
+    try:
+        await context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except TelegramError:
+        pass
+
+
+def _undo_button(button_text: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(button_text, callback_data=_UNDO_CALLBACK_DATA)
 
 
 def _extract_pending_preview(tool_calls: list[dict], tool_filter: set[str] | None = None) -> dict | None:
@@ -837,7 +992,7 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
             prompt,
             mcp_token=user.mcp_token,
             user_id=user.id,
-            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()),
+            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()) | _UNDOABLE_TOOL_NAMES,
         )
         response_text = result.text
         tool_calls = result.tool_calls
@@ -849,17 +1004,34 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
     # Always replace so a previous draft can't linger if the new turn produced none.
     context.user_data["pending_workout"] = _extract_pending_preview(tool_calls, _WORKOUT_TOOLS)
 
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="workout_cancel")],
-        ]
-    )
+    undoable = _extract_pending_undoable(tool_calls)
+    if undoable is not None:
+        await _clear_prior_undo_button(context, query.message.chat_id)
+
+    keyboard_rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="workout_cancel")],
+    ]
+    if undoable is not None:
+        _payload, cfg = undoable
+        keyboard_rows.append([_undo_button(cfg.button_text)])
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     try:
-        await query.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
+        sent = await query.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
     except Exception:
-        await query.message.reply_text(response_text, reply_markup=keyboard)
+        sent = await query.message.reply_text(response_text, reply_markup=keyboard)
+
+    if undoable is not None:
+        payload, _cfg = undoable
+        context.user_data[_LAST_UNDOABLE_KEY] = payload
+        context.user_data[_LAST_UNDO_MSG_ID_KEY] = sent.message_id
+        if context.job_queue is not None:
+            context.job_queue.run_once(
+                _expire_undo_button,
+                when=_UNDO_EXPIRE_SECONDS,
+                data={"chat_id": sent.chat_id, "message_id": sent.message_id, "tg_user_id": update.effective_user.id},
+            )
 
     return WORKOUT_DIALOG
 
@@ -882,7 +1054,7 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
             prompt,
             mcp_token=user.mcp_token,
             user_id=user.id,
-            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()),
+            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()) | _UNDOABLE_TOOL_NAMES,
         )
         response_text = result.text
         tool_calls = result.tool_calls
@@ -894,17 +1066,34 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Always replace so a previous draft can't linger if the new turn produced none.
     context.user_data["pending_workout"] = _extract_pending_preview(tool_calls, _WORKOUT_TOOLS)
 
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="workout_cancel")],
-        ]
-    )
+    undoable = _extract_pending_undoable(tool_calls)
+    if undoable is not None:
+        await _clear_prior_undo_button(context, update.effective_chat.id)
+
+    keyboard_rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("✅ Отправить в Intervals", callback_data="workout_push")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="workout_cancel")],
+    ]
+    if undoable is not None:
+        _payload, cfg = undoable
+        keyboard_rows.append([_undo_button(cfg.button_text)])
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     try:
-        await update.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
+        sent = await update.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
     except Exception:
-        await update.message.reply_text(response_text, reply_markup=keyboard)
+        sent = await update.message.reply_text(response_text, reply_markup=keyboard)
+
+    if undoable is not None:
+        payload, _cfg = undoable
+        context.user_data[_LAST_UNDOABLE_KEY] = payload
+        context.user_data[_LAST_UNDO_MSG_ID_KEY] = sent.message_id
+        if context.job_queue is not None:
+            context.job_queue.run_once(
+                _expire_undo_button,
+                when=_UNDO_EXPIRE_SECONDS,
+                data={"chat_id": sent.chat_id, "message_id": sent.message_id, "tg_user_id": update.effective_user.id},
+            )
 
     return WORKOUT_DIALOG
 
@@ -1059,6 +1248,64 @@ async def race_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, user: 
     await query.edit_message_reply_markup(reply_markup=None)
     context.user_data.pop("pending_race", None)
     await query.message.reply_text(_("Отменено."))
+
+
+# ---------------------------------------------------------------------------
+# Fact memory — inline undo after save_fact / deactivate_fact
+# ---------------------------------------------------------------------------
+#
+# See USER_CONTEXT_SPEC §4. The mutating tool has already committed by the
+# time we render the button; the callback invokes a compensating MCP tool
+# (``deactivate_fact`` or ``reactivate_fact``) without re-running Claude.
+# Consume-on-read via ``pop`` prevents a duplicate tap from replaying.
+
+
+@athlete_required
+async def fact_undo(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Reverse the last save_fact / deactivate_fact via a direct MCP call."""
+    query = update.callback_query
+    payload = context.user_data.pop(_LAST_UNDOABLE_KEY, None)
+    context.user_data.pop(_LAST_UNDO_MSG_ID_KEY, None)
+
+    # Ack first so Telegram doesn't show a spinner while MCP runs.
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        pass
+
+    if not isinstance(payload, dict):
+        # TTL fired, user hit back on an old message, or we pre-consumed the
+        # payload on the next chat turn — all legit, just no-op with a nudge.
+        await query.message.reply_text(_("Нечего отменять — кнопка истекла."))
+        return
+
+    fact_id = payload.get("fact_id")
+    tool = payload.get("tool")
+    cfg = _UNDOABLE_TOOLS.get(tool) if isinstance(tool, str) else None
+    if not (isinstance(fact_id, int) and cfg is not None):
+        logger.warning("fact_undo: malformed payload %r", payload)
+        await query.message.reply_text(_("Не получилось отменить — попробуй написать в чате."))
+        return
+
+    try:
+        mcp = MCPClient(token=user.mcp_token)
+        result = await mcp.call_tool(cfg.undo_tool, cfg.undo_args(fact_id))
+    except Exception:
+        logger.exception("fact_undo: MCP call %s failed for fact_id=%s", cfg.undo_tool, fact_id)
+        await query.message.reply_text(_("Не удалось отменить, попробуй ещё раз."))
+        return
+
+    # The undo tools return ``{"fact_id": ..., "deactivated"/"reactivated": bool}``.
+    # A False flag means the row was already in the target state (race with a
+    # second tap, or TTL stripped the stash). Report generically — no
+    # information disclosure (spec §3).
+    ok = bool(isinstance(result, dict) and (result.get("deactivated") or result.get("reactivated")))
+    if ok:
+        msg = _("🗑 Факт удалён.") if cfg.undo_tool == "deactivate_fact" else _("↩️ Факт восстановлен.")
+    else:
+        msg = _("Кнопка уже сработала раньше.")
+    await query.message.reply_text(msg)
 
 
 @athlete_required
@@ -1409,6 +1656,7 @@ def build_application() -> Application:
     # workout ConversationHandler.
     app.add_handler(CallbackQueryHandler(race_push, pattern=r"^race_push$"))
     app.add_handler(CallbackQueryHandler(race_cancel, pattern=r"^race_cancel$"))
+    app.add_handler(CallbackQueryHandler(fact_undo, pattern=r"^fact_undo$"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     # Photo handler — download, save, pass to AI chat with vision
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo_message))

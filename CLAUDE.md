@@ -50,7 +50,7 @@ triathlon-agent/
 
 ## Database Schema
 
-32 tables. Full column specs in `data/db/`. Key tables:
+33 tables. Full column specs in `data/db/`. Key tables:
 
 **Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `api/routers/intervals/oauth.py`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
@@ -58,7 +58,7 @@ triathlon-agent/
 
 **Training:** `scheduled_workouts`, `activities` (incl. `is_race`/`sub_type`/`rpe` — Borg CR-10 1-10 with `CHECK` constraint, see `docs/RPE_SPEC.md`), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot). See `docs/RACE_TAGGING.md`.
 
-**Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`, `star_transactions` (Telegram Stars donation ledger, `UNIQUE(charge_id)` for webhook idempotency, `refunded_at` nullable — see `docs/DONATE_SPEC.md`), `user_backfill_state` (1 row/user, cursor-based bootstrap progress: `oldest_dt`/`newest_dt`/`cursor_dt`/`chunks_done`/`status`+`last_error` — see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`).
+**Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`, `star_transactions` (Telegram Stars donation ledger, `UNIQUE(charge_id)` for webhook idempotency, `refunded_at` nullable — see `docs/DONATE_SPEC.md`), `user_backfill_state` (1 row/user, cursor-based bootstrap progress: `oldest_dt`/`newest_dt`/`cursor_dt`/`chunks_done`/`status`+`last_error` — see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`), `user_facts` (long-term memory: free-text traits per `topic` with `fact_language` (BCP-47), `source` (`tool`/`extractor`/`user`), `expires_at`, and soft-delete `deactivated_at`+`deactivated_reason` (`user_request`/`topic_cap`/`hard_cap`/`expired`/`contradicted`) — see `docs/USER_CONTEXT_SPEC.md`).
 
 **Garmin (9 tables):** `garmin_sleep`, `garmin_daily_summary`, `garmin_training_readiness`, `garmin_health_status`, `garmin_training_load`, `garmin_fitness_metrics`, `garmin_race_predictions`, `garmin_bio_metrics`, `garmin_abnormal_hr_events`.
 
@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). OAuth bootstrap backfill **Phase 1+2 complete** (chunk-recursive `actor_bootstrap_step`, `CHUNK_DAYS=30`, cursor state in `user_backfill_state`, fast-path today+settings+goals+14d-workouts + year-long slow-path, `GET /api/auth/backfill-status` + `POST /api/auth/retry-backfill` with dual cooldown 7d/1h + 1h anti-spam rate limit, CLI `bootstrap-sync`, `scheduler_watchdog_bootstrap` cron every 10min with 3-kick escalation to `watchdog_exhausted`, empty-import sentinel with 1h cooldown, `last_error` allowlist sanitization for UI, HRV ordering fix via inline `process_wellness_analysis_sync` in chronological loop, webapp `BackfillSection` progress bar + 7-state button machine — see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag — renames Intervals.icu activities on `ACTIVITY_UPLOADED` with `{sport_emoji} {descriptor}` title (e.g. `🏃 Easy Run 10k`) and a 2-3 sentence AI description (Instagram-card tone) ending with `→ endurai.me`; idempotent via `_SIGNATURE_MARKERS` (`"endurai.me"`, legacy `"Readiness"`). Workout card PNG generator: Pillow-based renderer with GPS polyline, AI text via Claude, sport-specific metrics (Run=pace, Ride=power, Swim=pace/100m), endurai.me branding — triggered via inline button in activity notification; sent via `sendDocument` (not `sendPhoto`) so Telegram preserves PNG transparency. Pending: personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars.
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). OAuth bootstrap backfill **Phase 1+2 complete** (chunk-recursive `actor_bootstrap_step`, `CHUNK_DAYS=30`, cursor state in `user_backfill_state`, fast-path today+settings+goals+14d-workouts + year-long slow-path, `GET /api/auth/backfill-status` + `POST /api/auth/retry-backfill` with dual cooldown 7d/1h + 1h anti-spam rate limit, CLI `bootstrap-sync`, `scheduler_watchdog_bootstrap` cron every 10min with 3-kick escalation to `watchdog_exhausted`, empty-import sentinel with 1h cooldown, `last_error` allowlist sanitization for UI, HRV ordering fix via inline `process_wellness_analysis_sync` in chronological loop, webapp `BackfillSection` progress bar + 7-state button machine — see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`). Webhook dispatchers: 8/10 implemented (WELLNESS, CALENDAR, SPORT_SETTINGS, FITNESS, APP_SCOPE, ACHIEVEMENTS, ACTIVITY_UPLOADED, ACTIVITY_UPDATED). Strava signature (`actor_rename_activity`) behind feature flag — renames Intervals.icu activities on `ACTIVITY_UPLOADED` with `{sport_emoji} {descriptor}` title (e.g. `🏃 Easy Run 10k`) and a 2-3 sentence AI description (Instagram-card tone) ending with `→ endurai.me`; idempotent via `_SIGNATURE_MARKERS` (`"endurai.me"`, legacy `"Readiness"`). Workout card PNG generator: Pillow-based renderer with GPS polyline, AI text via Claude, sport-specific metrics (Run=pace, Ride=power, Swim=pace/100m), endurai.me branding — triggered via inline button in activity notification; sent via `sendDocument` (not `sendPhoto`) so Telegram preserves PNG transparency. User-memory facts **Phase 1 complete** (long-term traits: `user_facts` table + `UserFact.save_with_cap` append-with-cap — per-topic `TOPIC_CAPS` dict `injury=5`/`health=5`/default=3 + global hard cap 200, race-safe via `SELECT ... FOR UPDATE`; 5 MCP tools `save_fact` / `list_facts` / `deactivate_fact` / `reactivate_fact` / `get_fact_metrics` in `tracking` group; two-segment cache split in `bot/prompts.py` — `get_static_system_prompt()` + `render_athlete_block(user, language, *, include_facts=True)` each with its own `cache_control: ephemeral` marker so `save_fact` invalidates only the ~240-tok tail, not the ~780-tok static prefix; inline undo-button registry `_UNDOABLE_TOOLS` in `bot/main.py` — `🗑 Забудь это` after `save_fact`, `↩️ Вернуть` after `deactivate_fact`, direct MCP call from `fact_undo` callback without re-inference; TTL = next-chat-msg cleanup + 10-min `job_queue.run_once` fallback; workout handlers widened filter to union with `_UNDOABLE_TOOL_NAMES` so `save_fact` inside `/workout` still surfaces undo; see `docs/USER_CONTEXT_SPEC.md`). Pending: personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy env vars, user-memory Phase 2 extractor (gated on `tool_facts_per_100_msgs_30d < 3` with `chat_msgs ≥ 100`).
 
 **Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 
@@ -385,7 +385,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 
 - **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00, weekly report Sunday 18:00
 - **Both HRV algorithms** always computed; `HRV_ALGORITHM` selects primary
-- **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls. Prompt caching (`cache_control: ephemeral`) on system prompt. Tool filtering: 6 groups, keyword-based, core+tracking always included (~75% token reduction for simple messages)
+- **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls. Prompt caching: **two `cache_control: ephemeral` segments** — `get_static_system_prompt()` (instructions, never changes) and `render_athlete_block(...)` (today + profile + goal + zones + facts + language). `save_fact` / goal update invalidates only the ~240-tok tail; the ~780-tok static prefix stays hot on Anthropic's prefix cache (see USER_CONTEXT_SPEC §6). Tool filtering: 6 groups, keyword-based, core+tracking+workouts always included (~75% token reduction for simple messages)
 - **All timestamps** UTC in DB, local timezone for display
 - **Telegram bot** — polling (local dev, `TELEGRAM_WEBHOOK_URL` empty) or webhook (production)
 - **Frontend** — React SPA via Vite; dev proxies /api to FastAPI; production serves from webapp/dist/
@@ -413,22 +413,23 @@ User sends /morning → @athlete_required resolves User from chat_id
 
 ---
 
-## MCP Server (53 tools + 3 resources)
+## MCP Server (58 tools + 3 resources)
 
 Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per-user Bearer auth via `User.mcp_token`).
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**53 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**58 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), **long-term user memory** (`save_fact`/`list_facts`/`deactivate_fact`/`reactivate_fact`/`get_fact_metrics` — see `docs/USER_CONTEXT_SPEC.md`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 
 ---
 
-## Mood & IQOS Tracking
+## Mood, IQOS & Long-term Memory
 
-**Mood:** Via MCP only. Claude notices emotional context → `save_mood_checkin`. Scales 1-5: energy, mood, anxiety, social + note.
+**Mood:** Via MCP only. Claude notices emotional context → `save_mood_checkin_tool`. Scales 1-5: energy, mood, anxiety, social + note. Transient — one check-in per moment.
 **IQOS:** `/stick` command increments daily counter. MCP tool `get_iqos_sticks(target_date, days_back)` for trends.
+**Long-term memory (`user_facts`):** Claude calls `save_fact(topic, fact, expires_at?)` when the athlete reveals a LASTING trait (injury, schedule, family, preference, equipment, travel, job, health — something still relevant in 2+ weeks). Active facts are injected into the system prompt via `render_athlete_block`. Undo: each mutation ships with an inline button (`🗑 Забудь это` / `↩️ Вернуть`) that invokes the compensating MCP tool (`deactivate_fact` / `reactivate_fact`) directly without re-inference; TTL is next-message cleanup + 10-min `job_queue.run_once` fallback. Phase 2 async extractor is gated on `get_fact_metrics().tool_facts_per_100_msgs_30d < 3` with `chat_msgs ≥ 100`. Full spec: `docs/USER_CONTEXT_SPEC.md`.
 
 ---
 
