@@ -64,7 +64,7 @@ class WorkoutCardData:
     avg_hr: int | None = None
     elevation_gain: float | None = None
     ai_text: str | None = None
-    latlng: list[tuple[float, float]] | None = None
+    latlng: list[tuple[float | None, float | None]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +365,12 @@ def _render_story(data: WorkoutCardData) -> bytes:
     track_color = "#4A90D9"
     track_top = 330
     track_bottom = 1080
-    if data.latlng and len(data.latlng) >= 2:
+    # Count non-None points at the caller so an all-None ``latlng`` (issue
+    # #249: GPS dropouts that produced only ``(None, None)`` samples) falls
+    # through to the emoji fallback below instead of silently rendering an
+    # empty track area.
+    valid_points = sum(1 for lat, lng in data.latlng if lat is not None and lng is not None) if data.latlng else 0
+    if valid_points >= 2:
         _render_polyline(draw, data.latlng, (40, track_top, W - 40, track_bottom), track_color, line_width=9)
     else:
         # No GPS (indoor trainer, pool swim, gym) — fill the track area with a

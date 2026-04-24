@@ -336,17 +336,23 @@ class TestRenderWorkoutCard:
         assert result[:8] == b"\x89PNG\r\n\x1a\n"
 
     def test_latlng_all_none_falls_back_to_no_gps(self):
-        """All-None latlng must not crash and must render the no-GPS fallback
-        (sport emoji) the same way ``latlng=None`` does.
+        """All-None latlng must render bit-for-bit identically to ``latlng=None``
+        — after filtering, neither has any drawable points, so the no-GPS
+        fallback (sport emoji) must kick in the same way.
         """
-        data = WorkoutCardData(
+        all_none_data = WorkoutCardData(
             sport_type="Run",
             distance_m=5000.0,
             duration_sec=1800,
             latlng=[(None, None), (None, None), (None, None)],
         )
-        result = render_workout_card(data)
-        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+        no_gps_data = WorkoutCardData(
+            sport_type="Run",
+            distance_m=5000.0,
+            duration_sec=1800,
+            latlng=None,
+        )
+        assert render_workout_card(all_none_data) == render_workout_card(no_gps_data)
 
     def test_with_ai_text(self):
         data = WorkoutCardData(

@@ -176,7 +176,7 @@ def _actor_process_fit_file(prev: str | None):
             scope.set_tag("fit_parse_aborted", "true")
             scope.set_extra("records_parsed", len(records))
             scope.set_extra("rr_parsed", len(rr_ms))
-            scope.set_extra("fit_path", prev)
+            scope.set_extra("fit_filename", Path(prev).name)
             sentry_sdk.capture_message(f"FIT parse aborted: {e}", level="warning")
 
     # Tail ``parse_aborted`` on the return so ``_actor_post_process_fit_file``
@@ -193,7 +193,7 @@ def _actor_post_process_fit_file(
     parsed_fit_data: tuple[list[float], list[dict], bool] | None,
     user: UserDTO,
     activity_id: str,
-) -> FitProcessingResultDTO | None:
+) -> dict[str, Any] | None:
     if not parsed_fit_data:
         return
 
