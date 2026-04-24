@@ -77,61 +77,6 @@ def _verify_webhook_secret(payload: IntervalsWebhookPayload) -> bool:
     return True
 
 
-def _classify_parse_status(
-    records_count: int,
-    parsed_count: int,
-    has_model: bool,
-) -> tuple[str, str, str]:
-    """Decide how to categorize a webhook event for Sentry monitoring."""
-    if records_count == 0:
-        return "empty", "info", "EMPTY"
-    if not has_model:
-        return "no_dto", "info", "NO DTO"
-    if parsed_count == records_count:
-        return "ok", "info", "OK"
-    if parsed_count == 0:
-        return "failed", "warning", "PARSE FAILED"
-    return "partial", "warning", "PARTIAL"
-
-
-def _sentry_monitor_event(
-    event: IntervalsWebhookEvent,
-    normalized_type: str,
-    user: User,
-    parsed_count: int,
-    record_field_names: set[str],
-    parse_errors: list[str],
-    has_model: bool,
-) -> None:
-    """Send a classified Sentry message with event **metadata only** (no PII)."""
-    status, level, prefix = _classify_parse_status(
-        records_count=len(event.records),
-        parsed_count=parsed_count,
-        has_model=has_model,
-    )
-    try:
-        with sentry_sdk.new_scope() as scope:
-            scope.set_tag("source", "intervals_webhook")
-            scope.set_tag("intervals_event_type", normalized_type)
-            scope.set_tag("parse_status", status)
-            scope.set_tag("intervals_athlete_id", event.athlete_id)
-            scope.set_tag("user_id", str(user.id))
-            if event.type != normalized_type:
-                scope.set_extra("original_event_type", event.type)
-            scope.set_extra("records_count", len(event.records))
-            scope.set_extra("parsed_count", parsed_count)
-            scope.set_extra("record_field_names", sorted(record_field_names))
-            scope.set_extra("event_timestamp", event.timestamp)
-            if parse_errors:
-                scope.set_extra("parse_errors", parse_errors[:10])
-            sentry_sdk.capture_message(
-                f"Intervals webhook {prefix}: {normalized_type}",
-                level=level,
-            )
-    except Exception:
-        logger.warning("Failed to forward intervals webhook event to Sentry", exc_info=True)
-
-
 # ---------------------------------------------------------------------------
 # Dispatchers — one function per supported event type.
 # ---------------------------------------------------------------------------
@@ -264,11 +209,6 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
                 sanitized = _format_validation_errors(e)
                 parse_errors.append(f"record[{i}]: {','.join(sanitized)}")
 
-    record_field_names: set[str] = set()
-    for record in event.records:
-        if isinstance(record, dict):
-            record_field_names.update(record.keys())
-
     logger.info(
         "Intervals webhook event type=%s normalized=%s user_id=%s athlete_id=%s "
         "records=%d parsed=%d errors=%d timestamp=%s",
@@ -287,17 +227,6 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
             normalized_type,
             user.id,
             "; ".join(parse_errors[:5]),
-        )
-
-    if settings.INTERVALS_WEBHOOK_MONITORING:
-        _sentry_monitor_event(
-            event,
-            normalized_type,
-            user,
-            parsed_count,
-            record_field_names,
-            parse_errors,
-            has_model=model_cls is not None,
         )
 
     # Dispatch actors for supported event types.
