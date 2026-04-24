@@ -125,7 +125,7 @@ OAuth callback (was_new=True)
          ├─ chunk_end = min(cursor_dt + CHUNK_DAYS - 1, newest_dt)
          │
          ├─ 1 HTTP: client.get_wellness_range(cursor_dt, chunk_end)
-         ├─ 1 HTTP: client.get_activities_range(cursor_dt, chunk_end)
+         ├─ 1 HTTP: client.get_activities(cursor_dt, chunk_end)
          │
          ├─ Chronological loop for dt in [cursor_dt .. chunk_end]:
          │    • Wellness.upsert(dt, ...) если row есть
@@ -325,7 +325,7 @@ def actor_bootstrap_step(user: UserDTO, cursor_dt: str, period_days: int = 365) 
     # Fetch range (2 HTTP calls)
     with IntervalsSyncClient.for_user(user) as client:
         wellness_rows = client.get_wellness_range(oldest=cursor, newest=chunk_end)
-        activity_rows = client.get_activities_range(oldest=cursor, newest=chunk_end)
+        activity_rows = client.get_activities(oldest=cursor, newest=chunk_end)
 
     wellness_by_date = {w.date: w for w in wellness_rows}
     activities_by_date: dict[date, list] = defaultdict(list)

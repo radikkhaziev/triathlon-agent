@@ -196,7 +196,16 @@ class UserBackfillState(Base):
         ``threshold_min`` minutes — i.e. the chain broke after exhausting
         Dramatiq retries. Used by the watchdog cron (Phase 2)."""
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=threshold_min)
-        rows = session.execute(select(cls).where(cls.status == "running", cls.last_step_at < cutoff)).scalars().all()
+        rows = (
+            session.execute(
+                select(cls).where(
+                    cls.status == "running",
+                    cls.last_step_at < cutoff,
+                )
+            )
+            .scalars()
+            .all()
+        )
         return list(rows)
 
     # --- Derived helpers ---
