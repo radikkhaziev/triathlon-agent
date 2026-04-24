@@ -12,6 +12,7 @@ import numpy as np
 import sentry_sdk
 from dramatiq import group, pipeline
 from fitparse import FitFile
+from fitparse.utils import FitParseError
 from pydantic import validate_call
 from sqlalchemy import select
 
@@ -104,9 +105,13 @@ def _actor_process_fit_file(prev: str | None):
     """Parse FIT file once, extracting both RR intervals and Record messages.
 
     Returns:
-        (rr_ms, records) where:
+        (rr_ms, records, parse_aborted) where:
         - rr_ms: list of RR intervals in milliseconds (from HRV messages)
         - records: list of dicts with timestamp_s, heart_rate, power, speed
+        - parse_aborted: True when ``FitParseError`` truncated the iteration
+          mid-file. Downstream post-processing uses this to mark the result
+          ``hrv_quality="poor"`` instead of storing DFA / thresholds derived
+          from a truncated RR tail as if they were clean.
     """
 
     if prev is None:
@@ -120,42 +125,75 @@ def _actor_process_fit_file(prev: str | None):
     rr_ms: list[float] = []
     records: list[dict] = []
     start_ts = None
+    parse_aborted = False
 
-    for msg in fit.get_messages():
-        msg_name = msg.name
-        if msg_name == "hrv":
-            for field in msg.fields:
-                if field.name == "time" and field.value is not None:
-                    values = field.value if isinstance(field.value, (list, tuple)) else [field.value]
-                    for v in values:
-                        if v is not None and v < 60.0:
-                            rr_ms.append(v * 1000.0)
-        elif msg_name == "record":
-            rec: dict[str, Any] = {}
-            for field in msg.fields:
-                if field.name == "timestamp" and field.value is not None:
-                    if start_ts is None:
-                        start_ts = field.value
-                    rec["timestamp_s"] = (field.value - start_ts).total_seconds()
-                elif field.name == "heart_rate":
-                    rec["heart_rate"] = field.value
-                elif field.name == "power":
-                    rec["power"] = field.value
-                elif field.name in ("speed", "enhanced_speed"):
-                    rec["speed"] = field.value
-            if "timestamp_s" in rec:
-                records.append(rec)
+    # fit.get_messages() is a generator — a single malformed dev_data field
+    # aborts the whole iteration with FitParseError (issue #250). Wrap the
+    # loop so we keep whatever's been parsed so far instead of losing the
+    # entire activity; bad dev fields typically appear late in the file
+    # (records + hrv arrive first), so partial data is usually sufficient.
+    try:
+        for msg in fit.get_messages():
+            msg_name = msg.name
+            if msg_name == "hrv":
+                for field in msg.fields:
+                    if field.name == "time" and field.value is not None:
+                        values = field.value if isinstance(field.value, (list, tuple)) else [field.value]
+                        for v in values:
+                            if v is not None and v < 60.0:
+                                rr_ms.append(v * 1000.0)
+            elif msg_name == "record":
+                rec: dict[str, Any] = {}
+                for field in msg.fields:
+                    if field.name == "timestamp" and field.value is not None:
+                        if start_ts is None:
+                            start_ts = field.value
+                        rec["timestamp_s"] = (field.value - start_ts).total_seconds()
+                    elif field.name == "heart_rate":
+                        rec["heart_rate"] = field.value
+                    elif field.name == "power":
+                        rec["power"] = field.value
+                    elif field.name in ("speed", "enhanced_speed"):
+                        rec["speed"] = field.value
+                if "timestamp_s" in rec:
+                    records.append(rec)
+    except FitParseError as e:
+        parse_aborted = True
+        # Log loud locally — we deliberately do NOT ``capture_exception`` per
+        # file (noisy: every Wahoo / third-party-field Garmin export would
+        # spam Sentry) but a fingerprinted message keeps a single grouped
+        # issue alive so we can watch for volume spikes that would signal a
+        # ``fitparse`` SDK regression or a new Garmin firmware drift.
+        logger.warning(
+            "FIT parse aborted mid-file for %s after %d records / %d rr values: %s",
+            prev,
+            len(records),
+            len(rr_ms),
+            e,
+        )
+        with sentry_sdk.new_scope() as scope:
+            scope.fingerprint = ["fit-parse-aborted"]
+            scope.set_tag("fit_parse_aborted", "true")
+            scope.set_extra("records_parsed", len(records))
+            scope.set_extra("rr_parsed", len(rr_ms))
+            scope.set_extra("fit_filename", Path(prev).name)
+            sentry_sdk.capture_message(f"FIT parse aborted: {e}", level="warning")
 
-    return rr_ms, records
+    # Tail ``parse_aborted`` on the return so ``_actor_post_process_fit_file``
+    # can degrade to ``hrv_quality="poor"`` rather than storing DFA /
+    # thresholds computed from a truncated RR series as if they were valid
+    # (issue #250 follow-up — see reviewer's warning on partial-data
+    # ambiguity).
+    return rr_ms, records, parse_aborted
 
 
 @dramatiq.actor(queue_name="default", time_limit=30 * 60 * 1000)
 @validate_call
 def _actor_post_process_fit_file(
-    parsed_fit_data: tuple[list[float], list[dict]] | None,
+    parsed_fit_data: tuple[list[float], list[dict], bool] | None,
     user: UserDTO,
     activity_id: str,
-) -> FitProcessingResultDTO | None:
+) -> dict[str, Any] | None:
     if not parsed_fit_data:
         return
 
@@ -169,7 +207,18 @@ def _actor_post_process_fit_file(
             session=session,
         )
 
-    rr_ms, records = parsed_fit_data
+    rr_ms, records, parse_aborted = parsed_fit_data
+    # Parse-aborted short-circuit: a truncated RR series can pass the 300
+    # sample gate (e.g. 500 samples before dev-data field broke fitparse),
+    # but the DFA / threshold regression over that tail is unreliable —
+    # mark the whole result ``low_quality`` so post-activity notifications
+    # stay honest. ``count_active`` / upstream gates will still run.
+    if parse_aborted:
+        return FitProcessingResultDTO(
+            status="low_quality",
+            hrv_quality="poor",
+            rr_count=len(rr_ms),
+        ).model_dump()
     if len(rr_ms) < 300:  # < ~5 min of data
         status = "too_short" if rr_ms else "no_rr_data"
         return FitProcessingResultDTO(status=status, rr_count=len(rr_ms)).model_dump()

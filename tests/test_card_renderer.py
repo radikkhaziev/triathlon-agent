@@ -312,6 +312,48 @@ class TestRenderWorkoutCard:
         result = render_workout_card(data)
         assert result[:8] == b"\x89PNG\r\n\x1a\n"
 
+    def test_latlng_with_none_values_filtered(self):
+        """Issue #249 regression: Intervals.icu GPS streams occasionally emit
+        ``(None, None)`` or ``(lat, None)`` sentinel samples from GPS dropouts
+        (tunnels, indoor segments). ``min()`` / ``max()`` crashed on mixed
+        ``float`` vs ``None`` comparison. Renderer must now filter those
+        points before bbox math and still produce a valid PNG.
+        """
+        data = WorkoutCardData(
+            sport_type="Run",
+            distance_m=5000.0,
+            duration_sec=1800,
+            latlng=[
+                (48.8566, 2.3522),
+                (48.8570, 2.3530),
+                (None, None),  # GPS dropout
+                (48.8575, None),  # half-populated sample
+                (None, 2.3540),
+                (48.8580, 2.3545),
+            ],
+        )
+        result = render_workout_card(data)
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_latlng_all_none_falls_back_to_no_gps(self):
+        """All-None latlng must render bit-for-bit identically to ``latlng=None``
+        — after filtering, neither has any drawable points, so the no-GPS
+        fallback (sport emoji) must kick in the same way.
+        """
+        all_none_data = WorkoutCardData(
+            sport_type="Run",
+            distance_m=5000.0,
+            duration_sec=1800,
+            latlng=[(None, None), (None, None), (None, None)],
+        )
+        no_gps_data = WorkoutCardData(
+            sport_type="Run",
+            distance_m=5000.0,
+            duration_sec=1800,
+            latlng=None,
+        )
+        assert render_workout_card(all_none_data) == render_workout_card(no_gps_data)
+
     def test_with_ai_text(self):
         data = WorkoutCardData(
             sport_type="Run",
