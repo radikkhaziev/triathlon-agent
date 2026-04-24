@@ -115,7 +115,7 @@ def actor_bootstrap_step(
 
     with IntervalsSyncClient.for_user(user) as client:
         wellness_rows: list[WellnessDTO] = client.get_wellness_range(oldest=cursor_dt, newest=chunk_end)
-        activity_rows: list[ActivityDTO] = client.get_activities_range(oldest=cursor_dt, newest=chunk_end)
+        activity_rows: list[ActivityDTO] = client.get_activities(oldest=cursor_dt, newest=chunk_end)
 
     # Strava activities cannot be read via Intervals.icu API (licensing).
     # Mirrors actor_fetch_user_activities — filter before persisting.

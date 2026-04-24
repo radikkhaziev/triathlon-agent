@@ -57,7 +57,7 @@ def _mock_client_ctx(wellness: list | None = None, activities: list | None = Non
     mock.__enter__ = MagicMock(return_value=mock)
     mock.__exit__ = MagicMock(return_value=False)
     mock.get_wellness_range.return_value = wellness or []
-    mock.get_activities_range.return_value = activities or []
+    mock.get_activities.return_value = activities or []
     return mock
 
 
