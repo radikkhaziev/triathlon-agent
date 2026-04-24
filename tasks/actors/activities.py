@@ -334,15 +334,32 @@ def _actor_send_activity_notification(
     user: UserDTO,
     activity_id: str,
 ):
-    if resultDTO is None or resultDTO.status != "processed":
+    # Run/Ride with a failed HRV extraction (``too_short`` / ``no_rr_data`` /
+    # ``low_quality``) keeps the pre-fallback behavior of this actor — skip
+    # the notification. Only ``resultDTO=None`` (the non-HRV-eligible sports
+    # that never enter the FIT pipeline: Swim / Walk / Hike / WeightTraining)
+    # is allowed to fall through to the empty-HRV rendering path below.
+    if resultDTO is not None and resultDTO.status != "processed":
         return
 
     with get_sync_session() as session:
         activity_row: Activity | None = session.get(Activity, activity_id)
         hrv_row: ActivityHrv | None = session.get(ActivityHrv, activity_id)
 
-    if activity_row is None or hrv_row is None:
+    if activity_row is None:
         return
+    # FIT pipeline skips non-Run/Ride types (HRV_ELIGIBLE_TYPES), so swim /
+    # walk / strength activities reach us with ``resultDTO=None`` and no
+    # persisted ``ActivityHrv`` row. Fall back to a non-persisted sentinel so
+    # the formatter can still render the base line. Each HRV block in
+    # ``build_post_activity_message`` is gated on the corresponding
+    # ``hrv.<field> is not None`` check — with every DFA/Ra/HRVT1/Da field
+    # left at its column default (None) on the sentinel, those blocks are
+    # skipped and the message degrades to ``{emoji} {sport} {dur} | TSS {N}``.
+    # ``activity_type`` is NOT NULL on the model; setting it keeps future
+    # formatter additions safe if they ever read ``hrv.activity_type``.
+    if hrv_row is None:
+        hrv_row = ActivityHrv(activity_id=activity_id, activity_type=activity_row.type or "")
 
     if activity_row.start_date_local != DateDTO.today().isoformat():
         return  # only notify for today's activities
