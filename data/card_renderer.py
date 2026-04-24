@@ -143,17 +143,25 @@ def _format_swim_pace(sec_per_100m: float) -> str:
 
 def _render_polyline(
     draw: ImageDraw.ImageDraw,
-    latlng: list[tuple[float, float]],
+    latlng: list[tuple[float | None, float | None]],
     bbox: tuple[int, int, int, int],
     color: str,
     line_width: int = 4,
 ) -> None:
-    """Draw GPS track on the image within the given bounding box."""
-    if len(latlng) < 2:
+    """Draw GPS track on the image within the given bounding box.
+
+    Tolerant to ``None`` values inside ``latlng`` points — GPS dropouts
+    (tunnels, indoor segments, Intervals.icu sentinel samples) may produce
+    ``[None, None]`` or ``[lat, None]`` entries. Mixing them with floats
+    crashed ``min()`` / ``max()`` before (issue #249); now we filter to
+    fully-populated points before the bounding-box math.
+    """
+    clean: list[tuple[float, float]] = [(lat, lng) for lat, lng in latlng if lat is not None and lng is not None]
+    if len(clean) < 2:
         return
 
-    lats = [p[0] for p in latlng]
-    lngs = [p[1] for p in latlng]
+    lats = [p[0] for p in clean]
+    lngs = [p[1] for p in clean]
     min_lat, max_lat = min(lats), max(lats)
     min_lng, max_lng = min(lngs), max(lngs)
 
@@ -185,7 +193,7 @@ def _render_polyline(
     offset_y = y0 + padding + (draw_h - track_h) / 2
 
     points = []
-    for lat, lng in latlng:
+    for lat, lng in clean:
         px = offset_x + (lng - min_lng) * scale
         py = offset_y + (max_lat - lat) * scale  # flip Y axis
         points.append((px, py))
