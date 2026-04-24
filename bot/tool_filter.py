@@ -34,6 +34,17 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "save_mood_checkin_tool",
         "get_mood_checkins_tool",
         "get_iqos_sticks",
+        "save_fact",
+        "list_facts",
+        "deactivate_fact",
+        # NOTE: ``reactivate_fact`` is intentionally absent from all tool
+        # groups — it's a UI-only compensating action for the undo button
+        # (``fact_undo`` callback calls MCP directly, bypassing Anthropic's
+        # tool-use loop). Exposing it to the model would let prompt-injected
+        # or hallucinated calls restore facts evicted by the cap (which also
+        # bypasses re-capping, since ``UserFact.reactivate`` just flips
+        # ``deactivated_at`` without cap checks). See USER_CONTEXT_SPEC §4.
+        "get_fact_metrics",
     ],
     "analysis": [
         "get_activity_details",

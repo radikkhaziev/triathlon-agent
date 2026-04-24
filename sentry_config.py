@@ -21,6 +21,11 @@ SENSITIVE_KEYS = {
     "jwt",
     "authorization",
     "cookie",
+    # Long-term user memory body (USER_CONTEXT_SPEC §11.5). Any exception
+    # inside ``UserFact.save_with_cap`` / ``save_fact`` would otherwise leak
+    # the 300-char fact text — which for ``topic='health'`` / ``'family'`` is
+    # PII — through Sentry stackframe local vars.
+    "fact",
 }
 
 # Defence-in-depth for issue #147: scrub credential-shaped substrings inside

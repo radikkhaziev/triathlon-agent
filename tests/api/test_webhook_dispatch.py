@@ -441,9 +441,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_wellness") as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -454,9 +452,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_calendar") as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -467,9 +463,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_sport_settings") as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -480,9 +474,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_scope_changed", new_callable=AsyncMock) as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -493,9 +485,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_achievements") as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -506,9 +496,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_fitness", new_callable=AsyncMock) as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -519,9 +507,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_activity_uploaded", new_callable=AsyncMock) as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -532,9 +518,7 @@ class TestHandleWebhookEvent:
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
             patch("api.routers.intervals.webhook._dispatch_activity_updated", new_callable=AsyncMock) as mock_dispatch,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)
             mock_dispatch.assert_called_once()
@@ -559,11 +543,7 @@ class TestHandleWebhookEvent:
                 "records": [],
             }
         )
-        with (
-            patch("api.routers.intervals.webhook.User") as mock_user_cls,
-            patch("api.routers.intervals.webhook.settings") as mock_settings,
-        ):
-            mock_settings.INTERVALS_WEBHOOK_MONITORING = False
+        with patch("api.routers.intervals.webhook.User") as mock_user_cls:
             mock_user = MagicMock()
             mock_user.id = 1
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=mock_user)

@@ -28,5 +28,6 @@ from .hrv import HrvAnalysis, PaBaseline, RhrAnalysis  # noqa
 from .progression import ProgressionModelRun  # noqa
 from .tracking import ApiUsageDaily, IqosDaily, MoodCheckin, StarTransaction  # noqa
 from .user import User  # noqa
+from .user_fact import HARD_CAP_ACTIVE, SOFT_WARN_ACTIVE, TOPIC_CAPS, UserFact  # noqa
 from .wellness import Wellness  # noqa
 from .workout import AiWorkout, ExerciseCard, ScheduledWorkout, TrainingLog, WorkoutCard  # noqa

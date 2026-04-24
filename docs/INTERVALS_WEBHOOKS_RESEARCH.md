@@ -4,7 +4,7 @@
 > Cookbook описывает типы, но не shape payload'ов. Мы исследуем на живом трафике.
 
 **Status:** ✅ Завершено — все 10 из 10 event types исследованы, 8 из 10 dispatchers реализованы (2026-04-18)
-**Monitoring:** `INTERVALS_WEBHOOK_MONITORING=true` → Sentry tag `source:intervals_webhook`
+**Monitoring:** parse/drift ошибки логируются в stdout; Sentry получает только `capture_exception` при падении диспатчера.
 **Endpoint:** `POST /api/intervals/webhook` (`api/routers/intervals/webhook.py`)
 **Dispatchers:** WELLNESS ✓, CALENDAR ✓, SPORT_SETTINGS ✓, FITNESS ✓, APP_SCOPE ✓, ACHIEVEMENTS ✓, ACTIVITY_UPLOADED ✓, ACTIVITY_UPDATED ✓. Skipped: ACTIVITY_ANALYZED, ACTIVITY_DELETED.
 
@@ -529,28 +529,7 @@ _Старая запись:_
 
 ## Как собирать новые samples
 
-### Автоматически (через Sentry monitoring)
-
-При `INTERVALS_WEBHOOK_MONITORING=true` каждый event создаёт Sentry issue с тегами:
-
-| Тег | Пример |
-|---|---|
-| `source` | `intervals_webhook` |
-| `intervals_event_type` | `WELLNESS_UPDATED` |
-| `parse_status` | `ok` / `partial` / `failed` / `no_dto` / `empty` |
-
-Extras:
-- `records_count` — сколько records
-- `parsed_count` — сколько успешно парсится DTO
-- `record_field_names` — set top-level ключей (без значений — PII safe)
-- `parse_errors` — список `field.path:error_type` при парсинге
-
-**Фильтр в Sentry для новых типов:**
-```
-tag:source:intervals_webhook tag:parse_status:no_dto
-```
-
-### Вручную (через docker logs)
+### Через docker logs
 
 ```bash
 docker compose logs -f api | grep "Intervals webhook"

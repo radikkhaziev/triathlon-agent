@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 import anthropic
 import sentry_sdk
 
-from bot.prompts import get_system_prompt_chat
+from bot.prompts import get_system_prompt_chat  # noqa: F401 — kept for tests that patch this symbol
+from bot.prompts import get_static_system_prompt, render_athlete_block
 from bot.tool_filter import filter_tools, select_tool_groups
 from bot.tools import MCPClient
 from config import settings
@@ -27,9 +28,13 @@ class ChatResult:
 
     - `text` — assistant response. Never empty: if Claude returned no text
       blocks, `chat()` supplies the fallback `"Не удалось обработать запрос."`.
-    - `tool_calls` — every `tool_use` block the model emitted, in order. Replaces
-      the previous `tool_calls_out` out-param. Callers that need to replay a
-      dry-run (e.g. `/workout` preview → push) read from here.
+    - `tool_calls` — every filtered `tool_use` block the model emitted, in
+      order. Each entry: ``{"name": str, "input": dict, "result": dict | Any}``.
+      ``result`` is the deep-copied tool-return (mainly needed for post-commit
+      tools whose id lives in the result, not the input — e.g. ``save_fact``
+      returns ``{"fact_id": ...}`` that the undo button reads). Callers that
+      replay a dry-run (e.g. ``/workout`` preview → push) read from ``input``
+      and ignore ``result``.
     - `nudge_boundary` — raw signal: today's request_count divides evenly by
       `DONATE_NUDGE_EVERY_N`. Agent does NOT apply donate policy — the handler
       gates this via `bot.donate_nudge.should_show_nudge`. See DONATE_SPEC §11.4.
@@ -54,7 +59,7 @@ class ClaudeAgent:
     async def _run_tool_use_loop(
         self,
         mcp: MCPClient,
-        system: str,
+        system: str | list[dict],
         messages: list[dict],
         tools: list[dict],
         max_tokens: int = 4096,
@@ -63,17 +68,27 @@ class ClaudeAgent:
     ) -> tuple[str, dict, list[dict]]:
         """Run Claude API with tool-use loop. Returns (text, usage_totals, tool_calls).
 
-        Tool calls are proxied to MCP server via HTTP. Every `tool_use` block
+        ``system`` can be a plain string (wrapped into a single ephemeral cache
+        segment — legacy tests patch it as a string) or the already-shaped
+        ``list[{"type": "text", "text": ..., "cache_control": ...}]`` that the
+        live chat path passes in so the static prompt and the per-user athlete
+        block each get their own cache marker (USER_CONTEXT_SPEC §6).
+
+        Tool calls are proxied to MCP server via HTTP. Every ``tool_use`` block
         is recorded (deep-copied) into the returned list so callers can replay
-        a dry-run as a real push without re-inference — e.g. `/workout` preview
-        → "Отправить в Intervals" button. `tool_calls_filter` narrows which tool
-        names are recorded (pass `{"suggest_workout", "compose_workout"}` to
-        skip deep-copies of unrelated large inputs). `None` records everything.
+        a dry-run as a real push without re-inference — e.g. ``/workout``
+        preview → "Отправить в Intervals" button. ``tool_calls_filter`` narrows
+        which tool names are recorded (pass ``{"suggest_workout",
+        "compose_workout"}`` to skip deep-copies of unrelated large inputs).
+        ``None`` records everything.
         """
         total_usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0}
         tool_calls: list[dict] = []
 
-        cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        if isinstance(system, str):
+            cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+        else:
+            cached_system = system
 
         response = await self.client.messages.create(
             model=self.model,
@@ -89,12 +104,27 @@ class ClaudeAgent:
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    if tool_calls_filter is None or block.name in tool_calls_filter:
-                        # Deep copy so later tool-side or caller-side mutations
-                        # of either `block.input` or the recorded snapshot can't
-                        # cause drift between what we saw and what we replay.
-                        tool_calls.append({"name": block.name, "input": copy.deepcopy(block.input)})
+                    recorded = tool_calls_filter is None or block.name in tool_calls_filter
+                    # Deep-copy the input before dispatch — the tool side or the
+                    # caller may mutate either the recorded snapshot or the live
+                    # input later, and we want the recording frozen.
+                    input_snapshot = copy.deepcopy(block.input) if recorded else None
                     result = await mcp.call_tool(block.name, block.input)
+                    if recorded:
+                        # Freeze any JSON-like mutable result (dict / list /
+                        # tuple / set). Scalars are immutable, skip the copy.
+                        frozen_result = (
+                            copy.deepcopy(result) if isinstance(result, (dict, list, tuple, set)) else result
+                        )
+                        tool_calls.append(
+                            {
+                                "name": block.name,
+                                "input": input_snapshot,
+                                # `result` is mainly for post-commit ids (save_fact.fact_id)
+                                # — replay-a-preview callers ignore it.
+                                "result": frozen_result,
+                            }
+                        )
                     tool_results.append(
                         {
                             "type": "tool_result",
@@ -149,7 +179,15 @@ class ClaudeAgent:
             are recorded. Use to avoid deep-copying unrelated large inputs.
         """
         mcp = MCPClient(token=mcp_token)
-        system = await get_system_prompt_chat(user_id=user_id, language=language)
+        # Two-segment cache: static prompt stays hot across users/days, per-user
+        # athlete block invalidates only on profile/goal/fact updates.
+        # See USER_CONTEXT_SPEC §6 for the prefix-hash rationale.
+        static_prompt = get_static_system_prompt()
+        athlete_block = await render_athlete_block(user_id=user_id, language=language)
+        system: list[dict] = [
+            {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": athlete_block, "cache_control": {"type": "ephemeral"}},
+        ]
         all_tools = await mcp.list_tools()
         sentry_sdk.set_tag("user_id", user_id)
 
