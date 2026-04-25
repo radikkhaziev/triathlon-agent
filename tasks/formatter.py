@@ -489,3 +489,22 @@ def build_morning_message(
             lines.append(f"→ {_('Обнови LTHR в настройках')}")
 
     return "\n".join(lines)
+
+
+def build_onboarding_hey_message() -> str:
+    """Post-onboarding nudge for athletes who finished bootstrap but haven't
+    sent a single chat message in 24-48h (issue #258). i18n via the active
+    contextvar — caller must ``set_language(user.language)`` first.
+
+    The body deliberately spells out the chat mental model (stateless per
+    message + Reply continues + long-term facts) since it's non-obvious and
+    affects how the athlete writes their first message.
+    """
+    return _(
+        "👋 Привет! Готов помочь с тренировками и восстановлением.\n\n"
+        "⚙️ Как со мной работать:\n"
+        "• каждое сообщение — отдельный диалог (контекст не тянется)\n"
+        "• Reply на моё сообщение — продолжает разговор\n"
+        "• важные факты (травмы, график) я запоминаю\n\n"
+        "Пробуй!"
+    )

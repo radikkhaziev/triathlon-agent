@@ -23,6 +23,7 @@ from .reports import (  # noqa: F401
     actor_compose_user_morning_report,
     actor_compose_weekly_report,
     actor_echo,
+    actor_send_onboarding_hey,
     actor_user_scheduled_workouts,
 )
 from .training_log import actor_fill_training_log, actor_fill_training_log_post  # noqa: F401

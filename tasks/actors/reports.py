@@ -19,6 +19,7 @@ from data.db import (
     ScheduledWorkout,
     ThresholdDriftDTO,
     User,
+    UserBackfillState,
     UserDTO,
     Wellness,
     WellnessPostDTO,
@@ -28,7 +29,7 @@ from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
 from data.workout_adapter import compute_constraints, needs_adaptation, parse_humango_description
 from tasks.dto import DateDTO
-from tasks.formatter import build_evening_message, build_morning_message
+from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message
 from tasks.tools import MCPTool, TelegramTool
 
 logger = logging.getLogger(__name__)
@@ -324,3 +325,31 @@ def actor_compose_user_evening_report(
     summary = build_evening_message(_wellness_row, activities, hrv_analyses, tomorrow_workouts)
     tg = TelegramTool(user=user)
     tg.send_message(text=summary)
+
+
+# ---------------------------------------------------------------------------
+#  Post-onboarding "hey" reminder (issue #258)
+# ---------------------------------------------------------------------------
+
+
+@dramatiq.actor(queue_name="default")
+@validate_call
+def actor_send_onboarding_hey(user: UserDTO) -> None:
+    """Post-onboarding nudge for athletes 24-48h after bootstrap completion
+    (issue #258).
+
+    Mark-first ordering: ``mark_hey_sent`` returns ``False`` if another
+    instance already won the race (e.g. two cron ticks fired close together
+    or Dramatiq redelivered the same message). Only the winner sends. The
+    rare cost is a missed nudge if Telegram fails immediately after a
+    successful UPDATE — much better than the alternative (double-send),
+    since the message is one-shot UX.
+    """
+    if not UserBackfillState.mark_hey_sent(user_id=user.id):
+        logger.info("Onboarding hey skipped (already sent / race) user_id=%d", user.id)
+        return
+    set_language(user.language or "ru")
+    text = build_onboarding_hey_message()
+    tg = TelegramTool(user=user)
+    tg.send_message(text=text)
+    logger.info("Sent onboarding hey-message to user_id=%d", user.id)
