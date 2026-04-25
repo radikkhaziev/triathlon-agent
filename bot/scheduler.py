@@ -1,10 +1,12 @@
 import logging
+from datetime import timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from dramatiq import group
 from pydantic import TypeAdapter
+from sqlalchemy import select
 
 from config import settings
 from data.db import User, UserBackfillState, UserDTO, get_session
@@ -14,6 +16,7 @@ from tasks.actors import (
     actor_compose_weekly_report,
     actor_fetch_user_activities,
     actor_retrain_progression_model,
+    actor_send_onboarding_hey,
     actor_sync_athlete_goals,
     actor_user_scheduled_workouts,
     actor_user_wellness,
@@ -165,6 +168,34 @@ async def scheduler_watchdog_bootstrap() -> None:
             )
 
 
+async def scheduler_onboarding_hey_job() -> None:
+    """Cron tick: nudge athletes who completed OAuth bootstrap 24-48h ago
+    (issue #258). The SQL filter is intentionally simple — only
+    ``status='completed'``, ``hey_message IS NULL``, and ``finished_at`` in
+    the [24h, 48h] window. We do NOT additionally check whether the athlete
+    has already chatted: the message is friendly and getting it once even
+    after an early reply is fine. Idempotency is owned by the actor —
+    ``mark_hey_sent`` uses a ``RETURNING`` row guard so two parallel actors
+    never both send.
+    """
+    user_ids = await UserBackfillState.list_eligible_for_hey(
+        min_age=timedelta(hours=24),
+        max_age=timedelta(hours=48),
+    )
+    if not user_ids:
+        return
+
+    # Batch-load Users in a single query rather than N+1 ``session.get()``.
+    async with get_session() as session:
+        result = await session.execute(select(User).where(User.id.in_(user_ids)))
+        db_users = list(result.scalars().all())
+        users = [_UserAdapter.validate_python(u) for u in db_users]
+
+    for u in users:
+        actor_send_onboarding_hey.send(user=u)
+    logger.info("Dispatched onboarding hey-message for %d athletes", len(users))
+
+
 async def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
@@ -228,6 +259,18 @@ async def create_scheduler() -> AsyncIOScheduler:
         trigger="cron",
         minute="*/10",
         id="scheduler_watchdog_bootstrap",
+    )
+
+    # Post-onboarding hey-message — daytime only (09:00-21:00 local) so we
+    # don't ping someone in their sleep. Hourly is plenty: candidates come
+    # off the cron the first tick after their 24h mark and have a 24h grace
+    # window to be picked up. See issue #258.
+    scheduler.add_job(
+        scheduler_onboarding_hey_job,
+        trigger="cron",
+        hour="9-21",
+        minute=0,
+        id="scheduler_onboarding_hey_job",
     )
 
     return scheduler

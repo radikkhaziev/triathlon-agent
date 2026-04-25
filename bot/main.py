@@ -883,7 +883,11 @@ async def _expire_undo_button(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _undo_button(button_text: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(button_text, callback_data=_UNDO_CALLBACK_DATA)
+    # ``button_text`` is the Russian source string from ``_UNDOABLE_TOOLS``
+    # (module-level dict, evaluated at import time before any language is
+    # set). Translate at render time so EN-locale users see the localized
+    # label. The msgids must be mirrored verbatim in ``locale/*/messages.po``.
+    return InlineKeyboardButton(_(button_text), callback_data=_UNDO_CALLBACK_DATA)
 
 
 def _extract_pending_preview(tool_calls: list[dict], tool_filter: set[str] | None = None) -> dict | None:

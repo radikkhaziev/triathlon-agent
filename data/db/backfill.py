@@ -36,6 +36,11 @@ class UserBackfillState(Base):
     chunks_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_step_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Timestamp of the post-onboarding "hey, you can chat" reminder (issue #258).
+    # NULL = not yet sent. Reset to NULL on ``start()`` --force so a re-run can
+    # in principle nudge again, but the cron filter ``status='completed'``
+    # prevents that until the new bootstrap actually finishes.
+    hey_message: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # --- CRUD ---
 
@@ -82,6 +87,7 @@ class UserBackfillState(Base):
                 finished_at=None,
                 last_step_at=func.now(),
                 last_error=None,
+                hey_message=None,
             )
             .on_conflict_do_update(
                 index_elements=["user_id"],
@@ -96,6 +102,7 @@ class UserBackfillState(Base):
                     "finished_at": None,
                     "last_step_at": func.now(),
                     "last_error": None,
+                    "hey_message": None,
                 },
             )
         )
@@ -207,6 +214,70 @@ class UserBackfillState(Base):
             .all()
         )
         return list(rows)
+
+    @classmethod
+    @dual
+    def list_eligible_for_hey(
+        cls,
+        *,
+        min_age: timedelta,
+        max_age: timedelta,
+        session: Session,
+    ) -> list[int]:
+        """User IDs that finished bootstrap inside the ``[min_age, max_age]``
+        window and haven't been nudged yet (issue #258).
+
+        Filters live entirely on ``user_backfill_state`` — by construction a
+        row only exists for users who started OAuth onboarding, so we don't
+        re-check ``User.is_active`` / ``role`` here. The ``hey_message IS NULL``
+        guard is the idempotency boundary together with ``mark_hey_sent``.
+
+        Window is keyed on ``finished_at``, not ``started_at`` — a slow
+        bootstrap (>24h: heavy retries, ``EMPTY_INTERVALS`` pause-then-resume)
+        would otherwise miss the window entirely. ``status='completed'``
+        guarantees ``finished_at IS NOT NULL``.
+
+        Window comparison runs in SQL (``func.now()``) — ``finished_at`` and
+        ``hey_message`` are stamped DB-side, so aligning the read with DB
+        time keeps eligibility consistent if app and DB clocks drift.
+        """
+        rows = (
+            session.execute(
+                select(cls.user_id).where(
+                    cls.status == "completed",
+                    cls.hey_message.is_(None),
+                    cls.finished_at >= func.now() - max_age,
+                    cls.finished_at <= func.now() - min_age,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(rows)
+
+    @classmethod
+    @dual
+    def mark_hey_sent(cls, user_id: int, *, session: Session) -> bool:
+        """Atomically stamp ``hey_message=now()``; return ``True`` only if THIS
+        call won the race. The actor uses the return value to decide whether
+        to actually send the Telegram message — see issue #258 follow-up.
+
+        Two writers can both pick up the same user_id between SELECT (in the
+        cron) and dispatch. The ``hey_message IS NULL`` guard makes the UPDATE
+        idempotent (no double-write), but only ``RETURNING`` lets the actor
+        detect that another instance already committed — without it, both
+        actors would proceed to ``tg.send_message`` and the user would get
+        the nudge twice.
+        """
+        result = session.execute(
+            update(cls)
+            .where(cls.user_id == user_id, cls.hey_message.is_(None))
+            .values(hey_message=func.now())
+            .returning(cls.user_id)
+        )
+        row = result.scalar_one_or_none()
+        session.commit()
+        return row is not None
 
     # --- Derived helpers ---
 
