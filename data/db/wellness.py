@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from data.intervals.dto import WellnessDTO
@@ -165,6 +166,17 @@ class Wellness(Base):
         return result.scalar_one_or_none()
 
     @classmethod
+    def _apply_intervals_fields(cls, row: "Wellness", wellness: WellnessDTO) -> None:
+        # Apply non-None Intervals.icu fields onto a wellness row. ``sport_info``
+        # is merged (not replaced) so locally-tracked sport CTL survives.
+        for field, val in wellness.intervals_dict().items():
+            if val is None:
+                continue
+            if field == "sport_info":
+                val = cls._merge_sport_info(row.sport_info, val)
+            setattr(row, field, val)
+
+    @classmethod
     @with_sync_session
     def save(
         cls,
@@ -176,8 +188,7 @@ class Wellness(Base):
 
         date_str = wellness.id
 
-        result = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str))
-        row = result.scalar_one_or_none()
+        row = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str)).scalar_one_or_none()
 
         is_new = row is None
         if is_new:
@@ -186,17 +197,34 @@ class Wellness(Base):
         elif row.updated == wellness.updated:
             return ORMDTO(is_new=False, is_changed=False, row=row)
 
-        for field, val in wellness.intervals_dict().items():
-            if val is None:
-                continue
-            if field == "sport_info":
-                val = cls._merge_sport_info(row.sport_info, val)
+        cls._apply_intervals_fields(row, wellness)
 
-            setattr(row, field, val)
+        try:
+            session.commit()
+        except IntegrityError as e:
+            # Narrow recovery to the specific (user_id, date) unique-violation
+            # race (issue #255): bootstrap chunk retries and WELLNESS_UPDATED
+            # webhooks can both try to create the same row. SQLSTATE 23505 +
+            # constraint name pins this to ``uq_wellness_user_date`` only —
+            # FK / CHECK / NOT NULL violations re-raise so real data defects
+            # still surface (otherwise ``scalar_one()`` below would mask them
+            # as ``NoResultFound``).
+            pgcode = getattr(e.orig, "pgcode", None)
+            constraint = getattr(getattr(e.orig, "diag", None), "constraint_name", None)
+            if pgcode != "23505" or constraint != "uq_wellness_user_date":
+                raise
+            session.rollback()
+            row = session.execute(select(cls).where(cls.user_id == user_id, cls.date == date_str)).scalar_one()
+            if row.updated == wellness.updated:
+                return ORMDTO(is_new=False, is_changed=False, row=row)
+            cls._apply_intervals_fields(row, wellness)
+            # Second commit is UPDATE-only: ``uq_wellness_user_date`` cannot
+            # fire on UPDATE (SQLSTATE 23505 is INSERT-time), so this commit
+            # doesn't need its own retry guard.
+            session.commit()
+            is_new = False
 
-        session.commit()
         session.refresh(row)
-
         return ORMDTO(is_new=is_new, is_changed=True, row=row)
 
     @classmethod

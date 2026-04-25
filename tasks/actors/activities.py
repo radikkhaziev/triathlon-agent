@@ -8,6 +8,7 @@ from typing import Any
 
 import anthropic
 import dramatiq
+import httpx
 import numpy as np
 import sentry_sdk
 from dramatiq import group, pipeline
@@ -73,6 +74,20 @@ def _actor_download_fit_file(
         try:
             with IntervalsSyncClient.for_user(user) as client:
                 fit_bytes = client.download_fit(activity_id)
+        except httpx.HTTPStatusError as e:
+            # Intervals.icu returns 422 for activities with no downloadable
+            # FIT file (Strava-source per licensing, manually-entered, or
+            # web-only entries — issue #256). Not a defect; skip with an
+            # info log (kept for volume tracking — Sentry capture is the
+            # part we drop). 404 already short-circuits to ``fit_bytes=None``
+            # in the client via ``handle_404=True``, so we only see real
+            # HTTP failures here — keep ``capture_exception`` for those.
+            if e.response.status_code == 422:
+                logger.info("No FIT available for activity %s (HTTP 422)", activity_id)
+                return
+            sentry_sdk.capture_exception(e)
+            logger.exception("Failed to download FIT file for activity %s", activity_id)
+            return
         except Exception as e:
             sentry_sdk.capture_exception(e)
             logger.exception("Failed to download FIT file for activity %s", activity_id)
