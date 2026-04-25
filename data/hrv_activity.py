@@ -117,21 +117,26 @@ def correct_rr_artifacts(
         }
 
     rr = np.array(rr_ms, dtype=np.float64)
-    corrected = rr.copy()
-    artifact_count = 0
+    n = len(rr)
 
-    # Sliding median with window of 5 beats
-    half_win = 2
-    for i in range(len(rr)):
-        lo = max(0, i - half_win)
-        hi = min(len(rr), i + half_win + 1)
-        local_median = np.median(rr[lo:hi])
+    # Vectorized sliding median (window of 5, half-width 2). `n >= 10` is
+    # guaranteed by the early-return guard above. Interior points use
+    # `sliding_window_view`; the four edge points keep the original
+    # asymmetric behavior. Replaces a per-beat Python loop that dominated
+    # runtime on long activities (issues 260-264).
+    medians = np.empty(n)
+    windows = np.lib.stride_tricks.sliding_window_view(rr, 5)
+    medians[2 : n - 2] = np.median(windows, axis=1)
+    for i in (0, 1, n - 2, n - 1):
+        medians[i] = np.median(rr[max(0, i - 2) : min(n, i + 3)])
 
-        if local_median > 0 and abs(rr[i] - local_median) / local_median > threshold_pct:
-            corrected[i] = local_median
-            artifact_count += 1
+    safe = medians > 0
+    deviation = np.abs(rr - medians) / np.where(safe, medians, 1.0)
+    artifact_mask = safe & (deviation > threshold_pct)
+    corrected = np.where(artifact_mask, medians, rr)
+    artifact_count = int(artifact_mask.sum())
 
-    artifact_pct = (artifact_count / len(rr)) * 100.0
+    artifact_pct = (artifact_count / n) * 100.0
 
     if artifact_pct < 5:
         quality = "good"
@@ -192,16 +197,17 @@ def calculate_dfa_alpha1(
             continue
 
         y_trimmed = y[: n_windows * n].reshape(n_windows, n)
-        x = np.arange(n)
-
-        residuals_sq = []
-        for window in y_trimmed:
-            # Linear detrend
-            coeffs = np.polyfit(x, window, 1)
-            trend = np.polyval(coeffs, x)
-            residuals_sq.append(np.mean((window - trend) ** 2))
-
-        f_n = np.sqrt(np.mean(residuals_sq))
+        # Vectorized linear detrend across all windows at once: closed-form
+        # OLS for degree 1 — `slope = Σ(x-x̄)(y-ȳ) / Σ(x-x̄)²`, residual_i =
+        # (y_i - ȳ) - slope·(x_i - x̄). Equivalent to looping `np.polyfit`
+        # / `np.polyval` per row but avoids the Python overhead that pushed
+        # long activities past the 30-min actor time-limit (issues 260-264).
+        x_centered = np.arange(n, dtype=np.float64) - (n - 1) / 2.0
+        x_var = float((x_centered**2).sum())
+        y_centered = y_trimmed - y_trimmed.mean(axis=1, keepdims=True)
+        slope = (y_centered * x_centered).sum(axis=1) / x_var
+        residuals = y_centered - slope[:, None] * x_centered
+        f_n = float(np.sqrt((residuals**2).mean()))
         if f_n > 0:
             fluctuations.append((np.log(n), np.log(f_n)))
 
@@ -627,111 +633,4 @@ def calculate_durability_da(
     return {
         "da_pct": round(da_pct, 1),
         "status": status,
-    }
-
-
-# ---------------------------------------------------------------------------
-# 7. Pipeline function
-# ---------------------------------------------------------------------------
-
-
-def _compute_hrv(
-    fit_bytes: bytes,
-    activity_type: str,
-    baseline_pa: float | None,
-) -> dict[str, Any]:
-    """CPU-bound HRV computation — runs in executor to avoid blocking the event loop.
-
-    Returns a dict with processing results: status, row fields, pa_baseline info, etc.
-    """
-    # 2. Parse FIT once — extract both RR and records
-    rr_ms, records = parse_fit(fit_bytes)
-    if len(rr_ms) < 300:  # < ~5 min of data
-        status = "too_short" if rr_ms else "no_rr_data"
-        return {"status": status, "rr_count": len(rr_ms)}
-
-    # 3. Artifact correction
-    corrected = correct_rr_artifacts(rr_ms)
-    if corrected["quality"] == "poor":
-        return {
-            "status": "low_quality",
-            "hrv_quality": "poor",
-            "artifact_pct": corrected["artifact_pct"],
-            "rr_count": len(rr_ms),
-        }
-
-    # 5. DFA timeseries
-    timeseries = calculate_dfa_timeseries(
-        corrected["rr_corrected"],
-        records=records,
-    )
-
-    if not timeseries:
-        return {
-            "status": "too_short",
-            "hrv_quality": corrected["quality"],
-            "artifact_pct": corrected["artifact_pct"],
-            "rr_count": len(rr_ms),
-        }
-
-    # DFA a1 summary
-    a1_values = [p["dfa_a1"] for p in timeseries]
-    dfa_a1_mean = float(np.mean(a1_values))
-
-    # Warmup a1 (first 15 min)
-    warmup_points = [p for p in timeseries if p["time_sec"] <= 900]
-    dfa_a1_warmup = float(np.mean([p["dfa_a1"] for p in warmup_points])) if warmup_points else None
-
-    # 6. Threshold detection
-    thresholds = detect_hrv_thresholds(timeseries, activity_type=activity_type)
-
-    # 7. Readiness (Ra)
-    ra_result = None
-    pa_today = None
-    if baseline_pa is not None:
-        ra_result = calculate_readiness_ra(timeseries, baseline_pa, activity_type=activity_type)
-        if ra_result:
-            pa_today = ra_result["pa_today"]
-
-    # Pa baseline data for saving
-    pa_baseline_data = None
-    if warmup_points:
-        if activity_type == "Ride":
-            warmup_perf = [
-                p["power"]
-                for p in warmup_points
-                if p.get("power") is not None and p["power"] > 0 and 0.6 <= p.get("dfa_a1", 0) <= 1.1
-            ]
-        else:
-            warmup_perf = [
-                p["speed"]
-                for p in warmup_points
-                if p.get("speed") is not None and p["speed"] > 0 and 0.6 <= p.get("dfa_a1", 0) <= 1.1
-            ]
-        if len(warmup_perf) >= 3:
-            pa_baseline_data = {
-                "pa_value": float(np.mean(warmup_perf)),
-                "dfa_a1_ref": dfa_a1_warmup,
-                "quality": corrected["quality"],
-            }
-
-    # 8. Durability (Da)
-    da_result = calculate_durability_da(timeseries, activity_type=activity_type)
-
-    # Trim timeseries for storage (keep every 30s instead of 5s)
-    stored_timeseries = [p for p in timeseries if p["time_sec"] % 30 == 0]
-
-    return {
-        "status": "processed",
-        "hrv_quality": corrected["quality"],
-        "artifact_pct": corrected["artifact_pct"],
-        "rr_count": len(rr_ms),
-        "dfa_a1_mean": round(dfa_a1_mean, 3),
-        "dfa_a1_warmup": round(dfa_a1_warmup, 3) if dfa_a1_warmup is not None else None,
-        "dfa_timeseries": stored_timeseries,
-        "thresholds": thresholds,
-        "ra_result": ra_result,
-        "pa_today": pa_today,
-        "pa_baseline_data": pa_baseline_data,
-        "da_result": da_result,
     }

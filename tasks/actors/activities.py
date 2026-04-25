@@ -50,6 +50,12 @@ from .common import actor_after_activity_update
 
 logger = logging.getLogger(__name__)
 
+# Defensive cap on parsed RR samples in `_actor_post_process_fit_file` —
+# ~28h at avg 120 bpm, well past any real activity. Vectorized DFA handles
+# real workloads in seconds; the cap exists to short-circuit pathological
+# / corrupt FIT inputs before they tie up a worker (issues 260-264).
+RR_COUNT_CAP = 200_000
+
 
 @dramatiq.actor(queue_name="default")
 @validate_call
@@ -219,6 +225,21 @@ def _actor_post_process_fit_file(
     if not parsed_fit_data:
         return
 
+    rr_ms, records, parse_aborted = parsed_fit_data
+    if len(rr_ms) > RR_COUNT_CAP:
+        logger.warning(
+            "FIT post-processing aborted for user=%s activity=%s: RR count %d exceeds cap %d",
+            user.id,
+            activity_id,
+            len(rr_ms),
+            RR_COUNT_CAP,
+        )
+        return FitProcessingResultDTO(
+            status="low_quality",
+            hrv_quality="poor",
+            rr_count=len(rr_ms),
+        ).model_dump()
+
     with get_sync_session() as session:
         activity: Activity = session.get(Activity, activity_id)
 
@@ -229,7 +250,6 @@ def _actor_post_process_fit_file(
             session=session,
         )
 
-    rr_ms, records, parse_aborted = parsed_fit_data
     # Parse-aborted short-circuit: a truncated RR series can pass the 300
     # sample gate (e.g. 500 samples before dev-data field broke fitparse),
     # but the DFA / threshold regression over that tail is unreliable —
