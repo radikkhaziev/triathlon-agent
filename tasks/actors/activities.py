@@ -118,9 +118,22 @@ def _actor_process_fit_file(prev: str | None):
         return
     try:
         fit = FitFile(prev)
+    except FitParseError as e:
+        # Header / structural errors (``FitHeaderError`` ⊂ ``FitParseError``)
+        # come from corrupted uploads and third-party FIT exports, not from
+        # our code (issues #250 / #253). Log locally with traceback and
+        # skip — we used to report to Sentry as a fingerprinted warning for
+        # volume tracking, but the alert monitor kept turning every spike
+        # into a GitHub issue, so the signal isn't worth the noise.
+        logger.warning("Failed to open FIT file %s: %s", prev, e, exc_info=True)
+        return
     except Exception as e:
+        # Unknown failures (IO / permissions / fitparse SDK regressions /
+        # bugs in our code) are NOT silenced — keep the prior
+        # ``capture_exception`` behaviour for everything that isn't a
+        # ``FitParseError`` so a real defect still surfaces in Sentry.
         sentry_sdk.capture_exception(e)
-        logger.exception("Failed to parse FIT file: %s", prev)
+        logger.exception("Failed to open FIT file: %s", prev)
         return
     rr_ms: list[float] = []
     records: list[dict] = []
@@ -159,25 +172,19 @@ def _actor_process_fit_file(prev: str | None):
                     records.append(rec)
     except FitParseError as e:
         parse_aborted = True
-        # Log loud locally — we deliberately do NOT ``capture_exception`` per
-        # file (noisy: every Wahoo / third-party-field Garmin export would
-        # spam Sentry) but a fingerprinted message keeps a single grouped
-        # issue alive so we can watch for volume spikes that would signal a
-        # ``fitparse`` SDK regression or a new Garmin firmware drift.
+        # Log locally only — bad dev_data fields are common in Wahoo /
+        # third-party-field Garmin exports and aren't a code defect. We
+        # used to send a fingerprinted Sentry warning for volume tracking
+        # (issue #250), but the alert monitor kept lifting it into GitHub
+        # issues (#252), so the noise outweighed the signal.
         logger.warning(
             "FIT parse aborted mid-file for %s after %d records / %d rr values: %s",
             prev,
             len(records),
             len(rr_ms),
             e,
+            exc_info=True,
         )
-        with sentry_sdk.new_scope() as scope:
-            scope.fingerprint = ["fit-parse-aborted"]
-            scope.set_tag("fit_parse_aborted", "true")
-            scope.set_extra("records_parsed", len(records))
-            scope.set_extra("rr_parsed", len(rr_ms))
-            scope.set_extra("fit_filename", Path(prev).name)
-            sentry_sdk.capture_message(f"FIT parse aborted: {e}", level="warning")
 
     # Tail ``parse_aborted`` on the return so ``_actor_post_process_fit_file``
     # can degrade to ``hrv_quality="poor"`` rather than storing DFA /
