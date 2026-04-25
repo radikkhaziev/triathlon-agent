@@ -54,6 +54,44 @@ class TestBrokerConfig:
         assert callable(actors_mod.actor_echo.send)
 
 
+class TestPostProcessFitFileCap:
+    """Defensive cap on RR-stream length in `_actor_post_process_fit_file`.
+
+    Issues #260-#264: long activities used to push DFA computation past the
+    30-min actor time-limit. Vectorization fixed the runtime, but the cap
+    is defense-in-depth against pathological/corrupt FIT inputs.
+    """
+
+    def test_oversized_rr_short_circuits_to_low_quality(self):
+        """RR count > cap returns low_quality without touching the DB."""
+        from tasks.actors.activities import RR_COUNT_CAP, _actor_post_process_fit_file
+
+        rr_ms = [800.0] * (RR_COUNT_CAP + 1)
+
+        with patch("tasks.actors.activities.get_sync_session") as session_mock:
+            result = _actor_post_process_fit_file(
+                (rr_ms, [], False),
+                _user(),
+                "act-cap-1",
+            )
+
+        session_mock.assert_not_called()
+        assert result["status"] == "low_quality"
+        assert result["hrv_quality"] == "poor"
+        assert result["rr_count"] == RR_COUNT_CAP + 1
+
+    def test_at_cap_boundary_proceeds_past_guard(self):
+        """RR count == cap is below the strict-greater check and proceeds to DB lookup."""
+        from tasks.actors.activities import RR_COUNT_CAP, _actor_post_process_fit_file
+
+        rr_ms = [800.0] * RR_COUNT_CAP
+
+        with patch("tasks.actors.activities.get_sync_session") as session_mock:
+            session_mock.side_effect = RuntimeError("guard reached DB")
+            with pytest.raises(RuntimeError, match="guard reached DB"):
+                _actor_post_process_fit_file((rr_ms, [], False), _user(), "act-cap-2")
+
+
 @pytest.mark.real_db
 @pytest.mark.skip(reason="Integration: requires real Redis + Intervals.icu API")
 class TestSyncUserWellness:
