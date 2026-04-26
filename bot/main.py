@@ -1707,7 +1707,8 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(handle_rpe_callback, pattern=r"^rpe:"))
     app.add_handler(CallbackQueryHandler(handle_card_callback, pattern=r"^card:"))
-    app.add_handler(CallbackQueryHandler(handle_video_callback, pattern=r"^video:"))
+    # Temporarily disabled — video render is offline.
+    # app.add_handler(CallbackQueryHandler(handle_video_callback, pattern=r"^video:"))
     # Race creation confirm/cancel — standalone, not inside ConversationHandler.
     # Race is requested via free-form chat (Claude emits suggest_race(dry_run=True)),
     # not through a multi-state /race wizard, so these handlers live outside the
