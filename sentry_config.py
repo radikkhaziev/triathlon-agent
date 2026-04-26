@@ -48,6 +48,12 @@ _SENSITIVE_BEARER = re.compile(
     r"(Authorization\s*:\s*Bearer\s+)[\w\-\.=+/]+",
     re.IGNORECASE,
 )
+# Telegram Bot API URLs embed the bot token as `/bot<id>:<35-char-auth>/`.
+# Sentry's auto-issue integration pastes those URLs into issue titles + bodies
+# verbatim (issue #266/#267/#268), so a single httpx error leaks the token to
+# anyone with read access to the GitHub repo. Preserve the numeric bot id
+# (public, useful for routing) and redact only the auth half.
+_SENSITIVE_TG_BOT_TOKEN = re.compile(r"(bot\d+:)[A-Za-z0-9_-]{30,}")
 # Pydantic's SecretStr already masks via repr(), but catch the rare case of a
 # custom repr or manual unwrap leaking a SecretStr('realvalue') literal.
 _SENSITIVE_SECRETSTR = re.compile(r"SecretStr\(\s*['\"][^'\"]+['\"]\s*\)")
@@ -80,6 +86,7 @@ _CREDENTIAL_MARKERS: tuple[str, ...] = (
     "fernet",
     "jwt",
     "secretstr(",
+    "api.telegram.org",
 )
 
 
@@ -89,6 +96,7 @@ def _scrub_text(text):
         return text
     text = _SENSITIVE_KV.sub(rf"\1{_REDACT}", text)
     text = _SENSITIVE_BEARER.sub(rf"\1{_REDACT}", text)
+    text = _SENSITIVE_TG_BOT_TOKEN.sub(rf"\1{_REDACT}", text)
     text = _SENSITIVE_SECRETSTR.sub(f"SecretStr({_REDACT})", text)
     return text
 
