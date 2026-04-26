@@ -13,7 +13,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from api.dto import IntervalsWebhookEvent, IntervalsWebhookPayload
 from config import settings
-from data.db import Activity, FitnessProjection, User, UserDTO, get_session
+from data.db import Activity, ActivityAchievement, FitnessProjection, User, UserDTO, get_session
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
 from tasks.actors import (
     actor_rename_activity,
@@ -130,10 +130,61 @@ async def _dispatch_scope_changed(user: User, event: IntervalsWebhookEvent) -> N
         await session.commit()
 
 
-def _dispatch_achievements(user: UserDTO, event: IntervalsWebhookEvent) -> None:
-    """Send achievement notification from ACTIVITY_ACHIEVEMENTS event."""
+async def _dispatch_achievements(user: UserDTO, event: IntervalsWebhookEvent) -> None:
+    """Persist achievements + send Telegram notification from ACTIVITY_ACHIEVEMENTS.
+
+    Two side effects:
+      1. ``ActivityAchievement.save_bulk`` — durable storage for the social-
+         share UI (power PRs, FTP changes, future milestone types). Idempotent
+         under webhook redelivery via the unique key.
+      2. ``actor_send_achievement_notification`` — Telegram one-shot. Async
+         actor invocation continues to be best-effort (no awaiting completion).
+
+    Save BEFORE notify so a Telegram outage doesn't cost us the data.
+    """
     if not event.activity:
         return
+    activity_id = event.activity.get("id")
+    if activity_id:
+        # Tenant-scoped existence check: refuse to write achievements for an
+        # activity_id that does NOT belong to ``user.id``. Closes a webhook-
+        # tampering vector where a foreign activity_id (or one belonging to
+        # another tenant) would otherwise create a row attributing someone
+        # else's PR to this user. Also a clean skip for the legitimate race:
+        # ACTIVITY_ACHIEVEMENTS arriving before ACTIVITY_UPLOADED persisted
+        # the parent row (Strava-source activity, ordering glitch, etc.).
+        # See ``docs/MULTI_TENANT_SECURITY.md`` T19.
+        if not await Activity.exists_for_user(user_id=user.id, activity_id=str(activity_id)):
+            logger.info(
+                "Achievement webhook for unknown/foreign activity_id=%s user_id=%d — skip persist",
+                activity_id,
+                user.id,
+            )
+        else:
+            try:
+                inserted = await ActivityAchievement.save_bulk(
+                    user_id=user.id,
+                    activity_id=str(activity_id),
+                    activity=event.activity,
+                )
+                if inserted:
+                    logger.info(
+                        "Saved %d new achievement(s) for user_id=%d activity_id=%s",
+                        inserted,
+                        user.id,
+                        activity_id,
+                    )
+            except Exception as e:
+                # Don't let a persistence error block the Telegram notification —
+                # the user benefits from the realtime ping even if our archive
+                # missed this row. Sentry sees the error via the global capture.
+                sentry_sdk.capture_exception(e)
+                logger.warning(
+                    "ActivityAchievement.save_bulk failed for user_id=%d activity_id=%s: %s",
+                    user.id,
+                    activity_id,
+                    e,
+                )
     actor_send_achievement_notification.send(user=user, activity=event.activity)
 
 

@@ -158,6 +158,20 @@ class ApiUsageDaily(Base):
 
     @classmethod
     @with_session
+    async def get_today_request_count(cls, user_id: int, *, session: AsyncSession) -> int:
+        """Return today's ``request_count`` for ``user_id``, or 0 if no row.
+
+        Used by ``handle_chat_message`` / ``handle_photo_message`` to enforce
+        ``settings.CHAT_DAILY_LIMIT`` before invoking Claude. Cheap (PK lookup
+        on the unique ``(user_id, date)`` constraint), called once per chat
+        message.
+        """
+        dt = str(_dt.date.today())
+        result = await session.execute(select(cls.request_count).where(cls.user_id == user_id, cls.date == dt))
+        return result.scalar_one_or_none() or 0
+
+    @classmethod
+    @with_session
     async def get_range(
         cls,
         user_id: int,

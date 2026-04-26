@@ -304,3 +304,20 @@ msgstr "🗑 Fact deleted."
 
 msgid "↩️ Факт восстановлен."
 msgstr "↩️ Fact restored."
+
+msgid "Дневной лимит сообщений исчерпан ({used}/{limit}). Попробуй завтра."
+msgstr "Daily message limit reached ({used}/{limit}). Try again tomorrow."
+
+msgid ""
+"Дневной лимит сообщений исчерпан ({used}/{limit}). У донатеров лимит "
+"{donor_limit}/день — /donate чтобы поднять."
+msgstr ""
+"Daily message limit reached ({used}/{limit}). Donors get {donor_limit}/day — "
+"/donate to lift the cap."
+
+msgid ""
+"Дневной лимит сообщений исчерпан ({used}/{limit}). У донатеров лимит снят — "
+"/donate чтобы получить безлимит."
+msgstr ""
+"Daily message limit reached ({used}/{limit}). Donors get unlimited — /donate "
+"to lift the cap."

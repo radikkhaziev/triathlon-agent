@@ -323,22 +323,119 @@ class TestDispatchScopeChanged:
 
 
 class TestDispatchAchievements:
-    def test_dispatches_notification_with_activity(self):
+    @pytest.mark.asyncio
+    async def test_dispatches_notification_with_activity(self):
         event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
         user = _make_user_dto()
-        with patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock:
-            _dispatch_achievements(user, event)
+        with (
+            patch(
+                "api.routers.intervals.webhook.Activity.exists_for_user",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("api.routers.intervals.webhook.ActivityAchievement.save_bulk", new=AsyncMock(return_value=1)),
+            patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock,
+        ):
+            await _dispatch_achievements(user, event)
             mock.send.assert_called_once()
             call_kwargs = mock.send.call_args.kwargs
             assert call_kwargs["user"] == user
             assert call_kwargs["activity"]["icu_rolling_ftp"] == 210
 
-    def test_skips_without_activity(self):
+    @pytest.mark.asyncio
+    async def test_skips_persist_when_activity_unknown_to_user(self):
+        """T19 (cross-tenant write guard): a webhook with an activity_id that
+        doesn't belong to this user must NOT touch ActivityAchievement.
+        Notification still fires — Telegram-side ping is harmless even if
+        the activity is foreign (the actor itself is also tenant-scoped)."""
+        event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
+        user = _make_user_dto()
+        with (
+            patch(
+                "api.routers.intervals.webhook.Activity.exists_for_user",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "api.routers.intervals.webhook.ActivityAchievement.save_bulk",
+                new=AsyncMock(),
+            ) as mock_save,
+            patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock_notify,
+        ):
+            await _dispatch_achievements(user, event)
+
+        mock_save.assert_not_called()
+        mock_notify.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_without_activity(self):
         event = _make_event({**ACTIVITY_ACHIEVEMENTS_EVENT, "activity": None})
         user = _make_user_dto()
-        with patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock:
-            _dispatch_achievements(user, event)
-            mock.send.assert_not_called()
+        with (
+            patch("api.routers.intervals.webhook.ActivityAchievement.save_bulk", new=AsyncMock()) as mock_save,
+            patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock_notify,
+        ):
+            await _dispatch_achievements(user, event)
+            mock_save.assert_not_called()
+            mock_notify.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_persists_before_notify(self):
+        """Save BEFORE Telegram so a notification outage doesn't cost data.
+        Uses a shared call_log to lock the order — assert_called alone would
+        let a refactor flip the sequence undetected."""
+        event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
+        user = _make_user_dto()
+        call_log: list[str] = []
+
+        async def _save_spy(**kwargs):
+            call_log.append("save")
+            return 2
+
+        def _notify_spy(**kwargs):
+            call_log.append("notify")
+
+        with (
+            patch(
+                "api.routers.intervals.webhook.Activity.exists_for_user",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "api.routers.intervals.webhook.ActivityAchievement.save_bulk",
+                new=AsyncMock(side_effect=_save_spy),
+            ) as mock_save,
+            patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock_notify,
+        ):
+            mock_notify.send.side_effect = _notify_spy
+            await _dispatch_achievements(user, event)
+
+        assert call_log == ["save", "notify"]
+        # Args: user_id, activity_id, activity (raw dict)
+        call_kwargs = mock_save.call_args.kwargs
+        assert call_kwargs["user_id"] == user.id
+        assert call_kwargs["activity_id"] == str(event.activity["id"])
+        assert call_kwargs["activity"]["icu_rolling_ftp"] == 210
+
+    @pytest.mark.asyncio
+    async def test_notify_still_fires_when_save_raises(self):
+        """Persistence error must NOT block the realtime Telegram nudge —
+        the user should still get the ping even if our archive missed it."""
+        event = _make_event(ACTIVITY_ACHIEVEMENTS_EVENT)
+        user = _make_user_dto()
+        with (
+            patch(
+                "api.routers.intervals.webhook.Activity.exists_for_user",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "api.routers.intervals.webhook.ActivityAchievement.save_bulk",
+                new=AsyncMock(side_effect=RuntimeError("DB down")),
+            ),
+            patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock_notify,
+            patch("api.routers.intervals.webhook.sentry_sdk.capture_exception") as mock_capture,
+        ):
+            await _dispatch_achievements(user, event)
+
+        mock_notify.send.assert_called_once()
+        mock_capture.assert_called_once()
 
 
 class TestDispatchFitness:

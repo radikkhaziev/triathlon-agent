@@ -43,3 +43,22 @@ class TestApiUsageDaily:
         rows = await ApiUsageDaily.get_range(user_id=1, days_back=7)
         assert len(rows) == 1
         assert rows[0].user_id == 1
+
+
+class TestGetTodayRequestCount:
+    """``get_today_request_count`` powers the chat daily-cap gate
+    (``CHAT_DAILY_LIMIT``). Every miss must return 0 (not raise) so the
+    first message of the day passes the gate cleanly."""
+
+    async def test_returns_zero_for_user_with_no_row(self, _test_db):
+        assert await ApiUsageDaily.get_today_request_count(user_id=999) == 0
+
+    async def test_returns_request_count_for_today(self, _test_db):
+        await ApiUsageDaily.increment(user_id=1, input_tokens=10, output_tokens=5)
+        await ApiUsageDaily.increment(user_id=1, input_tokens=10, output_tokens=5)
+        assert await ApiUsageDaily.get_today_request_count(user_id=1) == 2
+
+    async def test_isolated_per_user(self, _test_db):
+        await ApiUsageDaily.increment(user_id=1, input_tokens=10, output_tokens=5)
+        assert await ApiUsageDaily.get_today_request_count(user_id=1) == 1
+        assert await ApiUsageDaily.get_today_request_count(user_id=2) == 0

@@ -36,6 +36,23 @@ class Settings(BaseSettings):
     # HRV Algorithm
     HRV_ALGORITHM: str = "flatt_esco"  # "flatt_esco" | "ai_endurance"
 
+    # Free-form chat daily request cap. 0 = unlimited (disabled gate).
+    # Counted via ``ApiUsageDaily.request_count`` which `bot/agent.py` already
+    # increments on every Claude call. Applies to ALL roles including owner —
+    # cap is global anti-abuse, not a permission tier. Workout/race conversation
+    # handlers are NOT gated (bounded by their own state machines).
+    CHAT_DAILY_LIMIT: int = Field(default=40, ge=0)
+    # Higher cap for donors — recognised when ``User.last_donation_at`` falls
+    # within ``CHAT_DONOR_WINDOW_DAYS``. 0 = unlimited for donors.
+    # Stop-message for non-donors mentions the donor cap as a soft conversion
+    # nudge (separate from the donate-nudge cadence in DONATE_SPEC §11).
+    CHAT_DAILY_LIMIT_DONOR: int = Field(default=100, ge=0)
+    # Days a donation grants the elevated cap. Mirrors
+    # ``DONATE_NUDGE_SUPPRESS_DAYS`` so a single donation buys exactly one
+    # week of both nudge silence and the higher cap — keeping the donor
+    # contract simple to communicate ("donate → 7 days of perks").
+    CHAT_DONOR_WINDOW_DAYS: int = Field(default=7, ge=1)
+
     # Donate nudge (see docs/DONATE_SPEC.md §11)
     DONATE_NUDGE_EVERY_N: int = Field(default=5, gt=0)  # show nudge on every N-th chat request (must be > 0)
     DONATE_NUDGE_SKIP_OWNER: bool = False  # True = suppress nudge for owner role
