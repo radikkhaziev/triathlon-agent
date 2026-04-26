@@ -201,6 +201,26 @@ class TestBeforeSendTextScrubbing:
         result = _before_send(event, {})
         assert result["threads"]["values"][0]["stacktrace"]["frames"][0]["vars"]["mcp_token"] == "[REDACTED]"
 
+    def test_scrubs_telegram_bot_token_in_exception_value(self):
+        """Issue #266/#267/#268: httpx HTTPStatusError leaks bot token via URL in exception.value."""
+        leaked = "AAFmjQKLJzQWII3eRcPyzJUai4Bi38DhTuI"
+        event = {
+            "exception": {
+                "values": [
+                    {
+                        "value": (
+                            f"Client error '400 Bad Request' for url "
+                            f"'https://api.telegram.org/bot8598544740:{leaked}/sendMessage'"
+                        ),
+                    }
+                ]
+            }
+        }
+        result = _before_send(event, {})
+        scrubbed = result["exception"]["values"][0]["value"]
+        assert leaked not in scrubbed
+        assert "[REDACTED]" in scrubbed
+
     def test_scrubs_quoted_value_with_spaces(self):
         """Quoted value containing spaces must be fully redacted, not truncated at first space."""
         text = "password='hunter 2 with spaces'"
