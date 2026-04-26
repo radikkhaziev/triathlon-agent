@@ -60,6 +60,12 @@ class User(Base):
 
     is_silent: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True once the user has actually opened a chat with the bot (sent /start
+    # or any message). Login Widget auth creates a User row from a chat_id
+    # without requiring the bot chat to exist — Telegram returns
+    # ``400 chat not found`` if we try to ``sendMessage`` in that state.
+    # See issue #266; gated in TelegramTool + /api/intervals/auth/init.
+    bot_chat_initialized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_donation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Intervals.icu OAuth — see api/routers/intervals/oauth.py
@@ -192,6 +198,21 @@ class User(Base):
     def set_active_by_chat_id(cls, chat_id: int | str, active: bool, *, session: Session) -> None:
         """Toggle `is_active` by chat_id. Called from `my_chat_member` handler and 403 fallbacks."""
         session.execute(update(cls).where(cls.chat_id == str(chat_id)).values(is_active=active))
+        session.commit()
+
+    @classmethod
+    @dual
+    def set_bot_chat_initialized(cls, chat_id: int | str, value: bool, *, session: Session) -> None:
+        """Toggle ``bot_chat_initialized`` for the given chat.
+
+        Set True from the /start handler and ``my_chat_member`` MEMBER
+        transition — both prove the chat exists. Set False from the
+        ``_post_with_retries`` 400-chat-not-found self-healing branch when
+        Telegram tells us the chat is gone (user deleted it after /start).
+        That re-arms the OAuth-init gate + frontend banner so the user can
+        re-engage without a perma-Sentry-storm.
+        """
+        session.execute(update(cls).where(cls.chat_id == str(chat_id)).values(bot_chat_initialized=value))
         session.commit()
 
     @classmethod

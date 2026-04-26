@@ -76,6 +76,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user.is_active:
         await User.set_active_by_chat_id(chat_id, True)
         user.is_active = True
+    # /start proves the bot can ``sendMessage`` to this chat. Flip the flag so
+    # the OAuth-init gate and TelegramTool stop suppressing notifications.
+    # Issue #266 — without this, widget-only signups fall into a 400 loop.
+    if not user.bot_chat_initialized:
+        await User.set_bot_chat_initialized(chat_id, True)
+        user.bot_chat_initialized = True
     logger.info("User resolved via /start: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
 
     # New users (no athlete_id) land in the onboarding flow — a button that
@@ -315,6 +321,44 @@ async def handle_card_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     user_dto = UserDTO.model_validate(user)
     actor_generate_workout_card.send(user=user_dto, activity_id=activity_id)
+
+
+@athlete_required
+async def handle_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle 🎬 Video button — pipeline avatar download → video render request.
+
+    Single-shot: strip the media row (Card + Video share it) so a second tap
+    cannot queue a duplicate render. Pipeline result of `actor_download_user_avatar`
+    feeds `actor_render_workout_video` as its first positional arg.
+    """
+    from dramatiq import pipeline
+
+    from tasks.actors import actor_download_user_avatar, actor_render_workout_video
+
+    query = update.callback_query
+    parts = query.data.split(":")
+    if len(parts) != 2:
+        await query.answer()
+        return
+
+    activity_id = parts[1]
+    await query.answer("🎬 Generating video...")
+
+    # The media row contains both Card and Video buttons — strip by either
+    # prefix to drop the whole row in one shot.
+    remaining_markup = _strip_rows_with_prefix(query.message.reply_markup if query.message else None, "video:")
+    try:
+        await query.edit_message_reply_markup(reply_markup=remaining_markup)
+    except TelegramError:
+        logger.warning("handle_video_callback: failed to strip media row", exc_info=True)
+
+    user_dto = UserDTO.model_validate(user)
+    pipeline(
+        [
+            actor_download_user_avatar.message(user=user_dto),
+            actor_render_workout_video.message(activity_id=activity_id),
+        ]
+    ).run()
 
 
 @athlete_required
@@ -1581,6 +1625,12 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
         return
     active = new_status == ChatMember.MEMBER
     await User.set_active_by_chat_id(cmu.chat.id, active)
+    # MEMBER transition (user tapped Start in the client without sending /start
+    # as a typed command) is an equivalent proof that the bot chat exists, so
+    # the OAuth-init gate + TelegramTool suppress can stop blocking. Mirrors
+    # the flip in /start above. Issue #266.
+    if active:
+        await User.set_bot_chat_initialized(cmu.chat.id, True)
     logger.info("User %s is_active=%s (my_chat_member=%s)", cmu.chat.id, active, new_status)
 
 
@@ -1657,6 +1707,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(handle_rpe_callback, pattern=r"^rpe:"))
     app.add_handler(CallbackQueryHandler(handle_card_callback, pattern=r"^card:"))
+    app.add_handler(CallbackQueryHandler(handle_video_callback, pattern=r"^video:"))
     # Race creation confirm/cancel — standalone, not inside ConversationHandler.
     # Race is requested via free-form chat (Claude emits suggest_race(dry_run=True)),
     # not through a multi-state /race wizard, so these handlers live outside the

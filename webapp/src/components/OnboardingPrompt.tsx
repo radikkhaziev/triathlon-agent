@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Layout from './Layout'
-import { apiFetch } from '../api/client'
+import { apiFetch, ApiError } from '../api/client'
 
 /**
  * Empty state for authenticated users without a connected Intervals.icu
@@ -17,6 +17,10 @@ export default function OnboardingPrompt() {
   const { t } = useTranslation()
   const [error, setError] = useState(false)
   const [busy, setBusy] = useState(false)
+  // 412 from /api/intervals/auth/init means the user has no bot chat yet
+  // (Login Widget signup, never pressed /start). We swap the OAuth CTA for
+  // a "open the bot" deep link until they fix it.
+  const [needsBotStart, setNeedsBotStart] = useState<{ bot_username: string | null } | null>(null)
 
   const startOAuth = async () => {
     setError(false)
@@ -28,10 +32,50 @@ export default function OnboardingPrompt() {
       )
       window.location.assign(authorize_url)
     } catch (e) {
+      if (e instanceof ApiError && e.status === 412) {
+        const d = e.detail as { error?: string; bot_username?: string | null } | null
+        if (d?.error === 'bot_chat_not_initialized') {
+          setNeedsBotStart({ bot_username: d.bot_username ?? null })
+          setBusy(false)
+          return
+        }
+      }
       console.error('Intervals OAuth init failed:', e)
       setError(true)
       setBusy(false)
     }
+  }
+
+  if (needsBotStart) {
+    const href = needsBotStart.bot_username
+      ? `https://t.me/${needsBotStart.bot_username}?start=fromwidget`
+      : null
+    return (
+      <Layout maxWidth="480px">
+        <div className="flex flex-col items-center text-center px-6 py-12">
+          <div aria-hidden="true" className="text-5xl mb-4">💬</div>
+          <h1 className="text-xl font-bold mb-3">{t('onboarding.start_bot_title')}</h1>
+          <p className="text-sm text-text-dim leading-relaxed mb-8 max-w-[320px]">
+            {t('onboarding.start_bot_description')}
+          </p>
+          {href ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 w-full max-w-[320px] py-3.5 bg-accent text-white text-center rounded-xl text-[15px] font-semibold no-underline font-sans"
+            >
+              {t('onboarding.start_bot_cta')}
+            </a>
+          ) : (
+            <p className="text-[12px] text-text-dim">{t('onboarding.start_bot_no_username')}</p>
+          )}
+          <p className="text-[11px] text-text-dim mt-6 max-w-[320px] leading-snug">
+            {t('onboarding.start_bot_after_hint')}
+          </p>
+        </div>
+      </Layout>
+    )
   }
 
   return (

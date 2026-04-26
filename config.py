@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # Strava signature: auto-rename activities with AI-generated promo title/description.
     STRAVA_SIGNATURE_ENABLED: bool = False
 
+    # Video render service (video.endurai.me). Empty URL = feature disabled,
+    # bot does not show the "🎬 Video (beta)" button after activities.
+    VIDEO_API_URL: str = ""
+    VIDEO_API_TOKEN: SecretStr = SecretStr("")
+
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
 

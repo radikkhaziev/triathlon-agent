@@ -400,6 +400,19 @@ class TelegramTool:
     def __post_init__(self):
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
+    # Telegram 400 ``description`` substrings that mean "this chat is
+    # permanently unreachable from this bot" — sending again will deterministically
+    # fail. Treat the same way as 403 (block): drop the bot-chat flag, swallow
+    # the error, return None. The frontend banner re-arms automatically.
+    # Any other 400 (parse_mode error, empty text, etc.) keeps raising — that's
+    # our bug to fix, not the user's.
+    _TG_400_PERMANENT_SUBSTRINGS: tuple[str, ...] = (
+        "chat not found",
+        "user is deactivated",
+        "peer_id_invalid",
+        "bot was blocked by the user",
+    )
+
     def _post_with_retries(
         self,
         endpoint: str,
@@ -412,6 +425,8 @@ class TelegramTool:
         """POST to Telegram endpoint with retry on transient errors.
 
         403 marks the user inactive and returns None.
+        400 with a permanent ``description`` (chat not found, user is
+        deactivated, etc.) clears ``bot_chat_initialized`` and returns None.
         Passes through ``data=`` / ``files=`` / ``json=`` kwargs to ``httpx.post``.
         """
         last_exc: Exception | None = None
@@ -430,6 +445,18 @@ class TelegramTool:
                     logger.info("Telegram 403 for chat_id=%s — marking inactive", chat_id)
                     User.set_active_by_chat_id(chat_id, False)
                     return None
+                if resp.status_code == 400 and self._is_permanent_400(resp):
+                    # Self-healing: chat is gone (deleted) or never existed
+                    # (widget signup that bypassed /start by some race).
+                    # Clear bot_chat_initialized so future actors are skipped
+                    # by ``_suppress`` and the webapp banner re-appears, prompting
+                    # the user to /start again. Issue #266 bleed-stop.
+                    logger.info(
+                        "Telegram 400 permanent for chat_id=%s — clearing bot_chat_initialized",
+                        chat_id,
+                    )
+                    User.set_bot_chat_initialized(chat_id, False)
+                    return None
                 resp.raise_for_status()
                 return resp.json()
             except (httpx.TimeoutException, httpx.ConnectError) as e:
@@ -437,6 +464,30 @@ class TelegramTool:
                 logger.warning("Telegram %s attempt %d/%d failed: %s", endpoint, attempt + 1, retries, e)
         assert last_exc is not None  # retries >= 1
         raise last_exc
+
+    @classmethod
+    def _is_permanent_400(cls, resp: httpx.Response) -> bool:
+        """Match Telegram's 400 ``description`` against the permanent-failure
+        allowlist. Any parse error or unknown shape returns False so the
+        caller falls through to ``raise_for_status`` and Sentry sees it."""
+        try:
+            description = (resp.json().get("description") or "").lower()
+        except (ValueError, AttributeError):
+            return False
+        return any(marker in description for marker in cls._TG_400_PERMANENT_SUBSTRINGS)
+
+    def _suppress(self) -> bool:
+        """Skip-send predicate shared by every Telegram outbound.
+
+        ``is_silent`` is the user's quiet-hours opt-out.
+        ``bot_chat_initialized=False`` means the bot chat does not exist on
+        Telegram's side (Login Widget signup that never typed /start) — see
+        issue #266. Sending would deterministically 400 with
+        ``chat not found`` and create a Sentry storm; suppress instead.
+        """
+        if not self.user:
+            return False
+        return self.user.is_silent or not self.user.bot_chat_initialized
 
     def send_message(
         self,
@@ -451,7 +502,7 @@ class TelegramTool:
         markdown (``**bold**``, ``### headings``, pipe tables) to Telegram HTML
         and sent with ``parse_mode=HTML``.
         """
-        if self.user and self.user.is_silent:
+        if self._suppress():
             return None
 
         _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
@@ -477,7 +528,7 @@ class TelegramTool:
         chat_id: int | str | None = None,
     ) -> dict | None:
         """Send a photo via Telegram Bot API. Skips if user is_silent."""
-        if self.user and self.user.is_silent:
+        if self._suppress():
             return None
 
         _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
@@ -503,7 +554,7 @@ class TelegramTool:
         chat_id: int | str | None = None,
     ) -> dict | None:
         """Send a document via Telegram Bot API. Preserves PNG transparency. Skips if user is_silent."""
-        if self.user and self.user.is_silent:
+        if self._suppress():
             return None
 
         _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
