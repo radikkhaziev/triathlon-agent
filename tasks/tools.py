@@ -475,12 +475,20 @@ class TelegramTool:
                     # could otherwise update the wrong row (a typo'd chat_id
                     # could match a real victim user). Swallow the error
                     # either way, but only mutate state for the bound user.
-                    if self.user is not None and str(self.user.chat_id) == chat_id:
+                    #
+                    # Defensive str-normalisation on both sides: ``UserDTO``
+                    # types ``chat_id`` as ``str`` (DB is varchar), but the
+                    # outer API accepts ``int | str`` and only normalises
+                    # right before ``_post_with_retries``. A future caller
+                    # bypassing ``send_message`` with a raw ``int`` would
+                    # silently fail the equality and skip the self-heal.
+                    normalized_chat_id = str(chat_id)
+                    if self.user is not None and str(self.user.chat_id) == normalized_chat_id:
                         logger.info(
                             "Telegram 400 permanent for chat_id=%s — clearing bot_chat_initialized",
-                            chat_id,
+                            normalized_chat_id,
                         )
-                        User.set_bot_chat_initialized(chat_id, False)
+                        User.set_bot_chat_initialized(normalized_chat_id, False)
                     else:
                         logger.warning(
                             "Telegram 400 permanent for chat_id=%s (broadcast/no-user) — "

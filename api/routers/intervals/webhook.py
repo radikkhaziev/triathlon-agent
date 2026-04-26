@@ -146,9 +146,10 @@ async def _dispatch_fitness(user_id: int, event: IntervalsWebhookEvent) -> None:
 
 
 def _is_stub_activity(activity: dict[str, Any]) -> bool:
-    """Intervals.icu occasionally fires ACTIVITY_UPLOADED/UPDATED with a deleted-
-    activity stub (only id + boolean/zero defaults, no ``start_date_local``).
-    See ``docs/INTERVALS_WEBHOOKS_RESEARCH.md`` ACTIVITY_DELETED section.
+    """Intervals.icu occasionally fires ACTIVITY_UPLOADED/UPDATED with a
+    deleted activity stub (only id + boolean/zero defaults, no
+    ``start_date_local``). See ``docs/INTERVALS_WEBHOOKS_RESEARCH.md``
+    ACTIVITY_DELETED section.
     """
     return "start_date_local" not in activity
 
