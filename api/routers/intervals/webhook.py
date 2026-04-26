@@ -145,9 +145,27 @@ async def _dispatch_fitness(user_id: int, event: IntervalsWebhookEvent) -> None:
     logger.info("Saved %d fitness projection records for user %d", count, user_id)
 
 
+def _is_stub_activity(activity: dict[str, Any]) -> bool:
+    """Intervals.icu occasionally fires ACTIVITY_UPLOADED/UPDATED with a
+    deleted activity stub (only id + boolean/zero defaults, no
+    ``start_date_local``). See ``docs/INTERVALS_WEBHOOKS_RESEARCH.md``
+    ACTIVITY_DELETED section.
+    """
+    return "start_date_local" not in activity
+
+
 async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEvent) -> None:
     """Save new activity and run full details pipeline + delayed rename."""
     if not event.activity:
+        return
+    if _is_stub_activity(event.activity):
+        # Log the skip so an Intervals.icu payload-shape change (renamed key,
+        # newly-optional ``start_date_local``) doesn't silently lose activities.
+        logger.info(
+            "Skipping stub ACTIVITY_UPLOADED for user_id=%d activity_id=%s",
+            user.id,
+            event.activity.get("id"),
+        )
         return
 
     dto = ActivityDTO.model_validate(event.activity)
@@ -163,6 +181,13 @@ async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEven
 async def _dispatch_activity_updated(user: UserDTO, event: IntervalsWebhookEvent) -> None:
     """Save updated activity to DB. No actors — avoids rename→update loop."""
     if not event.activity:
+        return
+    if _is_stub_activity(event.activity):
+        logger.info(
+            "Skipping stub ACTIVITY_UPDATED for user_id=%d activity_id=%s",
+            user.id,
+            event.activity.get("id"),
+        )
         return
 
     dto = ActivityDTO.model_validate(event.activity)

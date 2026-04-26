@@ -363,6 +363,11 @@ export default function Settings() {
         <Section title="Race Goal" icon="🏁">
           <Row label="Event" value={String(goal.event_name)} />
           <Row label="Date" value={String(goal.event_date)} />
+          {!isDemo && goal.id && (
+            <p className="text-[11px] text-text-dim mt-2 mb-1 leading-snug">
+              {t('settings.goal.ctl_edit_hint_section')}
+            </p>
+          )}
           <EditableNumberRow
             label="CTL Target"
             value={goal.ctl_target ?? null}
@@ -609,13 +614,15 @@ function EditableNumberRow({
           type="button"
           disabled={disabled}
           title={editHint}
+          aria-label={`${label}: ${value ?? '—'}. ${editHint}`}
           onClick={() => {
             setError(null)
             setEditing(true)
           }}
-          className="text-[13px] font-medium hover:text-primary disabled:cursor-not-allowed"
+          className="group inline-flex items-center gap-1.5 min-h-[32px] px-1 -mx-1 text-[13px] font-medium text-text border-b border-dashed border-border hover:border-accent hover:text-accent cursor-pointer disabled:cursor-not-allowed disabled:border-transparent disabled:hover:text-text"
         >
-          {value != null ? String(value) : '—'}
+          <span>{value != null ? String(value) : '—'}</span>
+          <span aria-hidden="true" className="text-[11px] text-text-dim group-hover:text-accent">✏️</span>
         </button>
       )}
     </div>

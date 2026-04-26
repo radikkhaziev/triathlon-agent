@@ -168,7 +168,7 @@
     2. `bot/main.py:handle_my_chat_member` — Telegram прислал `my_chat_member` с `status=MEMBER`
   - Webapp auth (initData) и Login Widget **не реактивируют** — они читают `is_active` через существующий фильтр в `get_by_chat_id(chat_id)` (без `include_inactive`), т.е. заблокированный юзер для webapp просто "не найден" и получает anonymous flow.
 - **Семантика `users.is_active`:** флаг перегружен двумя смыслами — "админ-деактивация через CLI" ∪ "Telegram-канал недоступен". Оба состояния = полная потеря доступа (webapp, MCP, рассылки), потому что auth-запросы (`get_by_mcp_token`, `get_by_chat_id`) фильтруют по `is_active=True`. Это **намеренное решение**: блокировка бота = явный сигнал "не хочу пользоваться сервисом", и даёт юзеру единую kill-switch.
-- **Граничный случай:** юзер блокирует бота, но webapp-вкладка открыта. Первый API-запрос вернёт 401 (юзер не найден через `get_by_chat_id`). Frontend должен показать баннер "переподключите бота через /start" (TODO в `webapp/src/auth/`). Пока баннер не реализован — юзер увидит generic "требуется авторизация".
+- **Граничный случай:** юзер блокирует бота, но webapp-вкладка открыта. Первый API-запрос вернёт 401 (юзер не найден через `get_by_chat_id`). Frontend через `apiFetch` clear'ит JWT и редиректит на `/login`, где `<BotChatBanner/>` (см. T18 — реализован для widget-signup сценария, переиспользуется здесь) даёт deep-link на бота для re-engagement через `/start`.
 
 #### T13. RPE Callback Cross-Tenant Write (Tampering)
 
@@ -218,6 +218,24 @@
   - **User control:** inline "🗑 Забудь это" кнопка даёт возможность отозвать факт в течение 10 мин + `/forget` Phase 3 webapp UI для phase-out старых.
   - **Scope limit:** `save_fact` docstring запрещает сохранение транзиентных moods (→ `save_mood_checkin_tool` вместо факта) и данных уже присутствующих в `athlete_settings`/`athlete_goals`. Модель направляется избегать "case history" — только тренировочно-релевантные traits.
   - **Phase 2 (async extractor) trigger controlled** per-user через `get_fact_metrics.tool_facts_per_100_msgs_30d`; extractor не включается по умолчанию и не расширяет retention surface для юзеров у которых tool-based подход работает.
+
+#### T18. Login Widget Signup Without Bot Chat (Availability / Operational Hygiene)
+
+- **Что:** Telegram Login Widget на `bot.endurai.me` создаёт `users` row из подписанного payload, но **не требует** чтобы у юзера существовал чат с ботом — Telegram-боты не могут писать первыми, и `sendMessage` для такого `chat_id` детерминированно возвращает `400 Bad Request: chat not found`. После OAuth-callback'а (промоут viewer→athlete) фан-аут актёров (`actor_sync_athlete_goals`, `_actor_send_goal_notification`, утренние отчёты, webhook-driven activity notifications) бесконечно генерит Sentry-события с одинаковой 400, плюс утечка bot-token'а в URL ловится Sentry GitHub-integration'ом и попадает в публичный issue-tracker (см. issues #266 / #267 / #268, удалены).
+- **Где:** `api/routers/auth.py:auth_telegram_widget` → `User.get_or_create_from_telegram(chat_id=tg_user_id)`; затем любой `tasks/tools.py:TelegramTool.send_message` для этого юзера.
+- **Severity:** Medium (impact = операционный шум + secret leakage в issue tracker; не cross-tenant и не data disclosure)
+- **Mitigation (реализовано):**
+  - **Колонка `users.bot_chat_initialized`** (миграция `t0a1b2c3d4e5`, default False для новых rows; backfill TRUE для существующих, известные widget-only signups сбрасываются вручную через operational runbook в docstring миграции).
+  - **Set `True`** в двух явных сигналах "чат существует": `bot/main.py:start` (юзер ввёл `/start`) и `handle_my_chat_member` MEMBER-transition (юзер тапнул "START" в клиенте). Симметрия с `is_active` re-engagement из T14.
+  - **OAuth-init gate** (`api/routers/intervals/oauth.py:intervals_oauth_init`) → 412 с `detail={error: "bot_chat_not_initialized", bot_username}`. Срабатывает **до** rate-limit'а, чтобы стучащий в дверь юзер не выжигал свой 5-req/5-min лимит.
+  - **Defensive suppress** в `TelegramTool._suppress` — любой `send_*` no-op'ит при `bot_chat_initialized=False`. Защищает от любых актёров, проскочивших мимо OAuth-gate'а (existing athletes, миграция, race conditions).
+  - **Self-healing** в `_post_with_retries` для уже-онбордженных юзеров, которые потом удалили чат: 400 с `description ∈ {chat not found, user is deactivated, peer_id_invalid}` → `set_bot_chat_initialized(chat_id, False)` + return None. Под guard'ом `self.user is not None and str(self.user.chat_id) == chat_id` — broadcast-путь с typo'нутым chat_id не может затереть флаг невинному юзеру.
+  - **Frontend banner** (`webapp/src/components/BotChatBanner.tsx`) — sticky-баннер сверху на всех страницах через `App.tsx`-gate, plus full-page `<OnboardingPrompt/>` с deep-link `https://t.me/<bot>?start=fromwidget` для юзеров без `athlete_id`, plus inline-блок в Settings. Покрывает все пути входа (новый widget signup, существующий athlete вроде user 39).
+  - **Sentry scrubbing** (`sentry_config.py`): regex `bot\d+:[A-Za-z0-9_-]{30,}` редактирует TG bot-токены в URL httpx-исключений до того, как Sentry-bot создаст GitHub issue. Defence-in-depth поверх ротации токена.
+- **Семантика `bot_chat_initialized` vs `is_active`:** разные сигналы.
+  - `is_active=False` = юзер заблокировал бота (явный opt-out из всего сервиса) — фильтруется в `get_by_chat_id`/`get_by_mcp_token`, юзер вообще не аутентифицируется.
+  - `bot_chat_initialized=False` = бот технически не может писать в этот чат, но юзер существует и аутентифицируется (webapp работает, MCP работает). Только Telegram-выходящие коммуникации заблокированы.
+- **Тесты:** `tests/test_tools.py:TestSendMessage400PermanentFailure` (7 кейсов) + `TestSendMessage400CrossTenantGuard` (3 кейса, защита от cross-tenant flag wipe) + `TestPermanent400AllowlistIsClassConstant` (anti-regression на `ClassVar`); `tests/api/test_intervals_oauth_init.py:TestBotChatGate` (3 кейса, включая "412 не выжигает rate-limit" + "demo > bot-chat priority"); `tests/api/test_auth_me.py:TestBotChatFieldsExposed` (4 кейса, exposure фронту).
 
 ---
 
