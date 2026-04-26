@@ -27,6 +27,13 @@ class UserDTO(BaseModel):
     athlete_id: str | None = None
     language: str = "ru"
     is_silent: bool = False
+    avatar_url: str | None = None
+    # See User.bot_chat_initialized — false means TelegramTool must skip sends
+    # to avoid the 400 chat-not-found Sentry storm (issue #266). Default True
+    # because production rows flow through ``model_validate(user)`` which
+    # picks up the real DB value, and the only ad-hoc constructions left
+    # (tests, manual fan-outs) are over already-onboarded athletes.
+    bot_chat_initialized: bool = True
 
 
 class ThresholdTestDTO(BaseModel):

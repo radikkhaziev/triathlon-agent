@@ -78,6 +78,19 @@ async def intervals_oauth_init(user: User = Depends(require_viewer)) -> Interval
     if user.role == "demo":
         raise HTTPException(status_code=403, detail="Read-only demo mode")
 
+    # Issue #266 gate: OAuth callback dispatches `_actor_send_goal_notification`
+    # and other Telegram-bound actors. Without an existing bot chat each one
+    # would 400 with ``chat not found`` and create a Sentry storm. Force the
+    # user through /start before letting them OAuth.
+    if not user.bot_chat_initialized:
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "error": "bot_chat_not_initialized",
+                "bot_username": settings.TELEGRAM_BOT_USERNAME,
+            },
+        )
+
     # Rate limit per user
     now = time.monotonic()
     attempts = _oauth_init_attempts.get(user.id, [])

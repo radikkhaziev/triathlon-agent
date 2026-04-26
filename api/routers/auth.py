@@ -222,6 +222,11 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         "role": user.role,
         "authenticated": True,
         "language": user.language,
+        # Frontend uses this to gate the "Connect Intervals.icu" CTA — Login
+        # Widget signups land with ``false`` and must press /start in the bot
+        # before OAuth (see issue #266 + /api/intervals/auth/init's 412).
+        "bot_chat_initialized": user.bot_chat_initialized,
+        "bot_username": settings.TELEGRAM_BOT_USERNAME,
         "intervals": {
             "method": user.intervals_auth_method,
             "athlete_id": user.athlete_id,
@@ -250,6 +255,9 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     if user.role == "demo":
         result["language"] = "en"
         result["intervals"] = {"method": "oauth", "athlete_id": "demo", "scope": None}
+        # Demo browses owner data read-only and never triggers Telegram I/O.
+        # Pin to True so the frontend doesn't show a meaningless /start CTA.
+        result["bot_chat_initialized"] = True
     return result
 
 

@@ -55,3 +55,26 @@ class TestUserDTOExcludesCredentials:
         assert u2.is_silent is True
         assert "api_key" not in payload
         assert "mcp_token" not in payload
+
+
+class TestBotChatInitializedField:
+    """Issue #266: ``bot_chat_initialized`` controls whether TelegramTool
+    actually issues sendMessage. The DTO default is True (assume an
+    onboarded user) so ad-hoc test/actor constructions don't accidentally
+    suppress; the ORM-side default for newly created User rows is False
+    (the migration drops the server_default after backfill, so new rows
+    rely on the SQLAlchemy ``default=False`` until /start flips it)."""
+
+    def test_default_true(self):
+        u = UserDTO(id=1, chat_id="111")
+        assert u.bot_chat_initialized is True
+
+    def test_explicit_false_propagates(self):
+        u = UserDTO(id=1, chat_id="111", bot_chat_initialized=False)
+        assert u.bot_chat_initialized is False
+
+    def test_roundtrip_preserves_false(self):
+        """Dramatiq path: actor argument must serialize+restore the False sentinel."""
+        u = UserDTO(id=1, chat_id="111", bot_chat_initialized=False)
+        u2 = UserDTO.model_validate(u.model_dump(mode="json"))
+        assert u2.bot_chat_initialized is False

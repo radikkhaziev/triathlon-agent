@@ -148,7 +148,11 @@
       "toast_connected": "Intervals.icu connected!",
       "toast_cancelled": "Connection cancelled",
       "toast_mismatch": "You're already linked to a different Intervals.icu account. Disconnect first.",
-      "toast_error": "Connection failed. Please try again."
+      "toast_error": "Connection failed. Please try again.",
+      "start_bot_required_title": "Open the bot first",
+      "start_bot_required_desc": "Press /start in the Telegram bot so I can send morning reports and notifications. Then come back here and refresh the page.",
+      "start_bot_open": "Open the bot in Telegram",
+      "start_bot_no_username": "Bot is not configured yet — contact the instance owner."
     },
     "goal": {
       "ctl_edit_hint": "Click to edit",
@@ -191,6 +195,15 @@
     "cta": "🔗 Connect Intervals.icu",
     "redirecting": "Redirecting to Intervals.icu...",
     "no_account_hint": "No account? Sign up for free at",
-    "error": "Failed to start connection. Please try again in a minute."
+    "error": "Failed to start connection. Please try again in a minute.",
+    "start_bot_title": "Open the bot first",
+    "start_bot_description": "Press /start in the Telegram bot so I can deliver morning reports and workout analysis. Then come back here and refresh the page — the Connect Intervals.icu button will unlock.",
+    "start_bot_cta": "💬 Open the bot in Telegram",
+    "start_bot_no_username": "Bot is not configured yet — contact the instance owner.",
+    "start_bot_after_hint": "After /start, just refresh this page."
+  },
+  "bot_chat_banner": {
+    "message": "No active Telegram chat with you yet — press /start in the bot to get morning reports and notifications.",
+    "cta": "💬 Open the bot"
   }
 }

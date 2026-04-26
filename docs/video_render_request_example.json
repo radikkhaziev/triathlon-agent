@@ -1,0 +1,111 @@
+{
+  "user_id": 5,
+  "idempotency_key": "act-i987654-v1",
+  "activity_id": "i987654",
+  "user": {
+    "display_name": "Radik",
+    "avatar_url": "https://endurai.me/static/avatar/111.png",
+    "language": "ru"
+  },
+  "props": {
+    "wellness": {
+      "hrv": 62.5,
+      "rhr": 48,
+      "recovery_score": 78,
+      "recovery_category": "good",
+      "sleep_hours": 7.4,
+      "sleep_quality": 4,
+      "ctl": 65.2,
+      "atl": 58.1,
+      "tsb": 7.1
+    },
+    "activity": {
+      "sport": "Run",
+      "sub_type": "long",
+      "distance_km": 21.1,
+      "duration_sec": 6420,
+      "pace": "5:04",
+      "avg_hr": 152,
+      "max_hr": 178,
+      "hr_state": "STEADY",
+      "hr_zones_sec": {
+        "z1": 240,
+        "z2": 3600,
+        "z3": 1800,
+        "z4": 600,
+        "z5": 180
+      },
+      "elevation_gain_m": 412,
+      "calories": 980,
+      "cadence_avg": 86,
+      "decoupling_pct": 4.2,
+      "ef": 1.92,
+      "dfa_a1_mean": 0.81,
+      "hrvt1_hr": 148,
+      "track": {
+        "polyline": "u{~vFvyys@fS]bIqAxFmAhCu@`AYr@Ud@Mj@Mn@Q",
+        "render_style": "map",
+        "color_by": "hr",
+        "map_style": "dark",
+        "streams": {
+          "hr": [138, 142, 145, 148, 150, 152, 154, 155, 156, 158],
+          "speed": [3.0, 3.1, 3.2, 3.3, 3.3, 3.3, 3.4, 3.4, 3.5, 3.5],
+          "elevation": [120, 135, 158, 182, 210, 245, 268, 290, 305, 310]
+        },
+        "start_point": {"lat": 44.8176, "lng": 20.4633},
+        "end_point": {"lat": 44.8201, "lng": 20.4711},
+        "bbox": [20.4500, 44.8100, 20.4800, 44.8250]
+      },
+      "elevation_profile": [
+        {"distance_km": 0.0, "elevation_m": 120},
+        {"distance_km": 2.5, "elevation_m": 158},
+        {"distance_km": 5.0, "elevation_m": 245},
+        {"distance_km": 7.5, "elevation_m": 290},
+        {"distance_km": 10.5, "elevation_m": 310},
+        {"distance_km": 13.0, "elevation_m": 280},
+        {"distance_km": 16.0, "elevation_m": 225},
+        {"distance_km": 18.5, "elevation_m": 195},
+        {"distance_km": 21.1, "elevation_m": 180}
+      ],
+      "splits": [
+        {"label": "Lap 1", "duration_sec": 1500, "distance_km": 5.0, "avg_hr": 148, "pace": "5:00"},
+        {"label": "Lap 2", "duration_sec": 1530, "distance_km": 5.0, "avg_hr": 152, "pace": "5:06"},
+        {"label": "Lap 3", "duration_sec": 1550, "distance_km": 5.0, "avg_hr": 154, "pace": "5:10"},
+        {"label": "Lap 4", "duration_sec": 1840, "distance_km": 6.1, "avg_hr": 155, "pace": "5:01"}
+      ],
+      "started_at": "2026-04-25T06:12:00+02:00",
+      "is_race": false,
+      "rpe": 6,
+      "weather": {
+        "temp_c": 12,
+        "wind_kmh": 14,
+        "conditions": "partly_cloudy"
+      }
+    },
+    "achievements": [
+      {"type": "pr_distance", "label": "Самый длинный забег за полгода", "value": "21.1 km"},
+      {"type": "streak_days", "label": "12 дней подряд", "value": "12"},
+      {"type": "weekly_goal_complete", "label": "Недельный план закрыт", "value": "42 / 40 km"}
+    ],
+    "compare": {
+      "personal_best": {
+        "metric": "pace",
+        "delta_pct": -3.2,
+        "label": "fastest 10k в этом году"
+      },
+      "weekly_volume": {
+        "this_week_km": 42.0,
+        "delta_pct": 12.0
+      }
+    },
+    "user_content": {
+      "photo_urls": [
+        "https://endurai.me/static/uploads/run-pano.jpg"
+      ],
+      "caption": "Финал длинной подготовки к марафону"
+    },
+    "insight": "HRV восстановилась, темп стабилен на всей дистанции — форма растёт.",
+    "caption_ai": "Воскресный длинный. 21 км в Z2, средний пульс 152, дрейф 4% — аэробная база крепкая. Готов к гоночной неделе.\n\n→ endurai.me",
+    "tone": "analytical"
+  }
+}

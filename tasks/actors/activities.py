@@ -488,12 +488,16 @@ def _actor_send_activity_notification(
     summary = build_post_activity_message(activity_row, hrv_row, race=race_row)
     reply_markup = build_rpe_keyboard(activity_id) if activity_row.rpe is None else None
 
-    # Add "📸 Card" button (works with and without GPS — fallback shows sport label)
-    card_btn = [{"text": "📸 Card", "callback_data": f"card:{activity_id}"}]
+    # Card / Video buttons. Card always available. Video requires VIDEO_API_URL
+    # to be configured; otherwise the button is omitted (feature flag).
+    media_row = [{"text": "📸 Card", "callback_data": f"card:{activity_id}"}]
+    if settings.VIDEO_API_URL:
+        media_row.append({"text": "🎬 Video (beta)", "callback_data": f"video:{activity_id}"})
+
     if reply_markup:
-        reply_markup["inline_keyboard"].append(card_btn)
+        reply_markup["inline_keyboard"].append(media_row)
     else:
-        reply_markup = {"inline_keyboard": [card_btn]}
+        reply_markup = {"inline_keyboard": [media_row]}
 
     tg.send_message(text=summary, reply_markup=reply_markup)
 

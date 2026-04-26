@@ -52,6 +52,11 @@ export default function Settings() {
   const [intervals, setIntervals] = useState<IntervalsStatus | null>(null)
   const [intervalsToast, setIntervalsToast] = useState<IntervalsToast | null>(null)
   const [intervalsBusy, setIntervalsBusy] = useState(false)
+  // Issue #266: track whether the user has actually opened a chat with the
+  // bot. Login Widget signups land with ``false`` and must press /start in
+  // the bot before OAuth — otherwise notifications 400 with chat-not-found.
+  const [botChatInitialized, setBotChatInitialized] = useState<boolean | null>(null)
+  const [botUsername, setBotUsername] = useState<string | null>(null)
   const [profile, setProfile] = useState<{
     age?: number | null
     lthr_run?: number | null
@@ -84,11 +89,17 @@ export default function Settings() {
     apiFetch<AuthMeResponse & { profile?: typeof profile; goal?: typeof goal }>('/api/auth/me')
       .then(data => {
         setIntervals(data.intervals ?? { method: 'none', athlete_id: null, scope: null })
+        // Default to true on missing field so old API responses don't lock
+        // existing users out of the OAuth button — only an explicit `false`
+        // from a fresh server triggers the /start gate.
+        setBotChatInitialized(data.bot_chat_initialized ?? true)
+        setBotUsername(data.bot_username ?? null)
         if (data.profile) setProfile(data.profile)
         if (data.goal) setGoal(data.goal)
       })
       .catch(() => {
         setIntervals({ method: 'none', athlete_id: null, scope: null })
+        setBotChatInitialized(true)
       })
   }, [isAuthenticated])
 
@@ -251,7 +262,29 @@ export default function Settings() {
             </div>
           )}
           {!intervals && <p className="text-[13px] text-text-dim">{t('settings.intervals.loading')}</p>}
-          {intervals && (!intervals.athlete_id || intervals.method === 'none') && (
+          {intervals && (!intervals.athlete_id || intervals.method === 'none') && botChatInitialized === false && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+              <p className="text-[13px] text-text mb-2 leading-snug font-semibold">
+                {t('settings.intervals.start_bot_required_title')}
+              </p>
+              <p className="text-[12px] text-text-dim mb-3 leading-snug">
+                {t('settings.intervals.start_bot_required_desc')}
+              </p>
+              {botUsername ? (
+                <a
+                  href={`https://t.me/${botUsername}?start=fromwidget`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 w-full py-2.5 bg-accent text-white rounded-xl text-sm font-semibold no-underline font-sans"
+                >
+                  {t('settings.intervals.start_bot_open')}
+                </a>
+              ) : (
+                <p className="text-[12px] text-text-dim">{t('settings.intervals.start_bot_no_username')}</p>
+              )}
+            </div>
+          )}
+          {intervals && (!intervals.athlete_id || intervals.method === 'none') && botChatInitialized !== false && (
             <>
               <p className="text-[12px] text-text-dim mb-3 leading-snug">
                 {t('settings.intervals.not_connected_desc')}

@@ -8,6 +8,7 @@ import type { AuthMeResponse } from './api/types'
 import LoadingSpinner from './components/LoadingSpinner'
 import Layout from './components/Layout'
 import OnboardingPrompt from './components/OnboardingPrompt'
+import BotChatBanner from './components/BotChatBanner'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Today from './pages/Today'
@@ -32,6 +33,10 @@ export default function App() {
   const { i18n } = useTranslation()
   // 'checking' = fetch in flight, 'yes' = has athlete, 'no' = needs onboarding
   const [athleteState, setAthleteState] = useState<'checking' | 'yes' | 'no'>('checking')
+  // Issue #266: a Login Widget signup never opened a bot chat, so notifications
+  // would 400. Banner stays visible across every page until /start unsticks it.
+  const [botChatInitialized, setBotChatInitialized] = useState<boolean | null>(null)
+  const [botUsername, setBotUsername] = useState<string | null>(null)
 
   // Global auth gate: fetch /api/auth/me once on login → check if user has
   // a linked Intervals.icu athlete. If not, ALL data routes are replaced by
@@ -54,12 +59,17 @@ export default function App() {
           i18n.changeLanguage(data.language)
         }
         setAthleteState(data.intervals?.athlete_id ? 'yes' : 'no')
+        // Default to true so an old server (no field) doesn't show a bogus
+        // banner; only an explicit ``false`` from a fresh API triggers it.
+        setBotChatInitialized(data.bot_chat_initialized ?? true)
+        setBotUsername(data.bot_username ?? null)
       })
       .catch(() => {
         // Network/server error — don't gate to onboarding, keep spinner.
         // User can reload; if it persists, the data endpoints will also
         // fail and show their own error states.
         setAthleteState('checking')
+        setBotChatInitialized(true)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated])
@@ -76,7 +86,11 @@ export default function App() {
     gated ? <OnboardingPrompt /> :
     <Page />
 
+  const showBotChatBanner = isAuthenticated && botChatInitialized === false
+
   return (
+    <>
+      {showBotChatBanner && <BotChatBanner botUsername={botUsername} />}
     <Routes>
       <Route path="/" element={
         !isAuthenticated ? <Landing /> :
@@ -95,5 +109,6 @@ export default function App() {
       <Route path="/dashboard" element={dataRoute(Dashboard)} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
+    </>
   )
 }

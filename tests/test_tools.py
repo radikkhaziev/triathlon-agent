@@ -14,8 +14,13 @@ from tasks.tools import TelegramTool
 # ---------------------------------------------------------------------------
 
 
-def _make_user(*, is_silent: bool = False, chat_id: str = "123456") -> UserDTO:
-    return UserDTO(id=1, chat_id=chat_id, is_silent=is_silent)
+def _make_user(
+    *,
+    is_silent: bool = False,
+    chat_id: str = "123456",
+    bot_chat_initialized: bool = True,
+) -> UserDTO:
+    return UserDTO(id=1, chat_id=chat_id, is_silent=is_silent, bot_chat_initialized=bot_chat_initialized)
 
 
 def _make_tool(user: UserDTO | None = None) -> TelegramTool:
@@ -174,6 +179,57 @@ class TestSendPhotoSilentUser:
 
 
 # ---------------------------------------------------------------------------
+#  Suppress for users without a bot chat — issue #266
+# ---------------------------------------------------------------------------
+
+
+class TestSuppressBotChatNotInitialized:
+    """All three send methods skip HTTP and return None when the user logged
+    in via the Login Widget but never opened a bot chat (Telegram would
+    return 400 chat-not-found and create a Sentry storm)."""
+
+    def test_send_message_skips_when_bot_chat_not_initialized(self):
+        tool = _make_tool(_make_user(bot_chat_initialized=False))
+        with patch("httpx.post") as mock_post:
+            result = tool.send_message("hello")
+
+        assert result is None
+        mock_post.assert_not_called()
+
+    def test_send_photo_skips_when_bot_chat_not_initialized(self):
+        tool = _make_tool(_make_user(bot_chat_initialized=False))
+        with patch("httpx.post") as mock_post:
+            result = tool.send_photo(b"PNG_BYTES")
+
+        assert result is None
+        mock_post.assert_not_called()
+
+    def test_send_document_skips_when_bot_chat_not_initialized(self):
+        tool = _make_tool(_make_user(bot_chat_initialized=False))
+        with patch("httpx.post") as mock_post:
+            result = tool.send_document(b"PDF_BYTES", filename="report.pdf")
+
+        assert result is None
+        mock_post.assert_not_called()
+
+    def test_send_message_proceeds_when_bot_chat_initialized(self):
+        """Sanity guard: True should NOT be the path that suppresses."""
+        tool = _make_tool(_make_user(bot_chat_initialized=True))
+        with patch("httpx.post", return_value=_ok_response()) as mock_post:
+            tool.send_message("hello")
+
+        mock_post.assert_called_once()
+
+    def test_anonymous_user_none_does_not_suppress(self):
+        """``user=None`` (e.g. owner-broadcast paths) bypasses both gates."""
+        tool = _make_tool(None)
+        with patch("httpx.post", return_value=_ok_response()) as mock_post:
+            tool.send_message("hello", chat_id="999")
+
+        mock_post.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 #  send_photo — missing chat_id
 # ---------------------------------------------------------------------------
 
@@ -234,6 +290,118 @@ class TestSendPhoto403:
             tool.send_photo(b"PNG_BYTES")
 
         assert mock_post.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+#  Self-healing on Telegram 400 chat-not-found — issue #266 bleed-stop
+# ---------------------------------------------------------------------------
+
+
+def _telegram_400(description: str) -> MagicMock:
+    """Build a Telegram-shaped 400 response with a given ``description``."""
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 400
+    resp.json.return_value = {"ok": False, "error_code": 400, "description": description}
+    return resp
+
+
+class TestSendMessage400PermanentFailure:
+    """``_post_with_retries``: 400 with a permanent ``description`` clears
+    ``bot_chat_initialized`` and returns None instead of raising. Covers the
+    case where a user had a chat (initialized=True) but later deleted it —
+    without this, the original 400 still escapes to Sentry."""
+
+    def test_returns_none_on_chat_not_found(self):
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: chat not found")),
+            patch("data.db.user.User.set_bot_chat_initialized"),
+        ):
+            result = tool.send_message("hello")
+
+        assert result is None
+
+    def test_clears_bot_chat_initialized_on_chat_not_found(self):
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: chat not found")),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            tool.send_message("hello")
+
+        mock_set.assert_called_once_with("123", False)
+
+    def test_no_retry_on_permanent_400(self):
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: chat not found")) as mock_post,
+            patch("data.db.user.User.set_bot_chat_initialized"),
+        ):
+            tool.send_message("hello")
+
+        assert mock_post.call_count == 1
+
+    def test_user_is_deactivated_also_clears_flag(self):
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: user is deactivated")),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            result = tool.send_message("hello")
+
+        assert result is None
+        mock_set.assert_called_once_with("123", False)
+
+    def test_peer_id_invalid_also_clears_flag(self):
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: PEER_ID_INVALID")),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            result = tool.send_message("hello")
+
+        assert result is None
+        mock_set.assert_called_once_with("123", False)
+
+    def test_unknown_400_still_raises(self):
+        """A 400 we don't recognize (e.g. parse_mode bug) is OUR problem and
+        must surface to Sentry — don't silently swallow it."""
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        resp = _telegram_400("Bad Request: message text is empty")
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "HTTP 400",
+            request=MagicMock(),
+            response=resp,
+        )
+        with (
+            patch("httpx.post", return_value=resp),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                tool.send_message("hello")
+
+        mock_set.assert_not_called()
+
+    def test_400_with_unparseable_body_still_raises(self):
+        """Defensive: if Telegram returns 400 with a non-JSON body, fall through
+        to ``raise_for_status`` rather than silently swallowing."""
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 400
+        resp.json.side_effect = ValueError("not JSON")
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "HTTP 400",
+            request=MagicMock(),
+            response=resp,
+        )
+        with (
+            patch("httpx.post", return_value=resp),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                tool.send_message("hello")
+
+        mock_set.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

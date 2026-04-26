@@ -16,6 +16,12 @@ export interface AuthMeResponse {
   authenticated: boolean
   language?: string
   intervals?: IntervalsStatus
+  // Issue #266: false means the user authed via Login Widget but never
+  // pressed /start in the bot, so Telegram has no chat to receive messages.
+  // Settings page renders a "Open bot first" CTA instead of the OAuth button
+  // until this flips true.
+  bot_chat_initialized?: boolean
+  bot_username?: string | null
 }
 
 // Recovery
