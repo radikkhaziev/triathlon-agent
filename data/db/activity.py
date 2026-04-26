@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     select,
 )
@@ -189,6 +190,185 @@ class Activity(Base):
         last_synced_at = sync_result.scalar_one_or_none()
 
         return activities, last_synced_at
+
+    @classmethod
+    @with_session
+    async def exists_for_user(
+        cls,
+        user_id: int,
+        activity_id: str,
+        *,
+        session: AsyncSession,
+    ) -> bool:
+        """Tenant-safe existence check: True iff (user_id, activity_id) row exists.
+
+        Used by ``_dispatch_achievements`` (and other webhook paths) to gate
+        downstream writes against tampered/foreign ``activity.id`` payloads.
+        Without this guard, an attacker with a leaked webhook secret could
+        write achievement rows referencing another user's activity_id and
+        surface them under their own ``user_id`` in tenant-scoped reads.
+        See ``docs/MULTI_TENANT_SECURITY.md`` T19.
+        """
+        result = await session.execute(select(cls.id).where(cls.user_id == user_id, cls.id == activity_id).limit(1))
+        return result.scalar_one_or_none() is not None
+
+
+class ActivityAchievement(Base):
+    """Per-activity achievement from ``ACTIVITY_ACHIEVEMENTS`` webhook.
+
+    Stores power PRs (5s/10s/30s/1m/5m/...), FTP changes, and any future
+    Intervals.icu milestone types. Source of truth for the social-share UI.
+    """
+
+    __tablename__ = "activity_achievements"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "activity_id",
+            "achievement_id",
+            name="uq_activity_achievements_user_activity_achievement",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    activity_id: Mapped[str] = mapped_column(String, ForeignKey("activities.id", ondelete="CASCADE"), nullable=False)
+    achievement_id: Mapped[str] = mapped_column(String, nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ftp_at_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ctl_at_time: Mapped[float | None] = mapped_column(Float, nullable=True)
+    point_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    _FTP_CHANGE_TYPE = "FTP_CHANGE"
+    _FTP_CHANGE_ID = "ftp_change"
+
+    @classmethod
+    @with_session
+    async def save_bulk(
+        cls,
+        user_id: int,
+        activity_id: str,
+        activity: dict,
+        *,
+        session: AsyncSession,
+    ) -> int:
+        """Idempotent upsert from a raw ``ACTIVITY_ACHIEVEMENTS`` webhook payload.
+
+        Reads three sources in the activity dict:
+          - ``icu_achievements[]`` — power/time PRs (BEST_POWER, ...)
+          - ``icu_rolling_ftp_delta != 0`` — synthesised FTP_CHANGE row
+          - ``icu_rolling_ftp`` / ``icu_ctl`` — snapshot for context
+
+        ``ON CONFLICT DO NOTHING`` on the unique key keeps re-delivered webhooks
+        from duplicating rows. Returns count of NEW rows inserted (for logging).
+        """
+        ftp = activity.get("icu_rolling_ftp")
+        ctl = activity.get("icu_ctl")
+
+        rows: list[dict] = []
+
+        for ach in activity.get("icu_achievements") or []:
+            if not isinstance(ach, dict):
+                continue
+            ach_id = ach.get("id")
+            ach_type = ach.get("type")
+            if not ach_id or not ach_type:
+                # Drop achievements we cannot key on — without (id, type) we
+                # cannot dedupe, and without dedupe we'd accumulate duplicates
+                # on every webhook redelivery.
+                continue
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "activity_id": activity_id,
+                    "achievement_id": str(ach_id),
+                    "type": str(ach_type),
+                    "value": _coerce_float(ach.get("watts")),
+                    "secs": _coerce_int(ach.get("secs")),
+                    "ftp_at_time": _coerce_int(ftp),
+                    "ctl_at_time": _coerce_float(ctl),
+                    "point_data": ach.get("point"),
+                    "extra": ach,
+                }
+            )
+
+        # FTP_CHANGE — synthetic achievement when rolling FTP changed. Surfaces
+        # FTP PRs in the same query as power PRs for unified social-share lists.
+        ftp_delta = activity.get("icu_rolling_ftp_delta")
+        if ftp_delta is not None and ftp_delta != 0 and ftp is not None:
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "activity_id": activity_id,
+                    "achievement_id": cls._FTP_CHANGE_ID,
+                    "type": cls._FTP_CHANGE_TYPE,
+                    "value": _coerce_float(ftp),
+                    "secs": None,
+                    "ftp_at_time": _coerce_int(ftp),
+                    "ctl_at_time": _coerce_float(ctl),
+                    "point_data": None,
+                    "extra": {"delta": ftp_delta},
+                }
+            )
+
+        if not rows:
+            return 0
+
+        stmt = (
+            insert(cls)
+            .values(rows)
+            .on_conflict_do_nothing(
+                index_elements=["user_id", "activity_id", "achievement_id"],
+            )
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        # rowcount on ON CONFLICT DO NOTHING reflects only inserted rows
+        return result.rowcount or 0
+
+    @classmethod
+    @with_session
+    async def get_for_activity(
+        cls,
+        user_id: int,
+        activity_id: str,
+        *,
+        session: AsyncSession,
+    ) -> list[ActivityAchievement]:
+        """Tenant-safe fetch by (user_id, activity_id).
+
+        Secondary order on ``id`` — ``save_bulk`` writes all rows in one
+        ``INSERT`` so they share the same ``created_at`` (server `now()`),
+        making a single-key sort nondeterministic across drivers/replicas.
+        """
+        result = await session.execute(
+            select(cls)
+            .where(cls.user_id == user_id, cls.activity_id == activity_id)
+            .order_by(cls.created_at.asc(), cls.id.asc())
+        )
+        return list(result.scalars().all())
+
+
+def _coerce_int(v) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 class ActivityHrv(Base):

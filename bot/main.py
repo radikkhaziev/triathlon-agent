@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 import zoneinfo
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
 
 import httpx
@@ -39,7 +39,7 @@ from bot.i18n import set_language as _set_lang
 from bot.scheduler import create_scheduler
 from bot.tools import MCPClient
 from config import settings
-from data.db import Activity, IqosDaily, StarTransaction, User, UserDTO, Wellness, get_session
+from data.db import Activity, ApiUsageDaily, IqosDaily, StarTransaction, User, UserDTO, Wellness, get_session
 from data.redis_client import close_redis, get_redis, init_redis
 from sentry_config import init_sentry
 from tasks.actors import actor_compose_user_morning_report, actor_update_zones
@@ -588,11 +588,75 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
+def _is_donor(user: User) -> bool:
+    """True if ``user.last_donation_at`` falls within the donor cap window.
+
+    ``CHAT_DONOR_WINDOW_DAYS`` mirrors ``DONATE_NUDGE_SUPPRESS_DAYS`` so a
+    single donation grants exactly one week of both perks (no nudge + higher
+    cap), keeping the donor contract trivially explainable.
+
+    Uses the same ``last_donation_at > cutoff`` shape as
+    ``bot/donate_nudge.should_show_nudge`` — a continuous-time comparison,
+    not a ``timedelta.days`` floor. The floor variant looks equivalent for
+    the boundary case but breaks under clock skew (a future-dated
+    ``last_donation_at`` from NTP slip / data import would yield a negative
+    ``timedelta.days`` which still satisfies ``< 7`` and falsely promotes
+    the user to donor tier).
+    """
+    if user.last_donation_at is None:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.CHAT_DONOR_WINDOW_DAYS)
+    return user.last_donation_at > cutoff
+
+
+async def _enforce_chat_daily_cap(update: Update, user: User) -> bool:
+    """Return True if the request should proceed, False if cap is exhausted.
+
+    Reads ``ApiUsageDaily.request_count`` for today (incremented on every
+    Claude call from ``bot/agent.py``). Two tiers:
+      - non-donor: ``CHAT_DAILY_LIMIT`` (default 40)
+      - donor (donated within ``CHAT_DONOR_WINDOW_DAYS``): ``CHAT_DAILY_LIMIT_DONOR``
+        (default 100)
+    A 0-value tier is treated as unlimited (gate disabled for that user).
+    Cap applies to ALL roles including owner — anti-abuse, not a permission
+    tier. A False return has already replied to the user; caller just returns.
+    """
+    is_donor = _is_donor(user)
+    limit = settings.CHAT_DAILY_LIMIT_DONOR if is_donor else settings.CHAT_DAILY_LIMIT
+    if limit <= 0:
+        return True
+    used = await ApiUsageDaily.get_today_request_count(user.id)
+    if used < limit:
+        return True
+    donor_limit = settings.CHAT_DAILY_LIMIT_DONOR
+    if is_donor:
+        msg = _("Дневной лимит сообщений исчерпан ({used}/{limit}). Попробуй завтра.").format(
+            used=used,
+            limit=limit,
+        )
+    elif donor_limit <= 0:
+        # Donor tier is unlimited — pitch that benefit explicitly instead of
+        # rendering "лимит 0/день" which reads as the opposite.
+        msg = _(
+            "Дневной лимит сообщений исчерпан ({used}/{limit}). "
+            "У донатеров лимит снят — /donate чтобы получить безлимит."
+        ).format(used=used, limit=limit)
+    else:
+        msg = _(
+            "Дневной лимит сообщений исчерпан ({used}/{limit}). "
+            "У донатеров лимит {donor_limit}/день — /donate чтобы поднять."
+        ).format(used=used, limit=limit, donor_limit=donor_limit)
+    await update.message.reply_text(msg)
+    return False
+
+
 @athlete_required
 async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle free-form text messages — AI chat via tool-use."""
     user_text = update.message.text
     if not user_text or not user_text.strip():
+        return
+    if not await _enforce_chat_daily_cap(update, user):
         return
 
     # Include reply context if replying to a message
@@ -673,6 +737,8 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 @athlete_required
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle photo messages — download, save locally, pass to AI chat with vision."""
+    if not await _enforce_chat_daily_cap(update, user):
+        return
 
     photo = update.message.photo[-1]  # highest resolution
     caption = update.message.caption or ""

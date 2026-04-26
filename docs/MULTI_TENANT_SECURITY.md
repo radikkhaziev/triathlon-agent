@@ -237,6 +237,19 @@
   - `bot_chat_initialized=False` = бот технически не может писать в этот чат, но юзер существует и аутентифицируется (webapp работает, MCP работает). Только Telegram-выходящие коммуникации заблокированы.
 - **Тесты:** `tests/test_tools.py:TestSendMessage400PermanentFailure` (7 кейсов) + `TestSendMessage400CrossTenantGuard` (3 кейса, защита от cross-tenant flag wipe) + `TestPermanent400AllowlistIsClassConstant` (anti-regression на `ClassVar`); `tests/api/test_intervals_oauth_init.py:TestBotChatGate` (3 кейса, включая "412 не выжигает rate-limit" + "demo > bot-chat priority"); `tests/api/test_auth_me.py:TestBotChatFieldsExposed` (4 кейса, exposure фронту).
 
+#### T19. Achievement Webhook — Cross-Tenant Write via Tampered `activity.id` (Tampering)
+
+- **Что:** `POST /api/intervals/webhook` с `type=ACTIVITY_ACHIEVEMENTS` резолвит tenant через `User.get_by_athlete_id(event.athlete_id)`, но `activity_id` берёт из `event.activity["id"]` — **без** проверки что эта activity принадлежит резолвнутому юзеру. Атакующий с валидным `INTERVALS_WEBHOOK_SECRET` (single shared secret across all tenants — см. T16-adjacent) может подсунуть `{athlete_id: "i_victim_A", activity: {id: "i_user_B_activity", icu_achievements: [{id: "ps0_5", type: "BEST_POWER", watts: 999, ...}]}}`. Без guard'а `ActivityAchievement.save_bulk(user_id=user_A.id, activity_id="i_user_B_activity", ...)` создаст row, и `get_for_activity(user_A.id, "i_user_B_activity")` в социал-share UI вернёт чужой PR под видом user_A.
+- **Где:** `api/routers/intervals/webhook.py:_dispatch_achievements` + `data/db/activity.py:ActivityAchievement.save_bulk`
+- **Severity:** High (impact = cross-tenant data attribution, surface area = social-share UI потенциально публикует чужие достижения; реалистичность зависит от сохранности `INTERVALS_WEBHOOK_SECRET`).
+- **Mitigation (реализовано):**
+  - **Tenant existence guard** перед `save_bulk`: `Activity.exists_for_user(user_id=user.id, activity_id=str(activity_id))` — `SELECT id FROM activities WHERE user_id = ? AND id = ? LIMIT 1` — отказывает в записи если activity не принадлежит резолвнутому юзеру.
+  - Параллельно решает race ACTIVITY_ACHIEVEMENTS-до-ACTIVITY_UPLOADED (legitimate edge: Strava-source activity отброшен в `actor_fetch_user_activities` → parent row отсутствует → guard просто пропускает persist без Sentry, нотификация всё равно идёт).
+  - Telegram-нотификация (`actor_send_achievement_notification`) **остаётся за guard'ом** — actor сам tenant-scoped через `TelegramTool(user=user_dto)` и `_suppress`-гейт (T18); даже если webhook tampered, ping не выйдет за пределы своего tenant'а.
+  - **Webhook-redelivery идемпотентность:** `UNIQUE(user_id, activity_id, achievement_id)` на `activity_achievements` + `ON CONFLICT DO NOTHING` в `save_bulk` — дубликат webhook не создаёт row, даже если guard пропустил его при первой доставке.
+- **Тесты:** `tests/api/test_webhook_dispatch.py:test_skips_persist_when_activity_unknown_to_user` (T19 regression-guard) + `test_persists_before_notify` (lock ordering save→notify через shared `call_log`).
+- **Что НЕ покрыто:** `INTERVALS_WEBHOOK_SECRET` остаётся single-tenant secret. Per-tenant signing — Phase 2 follow-up; пока T19 guard остаётся defense-in-depth.
+
 ---
 
 ## 3. Data Isolation Strategy
