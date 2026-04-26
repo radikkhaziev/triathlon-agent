@@ -491,8 +491,9 @@ def _actor_send_activity_notification(
     # Card / Video buttons. Card always available. Video requires VIDEO_API_URL
     # to be configured; otherwise the button is omitted (feature flag).
     media_row = [{"text": "📸 Card", "callback_data": f"card:{activity_id}"}]
-    if settings.VIDEO_API_URL:
-        media_row.append({"text": "🎬 Video (beta)", "callback_data": f"video:{activity_id}"})
+    # Temporarily disabled — video render is offline.
+    # if settings.VIDEO_API_URL:
+    #     media_row.append({"text": "🎬 Video (beta)", "callback_data": f"video:{activity_id}"})
 
     if reply_markup:
         reply_markup["inline_keyboard"].append(media_row)
