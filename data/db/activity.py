@@ -339,9 +339,16 @@ class ActivityAchievement(Base):
         *,
         session: AsyncSession,
     ) -> list[ActivityAchievement]:
-        """Tenant-safe fetch by (user_id, activity_id)."""
+        """Tenant-safe fetch by (user_id, activity_id).
+
+        Secondary order on ``id`` — ``save_bulk`` writes all rows in one
+        ``INSERT`` so they share the same ``created_at`` (server `now()`),
+        making a single-key sort nondeterministic across drivers/replicas.
+        """
         result = await session.execute(
-            select(cls).where(cls.user_id == user_id, cls.activity_id == activity_id).order_by(cls.created_at.asc())
+            select(cls)
+            .where(cls.user_id == user_id, cls.activity_id == activity_id)
+            .order_by(cls.created_at.asc(), cls.id.asc())
         )
         return list(result.scalars().all())
 

@@ -220,12 +220,14 @@ class TestIsDonor:
         stale = datetime.now(timezone.utc) - timedelta(days=8)
         assert _is_donor(_user(last_donation_at=stale)) is False
 
-    def test_at_window_boundary_is_not_donor(self, monkeypatch):
-        """Donation EXACTLY at the window boundary falls outside — strict
-        ``last_donation_at > cutoff`` comparison, mirroring
-        ``bot/donate_nudge.should_show_nudge`` semantics. Catches a regression
-        if anyone reverts to the old ``timedelta.days < N`` floor variant
-        (which would round-trip the equality differently)."""
+    def test_just_outside_window_boundary_is_not_donor(self, monkeypatch):
+        """Donation 1 second outside the window — falls outside donor tier.
+        Mirrors ``bot/donate_nudge.should_show_nudge``'s strict
+        ``last_donation_at > cutoff`` comparison. Catches a regression if
+        anyone reverts to the old ``timedelta.days < N`` floor variant —
+        which would round-trip the *exact* equality differently, but for the
+        1-second-outside case both forms agree, keeping this test
+        time-independent (no clock-freeze needed)."""
         monkeypatch.setattr("config.settings.CHAT_DONOR_WINDOW_DAYS", 7)
-        boundary = datetime.now(timezone.utc) - timedelta(days=7, seconds=1)
-        assert _is_donor(_user(last_donation_at=boundary)) is False
+        just_outside = datetime.now(timezone.utc) - timedelta(days=7, seconds=1)
+        assert _is_donor(_user(last_donation_at=just_outside)) is False
