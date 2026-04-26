@@ -156,6 +156,7 @@
     },
     "goal": {
       "ctl_edit_hint": "Click to edit",
+      "ctl_edit_hint_section": "Tap any CTL value below to edit it.",
       "save_failed": "Failed to save",
       "edit_via_chat_hint": "To change the name / date / priority — send /race in the bot chat."
     },

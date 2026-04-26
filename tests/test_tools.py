@@ -404,6 +404,78 @@ class TestSendMessage400PermanentFailure:
         mock_set.assert_not_called()
 
 
+class TestSendMessage400CrossTenantGuard:
+    """Self-healing must NOT update the flag when the failing chat_id doesn't
+    belong to the bound ``self.user``. Otherwise a typo'd chat_id in a
+    broadcast or an owner-broadcast targeting another user would silently
+    clear an innocent victim's ``bot_chat_initialized``. Issue #266 round-2.
+    """
+
+    def test_skips_mutation_when_no_user_bound(self):
+        """``TelegramTool()`` without ``user`` (broadcast path): swallow the
+        400 and return None, but do NOT touch any DB row."""
+        tool = _make_tool(None)
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: chat not found")),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            result = tool.send_message("hello", chat_id="999")
+
+        assert result is None
+        mock_set.assert_not_called()
+
+    def test_skips_mutation_when_explicit_chat_id_does_not_match_user(self):
+        """``send_message(text, chat_id=other)`` overrides ``self.user.chat_id``.
+        The 400 says ``other`` is unreachable, but the bound user might be
+        fine — don't touch their flag."""
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: chat not found")),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            result = tool.send_message("hello", chat_id="999_other_user")
+
+        assert result is None
+        mock_set.assert_not_called()
+
+    def test_clears_when_chat_id_matches_bound_user(self):
+        """Sanity counter-test: when the failing chat_id is exactly
+        ``self.user.chat_id``, the flag IS cleared."""
+        tool = _make_tool(_make_user(chat_id="123", bot_chat_initialized=True))
+        with (
+            patch("httpx.post", return_value=_telegram_400("Bad Request: chat not found")),
+            patch("data.db.user.User.set_bot_chat_initialized") as mock_set,
+        ):
+            tool.send_message("hello", chat_id="123")
+
+        mock_set.assert_called_once_with("123", False)
+
+
+class TestPermanent400AllowlistIsClassConstant:
+    """Regression guard: ``_TG_400_PERMANENT_SUBSTRINGS`` must stay a
+    ``ClassVar`` so it isn't promoted to a per-instance ``@dataclass`` field
+    (which would expose it via ``__init__`` kwargs, ``repr``, ``__eq__``).
+    """
+
+    def test_not_in_dataclass_fields(self):
+        from dataclasses import fields
+
+        from tasks.tools import TelegramTool
+
+        names = {f.name for f in fields(TelegramTool)}
+        assert "_TG_400_PERMANENT_SUBSTRINGS" not in names
+
+    def test_excludes_403_substring(self):
+        """``"bot was blocked by the user"`` is a 403, not a 400 — Telegram
+        never returns it with status 400, and the 403 branch handles it
+        with different semantics (``is_active=False``). Keeping it in the
+        400-allowlist would be misleading dead code."""
+        from tasks.tools import TelegramTool
+
+        for marker in TelegramTool._TG_400_PERMANENT_SUBSTRINGS:
+            assert "blocked" not in marker
+
+
 # ---------------------------------------------------------------------------
 #  send_photo — network retry
 # ---------------------------------------------------------------------------

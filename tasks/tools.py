@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from data.db import UserDTO
@@ -402,15 +402,23 @@ class TelegramTool:
 
     # Telegram 400 ``description`` substrings that mean "this chat is
     # permanently unreachable from this bot" — sending again will deterministically
-    # fail. Treat the same way as 403 (block): drop the bot-chat flag, swallow
-    # the error, return None. The frontend banner re-arms automatically.
-    # Any other 400 (parse_mode error, empty text, etc.) keeps raising — that's
-    # our bug to fix, not the user's.
-    _TG_400_PERMANENT_SUBSTRINGS: tuple[str, ...] = (
+    # fail. Drop ``bot_chat_initialized``, swallow the error, return None.
+    # The frontend banner re-arms automatically. Any other 400 (parse_mode
+    # error, empty text, etc.) keeps raising — that's our bug to fix.
+    #
+    # NOTE: ``"bot was blocked by the user"`` is intentionally NOT in this
+    # list — Telegram returns it with HTTP 403, not 400, and the 403 branch
+    # below handles that path with different semantics (``is_active=False``
+    # vs ``bot_chat_initialized=False``).
+    #
+    # ``ClassVar`` is mandatory inside an ``@dataclass`` — without it the
+    # tuple becomes a per-instance field (added to ``__init__``, dumped in
+    # ``repr``, compared in ``__eq__``) and external callers can override
+    # the allowlist via constructor kwargs.
+    _TG_400_PERMANENT_SUBSTRINGS: ClassVar[tuple[str, ...]] = (
         "chat not found",
         "user is deactivated",
         "peer_id_invalid",
-        "bot was blocked by the user",
     )
 
     def _post_with_retries(
@@ -428,6 +436,14 @@ class TelegramTool:
         400 with a permanent ``description`` (chat not found, user is
         deactivated, etc.) clears ``bot_chat_initialized`` and returns None.
         Passes through ``data=`` / ``files=`` / ``json=`` kwargs to ``httpx.post``.
+
+        Retry policy: ONLY ``httpx.TimeoutException`` and ``httpx.ConnectError``
+        retry. 4xx responses don't — both terminal-handler branches above
+        return ``None`` inside the try-block, and any unhandled non-2xx hits
+        ``raise_for_status`` whose ``HTTPStatusError`` is NOT caught by the
+        ``except (TimeoutException, ConnectError)``. If you ever broaden the
+        ``except`` to include ``HTTPError``, the 400 self-healing branch
+        will fire N times per failure and issue N redundant DB UPDATEs.
         """
         last_exc: Exception | None = None
         for attempt in range(retries):
@@ -449,13 +465,28 @@ class TelegramTool:
                     # Self-healing: chat is gone (deleted) or never existed
                     # (widget signup that bypassed /start by some race).
                     # Clear bot_chat_initialized so future actors are skipped
-                    # by ``_suppress`` and the webapp banner re-appears, prompting
-                    # the user to /start again. Issue #266 bleed-stop.
-                    logger.info(
-                        "Telegram 400 permanent for chat_id=%s — clearing bot_chat_initialized",
-                        chat_id,
-                    )
-                    User.set_bot_chat_initialized(chat_id, False)
+                    # by ``_suppress`` and the webapp banner re-appears,
+                    # prompting the user to /start again. Issue #266 bleed-stop.
+                    #
+                    # Guard: only flip the flag when the failing chat_id
+                    # belongs to the user this tool was instantiated for.
+                    # Broadcast paths (``TelegramTool()`` without ``user``,
+                    # owner-broadcast with explicit ``chat_id`` override)
+                    # could otherwise update the wrong row (a typo'd chat_id
+                    # could match a real victim user). Swallow the error
+                    # either way, but only mutate state for the bound user.
+                    if self.user is not None and str(self.user.chat_id) == chat_id:
+                        logger.info(
+                            "Telegram 400 permanent for chat_id=%s — clearing bot_chat_initialized",
+                            chat_id,
+                        )
+                        User.set_bot_chat_initialized(chat_id, False)
+                    else:
+                        logger.warning(
+                            "Telegram 400 permanent for chat_id=%s (broadcast/no-user) — "
+                            "swallowing without state mutation",
+                            chat_id,
+                        )
                     return None
                 resp.raise_for_status()
                 return resp.json()
