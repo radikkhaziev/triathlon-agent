@@ -1497,7 +1497,7 @@ async def handle_ramp_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_reply_markup(reply_markup=None)
 
     ramp = RampTrainingSuggestion(user=UserDTO.model_validate(user), wellness=None)
-    msg = ramp.plan_ramp(sport=sport)
+    msg = await asyncio.to_thread(ramp.plan_ramp, sport=sport)
     await query.message.reply_text(f"⚡ {msg}")
 
 
