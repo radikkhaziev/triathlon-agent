@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -182,6 +182,21 @@ def _actor_process_fit_file(prev: str | None):
                     if field.name == "timestamp" and field.value is not None:
                         if start_ts is None:
                             start_ts = field.value
+                        # fitparse occasionally emits non-datetime timestamps on
+                        # malformed FIT files — either an ``int`` mid-file after a
+                        # ``datetime`` start_ts (the original issue #276) or both
+                        # values as ``int`` from frame zero (PR #278 review:
+                        # int - int → int, then ``.total_seconds()`` raises
+                        # AttributeError and bypasses the FitParseError handler).
+                        # Validate up front and route both shapes through the
+                        # partial-data branch instead of catching TypeError /
+                        # AttributeError on the subtraction line, which would
+                        # silently swallow unrelated bugs in the surrounding loop.
+                        if not isinstance(field.value, datetime) or not isinstance(start_ts, datetime):
+                            raise FitParseError(
+                                f"non-datetime timestamps in {prev}: "
+                                f"start={type(start_ts).__name__}, value={type(field.value).__name__}"
+                            )
                         rec["timestamp_s"] = (field.value - start_ts).total_seconds()
                     elif field.name == "heart_rate":
                         rec["heart_rate"] = field.value

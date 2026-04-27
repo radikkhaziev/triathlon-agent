@@ -504,32 +504,34 @@ class ActivityDetail(Base):
     intervals: Mapped[list | None] = mapped_column(JSON, nullable=True)
     pool_length: Mapped[float | None] = mapped_column(Float, nullable=True)  # meters (25 or 50)
 
-    # Mapping: Intervals.icu JSON key → ActivityDetail column
+    # Mapping: Intervals.icu JSON key → (ActivityDetail column, coerce fn).
+    # Coercion guards against occasional string values from the API (e.g. pace
+    # returned as "5:30") that would otherwise blow up at compare- or commit-time.
     _DETAIL_FIELD_MAP = {
-        "max_heartrate": "max_hr",
-        "icu_average_watts": "avg_power",
-        "icu_weighted_avg_watts": "normalized_power",
-        "max_speed": "max_speed",
-        "average_speed": "avg_speed",
-        "pace": "pace",
-        "gap": "gap",
-        "distance": "distance",
-        "total_elevation_gain": "elevation_gain",
-        "average_cadence": "avg_cadence",
-        "average_stride": "avg_stride",
-        "calories": "calories",
-        "icu_intensity": "intensity_factor",
-        "icu_variability_index": "variability_index",
-        "icu_efficiency_factor": "efficiency_factor",
-        "icu_power_hr": "power_hr",
-        "decoupling": "decoupling",
-        "trimp": "trimp",
-        "icu_hr_zones": "hr_zones",
-        "icu_power_zones": "power_zones",
-        "pace_zones": "pace_zones",
-        "icu_hr_zone_times": "hr_zone_times",
-        "pace_zone_times": "pace_zone_times",
-        "pool_length": "pool_length",
+        "max_heartrate": ("max_hr", _coerce_int),
+        "icu_average_watts": ("avg_power", _coerce_int),
+        "icu_weighted_avg_watts": ("normalized_power", _coerce_int),
+        "max_speed": ("max_speed", _coerce_float),
+        "average_speed": ("avg_speed", _coerce_float),
+        "pace": ("pace", _coerce_float),
+        "gap": ("gap", _coerce_float),
+        "distance": ("distance", _coerce_float),
+        "total_elevation_gain": ("elevation_gain", _coerce_float),
+        "average_cadence": ("avg_cadence", _coerce_float),
+        "average_stride": ("avg_stride", _coerce_float),
+        "calories": ("calories", _coerce_int),
+        "icu_intensity": ("intensity_factor", _coerce_float),
+        "icu_variability_index": ("variability_index", _coerce_float),
+        "icu_efficiency_factor": ("efficiency_factor", _coerce_float),
+        "icu_power_hr": ("power_hr", _coerce_float),
+        "decoupling": ("decoupling", _coerce_float),
+        "trimp": ("trimp", _coerce_float),
+        "icu_hr_zones": ("hr_zones", None),
+        "icu_power_zones": ("power_zones", None),
+        "pace_zones": ("pace_zones", None),
+        "icu_hr_zone_times": ("hr_zone_times", None),
+        "pace_zone_times": ("pace_zone_times", None),
+        "pool_length": ("pool_length", _coerce_float),
     }
 
     # --- CRUD ---
@@ -551,9 +553,10 @@ class ActivityDetail(Base):
             row = cls(activity_id=activity_id)
             session.add(row)
 
-        for api_key, col_name in cls._DETAIL_FIELD_MAP.items():
+        for api_key, (col_name, coerce) in cls._DETAIL_FIELD_MAP.items():
             if api_key in detail_json:
-                setattr(row, col_name, detail_json[api_key])
+                value = detail_json[api_key]
+                setattr(row, col_name, coerce(value) if coerce else value)
 
         # icu_zone_times is ZoneTime[] ({id, secs}) — extract seconds array
         raw_zt = detail_json.get("icu_zone_times")
@@ -568,7 +571,9 @@ class ActivityDetail(Base):
         # For Run: use GAP (grade-adjusted pace) to normalize terrain effects.
         if not row.efficiency_factor:
             speed = row.gap if row.gap and row.gap > 0 else row.pace
-            avg_hr = detail_json.get("average_heartrate") or detail_json.get("average_hr")
+            # average_heartrate isn't in _DETAIL_FIELD_MAP (it lives on Activity, not
+            # ActivityDetail), so it bypasses the map's coercion — coerce defensively here.
+            avg_hr = _coerce_float(detail_json.get("average_heartrate") or detail_json.get("average_hr"))
             if speed and speed > 0 and avg_hr and avg_hr > 0:
                 row.efficiency_factor = round((speed * 60) / avg_hr, 6)
 

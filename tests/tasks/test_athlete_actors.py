@@ -144,16 +144,15 @@ class TestActorSyncAthleteSettings:
             actor_sync_athlete_settings(_user())
 
         assert mock_as.upsert.call_count == 3
-        # Ride
-        mock_as.upsert.assert_any_call(
-            user_id=1,
-            sport="Ride",
-            lthr=148,
-            max_hr=179,
-            ftp=250,
-            threshold_pace=None,
-            pace_units=None,
-        )
+        # Ride — assert kwargs individually so the test stays resilient to new
+        # optional fields being added to upsert (e.g. zones-related kwargs).
+        ride_call = [c for c in mock_as.upsert.call_args_list if c.kwargs.get("sport") == "Ride"][0]
+        assert ride_call.kwargs["user_id"] == 1
+        assert ride_call.kwargs["lthr"] == 148
+        assert ride_call.kwargs["max_hr"] == 179
+        assert ride_call.kwargs["ftp"] == 250
+        assert ride_call.kwargs["threshold_pace"] is None
+        assert ride_call.kwargs["pace_units"] is None
         # Run: threshold_pace converted from m/s to sec/km (1000/3.5 ≈ 285.7)
         run_call = [c for c in mock_as.upsert.call_args_list if c.kwargs.get("sport") == "Run"][0]
         assert run_call.kwargs["lthr"] == 162

@@ -73,14 +73,14 @@ class TestIsZ2:
         assert _patched_is_z2(140, "bike") is False
 
     def test_run_z2_in_range(self):
-        """Run Z2: 72-82% of LTHR=153 → 110-125 bpm."""
+        """Run Z2: 72-89% of LTHR=153 → 110-136 bpm."""
         assert _patched_is_z2(118, "run") is True
 
     def test_run_below_z2(self):
         assert _patched_is_z2(100, "run") is False
 
     def test_run_above_z2(self):
-        assert _patched_is_z2(135, "run") is False
+        assert _patched_is_z2(140, "run") is False
 
     def test_swim_always_passes(self):
         """Swim has no HR filter."""

@@ -329,6 +329,11 @@ class TestSyncWorkoutsEndpoint:
         mock_user.role = "owner"
         mock_user.is_active = True
         mock_user.is_silent = False
+        # UserDTO.model_validate reads these via from_attributes — set
+        # concrete defaults so MagicMock auto-attrs don't fail validation.
+        mock_user.language = "ru"
+        mock_user.avatar_url = None
+        mock_user.bot_chat_initialized = True
         test_app.dependency_overrides[require_athlete] = lambda: mock_user
         return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
 
