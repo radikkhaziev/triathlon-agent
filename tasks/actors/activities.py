@@ -191,7 +191,11 @@ def _actor_process_fit_file(prev: str | None):
                         rec["speed"] = field.value
                 if "timestamp_s" in rec:
                     records.append(rec)
-    except FitParseError as e:
+    except (FitParseError, TypeError) as e:
+        # ``TypeError`` covers mixed int/datetime ``record.timestamp`` values
+        # that fitparse occasionally emits on malformed FIT files (issue
+        # #276) — same class of "bad third-party data, not a code defect"
+        # as ``FitParseError``, so it gets the same partial-data handling.
         parse_aborted = True
         # Log locally only — bad dev_data fields are common in Wahoo /
         # third-party-field Garmin exports and aren't a code defect. We
