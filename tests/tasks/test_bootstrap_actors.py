@@ -77,15 +77,21 @@ def bootstrap_mocks():
     # ``Wellness`` classes themselves — the finalize step builds SQLAlchemy column
     # comparisons (``Wellness.date >= ...``) and those need the real column
     # descriptors. ``session.execute`` is mocked, so no real query runs.
+    #
+    # Self-recursion and downstream Dramatiq dispatches go through ``.send`` /
+    # ``.send_with_options`` — patch only those attributes, NOT the actor object
+    # itself, otherwise the test would invoke the mock instead of the real actor.
     with (
         patch("tasks.actors.bootstrap.get_sync_session") as mock_session_cm,
         patch("tasks.actors.bootstrap.UserBackfillState") as mock_state_cls,
         patch("tasks.actors.bootstrap.IntervalsSyncClient") as mock_client_cls,
         patch("tasks.actors.bootstrap.Activity.save_bulk") as mock_save_bulk,
         patch("tasks.actors.bootstrap.process_wellness_analysis_sync") as mock_actor_wellness,
-        patch("tasks.actors.bootstrap.actor_update_activity_details") as mock_actor_details,
-        patch("tasks.actors.bootstrap.actor_bootstrap_step") as mock_self,
-        patch("tasks.actors.bootstrap._actor_send_bootstrap_completion_notification") as mock_notify,
+        patch("tasks.actors.bootstrap.actor_update_activity_details.send") as mock_actor_details_send,
+        patch("tasks.actors.bootstrap.actor_bootstrap_step.send") as mock_self_send,
+        patch(
+            "tasks.actors.bootstrap._actor_send_bootstrap_completion_notification.send_with_options"
+        ) as mock_notify_send,
     ):
         session = MagicMock()
         mock_session_cm.return_value.__enter__.return_value = session
@@ -111,6 +117,10 @@ def bootstrap_mocks():
         # Count queries for finalize
         session.execute.return_value.scalar_one.return_value = 0
 
+        # Wrap each .send / .send_with_options mock in a SimpleNamespace so
+        # tests can keep their original ``actor_self.send.X`` / ``actor_notify.
+        # send_with_options.X`` shape — even though we now patch the dispatch
+        # method, not the actor object.
         yield SimpleNamespace(
             session=session,
             state_cls=mock_state_cls,
@@ -118,9 +128,9 @@ def bootstrap_mocks():
             client=client,
             save_bulk=mock_save_bulk,
             actor_wellness=mock_actor_wellness,
-            actor_details=mock_actor_details,
-            actor_self=mock_self,
-            actor_notify=mock_notify,
+            actor_details=SimpleNamespace(send=mock_actor_details_send),
+            actor_self=SimpleNamespace(send=mock_self_send),
+            actor_notify=SimpleNamespace(send_with_options=mock_notify_send),
         )
 
 
@@ -273,7 +283,7 @@ class TestMiddleChunk:
         send_kwargs = bootstrap_mocks.actor_self.send.call_args.kwargs
         assert send_kwargs["cursor_dt"] == expected_next
         assert send_kwargs["period_days"] == 365
-        bootstrap_mocks.actor_notify.send.assert_not_called()
+        bootstrap_mocks.actor_notify.send_with_options.assert_not_called()
 
     def test_dispatches_wellness_and_activity_pipelines_per_row(self, bootstrap_mocks):
         """For each fetched wellness/activity row we dispatch the correct downstream actor."""

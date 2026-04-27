@@ -125,10 +125,12 @@ class TestPlannedWorkout:
         assert len(interval["steps"]) == 2
 
     def test_no_description_in_event(self):
-        """workout_doc replaces description — no description key in event."""
+        """workout_doc carries the actual workout — description stays empty
+        (Intervals.icu requires it as a string field, but content goes in
+        workout_doc)."""
         w = self._make_workout()
         event = w.to_intervals_event()
-        assert event.description is None
+        assert not event.description
 
     def test_rejects_step_without_target(self):
         """Targetless terminal steps leave watches unable to alert — must raise."""

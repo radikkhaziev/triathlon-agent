@@ -236,6 +236,13 @@ class TestSyncActivitiesEndpoint:
         mock_user.username = "tester"
         mock_user.api_key = "key1"
         mock_user.display_name = None
+        # UserDTO.model_validate reads these via from_attributes — MagicMock
+        # auto-attrs default to ``MagicMock`` instances which fail
+        # ``str`` / ``str | None`` validation.
+        mock_user.language = "ru"
+        mock_user.avatar_url = None
+        mock_user.is_silent = False
+        mock_user.bot_chat_initialized = True
         test_app.dependency_overrides[require_athlete] = lambda: mock_user
         return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
 

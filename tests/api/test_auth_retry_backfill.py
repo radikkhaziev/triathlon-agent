@@ -51,7 +51,12 @@ def _state(
     finished_at: datetime | None = None,
     last_error: str | None = None,
 ) -> SimpleNamespace:
-    return SimpleNamespace(status=status, finished_at=finished_at, last_error=last_error)
+    """Stub mirroring the subset of ``UserBackfillState`` the auth router uses,
+    including ``is_empty_import()`` (mirrors the ORM helper at
+    ``data/db/backfill.py``)."""
+    ns = SimpleNamespace(status=status, finished_at=finished_at, last_error=last_error)
+    ns.is_empty_import = lambda: ns.status == "completed" and ns.last_error == "EMPTY_INTERVALS"
+    return ns
 
 
 @pytest.fixture(autouse=True)

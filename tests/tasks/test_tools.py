@@ -70,7 +70,7 @@ class TestTelegramToolSendMessage:
         assert url.endswith("/sendMessage")
 
     def test_payload_contains_chat_id_and_text(self):
-        """Payload sent to Telegram includes chat_id and text."""
+        """Payload sent to Telegram includes chat_id (always normalized to str) and text."""
         tool = self._make_tool()
         mock_resp = _httpx_response(200, {"ok": True, "result": {}})
 
@@ -78,7 +78,8 @@ class TestTelegramToolSendMessage:
             tool.send_message(chat_id=99, text="Test message")
 
         payload = mock_post.call_args[1]["json"]
-        assert payload["chat_id"] == 99
+        # send_message normalizes chat_id to str (DB column is varchar) — see tasks/tools.py.
+        assert payload["chat_id"] == "99"
         assert payload["text"] == "Test message"
 
     def test_no_reply_markup_in_payload_when_none(self):
@@ -119,14 +120,27 @@ class TestTelegramToolSendMessage:
 
         assert result == expected
 
-    def test_raises_on_http_error(self):
-        """HTTP 4xx/5xx raises httpx.HTTPStatusError."""
+    def test_raises_on_http_5xx(self):
+        """HTTP 5xx falls through to raise_for_status — 403/permanent-400 are
+        intentionally swallowed in _post_with_retries (self-healing branches)."""
         tool = self._make_tool()
-        mock_resp = _httpx_response(403)
+        mock_resp = _httpx_response(500)
 
         with patch("tasks.tools.httpx.post", return_value=mock_resp):
             with pytest.raises(httpx.HTTPStatusError):
                 tool.send_message(chat_id=1, text="Hi")
+
+    def test_403_marks_user_inactive_and_returns_none(self):
+        """403 = user blocked the bot — flip is_active=False and swallow without raising."""
+        tool = self._make_tool()
+        mock_resp = _httpx_response(403)
+
+        with patch("tasks.tools.httpx.post", return_value=mock_resp):
+            with patch("tasks.tools.User.set_active_by_chat_id") as mock_set_active:
+                result = tool.send_message(chat_id=1, text="Hi")
+
+        assert result is None
+        mock_set_active.assert_called_once()
 
     def test_timeout_is_15_seconds(self):
         """Timeout passed to httpx.post is 15.0."""

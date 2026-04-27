@@ -1,6 +1,6 @@
 """Tests for bot/tool_filter.py — tool group selection and filtering."""
 
-from bot.tool_filter import TOOL_GROUPS, filter_tools, select_tool_groups
+from bot.tool_filter import ALWAYS_INCLUDE, TOOL_GROUPS, filter_tools, select_tool_groups
 
 
 class TestSelectToolGroups:
@@ -9,9 +9,9 @@ class TestSelectToolGroups:
         assert "core" in groups
         assert "tracking" in groups
 
-    def test_plain_message_only_core_and_tracking(self):
+    def test_plain_message_only_always_included(self):
         groups = select_tool_groups("как дела?")
-        assert groups == {"core", "tracking"}
+        assert groups == ALWAYS_INCLUDE
 
     def test_garmin_sleep(self):
         assert "garmin" in select_tool_groups("как мой сон?")
@@ -75,7 +75,7 @@ class TestSelectToolGroups:
 
     def test_empty_message(self):
         groups = select_tool_groups("")
-        assert groups == {"core", "tracking"}
+        assert groups == ALWAYS_INCLUDE
 
 
 class TestFilterTools:
@@ -122,8 +122,9 @@ class TestToolGroupIntegrity:
         all_names: set[str] = set()
         for tools in TOOL_GROUPS.values():
             all_names.update(tools)
-        # 49 tools total (7 core + 6 garmin + 10 workouts + 3 tracking + 18 analysis + 5 admin)
-        assert len(all_names) == 49
+        # 55 tools total (7 core + 6 garmin + 10 workouts + 7 tracking + 20 analysis + 5 admin)
+        expected = sum(len(t) for t in TOOL_GROUPS.values())
+        assert len(all_names) == expected == 55
 
     def test_core_has_essential_tools(self):
         core = set(TOOL_GROUPS["core"])

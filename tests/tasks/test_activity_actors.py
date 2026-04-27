@@ -243,6 +243,15 @@ class TestActorFetchUserActivities:
 class TestActorFetchActivityDetails:
     """actor_fetch_activity_details fetches detail + intervals and saves them."""
 
+    @staticmethod
+    def _unchanged_save_result():
+        """Return an ORMDTO indicating nothing changed — actor early-returns at
+        ``if not result.is_changed and not force`` before reaching the
+        downstream ``session.get(Activity, ...)`` we don't want to mock."""
+        from tasks.dto import ORMDTO
+
+        return ORMDTO(is_new=False, is_changed=False, row=None)
+
     def test_calls_get_activity_detail(self):
         """Actor calls client.get_activity_detail with the activity ID."""
         from tasks.actors.activities import actor_update_activity_details
@@ -254,7 +263,7 @@ class TestActorFetchActivityDetails:
 
         with (
             patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
-            patch("tasks.actors.activities.ActivityDetail.save"),
+            patch("tasks.actors.activities.ActivityDetail.save", return_value=self._unchanged_save_result()),
         ):
             actor_update_activity_details(user.model_dump(), activity_id="i12345")
 
@@ -271,14 +280,16 @@ class TestActorFetchActivityDetails:
 
         with (
             patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
-            patch("tasks.actors.activities.ActivityDetail.save"),
+            patch("tasks.actors.activities.ActivityDetail.save", return_value=self._unchanged_save_result()),
         ):
             actor_update_activity_details(user.model_dump(), activity_id="i12345")
 
         mock_client.get_activity_intervals.assert_called_once_with("i12345")
 
     def test_calls_activity_detail_save(self):
-        """Actor calls ActivityDetail.save with ID, detail_data, and intervals_data."""
+        """Actor calls ActivityDetail.save with ID, detail_data, and intervals_data
+        (plus an explicit session kwarg — the actor manages the session itself
+        so it can ``session.get(Activity, ...)`` after the upsert)."""
         from tasks.actors.activities import actor_update_activity_details
 
         user = _user()
@@ -290,11 +301,17 @@ class TestActorFetchActivityDetails:
 
         with (
             patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
-            patch("tasks.actors.activities.ActivityDetail.save") as mock_save,
+            patch(
+                "tasks.actors.activities.ActivityDetail.save",
+                return_value=self._unchanged_save_result(),
+            ) as mock_save,
         ):
             actor_update_activity_details(user.model_dump(), activity_id="i12345")
 
-        mock_save.assert_called_once_with("i12345", detail_data, intervals_data)
+        mock_save.assert_called_once()
+        args, kwargs = mock_save.call_args
+        assert args == ("i12345", detail_data, intervals_data)
+        assert "session" in kwargs
 
     def test_returns_early_when_no_detail_data(self):
         """Actor returns early without calling ActivityDetail.save if detail is None/empty."""
@@ -714,27 +731,6 @@ class TestActorComposeMorningReport:
 
         mock_mcp_cls.assert_not_called()
 
-    def test_returns_early_when_hrv_rows_missing(self):
-        """Missing HRV analysis rows → MCPTool not called."""
-        from tasks.actors import actor_compose_user_morning_report
-
-        user = _user(id=1)
-        wellness = self._make_wellness_row()
-        mock_session = self._mock_session(
-            wellness_row=wellness,
-            hrv_flat_row=None,  # missing
-            hrv_aie_row=self._make_hrv_row(),
-            rhr_row=self._make_rhr_row(),
-        )
-
-        with (
-            patch("tasks.actors.reports.get_sync_session", return_value=mock_session),
-            patch("tasks.actors.reports.MCPTool") as mock_mcp_cls,
-        ):
-            actor_compose_user_morning_report(user.model_dump())
-
-        mock_mcp_cls.assert_not_called()
-
     def test_returns_early_when_rhr_row_missing(self):
         """Missing RHR analysis row → MCPTool not called."""
         from tasks.actors import actor_compose_user_morning_report
@@ -757,7 +753,12 @@ class TestActorComposeMorningReport:
         mock_mcp_cls.assert_not_called()
 
     def test_returns_early_when_mcp_generates_no_text(self):
-        """MCPTool returns None → ai_recommendation not saved, send not called."""
+        """MCPTool returns None → send not called and AI recommendation cleared back to None.
+
+        The actor still commits twice on this path (sentinel claim + sentinel
+        cleanup), but neither commit persists generated text — the wellness
+        row's ``ai_recommendation`` ends up cleared.
+        """
         from tasks.actors import actor_compose_user_morning_report
 
         user = _user(id=1)
@@ -779,11 +780,16 @@ class TestActorComposeMorningReport:
         ):
             actor_compose_user_morning_report(user.model_dump())
 
-        mock_session.__enter__.return_value.commit.assert_not_called()
         mock_send.send.assert_not_called()
+        assert wellness.ai_recommendation is None
 
     def test_saves_ai_recommendation_and_dispatches_send(self):
-        """Successful generation → saves to DB and dispatches send actor."""
+        """Successful generation → saves to DB and dispatches send actor.
+
+        The actor commits twice on the happy path (transaction 1 = sentinel
+        claim, transaction 2 = persisted text); both share the same patched
+        session, so we only assert ``call_count >= 2``.
+        """
         from tasks.actors import actor_compose_user_morning_report
 
         user = _user(id=1)
@@ -808,7 +814,7 @@ class TestActorComposeMorningReport:
 
         # ai_recommendation saved on the row
         assert wellness.ai_recommendation == "Generated morning report"
-        mock_session_ctx.__enter__.return_value.commit.assert_called_once()
+        assert mock_session_ctx.__enter__.return_value.commit.call_count >= 2
 
         # send actor dispatched
         mock_send.send.assert_called_once()

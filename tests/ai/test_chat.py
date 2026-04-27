@@ -139,6 +139,9 @@ def _mock_user(chat_id: str = "12345"):
     u.mcp_token = "test_token"
     u.role = "owner"
     u.language = "ru"
+    # _is_donor compares last_donation_at against a datetime cutoff — keep
+    # the default MagicMock (truthy + uncomparable) from triggering TypeError.
+    u.last_donation_at = None
     return u
 
 
@@ -151,12 +154,24 @@ class TestHandleChatMessage:
         message.chat = chat
         message.reply_text = AsyncMock()
         message.reply_to_message = None
+        # ``handle_chat_message`` reads ``update.effective_chat.id`` when
+        # clearing prior undo buttons. A SimpleNamespace with a chat_id-like
+        # int works — tests don't care about the value.
+        effective_chat = SimpleNamespace(id=int(user_id))
         update = SimpleNamespace(
             effective_user=user,
+            effective_chat=effective_chat,
             message=message,
             callback_query=None,
         )
         return update
+
+    def _make_context(self):
+        """Real Telegram passes a ``ContextTypes.DEFAULT_TYPE`` with mutable
+        ``user_data`` and a ``job_queue``. Mirror that shape with a
+        SimpleNamespace so the chat handler's race-creation /
+        undoable-tool branches don't AttributeError on ``None``."""
+        return SimpleNamespace(user_data={}, job_queue=None)
 
     @pytest.mark.asyncio
     async def test_owner_gets_response(self):
@@ -172,7 +187,7 @@ class TestHandleChatMessage:
             from bot.agent import ChatResult
 
             mock_agent.chat = AsyncMock(return_value=ChatResult(text="Всё хорошо"))
-            await handle_chat_message(update, None)
+            await handle_chat_message(update, self._make_context())
 
         update.message.reply_text.assert_called()
         first_call = update.message.reply_text.call_args_list[0]
@@ -186,7 +201,7 @@ class TestHandleChatMessage:
         update = self._make_update("99999", "Как дела?")
 
         with patch("bot.decorator.User.get_by_chat_id", new=AsyncMock(return_value=None)):
-            await handle_chat_message(update, None)
+            await handle_chat_message(update, self._make_context())
 
         # The decorator replies with "Нет доступа."
         update.message.reply_text.assert_called_once_with("Нет доступа.")
@@ -208,7 +223,7 @@ class TestHandleChatMessage:
             from bot.agent import ChatResult
 
             mock_agent.chat = AsyncMock(return_value=ChatResult(text="*ответ*"))
-            await handle_chat_message(update, None)
+            await handle_chat_message(update, self._make_context())
 
         assert update.message.reply_text.call_count == 2
         # Second call — plain text (no parse_mode)
@@ -228,7 +243,7 @@ class TestHandleChatMessage:
             patch("bot.main.agent") as mock_agent,
         ):
             mock_agent.chat = AsyncMock(side_effect=RuntimeError("API down"))
-            await handle_chat_message(update, None)
+            await handle_chat_message(update, self._make_context())
 
         update.message.reply_text.assert_called_with("Ошибка при обработке. Попробуй ещё раз.")
 

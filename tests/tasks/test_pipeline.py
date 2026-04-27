@@ -32,6 +32,10 @@ def _make_user(*, id: int = 1, chat_id: str = "111", athlete_id: str = "i001"):
     user.is_silent = False
     user.role = "athlete"
     user.is_active = True
+    # UserDTO requires concrete values (not MagicMock auto-attrs) for these
+    # nullable / typed fields under pydantic from_attributes mode.
+    user.avatar_url = None
+    user.bot_chat_initialized = True
     return user
 
 
@@ -54,6 +58,22 @@ def _make_dto(*, id: int = 9001, dt: date = date(2026, 4, 5), name: str = "Z2 Ru
 class TestSchedulerDispatch:
     """scheduler_scheduled_workouts fetches users and dispatches dramatiq messages."""
 
+    @staticmethod
+    def _patch_legacy_athletes(users):
+        """Patch the @with_legacy_athletes decorator's DB query to return ``users``.
+
+        ``with_legacy_athletes`` does its own ``select(User)`` against
+        ``get_session`` (NOT ``User.get_active_athletes``), so we mock the
+        session-execute-scalars chain.
+        """
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = users
+        session.execute = AsyncMock(return_value=result)
+        return patch("bot.decorator.get_session", return_value=session)
+
     @pytest.mark.asyncio
     async def test_dispatches_group_for_active_users(self):
         """Should create a dramatiq group with one message per active user."""
@@ -62,7 +82,7 @@ class TestSchedulerDispatch:
         mock_group_instance = MagicMock()
 
         with (
-            patch("bot.decorator.User.get_active_athletes", new=AsyncMock(return_value=users)),
+            self._patch_legacy_athletes(users),
             patch("bot.scheduler.group", return_value=mock_group_instance) as mock_group_cls,
         ):
             from bot.scheduler import scheduler_scheduled_workouts
@@ -81,7 +101,7 @@ class TestSchedulerDispatch:
         mock_group_instance = MagicMock()
 
         with (
-            patch("bot.decorator.User.get_active_athletes", new=AsyncMock(return_value=[])),
+            self._patch_legacy_athletes([]),
             patch("bot.scheduler.group", return_value=mock_group_instance) as mock_group_cls,
         ):
             from bot.scheduler import scheduler_scheduled_workouts

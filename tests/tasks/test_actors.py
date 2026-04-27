@@ -95,6 +95,29 @@ class TestProcessFitFileMixedTimestamps:
         assert rr_ms == []
         log_mock.warning.assert_called_once()
 
+    def test_int_start_and_int_record_aborts_with_partial_records(self):
+        """PR #278 review: if BOTH values are int, ``int - int`` returns int and
+        ``.total_seconds()`` raises AttributeError — pre-fix this bypassed the
+        FitParseError partial-data handler. Post-fix: we type-check up front so
+        the int+int case takes the same partial-data branch as int-after-datetime.
+        """
+        from tasks.actors.activities import _actor_process_fit_file
+
+        bad_a = self._msg("record", [self._field("timestamp", 100)])
+        bad_b = self._msg("record", [self._field("timestamp", 200)])
+
+        fake_fit = MagicMock()
+        fake_fit.get_messages.return_value = iter([bad_a, bad_b])
+
+        with patch("tasks.actors.activities.FitFile", return_value=fake_fit):
+            with patch("tasks.actors.activities.logger") as log_mock:
+                rr_ms, records, parse_aborted = _actor_process_fit_file("/tmp/fake.fit")
+
+        assert parse_aborted is True
+        assert records == []  # bailed before either record could be appended
+        assert rr_ms == []
+        log_mock.warning.assert_called_once()
+
     def test_unrelated_typeerror_in_loop_is_not_swallowed(self):
         """A TypeError outside the timestamp subtraction must surface — guards the narrow catch."""
         from tasks.actors.activities import _actor_process_fit_file
