@@ -54,6 +54,64 @@ class TestBrokerConfig:
         assert callable(actors_mod.actor_echo.send)
 
 
+class TestProcessFitFileMixedTimestamps:
+    """Issue #276: fitparse occasionally emits an int ``record.timestamp`` mid-file
+    after a ``datetime`` start_ts is captured. The subtraction raises TypeError;
+    we re-raise as FitParseError so the existing partial-data handler catches it
+    instead of swallowing every TypeError in the surrounding loop.
+    """
+
+    def _msg(self, name, fields):
+        msg = MagicMock()
+        msg.name = name
+        msg.fields = fields
+        return msg
+
+    def _field(self, name, value):
+        f = MagicMock()
+        f.name = name
+        f.value = value
+        return f
+
+    def test_int_timestamp_after_datetime_aborts_with_partial_records(self):
+        """Mixed int/datetime timestamps stop the loop, keep prior records, set parse_aborted."""
+        from datetime import datetime
+
+        from tasks.actors.activities import _actor_process_fit_file
+
+        good = self._msg("record", [self._field("timestamp", datetime(2026, 4, 27, 10, 0, 0))])
+        bad = self._msg("record", [self._field("timestamp", 12345)])
+
+        fake_fit = MagicMock()
+        fake_fit.get_messages.return_value = iter([good, bad])
+
+        with patch("tasks.actors.activities.FitFile", return_value=fake_fit):
+            with patch("tasks.actors.activities.logger") as log_mock:
+                rr_ms, records, parse_aborted = _actor_process_fit_file("/tmp/fake.fit")
+
+        assert parse_aborted is True
+        assert len(records) == 1
+        assert records[0]["timestamp_s"] == 0.0
+        assert rr_ms == []
+        log_mock.warning.assert_called_once()
+
+    def test_unrelated_typeerror_in_loop_is_not_swallowed(self):
+        """A TypeError outside the timestamp subtraction must surface — guards the narrow catch."""
+        from tasks.actors.activities import _actor_process_fit_file
+
+        # A non-iterable, non-comparable value sneaks into ``hrv.time`` — the comparison
+        # ``v < 60.0`` raises TypeError. Pre-fix, the broad ``except (FitParseError, TypeError)``
+        # would mask this; post-fix, it bubbles up.
+        bad_hrv = self._msg("hrv", [self._field("time", object())])
+
+        fake_fit = MagicMock()
+        fake_fit.get_messages.return_value = iter([bad_hrv])
+
+        with patch("tasks.actors.activities.FitFile", return_value=fake_fit):
+            with pytest.raises(TypeError):
+                _actor_process_fit_file("/tmp/fake.fit")
+
+
 class TestPostProcessFitFileCap:
     """Defensive cap on RR-stream length in `_actor_post_process_fit_file`.
 

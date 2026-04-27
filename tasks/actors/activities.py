@@ -182,7 +182,15 @@ def _actor_process_fit_file(prev: str | None):
                     if field.name == "timestamp" and field.value is not None:
                         if start_ts is None:
                             start_ts = field.value
-                        rec["timestamp_s"] = (field.value - start_ts).total_seconds()
+                        try:
+                            rec["timestamp_s"] = (field.value - start_ts).total_seconds()
+                        except TypeError as ts_err:
+                            # fitparse occasionally emits an ``int`` timestamp mid-file
+                            # after a ``datetime`` start_ts was captured (issue #276) —
+                            # same class of "bad third-party data" as FitParseError, so
+                            # surface it through the same partial-data handler instead
+                            # of swallowing every TypeError in the surrounding loop.
+                            raise FitParseError(f"mixed int/datetime timestamps in {prev}") from ts_err
                     elif field.name == "heart_rate":
                         rec["heart_rate"] = field.value
                     elif field.name == "power":
@@ -191,11 +199,7 @@ def _actor_process_fit_file(prev: str | None):
                         rec["speed"] = field.value
                 if "timestamp_s" in rec:
                     records.append(rec)
-    except (FitParseError, TypeError) as e:
-        # ``TypeError`` covers mixed int/datetime ``record.timestamp`` values
-        # that fitparse occasionally emits on malformed FIT files (issue
-        # #276) — same class of "bad third-party data, not a code defect"
-        # as ``FitParseError``, so it gets the same partial-data handling.
+    except FitParseError as e:
         parse_aborted = True
         # Log locally only — bad dev_data fields are common in Wahoo /
         # third-party-field Garmin exports and aren't a code defect. We

@@ -54,7 +54,12 @@ class RampTrainingSuggestion:
         return False
 
     def plan_ramp(self, sport: str | None = None, dt: date | None = None) -> str:
-        """Create and push a ramp test workout. Returns status message."""
+        """Create and push a ramp test workout. Returns status message.
+
+        Calls @dual ORM methods (User.get_threshold_freshness, AiWorkout.get_upcoming) —
+        from an async context wrap with ``asyncio.to_thread`` so @dual dispatches to
+        the sync branch (issue #277).
+        """
         if sport is None:
             sport = self.suggested_sport or "Run"
 

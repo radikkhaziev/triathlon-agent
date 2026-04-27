@@ -571,7 +571,8 @@ class ActivityDetail(Base):
         # For Run: use GAP (grade-adjusted pace) to normalize terrain effects.
         if not row.efficiency_factor:
             speed = row.gap if row.gap and row.gap > 0 else row.pace
-            # avg_hr lives on Activity, not in _DETAIL_FIELD_MAP — coerce defensively.
+            # average_heartrate isn't in _DETAIL_FIELD_MAP (it lives on Activity, not
+            # ActivityDetail), so it bypasses the map's coercion — coerce defensively here.
             avg_hr = _coerce_float(detail_json.get("average_heartrate") or detail_json.get("average_hr"))
             if speed and speed > 0 and avg_hr and avg_hr > 0:
                 row.efficiency_factor = round((speed * 60) / avg_hr, 6)
