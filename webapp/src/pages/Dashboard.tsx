@@ -376,8 +376,11 @@ function formatKm(meters: number): string {
 function formatWeekRange(weekStart: string, weekEnd: string): string {
   const start = new Date(weekStart + 'T00:00:00')
   const end = new Date(weekEnd + 'T00:00:00')
+  // `undefined` = browser/runtime default locale. Respects the user's system
+  // language instead of forcing en-US on Russian users (whose app is otherwise
+  // localised via i18next).
   const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-  return `${start.toLocaleDateString('en-US', opts)} – ${end.toLocaleDateString('en-US', opts)}`
+  return `${start.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}`
 }
 
 function tsbZone(tsb: number): { label: string; color: string } {
@@ -497,8 +500,12 @@ function WeekTab() {
   // clamp athletes with >1y of history would see has_prev=true at the cap and
   // the next click would 422. ``canNext`` is bound to offset directly — once
   // the freshest visible week is the current week (offset 0), Later locks.
-  const canPrev = recap.has_prev && offset > -52
-  const canNext = offset < 0
+  // While a fetch is in-flight we keep the previous window visible (no
+  // spinner-flash) but lock both buttons — otherwise a double-click could
+  // bump offset twice and `canPrev` (derived from the now-stale recap) would
+  // briefly disagree with the new offset.
+  const canPrev = recap.has_prev && offset > -52 && !loading
+  const canNext = offset < 0 && !loading
   const range = recap.weeks.length > 0
     ? formatWeekRange(recap.weeks[recap.weeks.length - 1].week_start, recap.weeks[0].week_end)
     : null
@@ -513,7 +520,7 @@ function WeekTab() {
         >
           ← Earlier
         </button>
-        <span className="text-[12px] text-text-dim">{range}</span>
+        <span className="text-[12px] text-text-dim">{loading ? '…' : range}</span>
         <button
           onClick={() => canNext && setOffset(o => o + 4)}
           disabled={!canNext}
