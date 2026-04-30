@@ -240,7 +240,7 @@ function ProgressBar({
   const fill = pct === null ? 0 : Math.min(100, Math.max(0, pct))
   return (
     <div className="flex items-center gap-2 mb-2">
-      <span className="w-[60px] text-[13px] font-semibold">{label}</span>
+      <span className="w-[72px] text-[13px] font-semibold">{label}</span>
       <div className="flex-1 h-2.5 bg-bg rounded-full overflow-hidden">
         <div
           className="h-full rounded-full transition-[width] duration-500"

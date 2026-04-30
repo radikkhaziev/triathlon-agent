@@ -43,8 +43,9 @@ async def training_load(
     """CTL/ATL/TSB time series from the user's wellness rows.
 
     Per-sport CTL keys (``ctl_swim`` / ``ctl_ride`` / ``ctl_run``) are
-    intentionally omitted here — GoalTab consumes them and is wired up in
-    [END-12].
+    intentionally omitted: GoalTab takes the latest snapshot from
+    ``wellness.sport_info``, not a time series — re-add only if a future
+    tab needs the 84d trend.
     """
     today = _today_local()
     start = today - timedelta(days=days - 1)
@@ -137,9 +138,11 @@ async def goal(user: User = Depends(require_viewer)) -> dict:
         return {"has_goal": False}
 
     today = _today_local()
-    days_remaining = (g.event_date - today).days
-    # Round toward zero so the day-of-event reads "0 weeks" rather than
-    # rounding up to "1 week to go" the morning of.
+    # Clamp both to 0 if the athlete forgot to deactivate a past goal — a
+    # negative "days_remaining" in the JSON is misleading. Floor-divide
+    # before clamping so day-of-event reads "0 weeks" instead of rounding
+    # up to "1 week to go" the morning of.
+    days_remaining = max(0, (g.event_date - today).days)
     weeks_remaining = max(0, days_remaining // 7)
 
     async with get_session() as session:

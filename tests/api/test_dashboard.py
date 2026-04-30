@@ -513,6 +513,19 @@ class TestGoal:
         assert data["weeks_remaining"] == 0
         assert data["days_remaining"] == 0
 
+    async def test_past_race_clamps_to_zero(self, client):
+        """Athlete forgot to deactivate a past goal — both counters clamp to 0
+        rather than returning a negative `days_remaining` in the JSON."""
+        await _seed_goal(1, event_date=_FIXED_TODAY - timedelta(days=10), ctl_target=80.0)
+        await _seed_wellness(1, _FIXED_TODAY, ctl=70.0, atl=55.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["weeks_remaining"] == 0
+        assert data["days_remaining"] == 0
+
     async def test_no_wellness_yet(self, client):
         """Brand-new athlete with a goal but no wellness rows yet renders an
         empty bar instead of crashing the endpoint."""
