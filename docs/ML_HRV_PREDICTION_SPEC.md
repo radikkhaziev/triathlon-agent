@@ -497,7 +497,7 @@ CREATE TABLE hrv_predictions (
 
 1. `python -m cli train-hrv-model 1`.
 2. `python -c "from ml.predict import predict_with_shap; print(predict_with_shap(1, '2026-04-20'))"` → руками проверяем top-5.
-3. Дождаться авто-генерации morning report (либо вручную: `actor_compose_user_morning_report.send(user=...)` через `python -m cli shell`) → проверяем что SHAP-блок появился.
+3. Дождаться авто-генерации morning report (либо вручную через `python -m cli shell`: `actor_compose_user_morning_report.send(user={"id": 1})`) → проверяем, что SHAP-блок появился именно в полученном Telegram morning report за дату `2026-04-20`.
 4. Неделю ждём → смотрим retrain actor в logs.
 
 ---
