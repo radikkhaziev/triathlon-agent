@@ -1,9 +1,10 @@
 """Dashboard API routes — real per-user data for the Mini App Dashboard.
 
 These handlers replace the seeded mocks in ``api/dashboard_routes.py`` for the
-**Load** tab. They are mounted *before* the mock router in ``api/server.py`` so
-FastAPI's first-match-wins routing picks the real handlers; the mock module
-keeps serving Goal/Week tabs until [END-12] / [END-13] cut over.
+**Load** and **Goal** tabs. They are mounted *before* the mock router in
+``api/server.py`` so FastAPI's first-match-wins routing picks the real
+handlers; the mock module keeps serving the Week tab until [END-13] cuts
+over.
 """
 
 import zoneinfo
@@ -14,8 +15,8 @@ from sqlalchemy import select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import Activity, User, Wellness, get_session
-from data.utils import normalize_sport
+from data.db import Activity, AthleteGoal, User, Wellness, get_session
+from data.utils import extract_sport_ctl, normalize_sport
 
 router = APIRouter()
 
@@ -113,6 +114,82 @@ async def activities(
         out.append({"date": dt, "sport": sport, "tss": round(float(tss), 1)})
 
     return {"activities": out}
+
+
+@router.get("/api/goal")
+async def goal(user: User = Depends(require_viewer)) -> dict:
+    """Race goal progress for the Goal tab.
+
+    Returns ``{"has_goal": false}`` when the athlete has no active race —
+    the React Dashboard hides the Goal tab entirely in that case (per the
+    [END-12] scoping decision; we don't want to push users into a CTA they
+    didn't ask for, and the tab list is shorter and clearer with it gone).
+
+    When a goal exists, the response always includes the overall CTL bar
+    (``ctl_current`` / ``ctl_target`` / ``overall_pct``). Per-sport bars
+    are only included when ``per_sport_targets`` is set on the goal —
+    auto-splitting an overall target by canonical 70.3 ratios was rejected
+    because the per-sport mix varies too much between athletes to fake.
+    """
+    uid = get_data_user_id(user)
+    g = await AthleteGoal.get_goal_dto(uid)
+    if not g:
+        return {"has_goal": False}
+
+    today = _today_local()
+    days_remaining = (g.event_date - today).days
+    # Round toward zero so the day-of-event reads "0 weeks" rather than
+    # rounding up to "1 week to go" the morning of.
+    weeks_remaining = max(0, days_remaining // 7)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Wellness)
+            .where(Wellness.user_id == uid, Wellness.ctl.isnot(None))
+            .order_by(Wellness.date.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+
+    current_ctl = float(row.ctl) if row and row.ctl is not None else None
+    sport_ctl = extract_sport_ctl(row.sport_info) if row else {"swim": None, "ride": None, "run": None}
+    targets: dict = g.per_sport_targets or {}
+
+    overall_pct = (
+        round(current_ctl / g.ctl_target * 100)
+        if (current_ctl is not None and g.ctl_target)
+        else None
+    )
+
+    response: dict = {
+        "has_goal": True,
+        "event_name": g.event_name,
+        "event_date": str(g.event_date),
+        "weeks_remaining": weeks_remaining,
+        "days_remaining": days_remaining,
+        "ctl_current": round(current_ctl, 1) if current_ctl is not None else None,
+        "ctl_target": g.ctl_target,
+        "overall_pct": overall_pct,
+    }
+
+    # Per-sport bars: only emit sports that actually have a target. A sport
+    # with target=0 or missing is treated as "not part of this race plan"
+    # and dropped, not rendered as 0% (which would look like a regression).
+    per_sport: dict[str, dict] = {}
+    for sport in ("swim", "ride", "run"):
+        target = targets.get(sport)
+        if not target or target <= 0:
+            continue
+        cur = sport_ctl.get(sport)
+        per_sport[sport] = {
+            "ctl_current": round(cur, 1) if cur is not None else None,
+            "ctl_target": target,
+            "pct": round(cur / target * 100) if cur is not None else None,
+        }
+    if per_sport:
+        response["per_sport"] = per_sport
+
+    return response
 
 
 @router.get("/api/recovery-trend")

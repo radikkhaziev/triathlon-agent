@@ -5,13 +5,12 @@ import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { apiFetch } from '../api/client'
-import { CHART_COLORS } from '../lib/constants'
-import type { TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList, RecoveryTrendSeries } from '../api/types'
+import { CHART_COLORS, SPORT_ICONS } from '../lib/constants'
+import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList, RecoveryTrendSeries } from '../api/types'
 
 Chart.register(...registerables)
 
-const TABS = ['load', 'goal', 'week'] as const
-type TabKey = typeof TABS[number]
+type TabKey = 'load' | 'goal' | 'week'
 
 const TAB_LABELS: Record<TabKey, string> = {
   load: 'Load',
@@ -21,12 +20,29 @@ const TAB_LABELS: Record<TabKey, string> = {
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<TabKey>('load')
+  // null = still loading, true/false = known. We optimistically render all
+  // three tabs while loading so the common case (race set) doesn't flicker
+  // a missing tab in for a frame; if the athlete turns out to have no goal
+  // we drop the Goal tab and bounce them back to Load.
+  const [hasGoal, setHasGoal] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    apiFetch<AuthMeResponse>('/api/auth/me')
+      .then(data => setHasGoal(!!data.goal))
+      .catch(() => setHasGoal(null))
+  }, [])
+
+  useEffect(() => {
+    if (hasGoal === false && activeTab === 'goal') setActiveTab('load')
+  }, [hasGoal, activeTab])
+
+  const tabs: TabKey[] = hasGoal === false ? ['load', 'week'] : ['load', 'goal', 'week']
 
   return (
     <Layout maxWidth="480px">
       {/* Sticky Tabs */}
       <div className="flex gap-1 py-3 sticky top-0 bg-bg z-10">
-        {TABS.map(tab => (
+        {tabs.map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -195,63 +211,117 @@ function LoadTab() {
   )
 }
 
+// Sport key → display label + emoji + color. Reuses CHART_COLORS so the
+// Goal-tab bars match the Load-tab TSS chart, and SPORT_ICONS so the
+// vocabulary lines up with the bot (END-12 visuals decision).
+const SPORT_META: Record<'swim' | 'ride' | 'run', { label: string; emoji: string; color: string }> = {
+  swim: { label: 'Swim', emoji: SPORT_ICONS.Swim, color: CHART_COLORS.swim },
+  ride: { label: 'Ride', emoji: SPORT_ICONS.Ride, color: CHART_COLORS.ride },
+  run: { label: 'Run', emoji: SPORT_ICONS.Run, color: CHART_COLORS.run },
+}
+
+function ProgressBar({
+  label,
+  current,
+  target,
+  pct,
+  color,
+}: {
+  label: React.ReactNode
+  current: number | null
+  target: number | null
+  pct: number | null
+  color: string
+}) {
+  // Bar fill is clamped to 100% so an over-target athlete (pct > 100) doesn't
+  // overflow the row, but the numeric pct is shown as-is so they can see the
+  // overshoot. A null pct (no target or no current CTL) renders an empty bar
+  // and "—" instead of a misleading 0%.
+  const fill = pct === null ? 0 : Math.min(100, Math.max(0, pct))
+  return (
+    <div className="flex items-center gap-2 mb-2">
+      <span className="w-[60px] text-[13px] font-semibold">{label}</span>
+      <div className="flex-1 h-2.5 bg-bg rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-[width] duration-500"
+          style={{ width: `${fill}%`, background: color }}
+        />
+      </div>
+      <span className="w-12 text-[13px] text-right tabular-nums">
+        {pct === null ? '—' : `${pct}%`}
+      </span>
+      <span className="w-16 text-[11px] text-right text-text-dim tabular-nums">
+        {current === null ? '—' : current.toFixed(0)}
+        {target !== null ? ` / ${Math.round(target)}` : ''}
+      </span>
+    </div>
+  )
+}
+
 function GoalTab() {
-  const chartRef = useRef<HTMLCanvasElement>(null)
-  const chartInstRef = useRef<Chart | null>(null)
   const [goal, setGoal] = useState<GoalResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    Promise.all([
-      apiFetch<GoalResponse>('/api/goal'),
-      apiFetch<TrainingLoadSeries>('/api/training-load?days=84'),
-    ]).then(([goalData, loadData]) => {
-      setGoal(goalData)
-      if (chartRef.current && loadData.dates?.length) {
-        chartInstRef.current?.destroy()
-        const labels = loadData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-        chartInstRef.current = new Chart(chartRef.current, {
-          type: 'line',
-          data: {
-            labels,
-            datasets: [
-              { label: 'Swim CTL', data: loadData.ctl_swim || [], borderColor: CHART_COLORS.swim, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-              { label: 'Ride CTL', data: loadData.ctl_ride || [], borderColor: CHART_COLORS.ride, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-              { label: 'Run CTL', data: loadData.ctl_run || [], borderColor: CHART_COLORS.run, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-            ],
-          },
-          options: chartOptions('CTL by Sport'),
-        })
-      }
-    }).catch(err => setError(err instanceof Error ? err.message : 'Failed to load')).finally(() => setLoading(false))
-
-    return () => { chartInstRef.current?.destroy() }
+    apiFetch<GoalResponse>('/api/goal')
+      .then(setGoal)
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
+      .finally(() => setLoading(false))
   }, [])
 
   if (loading) return <LoadingSpinner />
   if (error) return <ErrorMessage message={error} />
-  if (!goal) return <div className="text-center py-6 text-text-dim">No goal data.</div>
+  // The Dashboard shell already hides the Goal tab when the athlete has no
+  // race, so we should never actually hit `has_goal: false` here. Keep a
+  // lightweight fallback in case the two fetches race (Dashboard reads
+  // /api/auth/me, GoalTab reads /api/goal — the goal could be deleted
+  // between the two).
+  if (!goal || !goal.has_goal) {
+    return <div className="text-center py-6 text-text-dim">No race set.</div>
+  }
 
   return (
     <>
       <div className="text-center py-4 text-xl font-bold">
         <span className="text-[var(--button)]">{goal.weeks_remaining}</span> weeks to {goal.event_name}
       </div>
-      {(['swim', 'bike', 'run'] as const).map(sport => {
-        const pct = goal[`${sport}_pct`]
-        const colors: Record<string, string> = { swim: '#3b82f6', bike: '#22c55e', run: '#f59e0b' }
-        return (
-          <div key={sport} className="flex items-center gap-2 mb-2">
-            <span className="w-[50px] text-[13px] font-semibold capitalize">{sport}</span>
-            <div className="flex-1 h-2.5 bg-bg rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.min(100, pct)}%`, background: colors[sport] }} />
-            </div>
-            <span className="w-10 text-[13px] text-right">{pct.toFixed(0)}%</span>
+
+      <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
+        <ProgressBar
+          label={<span>Overall CTL</span>}
+          current={goal.ctl_current}
+          target={goal.ctl_target}
+          pct={goal.overall_pct}
+          color={CHART_COLORS.ctl}
+        />
+
+        {goal.per_sport && (
+          <div className="mt-3 pt-3 border-t border-bg">
+            {(['swim', 'ride', 'run'] as const).map(sport => {
+              const block = goal.per_sport?.[sport]
+              if (!block) return null
+              const meta = SPORT_META[sport]
+              return (
+                <ProgressBar
+                  key={sport}
+                  label={<span>{meta.emoji} {meta.label}</span>}
+                  current={block.ctl_current}
+                  target={block.ctl_target}
+                  pct={block.pct}
+                  color={meta.color}
+                />
+              )
+            })}
           </div>
-        )
-      })}
-      <ChartContainer><canvas ref={chartRef} /></ChartContainer>
+        )}
+
+        {!goal.per_sport && goal.ctl_target && (
+          <div className="text-[11px] text-text-dim mt-3 pt-3 border-t border-bg">
+            Set per-sport CTL targets in Settings to see swim / ride / run progress.
+          </div>
+        )}
+      </div>
     </>
   )
 }
