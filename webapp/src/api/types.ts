@@ -359,14 +359,21 @@ export type GoalResponse =
       }
     }
 
-export interface WeeklySummary {
+export interface WeeklyRecapBucket {
   week_start: string
   week_end: string
   by_sport: Record<string, { duration_sec: number; distance_m: number; tss: number }>
+  ctl_start: number | null
+  ctl_end: number | null
+  ctl_delta: number | null
+  tsb_end: number | null
 }
 
-export interface ScheduledList {
-  workouts: { date: string; sport: string; workout_name: string; planned_tss: number }[]
+export interface WeeklyRecapResponse {
+  weeks: WeeklyRecapBucket[]
+  offset: number
+  today: string
+  has_prev: boolean
 }
 
 // Recovery Trend (Dashboard)

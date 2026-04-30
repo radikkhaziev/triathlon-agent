@@ -1,10 +1,9 @@
 """Dashboard API routes — real per-user data for the Mini App Dashboard.
 
 These handlers replace the seeded mocks in ``api/dashboard_routes.py`` for the
-**Load** and **Goal** tabs. They are mounted *before* the mock router in
-``api/server.py`` so FastAPI's first-match-wins routing picks the real
-handlers; the mock module keeps serving the Week tab until [END-13] cuts
-over.
+**Load**, **Goal**, and **Week** tabs. They are mounted *before* the mock
+router in ``api/server.py`` so FastAPI's first-match-wins routing picks the
+real handlers.
 """
 
 import zoneinfo
@@ -15,7 +14,7 @@ from sqlalchemy import select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import Activity, AthleteGoal, User, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
 from data.utils import extract_sport_ctl, normalize_sport
 
 router = APIRouter()
@@ -33,6 +32,21 @@ _SPORT_MAP = {
 
 def _today_local() -> date:
     return datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
+
+
+def _nearest_wellness(
+    wellness_by_date: dict[str, tuple[float | None, float | None]],
+    anchor: date,
+    *,
+    back_days: int,
+) -> tuple[float | None, float | None]:
+    """Return the most recent (ctl, atl) on/before anchor within back_days."""
+    for delta in range(back_days + 1):
+        key = (anchor - timedelta(days=delta)).isoformat()
+        row = wellness_by_date.get(key)
+        if row is not None and row[0] is not None and row[1] is not None:
+            return row
+    return None, None
 
 
 @router.get("/api/training-load")
@@ -115,6 +129,144 @@ async def activities(
         out.append({"date": dt, "sport": sport, "tss": round(float(tss), 1)})
 
     return {"activities": out}
+
+
+@router.get("/api/weekly-recap")
+async def weekly_recap(
+    weeks: int = Query(default=4, ge=1, le=12),
+    offset: int = Query(default=0, ge=-52, le=0),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Weekly training recap — N weeks of completed activity, freshest first.
+
+    The window's most-recent week is ``today + offset*7``'s Mon–Sun (offset is
+    non-positive: 0 = current week, -1 = week ending last Sunday, …). The
+    response carries ``weeks`` buckets ending at that week, plus a Wellness
+    snapshot at each week's bookends (CTL on the day before the week starts vs
+    CTL on the week's last day) so the frontend can render a compact load
+    card without a second round-trip. ``has_prev`` lets the UI hide the back
+    button when the user has scrolled to before their first activity.
+    """
+    today = _today_local()
+    anchor_monday = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
+    window_start = anchor_monday - timedelta(weeks=weeks - 1)
+    window_end = anchor_monday + timedelta(days=6)
+    # _nearest_wellness walks back up to 6 days from each bookend (covers
+    # bootstrap-day gaps), so the cache must reach 7 days before window_start
+    # for the oldest week's "entering CTL" to fall back correctly.
+    wellness_start = window_start - timedelta(days=7)
+
+    uid = get_data_user_id(user)
+    async with get_session() as session:
+        result = await session.execute(
+            select(
+                Activity.start_date_local,
+                Activity.type,
+                Activity.moving_time,
+                Activity.icu_training_load,
+                ActivityDetail.distance,
+            )
+            .outerjoin(ActivityDetail, ActivityDetail.activity_id == Activity.id)
+            .where(
+                Activity.user_id == uid,
+                Activity.start_date_local >= window_start.isoformat(),
+                Activity.start_date_local <= window_end.isoformat(),
+            )
+        )
+        rows = result.all()
+
+        wellness_result = await session.execute(
+            select(Wellness.date, Wellness.ctl, Wellness.atl)
+            .where(
+                Wellness.user_id == uid,
+                Wellness.date >= wellness_start.isoformat(),
+                Wellness.date <= window_end.isoformat(),
+            )
+        )
+        wellness_rows = wellness_result.all()
+
+        prev_result = await session.execute(
+            select(Activity.id)
+            .where(
+                Activity.user_id == uid,
+                Activity.start_date_local < window_start.isoformat(),
+            )
+            .limit(1)
+        )
+        has_prev = prev_result.first() is not None
+
+    # date string → (ctl, atl). Wellness rows can have NULL ctl/atl on bootstrap
+    # gaps; we keep them so the frontend can still render the row, just with
+    # "—" for the load card.
+    wellness_by_date: dict[str, tuple[float | None, float | None]] = {
+        d: (float(c) if c is not None else None, float(a) if a is not None else None)
+        for d, c, a in wellness_rows
+    }
+
+    # Pre-bucket activities by week index (0 = oldest, weeks-1 = newest).
+    buckets: list[dict[str, dict[str, float]]] = [{} for _ in range(weeks)]
+    for dt_str, raw_type, mt, tss, dist in rows:
+        sport = _SPORT_MAP.get(normalize_sport(raw_type) or "")
+        if not sport:
+            continue
+        try:
+            dt = date.fromisoformat(dt_str)
+        except (TypeError, ValueError):
+            continue
+        idx = (dt - window_start).days // 7
+        if idx < 0 or idx >= weeks:
+            continue
+        bucket = buckets[idx].setdefault(sport, {"duration_sec": 0.0, "distance_m": 0.0, "tss": 0.0})
+        if mt is not None:
+            bucket["duration_sec"] += float(mt)
+        if dist is not None:
+            bucket["distance_m"] += float(dist)
+        if tss is not None:
+            bucket["tss"] += float(tss)
+
+    weeks_out: list[dict] = []
+    for i in range(weeks):
+        wk_start = window_start + timedelta(weeks=i)
+        wk_end = wk_start + timedelta(days=6)
+        # CTL/ATL "entering" the week = day before week_start (Sunday of prior week).
+        # "Exiting" = day == week_end (Sunday). Walk back from each anchor up to
+        # 6 days to absorb missing wellness rows on the exact bookends — Intervals
+        # backfills wellness daily, but bootstrap can leave one-day gaps.
+        ctl_start, _ = _nearest_wellness(wellness_by_date, wk_start - timedelta(days=1), back_days=6)
+        ctl_end, atl_end = _nearest_wellness(wellness_by_date, wk_end, back_days=6)
+
+        by_sport = {}
+        for sport, totals in buckets[i].items():
+            by_sport[sport] = {
+                "duration_sec": int(totals["duration_sec"]),
+                "distance_m": round(totals["distance_m"], 1),
+                "tss": round(totals["tss"], 1),
+            }
+
+        ctl_delta = round(ctl_end - ctl_start, 1) if ctl_start is not None and ctl_end is not None else None
+        tsb_end = round(ctl_end - atl_end, 1) if ctl_end is not None and atl_end is not None else None
+
+        weeks_out.append(
+            {
+                "week_start": wk_start.isoformat(),
+                "week_end": wk_end.isoformat(),
+                "by_sport": by_sport,
+                "ctl_start": round(ctl_start, 1) if ctl_start is not None else None,
+                "ctl_end": round(ctl_end, 1) if ctl_end is not None else None,
+                "ctl_delta": ctl_delta,
+                "tsb_end": tsb_end,
+            }
+        )
+
+    # Newest first — matches the wake-comment ask ("видеть последние 4 недели").
+    weeks_out.reverse()
+
+    return {
+        "weeks": weeks_out,
+        "offset": offset,
+        "today": today.isoformat(),
+        "has_prev": has_prev,
+    }
 
 
 @router.get("/api/goal")

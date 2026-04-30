@@ -216,7 +216,7 @@ GET  /static/exercises/{id}.html        — generated exercise card HTML (Static
 GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles)
 ```
 
-**Dashboard API** (scaffold, mock data): `/api/dashboard`, `/api/training-load`, `/api/goal`, `/api/weekly-summary`, job trigger stubs.
+**Dashboard API** (scaffold, mock data): `/api/dashboard`, `/api/goal`, job trigger stubs. Real per-user: `/api/training-load`, `/api/activities`, `/api/recovery-trend`, `/api/weekly-recap`.
 
 **Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256, 15-min freshness) or `Bearer <jwt>`. Demo mode: `POST /api/auth/demo` with `DEMO_PASSWORD` → JWT with `purpose=demo` claim, resolved to owner's User with virtual `role="demo"` (read-only, mutation endpoints blocked via `require_athlete`). Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id, blocks demo), `require_owner`. `get_data_user_id(user)` always returns `user.id`. API DTOs centralized in `api/dto.py`.
 

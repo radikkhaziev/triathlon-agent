@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.deps import require_viewer
 from api.routers.dashboard import router as dashboard_router
-from data.db import Activity, AthleteGoal, User, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
 from data.intervals.dto import ActivityDTO
 
 
@@ -352,6 +352,7 @@ class TestRecoveryTrend:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # /api/goal
 # ---------------------------------------------------------------------------
 
@@ -551,3 +552,189 @@ class TestGoal:
 
         # User 1 has no goal of their own; user 2's must not leak through
         assert resp.json() == {"has_goal": False}
+
+# ---------------------------------------------------------------------------
+# /api/weekly-recap
+# ---------------------------------------------------------------------------
+
+
+# _FIXED_TODAY is a Thursday (weekday 3), so for offset=0:
+#   newest week (idx=3): Mon 2026-04-27 → Sun 2026-05-03  (current)
+#   week idx=2:          Mon 2026-04-20 → Sun 2026-04-26
+#   week idx=1:          Mon 2026-04-13 → Sun 2026-04-19
+#   oldest (idx=0):      Mon 2026-04-06 → Sun 2026-04-12
+_W_NEWEST_START = date(2026, 4, 27)
+_W_NEWEST_END = date(2026, 5, 3)
+_W_OLDEST_START = date(2026, 4, 6)
+
+
+async def _save_detail(activity_id: str, distance_m: float) -> None:
+    """Write an ActivityDetail row directly. ``ActivityDetail.save`` expects
+    an Intervals.icu detail blob; for tests we only need ``distance``, so we
+    persist the model directly."""
+    async with get_session() as session:
+        session.add(ActivityDetail(activity_id=activity_id, distance=distance_m))
+        await session.commit()
+
+
+class TestWeeklyRecap:
+    async def test_bucket_boundary_sunday_vs_monday(self, client):
+        """Activity exactly on Sunday lands in week N; the next Monday lands in N+1."""
+        # Sunday of week idx=2 → must end up in that week, not the newer one
+        await Activity.save_bulk(
+            1,
+            activities=[
+                _make_activity(aid="i_sun", dt=date(2026, 4, 26), sport="Run", tss=50.0),
+                _make_activity(aid="i_mon", dt=date(2026, 4, 27), sport="Run", tss=70.0),
+            ],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Response is freshest-first, so weeks[0] is the current week
+        assert data["weeks"][0]["week_start"] == _W_NEWEST_START.isoformat()
+        assert data["weeks"][0]["week_end"] == _W_NEWEST_END.isoformat()
+        # Monday activity in newest week
+        assert data["weeks"][0]["by_sport"]["running"]["tss"] == 70.0
+        # Sunday activity in week idx=2 (one week back)
+        assert data["weeks"][1]["by_sport"]["running"]["tss"] == 50.0
+
+    async def test_drops_unmappable_sports_from_by_sport(self, client):
+        """Yoga / hike never make it into by_sport — they aren't on _SPORT_MAP."""
+        await Activity.save_bulk(
+            1,
+            activities=[
+                _make_activity(aid="i_yoga", dt=_FIXED_TODAY, sport="Yoga", tss=10.0),
+                _make_activity(aid="i_hike", dt=_FIXED_TODAY, sport="Hike", tss=30.0),
+                _make_activity(aid="i_run", dt=_FIXED_TODAY, sport="Run", tss=55.0),
+            ],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        newest = resp.json()["weeks"][0]
+        assert set(newest["by_sport"].keys()) == {"running"}
+        assert newest["by_sport"]["running"]["tss"] == 55.0
+
+    async def test_empty_week_still_carries_ctl_bookends(self, client):
+        """A week with zero activities still emits a bucket and resolves CTL bookends."""
+        # Seed wellness on the bookend days only — every week's start/end has CTL/ATL.
+        # Note: _nearest_wellness anchors on (week_start - 1) for ctl_start, so
+        # we seed Sunday-of-prior-week as well.
+        for d in [
+            _W_OLDEST_START - timedelta(days=1),  # 2026-04-05 (anchor for oldest week's ctl_start)
+            date(2026, 4, 12),  # oldest week's last day
+            date(2026, 4, 19),
+            date(2026, 4, 26),
+            _W_NEWEST_END,  # 2026-05-03
+        ]:
+            await _seed_wellness(1, d, ctl=60.0, atl=50.0)
+
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        weeks = resp.json()["weeks"]
+        assert len(weeks) == 4
+        # Every bucket has bookends and an empty by_sport map
+        for w in weeks:
+            assert w["by_sport"] == {}
+            assert w["ctl_start"] == 60.0
+            assert w["ctl_end"] == 60.0
+            assert w["ctl_delta"] == 0.0
+            assert w["tsb_end"] == 10.0  # 60 - 50
+
+    async def test_ctl_back_walk_covers_bootstrap_gaps(self, client):
+        """When the exact bookend day is missing, _nearest_wellness walks back up
+        to 6 days. The pre-fetch must cover that whole window — regression test
+        for the CodeReviewer-flagged 1-day vs 7-day mismatch."""
+        # Anchor for oldest week's ctl_start is (window_start - 1) = 2026-04-05.
+        # Drop wellness rows 5 days BEFORE that anchor (2026-03-31). With the old
+        # (wellness_start = window_start - 1) bug those rows never landed in the
+        # cache and ctl_start would silently come back null.
+        await _seed_wellness(1, date(2026, 3, 31), ctl=42.0, atl=35.0)
+        # Plus an end-bookend anchor so ctl_end is not null and we can isolate
+        # the regression to ctl_start.
+        await _seed_wellness(1, _W_NEWEST_END, ctl=70.0, atl=55.0)
+
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        weeks = resp.json()["weeks"]
+        # Oldest week (last in the freshest-first list)
+        oldest = weeks[-1]
+        assert oldest["week_start"] == _W_OLDEST_START.isoformat()
+        # Without the back-walk widening this would be null.
+        assert oldest["ctl_start"] == 42.0
+
+    async def test_has_prev_true_when_older_activity_exists(self, client):
+        """has_prev must flip true if any activity sits strictly before window_start."""
+        await Activity.save_bulk(
+            1,
+            activities=[
+                _make_activity(aid="i_old", dt=_W_OLDEST_START - timedelta(days=1), sport="Run"),
+            ],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        assert resp.json()["has_prev"] is True
+
+    async def test_has_prev_false_when_no_older_activity(self, client):
+        """No activities anywhere → has_prev is false."""
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        assert resp.json()["has_prev"] is False
+
+    async def test_offset_minus_one_shifts_window_back(self, client):
+        """offset=-1 moves the freshest visible week to the previous Mon–Sun."""
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=-1")
+
+        weeks = resp.json()["weeks"]
+        # Freshest week is the prior Mon (2026-04-20) → Sun (2026-04-26)
+        assert weeks[0]["week_start"] == "2026-04-20"
+        assert weeks[0]["week_end"] == "2026-04-26"
+
+    async def test_distance_aggregates_from_activity_detail(self, client):
+        """Distance comes from the outer-joined ActivityDetail row; multiple
+        activities in the same week roll up to one bucket per sport."""
+        await Activity.save_bulk(
+            1,
+            activities=[
+                _make_activity(aid="i_d1", dt=_FIXED_TODAY, sport="Run", tss=40.0),
+                _make_activity(aid="i_d2", dt=_FIXED_TODAY - timedelta(days=1), sport="Run", tss=60.0),
+            ],
+        )
+        await _save_detail("i_d1", 5_000.0)
+        await _save_detail("i_d2", 7_500.0)
+
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        run = resp.json()["weeks"][0]["by_sport"]["running"]
+        assert run["distance_m"] == 12500.0
+        assert run["tss"] == 100.0
+        assert run["duration_sec"] == 7200  # 2 × 3600
+
+    async def test_per_user_scoping(self, client):
+        """Activities from another user must not leak into the recap."""
+        async with get_session() as session:
+            session.add(User(id=2, chat_id="other_user", role="athlete"))
+            await session.commit()
+        await Activity.save_bulk(
+            2,
+            activities=[_make_activity(aid="i_other", dt=_FIXED_TODAY, sport="Run", tss=99.0)],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
+
+        # User 1 has no activities; the response should be empty buckets
+        for w in resp.json()["weeks"]:
+            assert w["by_sport"] == {}
