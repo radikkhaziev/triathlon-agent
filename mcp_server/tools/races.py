@@ -2,12 +2,14 @@
 
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 import anthropic
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from config import settings
 from data.db import (
@@ -629,7 +631,7 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
             ),
             "items": {
                 "type": "object",
-                "required": ["leg"],
+                "required": ["leg", "pacing"],
                 "properties": {
                     "leg": {
                         "type": "string",
@@ -642,6 +644,7 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
                     "pacing": {
                         "type": "object",
                         "description": "Pacing corridor low/target/cap. Units appropriate to the leg (min/km, W, min/100m).",
+                        "required": ["low", "target", "cap"],
                         "properties": {
                             "low": {"type": "string"},
                             "target": {"type": "string"},
@@ -650,6 +653,8 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
                     },
                     "hr_ceiling_bpm": {
                         "type": "integer",
+                        "minimum": 80,
+                        "maximum": 220,
                         "description": "Maximum HR for this leg in bpm. Omit for transitions.",
                     },
                     "notes": {
@@ -665,6 +670,8 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
             "properties": {
                 "carbs_g_per_hour": {
                     "type": "integer",
+                    "minimum": 30,
+                    "maximum": 120,
                     "description": "Target carb intake g/hr. Conservative band 60-90 unless gut-trained.",
                 },
                 "fluid_ml_per_hour": {"type": "integer"},
@@ -799,9 +806,73 @@ def _summarize_zones(settings_rows: list[AthleteSettings]) -> dict[str, Any]:
     return out
 
 
+# Pace string forms we'll attempt to parse for corridor sanity checks. Anything
+# we can't parse cleanly is *skipped* (validator stays defensive — false rejects
+# break a plan that's otherwise fine).
+_PACE_RE = re.compile(r"^\s*(\d+):(\d{2})\s*/\s*(km|100m|mi)\s*$", re.IGNORECASE)
+_POWER_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*w\s*$", re.IGNORECASE)
+
+
+def _parse_corridor_value(s: Any) -> tuple[float, str] | None:
+    """Parse a pacing-corridor entry to (effort, unit_kind).
+
+    ``effort`` is normalized so larger == harder (we negate pace seconds; we
+    leave power as-is). ``unit_kind`` lets us reject mixed-unit corridors.
+    Returns ``None`` for unparseable input — caller skips the ordering check.
+    """
+    if not isinstance(s, str):
+        return None
+    pace = _PACE_RE.match(s)
+    if pace:
+        secs = int(pace.group(1)) * 60 + int(pace.group(2))
+        return (-float(secs), f"pace_{pace.group(3).lower()}")
+    power = _POWER_RE.match(s)
+    if power:
+        return (float(power.group(1).replace(",", ".")), "power")
+    return None
+
+
+def _validate_race_plan(plan: dict[str, Any], *, athlete_max_hr: int | None) -> list[str]:
+    """Defensive post-generation checks the JSON schema can't enforce.
+
+    Returns a list of human-readable error strings (empty == valid). Used to
+    refuse persistence when the model produced a structurally valid but
+    physiologically nonsensical plan (e.g. cap < target < low for a pace
+    corridor, HR ceiling above the athlete's documented max).
+    """
+    errors: list[str] = []
+
+    legs = plan.get("legs") or []
+    for idx, leg in enumerate(legs):
+        leg_name = leg.get("leg") or f"#{idx}"
+
+        # Corridor ordering: low < target < cap in effort space.
+        pacing = leg.get("pacing") or {}
+        parsed = [_parse_corridor_value(pacing.get(k)) for k in ("low", "target", "cap")]
+        if all(p is not None for p in parsed):
+            units = {u for _, u in parsed}  # type: ignore[misc]
+            if len(units) == 1:
+                vals = [v for v, _ in parsed]  # type: ignore[misc]
+                if not (vals[0] < vals[1] < vals[2]):
+                    errors.append(f"leg {leg_name}: corridor not low<target<cap")
+
+        # HR ceiling sanity vs athlete max.
+        hr = leg.get("hr_ceiling_bpm")
+        if isinstance(hr, int) and athlete_max_hr is not None and hr > athlete_max_hr + 5:
+            errors.append(f"leg {leg_name}: hr_ceiling_bpm {hr} exceeds athlete max+5 ({athlete_max_hr + 5})")
+
+    return errors
+
+
+def _athlete_max_hr(zones_rows: list[AthleteSettings]) -> int | None:
+    """Highest documented max_hr across the athlete's per-sport zone rows."""
+    candidates = [s.max_hr for s in zones_rows if getattr(s, "max_hr", None)]
+    return max(candidates) if candidates else None
+
+
 @mcp.tool()
 @sentry_tool
-async def generate_race_plan(race_id: int | None = None, dry_run: bool = False) -> dict:
+async def generate_race_plan(goal_id: int | None = None, dry_run: bool = False) -> dict:
     """Generate a structured race-execution plan for an upcoming A-race.
 
     Reads the athlete's RACE_A goal (or a specific goal by id), the last 6
@@ -820,20 +891,20 @@ async def generate_race_plan(race_id: int | None = None, dry_run: bool = False) 
     closer to race day.
 
     Parameters:
-      race_id: athlete_goals.id — usually omitted; defaults to RACE_A.
-        (Spelled ``race_id`` to match the issue spec; this is the goal id
-        since the pre-race target lives in athlete_goals, not the post-race
-        ``races`` table.)
+      goal_id: athlete_goals.id — usually omitted; defaults to RACE_A.
+        (The pre-race target lives in athlete_goals, not the post-race
+        ``races`` table; the issue spec called this ``race_id`` but the row
+        is genuinely a goal id.)
       dry_run: True → return the generated payload only, do NOT persist.
     """
     user_id = get_current_user_id()
 
     # ---------- 1. Resolve goal ----------
-    if race_id is not None:
+    if goal_id is not None:
         async with get_session() as session:
-            goal = await session.get(AthleteGoal, race_id)
+            goal = await session.get(AthleteGoal, goal_id)
         if goal is None or goal.user_id != user_id:
-            return {"error": f"Goal {race_id} not found for this athlete."}
+            return {"error": f"Goal {goal_id} not found for this athlete."}
     else:
         goal = await AthleteGoal.get_by_category(user_id, "RACE_A")
         if goal is None:
@@ -842,6 +913,22 @@ async def generate_race_plan(race_id: int | None = None, dry_run: bool = False) 
                     "No active RACE_A goal — set one with /race or suggest_race "
                     "before generating a race plan."
                 )
+            }
+
+    # Idempotency pre-check: at most one plan per (goal_id, UTC day). Skip the
+    # Claude call entirely if today's row exists and we'd just hit the partial
+    # unique index. Saves an API call (and dollar-sense). Bypass for dry_run —
+    # callers may want to preview a regenerated plan without persisting.
+    if not dry_run:
+        existing_today = await RacePlan.get_today_for_goal(goal.id, user_id=user_id)
+        if existing_today is not None:
+            return {
+                "id": existing_today.id,
+                "dry_run": False,
+                "preliminary": (existing_today.payload or {}).get("preliminary", False),
+                "model_version": existing_today.model_version,
+                "payload": existing_today.payload,
+                "note": "Plan already generated today — returning the existing row.",
             }
 
     today = date.today()
@@ -969,9 +1056,9 @@ async def generate_race_plan(race_id: int | None = None, dry_run: bool = False) 
             tool_choice={"type": "tool", "name": "submit_race_plan"},
             messages=[{"role": "user", "content": user_message}],
         )
-    except Exception as e:
+    except Exception:
         logger.exception("generate_race_plan: Claude call failed for user %d", user_id)
-        return {"error": f"Plan generation failed: {e}"}
+        return {"error": "Plan generation failed — please retry."}
 
     plan_input: dict[str, Any] | None = None
     for block in resp.content:
@@ -982,6 +1069,19 @@ async def generate_race_plan(race_id: int | None = None, dry_run: bool = False) 
     if not plan_input:
         logger.warning("generate_race_plan: model did not call submit_race_plan, stop_reason=%s", resp.stop_reason)
         return {"error": "Model did not return a structured plan. Try again."}
+
+    # Defensive post-generation pass — schema can't enforce per-athlete HR or
+    # corridor monotonicity. Refuse persistence on validation failure so we
+    # don't ship a nonsensical plan to the athlete.
+    validation_errors = _validate_race_plan(plan_input, athlete_max_hr=_athlete_max_hr(zones_rows))
+    if validation_errors:
+        logger.warning(
+            "generate_race_plan: validation rejected plan for user %d, goal %d: %s",
+            user_id,
+            goal.id,
+            "; ".join(validation_errors),
+        )
+        return {"error": "Generated plan failed validation — please retry."}
 
     payload: dict[str, Any] = {
         "plan": plan_input,
@@ -1008,11 +1108,12 @@ async def generate_race_plan(race_id: int | None = None, dry_run: bool = False) 
             model_version=RACE_PLAN_MODEL_VERSION,
             payload=payload,
         )
-    except Exception as e:
-        # Most likely a unique-violation on (goal_id, day) — return today's
-        # row instead of erroring, so callers get the same idempotent shape.
-        logger.warning("generate_race_plan: save failed (%s) — falling back to today's row", e)
-        existing = await RacePlan.get_today_for_goal(goal.id)
+    except IntegrityError:
+        # Unique-violation on (goal_id, day): a parallel call beat us between
+        # the pre-check and the insert. Return today's row so callers get the
+        # same idempotent shape.
+        logger.info("generate_race_plan: race condition on uq_race_plans_goal_day — using existing row")
+        existing = await RacePlan.get_today_for_goal(goal.id, user_id=user_id)
         if existing is not None:
             return {
                 "id": existing.id,
@@ -1022,7 +1123,7 @@ async def generate_race_plan(race_id: int | None = None, dry_run: bool = False) 
                 "payload": existing.payload,
                 "note": "Plan already generated today — returning the existing row.",
             }
-        return {"error": f"Plan persistence failed: {e}"}
+        return {"error": "Plan persistence failed — please retry."}
 
     return {
         "id": row.id,

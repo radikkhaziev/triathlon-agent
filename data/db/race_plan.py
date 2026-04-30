@@ -73,26 +73,37 @@ class RacePlan(Base):
 
     @classmethod
     @dual
-    def get_latest_for_race(cls, goal_id: int, *, session: Session) -> RacePlan | None:
-        """Return the most recent plan for a goal (highest generated_at)."""
+    def get_latest_for_race(cls, goal_id: int, *, user_id: int, session: Session) -> RacePlan | None:
+        """Return the most recent plan for a goal (highest generated_at).
+
+        Scoped to ``user_id`` as defense-in-depth — callers already vet
+        ownership of ``goal_id``, but a leaked id would otherwise cross-tenant
+        read here. Mirrors the pattern in
+        ``data/db/athlete.py:362-407`` (``deactivate_by_id`` / ``set_ctl_target``).
+        """
         result = session.execute(
-            select(cls).where(cls.goal_id == goal_id).order_by(cls.generated_at.desc()).limit(1)
+            select(cls)
+            .where(cls.goal_id == goal_id, cls.user_id == user_id)
+            .order_by(cls.generated_at.desc())
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
     @classmethod
     @dual
-    def get_today_for_goal(cls, goal_id: int, *, session: Session) -> RacePlan | None:
+    def get_today_for_goal(cls, goal_id: int, *, user_id: int, session: Session) -> RacePlan | None:
         """Return today's plan (UTC day) for a goal, or None.
 
         Mirrors the partial unique index ``uq_race_plans_goal_day`` so callers
-        can skip a fresh generation when one already exists for today.
+        can skip a fresh generation when one already exists for today. Scoped
+        to ``user_id`` as defense-in-depth.
         """
         today = datetime.now(timezone.utc).date()
         result = session.execute(
             select(cls)
             .where(
                 cls.goal_id == goal_id,
+                cls.user_id == user_id,
                 cls.generated_at >= datetime(today.year, today.month, today.day, tzinfo=timezone.utc),
             )
             .order_by(cls.generated_at.desc())
