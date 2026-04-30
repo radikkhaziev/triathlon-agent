@@ -6,7 +6,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
-import type { TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList, RecoveryTrendSeries } from '../api/types'
+import type { TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
 
 Chart.register(...registerables)
 
@@ -256,84 +256,188 @@ function GoalTab() {
   )
 }
 
+// Sport buckets are keyed by the backend's normalized name (swimming / cycling
+// / running — what _SPORT_MAP in api/routers/dashboard.py emits). Anything else
+// is dropped server-side, so we don't need a fallback row in the UI.
+const WEEK_SPORT_META: Record<string, { label: string; emoji: string }> = {
+  swimming: { label: 'Swim', emoji: '🏊' },
+  cycling: { label: 'Ride', emoji: '🚴' },
+  running: { label: 'Run', emoji: '🏃' },
+}
+const WEEK_SPORT_ORDER = ['swimming', 'cycling', 'running']
+
+function formatHm(seconds: number): string {
+  if (seconds <= 0) return '—'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.round((seconds % 3600) / 60)
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}h ${m}m`
+}
+
+// Garmin-style: meters → km. Sub-1km still shows in metres so 800m doesn't
+// round to "0.8 km" and lose readability for short swim sessions. Above 100km
+// we drop the decimal — the extra digit is noise at that scale.
+function formatKm(meters: number): string {
+  if (meters <= 0) return '—'
+  if (meters < 1000) return `${Math.round(meters)} m`
+  const km = meters / 1000
+  return km >= 100 ? `${km.toFixed(0)} km` : `${km.toFixed(1)} km`
+}
+
+function formatWeekRange(weekStart: string, weekEnd: string): string {
+  const start = new Date(weekStart + 'T00:00:00')
+  const end = new Date(weekEnd + 'T00:00:00')
+  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
+  return `${start.toLocaleDateString('en-US', opts)} – ${end.toLocaleDateString('en-US', opts)}`
+}
+
+function tsbZone(tsb: number): { label: string; color: string } {
+  if (tsb > 10) return { label: 'Under', color: '#3b82f6' }
+  if (tsb >= -10) return { label: 'Optimal', color: '#22c55e' }
+  if (tsb >= -25) return { label: 'Productive', color: '#f59e0b' }
+  return { label: 'Risk', color: '#ef4444' }
+}
+
+function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
+  const { ctl_start, ctl_end, ctl_delta, tsb_end } = week
+  // Bootstrap or pre-Intervals weeks have no wellness rows at the bookends —
+  // render nothing rather than a row of em-dashes.
+  if (ctl_start === null && ctl_end === null) return null
+
+  const deltaStr =
+    ctl_delta === null ? '' : ctl_delta > 0 ? `+${ctl_delta.toFixed(1)}` : ctl_delta.toFixed(1)
+  const deltaColor =
+    ctl_delta === null
+      ? 'var(--text-dim)'
+      : ctl_delta > 0.5
+        ? '#22c55e'
+        : ctl_delta < -0.5
+          ? '#ef4444'
+          : 'var(--text-dim)'
+  const zone = tsb_end !== null ? tsbZone(tsb_end) : null
+  const tsbStr = tsb_end === null ? '—' : tsb_end > 0 ? `+${tsb_end.toFixed(0)}` : tsb_end.toFixed(0)
+
+  return (
+    <div className="flex justify-between items-center text-[12px] text-text-dim mt-1.5">
+      <span>
+        CTL{' '}
+        <span className="font-mono text-text">
+          {ctl_start !== null ? ctl_start.toFixed(0) : '—'}
+          {' → '}
+          {ctl_end !== null ? ctl_end.toFixed(0) : '—'}
+        </span>{' '}
+        {ctl_delta !== null && (
+          <span className="font-mono font-semibold" style={{ color: deltaColor }}>
+            ({deltaStr})
+          </span>
+        )}
+      </span>
+      {zone && (
+        <span className="flex items-center gap-1.5">
+          <span className="font-mono" style={{ color: zone.color }}>TSB {tsbStr}</span>
+          <span
+            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
+            style={{ background: zone.color }}
+          >
+            {zone.label}
+          </span>
+        </span>
+      )}
+    </div>
+  )
+}
+
+function WeekCard({ week, isCurrent }: { week: WeeklyRecapBucket; isCurrent: boolean }) {
+  const sports = WEEK_SPORT_ORDER.filter(s => week.by_sport[s])
+  const totalTss = sports.reduce((a, s) => a + (week.by_sport[s]?.tss || 0), 0)
+
+  return (
+    <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
+      <div className="flex justify-between items-baseline mb-1">
+        <div className="text-sm font-bold">
+          {formatWeekRange(week.week_start, week.week_end)}
+          {isCurrent && <span className="ml-2 text-[10px] uppercase font-semibold text-text-dim">This week</span>}
+        </div>
+        <div className="text-[13px] font-semibold">TSS {totalTss.toFixed(0)}</div>
+      </div>
+      {sports.length === 0 ? (
+        <div className="text-[13px] text-text-dim py-1">No activities</div>
+      ) : (
+        sports.map(sport => {
+          const s = week.by_sport[sport]
+          const meta = WEEK_SPORT_META[sport]
+          return (
+            <div key={sport} className="flex justify-between items-center py-1 text-[13px]">
+              <span>{meta.emoji} <span className="font-semibold">{meta.label}</span></span>
+              <div className="flex gap-3 tabular-nums">
+                <span className="text-text-dim w-14 text-right">{formatHm(s.duration_sec)}</span>
+                <span className="text-text-dim w-16 text-right">{formatKm(s.distance_m)}</span>
+                <span className="font-semibold w-14 text-right">{s.tss.toFixed(0)}</span>
+              </div>
+            </div>
+          )
+        })
+      )}
+      <WeekLoadCard week={week} />
+    </div>
+  )
+}
+
 function WeekTab() {
-  const [summary, setSummary] = useState<WeeklySummary | null>(null)
-  const [sched, setSched] = useState<ScheduledList | null>(null)
+  const [recap, setRecap] = useState<WeeklyRecapResponse | null>(null)
+  const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    Promise.all([
-      apiFetch<WeeklySummary>('/api/weekly-summary'),
-      apiFetch<ScheduledList>('/api/scheduled?days=7'),
-    ]).then(([w, s]) => { setSummary(w); setSched(s) })
+    setLoading(true)
+    apiFetch<WeeklyRecapResponse>(`/api/weekly-recap?weeks=4&offset=${offset}`)
+      .then(setRecap)
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [offset])
 
-  if (loading) return <LoadingSpinner />
+  if (loading && !recap) return <LoadingSpinner />
   if (error) return <ErrorMessage message={error} />
+  if (!recap) return null
 
-  const sportEmoji: Record<string, string> = { swimming: '🏊', cycling: '🚴', running: '🏃' }
-
-  const sportVals = Object.values(summary?.by_sport || {})
-  const totalDur = sportVals.reduce((a, s) => a + s.duration_sec, 0)
-  const totalDist = sportVals.reduce((a, s) => a + s.distance_m, 0)
-  const totalTss = sportVals.reduce((a, s) => a + s.tss, 0)
-  const showTotal = sportVals.length > 1
+  // ``has_prev`` reflects whether ANY activity exists before the window start,
+  // so we can scroll into recovery weeks with empty buckets without dead-end
+  // navigation. ``canNext`` is bound to offset directly — once the freshest
+  // visible week is the current week (offset 0), the Later button locks.
+  const canPrev = recap.has_prev
+  const canNext = offset < 0
+  const range = recap.weeks.length > 0
+    ? formatWeekRange(recap.weeks[recap.weeks.length - 1].week_start, recap.weeks[0].week_end)
+    : null
 
   return (
     <>
-      {sched?.workouts?.length ? (
-        <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
-          <div className="text-sm font-bold mb-2">Planned Workouts</div>
-          <table className="w-full border-collapse text-[13px]">
-            <thead>
-              <tr>
-                <th className="text-left py-1.5 px-1 border-b border-text-dim text-text-dim font-medium">Date</th>
-                <th className="text-left py-1.5 px-1 border-b border-text-dim text-text-dim font-medium">Workout</th>
-                <th className="text-left py-1.5 px-1 border-b border-text-dim text-text-dim font-medium">TSS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sched.workouts.map((w) => (
-                <tr key={`${w.date}-${w.sport}-${w.workout_name}`}>
-                  <td className="py-2 px-1 border-b border-[var(--surface)]">{w.date}</td>
-                  <td className="py-2 px-1 border-b border-[var(--surface)]">{sportEmoji[w.sport] || '🏋'} {w.workout_name}</td>
-                  <td className="py-2 px-1 border-b border-[var(--surface)]">{w.planned_tss ? w.planned_tss.toFixed(0) : '\u2014'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="text-center py-6 text-text-dim text-sm">No scheduled workouts</div>
-      )}
+      <div className="flex justify-between items-center mb-2">
+        <button
+          onClick={() => canPrev && setOffset(o => o - 4)}
+          disabled={!canPrev}
+          className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
+        >
+          ← Earlier
+        </button>
+        <span className="text-[12px] text-text-dim">{range}</span>
+        <button
+          onClick={() => canNext && setOffset(o => o + 4)}
+          disabled={!canNext}
+          className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
+        >
+          Later →
+        </button>
+      </div>
 
-      {summary && (
-        <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
-          <div className="text-sm font-bold mb-2">Weekly Summary</div>
-          {Object.entries(summary.by_sport || {}).map(([sport, s]) => (
-            <div key={sport} className="flex justify-between items-center py-2 border-b border-bg last:border-b-0">
-              <span className="text-sm">{sportEmoji[sport] || '🏋'} <span className="font-semibold capitalize">{sport}</span></span>
-              <div className="flex gap-3 text-[13px]">
-                <span className="text-text-dim">{(s.duration_sec / 3600).toFixed(1)}h</span>
-                <span className="text-text-dim">{(s.distance_m / 1000).toFixed(1)}km</span>
-                <span className="font-semibold">TSS {s.tss.toFixed(0)}</span>
-              </div>
-            </div>
-          ))}
-          {showTotal && (
-            <div className="flex justify-between items-center pt-2 mt-1">
-              <span className="text-sm font-bold">Total</span>
-              <div className="flex gap-3 text-[13px]">
-                <span className="text-text-dim">{(totalDur / 3600).toFixed(1)}h</span>
-                <span className="text-text-dim">{(totalDist / 1000).toFixed(1)}km</span>
-                <span className="font-bold">TSS {totalTss.toFixed(0)}</span>
-              </div>
-            </div>
-          )}
-        </div>
+      {recap.weeks.length === 0 ? (
+        <div className="text-center py-6 text-text-dim text-sm">No activities in this window</div>
+      ) : (
+        recap.weeks.map((w, i) => (
+          <WeekCard key={w.week_start} week={w} isCurrent={offset === 0 && i === 0} />
+        ))
       )}
     </>
   )
