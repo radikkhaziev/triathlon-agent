@@ -671,8 +671,8 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
                 "carbs_g_per_hour": {
                     "type": "integer",
                     "minimum": 30,
-                    "maximum": 120,
-                    "description": "Target carb intake g/hr. Conservative band 60-90 unless gut-trained.",
+                    "maximum": 100,
+                    "description": "Target carb intake g/hr. Conservative band 60-90; ceiling 100 reserves headroom for the gut-trained athlete.",
                 },
                 "fluid_ml_per_hour": {"type": "integer"},
                 "sodium_mg_per_hour": {"type": "integer"},
