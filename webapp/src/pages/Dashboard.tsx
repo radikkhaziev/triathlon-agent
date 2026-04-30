@@ -70,10 +70,10 @@ function TsbZoneBadge({ tsb }: { tsb: number | null }) {
   const { t } = useTranslation()
   if (tsb === null) return null
   let label: string, color: string
-  if (tsb > 10) { label = t('dashboard.undertraining'); color = '#3b82f6' }
-  else if (tsb >= -10) { label = t('dashboard.optimal'); color = '#22c55e' }
-  else if (tsb >= -25) { label = t('dashboard.productive_overreach'); color = '#f59e0b' }
-  else { label = t('dashboard.overtraining_risk'); color = '#ef4444' }
+  if (tsb > 10) { label = t('dashboard.undertraining'); color = TSB_ZONE_COLORS.under }
+  else if (tsb >= -10) { label = t('dashboard.optimal'); color = TSB_ZONE_COLORS.optimal }
+  else if (tsb >= -25) { label = t('dashboard.productive_overreach'); color = TSB_ZONE_COLORS.productive }
+  else { label = t('dashboard.overtraining_risk'); color = TSB_ZONE_COLORS.risk }
 
   const tsbStr = tsb > 0 ? `+${tsb.toFixed(0)}` : tsb.toFixed(0)
   return (
@@ -87,121 +87,134 @@ function TsbZoneBadge({ tsb }: { tsb: number | null }) {
   )
 }
 
+type LoadTabData = {
+  load: TrainingLoadSeries
+  activities: ActivitiesSeries
+  recovery: RecoveryTrendSeries | null
+}
+
 function LoadTab() {
   const loadChartRef = useRef<HTMLCanvasElement>(null)
   const tssChartRef = useRef<HTMLCanvasElement>(null)
   const recoveryChartRef = useRef<HTMLCanvasElement>(null)
   const chartsRef = useRef<Chart[]>([])
-  const [loading, setLoading] = useState(true)
+  const [data, setData] = useState<LoadTabData | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [currentTsb, setCurrentTsb] = useState<number | null>(null)
 
   useEffect(() => {
     Promise.all([
       apiFetch<TrainingLoadSeries>('/api/training-load?days=84'),
       apiFetch<ActivitiesSeries>('/api/activities?days=28'),
       apiFetch<RecoveryTrendSeries>('/api/recovery-trend?days=21').catch(() => null),
-    ]).then(([loadData, actData, recData]) => {
-      chartsRef.current.forEach(c => c.destroy())
-      chartsRef.current = []
-
-      if (loadData.tsb?.length) {
-        setCurrentTsb(loadData.tsb[loadData.tsb.length - 1])
-      }
-
-      if (loadChartRef.current && loadData.dates?.length) {
-        const labels = loadData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-        chartsRef.current.push(new Chart(loadChartRef.current, {
-          type: 'line',
-          data: {
-            labels,
-            datasets: [
-              { label: 'CTL', data: loadData.ctl, borderColor: CHART_COLORS.ctl, fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-              { label: 'ATL', data: loadData.atl, borderColor: CHART_COLORS.atl, fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-              { label: 'TSB', data: loadData.tsb, borderColor: CHART_COLORS.tsb, backgroundColor: CHART_COLORS.tsb + '15', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-            ],
-          },
-          options: chartOptions('Training Load (12 weeks)'),
-        }))
-      }
-
-      if (tssChartRef.current && actData.activities?.length) {
-        const byDate: Record<string, { swim: number; ride: number; run: number }> = {}
-        for (const act of actData.activities) {
-          if (!byDate[act.date]) byDate[act.date] = { swim: 0, ride: 0, run: 0 }
-          const sport = act.sport === 'swimming' ? 'swim' : act.sport === 'cycling' ? 'ride' : act.sport === 'running' ? 'run' : null
-          if (sport && act.tss) byDate[act.date][sport] += act.tss
-        }
-        const dates = Object.keys(byDate).sort()
-        const labels = dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-        chartsRef.current.push(new Chart(tssChartRef.current, {
-          type: 'bar',
-          data: {
-            labels,
-            datasets: [
-              { label: 'Swim', data: dates.map(d => byDate[d].swim), backgroundColor: CHART_COLORS.swim + 'cc', borderRadius: 2 },
-              { label: 'Ride', data: dates.map(d => byDate[d].ride), backgroundColor: CHART_COLORS.ride + 'cc', borderRadius: 2 },
-              { label: 'Run', data: dates.map(d => byDate[d].run), backgroundColor: CHART_COLORS.run + 'cc', borderRadius: 2 },
-            ],
-          },
-          options: { ...chartOptions('Daily TSS by Sport'), scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, ticks: { font: { size: 10 } } } } },
-        }))
-      }
-
-      if (recoveryChartRef.current && recData?.dates?.length) {
-        const labels = recData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-        chartsRef.current.push(new Chart(recoveryChartRef.current, {
-          type: 'line',
-          data: {
-            labels,
-            datasets: [
-              {
-                label: 'Recovery Score',
-                data: recData.recovery,
-                borderColor: '#a855f7',
-                backgroundColor: '#a855f720',
-                fill: true,
-                tension: 0.4,
-                pointRadius: 3,
-                pointBackgroundColor: '#a855f7',
-                borderWidth: 2,
-                yAxisID: 'y',
-              },
-              {
-                label: 'HRV (RMSSD)',
-                data: recData.hrv,
-                borderColor: '#f59e0b',
-                fill: false,
-                tension: 0.4,
-                pointRadius: 2,
-                pointBackgroundColor: '#f59e0b',
-                borderWidth: 1.5,
-                yAxisID: 'y1',
-              },
-            ],
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
-              title: { display: true, text: 'Recovery & HRV (21 days)', font: { size: 13 } },
-            },
-            scales: {
-              x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45 } },
-              y: { min: 0, max: 100, grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } }, position: 'left' },
-              y1: { min: 30, max: 75, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } }, position: 'right' },
-            },
-          },
-        }))
-      }
-    }).catch(err => setError(err instanceof Error ? err.message : 'Failed to load')).finally(() => setLoading(false))
-
-    return () => { chartsRef.current.forEach(c => c.destroy()) }
+    ])
+      .then(([loadData, actData, recData]) => setData({ load: loadData, activities: actData, recovery: recData }))
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
   }, [])
 
-  if (loading) return <LoadingSpinner />
+  // Chart creation runs in a separate effect that fires AFTER `data` commits
+  // and the canvases mount. The earlier "create charts inside Promise.then"
+  // shape silently no-op'd because the refs were still null while the spinner
+  // was rendered (END-51). Cleanup (return below) destroys old charts before
+  // each re-run, so we don't need to clear `chartsRef` at the top.
+  useEffect(() => {
+    if (!data) return
+
+    const { load: loadData, activities: actData, recovery: recData } = data
+
+    if (loadChartRef.current && loadData.dates?.length) {
+      const labels = loadData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
+      chartsRef.current.push(new Chart(loadChartRef.current, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            { label: 'CTL', data: loadData.ctl, borderColor: CHART_COLORS.ctl, fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+            { label: 'ATL', data: loadData.atl, borderColor: CHART_COLORS.atl, fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+            { label: 'TSB', data: loadData.tsb, borderColor: CHART_COLORS.tsb, backgroundColor: CHART_COLORS.tsb + '15', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+          ],
+        },
+        options: chartOptions('Training Load (12 weeks)'),
+      }))
+    }
+
+    if (tssChartRef.current && actData.activities?.length) {
+      const byDate: Record<string, { swim: number; ride: number; run: number }> = {}
+      for (const act of actData.activities) {
+        if (!byDate[act.date]) byDate[act.date] = { swim: 0, ride: 0, run: 0 }
+        const sport = act.sport === 'swimming' ? 'swim' : act.sport === 'cycling' ? 'ride' : act.sport === 'running' ? 'run' : null
+        if (sport && act.tss) byDate[act.date][sport] += act.tss
+      }
+      const dates = Object.keys(byDate).sort()
+      const labels = dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
+      chartsRef.current.push(new Chart(tssChartRef.current, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label: 'Swim', data: dates.map(d => byDate[d].swim), backgroundColor: CHART_COLORS.swim + 'cc', borderRadius: 2 },
+            { label: 'Ride', data: dates.map(d => byDate[d].ride), backgroundColor: CHART_COLORS.ride + 'cc', borderRadius: 2 },
+            { label: 'Run', data: dates.map(d => byDate[d].run), backgroundColor: CHART_COLORS.run + 'cc', borderRadius: 2 },
+          ],
+        },
+        options: { ...chartOptions('Daily TSS by Sport'), scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, ticks: { font: { size: 10 } } } } },
+      }))
+    }
+
+    if (recoveryChartRef.current && recData?.dates?.length) {
+      const labels = recData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
+      chartsRef.current.push(new Chart(recoveryChartRef.current, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Recovery Score',
+              data: recData.recovery,
+              borderColor: '#a855f7',
+              backgroundColor: '#a855f720',
+              fill: true,
+              tension: 0.4,
+              pointRadius: 3,
+              pointBackgroundColor: '#a855f7',
+              borderWidth: 2,
+              yAxisID: 'y',
+            },
+            {
+              label: 'HRV (RMSSD)',
+              data: recData.hrv,
+              borderColor: '#f59e0b',
+              fill: false,
+              tension: 0.4,
+              pointRadius: 2,
+              pointBackgroundColor: '#f59e0b',
+              borderWidth: 1.5,
+              yAxisID: 'y1',
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
+            title: { display: true, text: 'Recovery & HRV (21 days)', font: { size: 13 } },
+          },
+          scales: {
+            x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45 } },
+            y: { min: 0, max: 100, grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } }, position: 'left' },
+            y1: { min: 30, max: 75, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } }, position: 'right' },
+          },
+        },
+      }))
+    }
+
+    return () => { chartsRef.current.forEach(c => c.destroy()); chartsRef.current = [] }
+  }, [data])
+
   if (error) return <ErrorMessage message={error} />
+  if (!data) return <LoadingSpinner />
+
+  const currentTsb = data.load.tsb?.length ? data.load.tsb[data.load.tsb.length - 1] : null
 
   return (
     <>
@@ -363,8 +376,11 @@ function formatKm(meters: number): string {
 function formatWeekRange(weekStart: string, weekEnd: string): string {
   const start = new Date(weekStart + 'T00:00:00')
   const end = new Date(weekEnd + 'T00:00:00')
+  // `undefined` = browser/runtime default locale. Respects the user's system
+  // language instead of forcing en-US on Russian users (whose app is otherwise
+  // localised via i18next).
   const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-  return `${start.toLocaleDateString('en-US', opts)} – ${end.toLocaleDateString('en-US', opts)}`
+  return `${start.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}`
 }
 
 function tsbZone(tsb: number): { label: string; color: string } {
@@ -484,8 +500,12 @@ function WeekTab() {
   // clamp athletes with >1y of history would see has_prev=true at the cap and
   // the next click would 422. ``canNext`` is bound to offset directly — once
   // the freshest visible week is the current week (offset 0), Later locks.
-  const canPrev = recap.has_prev && offset > -52
-  const canNext = offset < 0
+  // While a fetch is in-flight we keep the previous window visible (no
+  // spinner-flash) but lock both buttons — otherwise a double-click could
+  // bump offset twice and `canPrev` (derived from the now-stale recap) would
+  // briefly disagree with the new offset.
+  const canPrev = recap.has_prev && offset > -52 && !loading
+  const canNext = offset < 0 && !loading
   const range = recap.weeks.length > 0
     ? formatWeekRange(recap.weeks[recap.weeks.length - 1].week_start, recap.weeks[0].week_end)
     : null
@@ -500,7 +520,7 @@ function WeekTab() {
         >
           ← Earlier
         </button>
-        <span className="text-[12px] text-text-dim">{range}</span>
+        <span className="text-[12px] text-text-dim">{loading ? '…' : range}</span>
         <button
           onClick={() => canNext && setOffset(o => o + 4)}
           disabled={!canNext}
