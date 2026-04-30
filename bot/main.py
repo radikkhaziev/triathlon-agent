@@ -646,19 +646,22 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.chat.send_action("typing")
 
     try:
-        # Free-form chat watches race-creation previews + memory mutations.
-        # Workout previews come through the /workout ConversationHandler, not
-        # here. Filtering narrowly keeps tool_calls deep-copy cost minimal.
+        # Free-form chat watches race-creation, race-plan generation previews
+        # + memory mutations. Workout previews come through the /workout
+        # ConversationHandler, not here. Filtering narrowly keeps tool_calls
+        # deep-copy cost minimal.
         result = await agent.chat(
             user_text,
             mcp_token=user.mcp_token,
             user_id=user.id,
             language=user.language,
-            tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
+            tool_calls_filter=_RACE_TOOLS | _RACEPLAN_TOOLS | _UNDOABLE_TOOL_NAMES,
         )
 
         pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
         context.user_data["pending_race"] = pending_race
+        pending_raceplan = _extract_pending_preview(result.tool_calls, _RACEPLAN_TOOLS)
+        context.user_data["pending_raceplan"] = pending_raceplan
 
         undoable = _extract_pending_undoable(result.tool_calls)
 
@@ -667,7 +670,10 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _clear_prior_undo_button(context, update.effective_chat.id)
 
         rows: list[list[InlineKeyboardButton]] = []
-        if pending_race is not None:
+        if pending_raceplan is not None:
+            rows.append([InlineKeyboardButton(_("✅ Сохранить план"), callback_data="raceplan_push")])
+            rows.append([InlineKeyboardButton(_("❌ Отмена"), callback_data="raceplan_cancel")])
+        elif pending_race is not None:
             rows.append([InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")])
             rows.append([InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")])
         if undoable is not None:
@@ -749,17 +755,22 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
             language=user.language,
             image_data=bytes(photo_bytes),
             image_url=image_url,
-            tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
+            tool_calls_filter=_RACE_TOOLS | _RACEPLAN_TOOLS | _UNDOABLE_TOOL_NAMES,
         )
 
         pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
         context.user_data["pending_race"] = pending_race
+        pending_raceplan = _extract_pending_preview(result.tool_calls, _RACEPLAN_TOOLS)
+        context.user_data["pending_raceplan"] = pending_raceplan
 
         undoable = _extract_pending_undoable(result.tool_calls)
         await _clear_prior_undo_button(context, update.effective_chat.id)
 
         rows: list[list[InlineKeyboardButton]] = []
-        if pending_race is not None:
+        if pending_raceplan is not None:
+            rows.append([InlineKeyboardButton(_("✅ Сохранить план"), callback_data="raceplan_push")])
+            rows.append([InlineKeyboardButton(_("❌ Отмена"), callback_data="raceplan_cancel")])
+        elif pending_race is not None:
             rows.append([InlineKeyboardButton("✅ Отправить в Intervals", callback_data="race_push")])
             rows.append([InlineKeyboardButton("❌ Отмена", callback_data="race_cancel")])
         if undoable is not None:
@@ -849,14 +860,25 @@ def _suggest_race_apply_push(inp: dict) -> None:
     inp["dry_run"] = False
 
 
+def _generate_race_plan_is_preview(inp: dict) -> bool:
+    # generate_race_plan: dry_run=True returns the plan without persisting.
+    return inp.get("dry_run") is True
+
+
+def _generate_race_plan_apply_push(inp: dict) -> None:
+    inp["dry_run"] = False
+
+
 _PREVIEWABLE_TOOLS: dict[str, PreviewableTool] = {
     "suggest_workout": PreviewableTool(_suggest_workout_is_preview, _suggest_workout_apply_push),
     "compose_workout": PreviewableTool(_compose_workout_is_preview, _compose_workout_apply_push),
     "suggest_race": PreviewableTool(_suggest_race_is_preview, _suggest_race_apply_push),
+    "generate_race_plan": PreviewableTool(_generate_race_plan_is_preview, _generate_race_plan_apply_push),
 }
 
 _WORKOUT_TOOLS = {"suggest_workout", "compose_workout"}
 _RACE_TOOLS = {"suggest_race"}
+_RACEPLAN_TOOLS = {"generate_race_plan"}
 
 
 # ---------------------------------------------------------------------------
@@ -1347,6 +1369,176 @@ async def race_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, user: 
 
 
 # ---------------------------------------------------------------------------
+# /raceplan — generate_race_plan preview → confirm to persist
+# ---------------------------------------------------------------------------
+#
+# Two-phase pattern mirrors /workout: the command issues a dry-run via Claude
+# (so the model can pick the goal_id from athlete_goals); the confirm callback
+# replays the same MCP call with dry_run=False — no second inference, so the
+# persisted plan is bit-for-bit what the user saw in the preview.
+#
+# Free-form chat ("дай мне план на гонку") goes through handle_chat_message,
+# which detects the dry-run generate_race_plan tool call and renders the same
+# raceplan_push / raceplan_cancel buttons.
+
+
+def _find_tool_result(tool_calls: list[dict], tool_name: str) -> dict | None:
+    """Return the most recent ``tool_name`` call's ``result`` dict from history.
+
+    Mirrors ``_extract_pending_preview``'s reverse scan so a turn with both a
+    bad-then-good call returns the good (latest) result. Returns ``None`` if
+    no such call has a dict result.
+    """
+    for call in reversed(tool_calls):
+        if call.get("name") != tool_name:
+            continue
+        result = call.get("result")
+        if isinstance(result, dict):
+            return result
+    return None
+
+
+@athlete_required
+async def raceplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Generate a dry-run race execution plan for the athlete's RACE_A goal.
+
+    Asks the agent to call generate_race_plan(dry_run=True), then renders the
+    plan as Markdown with confirm/cancel buttons. The agent decides goal_id —
+    by default RACE_A; the athlete can specify a different goal in chat.
+    """
+    from bot.raceplan_render import render_plan_markdown
+
+    await update.message.chat.send_action("typing")
+
+    prompt = (
+        "Сгенерируй план на ближайшую RACE_A гонку. Вызови generate_race_plan "
+        "с dry_run=True (только превью, не сохраняй). Не дублируй вывод — "
+        "пользователь увидит результат отдельным сообщением."
+    )
+
+    try:
+        result = await agent.chat(
+            prompt,
+            mcp_token=user.mcp_token,
+            user_id=user.id,
+            language=user.language,
+            tool_calls_filter=_RACEPLAN_TOOLS | _UNDOABLE_TOOL_NAMES,
+        )
+    except Exception:
+        logger.exception("raceplan_command: agent.chat failed for user %d", user.id)
+        await update.message.reply_text(_("Не удалось сгенерировать план. Попробуй ещё раз."))
+        return
+
+    pending_raceplan = _extract_pending_preview(result.tool_calls, _RACEPLAN_TOOLS)
+    context.user_data["pending_raceplan"] = pending_raceplan
+
+    if pending_raceplan is None:
+        # Agent surfaced an error (no RACE_A, race >120d out, <6 activities)
+        # or did not call the tool. Forward its prose so the athlete knows
+        # what to fix.
+        text = result.text or _("Не удалось собрать план — нет данных для калибровки.")
+        await update.message.reply_text(text)
+        return
+
+    plan_result = _find_tool_result(result.tool_calls, "generate_race_plan")
+    if not isinstance(plan_result, dict) or plan_result.get("error"):
+        # Tool failed at the MCP layer — drop the draft and show the error.
+        context.user_data.pop("pending_raceplan", None)
+        msg = (plan_result or {}).get("error") if isinstance(plan_result, dict) else None
+        await update.message.reply_text(msg or _("Не удалось собрать план."))
+        return
+
+    body = render_plan_markdown(plan_result)
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(_("✅ Сохранить план"), callback_data="raceplan_push")],
+            [InlineKeyboardButton(_("❌ Отмена"), callback_data="raceplan_cancel")],
+        ]
+    )
+    try:
+        await update.message.reply_text(body, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception:
+        # Markdown is fragile — fall back to plain text rather than crash.
+        await update.message.reply_text(body, reply_markup=keyboard)
+
+
+@athlete_required
+async def raceplan_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Persist the previewed race plan via direct MCP call (dry_run=False).
+
+    Mirrors workout_push: pops the pending draft (consume-on-read), replays
+    the exact tool invocation Claude made during preview with dry_run flipped,
+    and renders the persisted plan as Markdown + a printable PNG card.
+    """
+    from bot.raceplan_render import render_plan_markdown, render_race_plan_card
+
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    pending = context.user_data.pop("pending_raceplan", None)
+    if not pending:
+        await query.message.reply_text(_("Не нашёл черновик плана — запусти /raceplan ещё раз."))
+        return
+
+    await query.message.chat.send_action("typing")
+
+    tool_name = pending["name"]
+    try:
+        _apply_push_flag(pending)
+    except KeyError:
+        logger.error("raceplan_push: unknown tool %s cached in pending_raceplan", tool_name)
+        await query.message.reply_text(_("Внутренняя ошибка. Запусти /raceplan заново."))
+        return
+
+    try:
+        mcp = MCPClient(token=user.mcp_token)
+        plan_result = await mcp.call_tool(tool_name, pending["input"])
+    except Exception:
+        logger.exception("raceplan_push: MCP call failed (tool=%s)", tool_name)
+        await query.message.reply_text(_("Ошибка при сохранении плана. Попробуй ещё раз."))
+        return
+
+    if isinstance(plan_result, dict) and plan_result.get("error"):
+        logger.warning("raceplan_push: MCP tool %s returned error: %s", tool_name, plan_result["error"])
+        await query.message.reply_text(_("Ошибка при сохранении: {error}").format(error=plan_result["error"]))
+        return
+    if not isinstance(plan_result, dict) or "payload" not in plan_result:
+        text = plan_result.get("text") if isinstance(plan_result, dict) else None
+        await query.message.reply_text(text or _("План сохранён."))
+        return
+
+    body = render_plan_markdown(plan_result)
+    try:
+        await query.message.reply_text(body, parse_mode="Markdown")
+    except Exception:
+        await query.message.reply_text(body)
+
+    # PNG card — best-effort. A render failure must not eat the saved-plan
+    # message: the athlete cares about the plan first, the card is a bonus.
+    try:
+        png = render_race_plan_card(plan_result)
+        race_name = ((plan_result.get("payload") or {}).get("race") or {}).get("name") or "race"
+        await query.message.reply_photo(
+            photo=png,
+            caption=_("План на {race} — сохрани и распечатай.").format(race=race_name),
+            filename="race_plan.png",
+        )
+    except Exception:
+        logger.exception("raceplan_push: PNG card render failed")
+
+
+@athlete_required
+async def raceplan_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Discard the pending race plan draft."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=None)
+    context.user_data.pop("pending_raceplan", None)
+    await query.message.reply_text(_("Отменено."))
+
+
+# ---------------------------------------------------------------------------
 # Fact memory — inline undo after save_fact / deactivate_fact
 # ---------------------------------------------------------------------------
 #
@@ -1728,6 +1920,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("stick", stick))
     app.add_handler(CommandHandler("health", health))
     app.add_handler(CommandHandler("race", race_command))
+    app.add_handler(CommandHandler("raceplan", raceplan_command))
     app.add_handler(CommandHandler("lang", set_lang))
     app.add_handler(CommandHandler("silent", silent))
     workout_conv = ConversationHandler(
@@ -1759,6 +1952,10 @@ def build_application() -> Application:
     # workout ConversationHandler.
     app.add_handler(CallbackQueryHandler(race_push, pattern=r"^race_push$"))
     app.add_handler(CallbackQueryHandler(race_cancel, pattern=r"^race_cancel$"))
+    # Race plan (END-64) — /raceplan or free-form chat ("план на гонку") emits
+    # generate_race_plan(dry_run=True); these handlers replay with dry_run=False.
+    app.add_handler(CallbackQueryHandler(raceplan_push, pattern=r"^raceplan_push$"))
+    app.add_handler(CallbackQueryHandler(raceplan_cancel, pattern=r"^raceplan_cancel$"))
     app.add_handler(CallbackQueryHandler(fact_undo, pattern=r"^fact_undo$"))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^whoami$"), whoami))
     # Photo handler — download, save, pass to AI chat with vision

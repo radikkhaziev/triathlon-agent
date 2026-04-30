@@ -312,3 +312,37 @@ msgid ""
 msgstr ""
 "Daily message limit reached ({used}/{limit}). Donors get unlimited — /donate "
 "to lift the cap."
+
+# /raceplan — race execution plan (END-64)
+msgid "✅ Сохранить план"
+msgstr "✅ Save plan"
+
+msgid "❌ Отмена"
+msgstr "❌ Cancel"
+
+msgid "Не нашёл черновик плана — запусти /raceplan ещё раз."
+msgstr "Couldn't find a plan draft — run /raceplan again."
+
+msgid "Не удалось сгенерировать план. Попробуй ещё раз."
+msgstr "Failed to generate plan. Please retry."
+
+msgid "Не удалось собрать план — нет данных для калибровки."
+msgstr "Couldn't build a plan — not enough data to calibrate."
+
+msgid "Не удалось собрать план."
+msgstr "Couldn't build the plan."
+
+msgid "Внутренняя ошибка. Запусти /raceplan заново."
+msgstr "Internal error. Run /raceplan again."
+
+msgid "Ошибка при сохранении плана. Попробуй ещё раз."
+msgstr "Error saving the plan. Please retry."
+
+msgid "Ошибка при сохранении: {error}"
+msgstr "Error saving: {error}"
+
+msgid "План сохранён."
+msgstr "Plan saved."
+
+msgid "План на {race} — сохрани и распечатай."
+msgstr "Plan for {race} — save it and print it."
