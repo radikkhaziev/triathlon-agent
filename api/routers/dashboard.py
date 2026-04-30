@@ -11,7 +11,6 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
-from sqlalchemy.orm import aliased
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
@@ -33,6 +32,21 @@ _SPORT_MAP = {
 
 def _today_local() -> date:
     return datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
+
+
+def _nearest_wellness(
+    wellness_by_date: dict[str, tuple[float | None, float | None]],
+    anchor: date,
+    *,
+    back_days: int,
+) -> tuple[float | None, float | None]:
+    """Return the most recent (ctl, atl) on/before anchor within back_days."""
+    for delta in range(back_days + 1):
+        key = (anchor - timedelta(days=delta)).isoformat()
+        row = wellness_by_date.get(key)
+        if row is not None and row[0] is not None and row[1] is not None:
+            return row
+    return None, None
 
 
 @router.get("/api/training-load")
@@ -136,22 +150,22 @@ async def weekly_recap(
     anchor_monday = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
     window_start = anchor_monday - timedelta(weeks=weeks - 1)
     window_end = anchor_monday + timedelta(days=6)
-    # Wellness lookup needs the day BEFORE the oldest week starts (so "ctl
-    # entering the week" is the prior day's CTL).
-    wellness_start = window_start - timedelta(days=1)
+    # _nearest_wellness walks back up to 6 days from each bookend (covers
+    # bootstrap-day gaps), so the cache must reach 7 days before window_start
+    # for the oldest week's "entering CTL" to fall back correctly.
+    wellness_start = window_start - timedelta(days=7)
 
     uid = get_data_user_id(user)
     async with get_session() as session:
-        ad = aliased(ActivityDetail)
         result = await session.execute(
             select(
                 Activity.start_date_local,
                 Activity.type,
                 Activity.moving_time,
                 Activity.icu_training_load,
-                ad.distance,
+                ActivityDetail.distance,
             )
-            .outerjoin(ad, ad.activity_id == Activity.id)
+            .outerjoin(ActivityDetail, ActivityDetail.activity_id == Activity.id)
             .where(
                 Activity.user_id == uid,
                 Activity.start_date_local >= window_start.isoformat(),
@@ -252,21 +266,6 @@ async def weekly_recap(
         "today": today.isoformat(),
         "has_prev": has_prev,
     }
-
-
-def _nearest_wellness(
-    wellness_by_date: dict[str, tuple[float | None, float | None]],
-    anchor: date,
-    *,
-    back_days: int,
-) -> tuple[float | None, float | None]:
-    """Return the most recent (ctl, atl) on/before anchor within back_days."""
-    for delta in range(back_days + 1):
-        key = (anchor - timedelta(days=delta)).isoformat()
-        row = wellness_by_date.get(key)
-        if row is not None and row[0] is not None and row[1] is not None:
-            return row
-    return None, None
 
 
 @router.get("/api/recovery-trend")

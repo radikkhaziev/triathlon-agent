@@ -302,8 +302,8 @@ function tsbZone(tsb: number): { label: string; color: string } {
 function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
   const { ctl_start, ctl_end, ctl_delta, tsb_end } = week
   // Bootstrap or pre-Intervals weeks have no wellness rows at the bookends —
-  // render nothing rather than a row of em-dashes.
-  if (ctl_start === null && ctl_end === null) return null
+  // render nothing rather than a half-rendered "CTL — → 73 (—)" row.
+  if (ctl_start === null || ctl_end === null) return null
 
   const deltaStr =
     ctl_delta === null ? '' : ctl_delta > 0 ? `+${ctl_delta.toFixed(1)}` : ctl_delta.toFixed(1)
@@ -404,9 +404,11 @@ function WeekTab() {
 
   // ``has_prev`` reflects whether ANY activity exists before the window start,
   // so we can scroll into recovery weeks with empty buckets without dead-end
-  // navigation. ``canNext`` is bound to offset directly — once the freshest
-  // visible week is the current week (offset 0), the Later button locks.
-  const canPrev = recap.has_prev
+  // navigation. The server caps ``offset`` at -52 (FastAPI ge=-52); without this
+  // clamp athletes with >1y of history would see has_prev=true at the cap and
+  // the next click would 422. ``canNext`` is bound to offset directly — once
+  // the freshest visible week is the current week (offset 0), Later locks.
+  const canPrev = recap.has_prev && offset > -52
   const canNext = offset < 0
   const range = recap.weeks.length > 0
     ? formatWeekRange(recap.weeks[recap.weeks.length - 1].week_start, recap.weeks[0].week_end)
@@ -416,7 +418,7 @@ function WeekTab() {
     <>
       <div className="flex justify-between items-center mb-2">
         <button
-          onClick={() => canPrev && setOffset(o => o - 4)}
+          onClick={() => canPrev && setOffset(o => Math.max(o - 4, -52))}
           disabled={!canPrev}
           className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
         >
