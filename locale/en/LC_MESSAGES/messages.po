@@ -40,20 +40,11 @@ msgstr "Thank you for your support! 🙏"
 msgid "Неизвестный тип платежа. Попробуйте снова через /donate"
 msgstr "Unknown payment type. Please retry via /donate"
 
-msgid "Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут."
-msgstr "No data for today. Data updates automatically every 10 minutes."
-
-msgid "Утренний отчёт готов."
-msgstr "Morning report is ready."
-
 msgid "Открыть отчёт"
 msgstr "Open report"
 
 msgid "Web Dashboard"
 msgstr "Web Dashboard"
-
-msgid "Отчёт формируется, подождите пару минут."
-msgstr "Report is being generated, please wait."
 
 msgid "Нет доступа."
 msgstr "Access denied."

@@ -425,7 +425,7 @@ async def resolve_tenant(update: Update) -> User | None:
 **Каждый bot handler** получает `user` через middleware, а не проверяет `TELEGRAM_CHAT_ID`:
 
 ```python
-async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await resolve_tenant(update)
     if not user:
         await update.message.reply_text("Вы не зарегистрированы. /start для начала.")
