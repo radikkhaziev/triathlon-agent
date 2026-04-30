@@ -156,8 +156,7 @@ Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any a
 
 ```
 /start      — welcome + create User in DB. Branches on `athlete_id`: new users get "🔗 Подключить Intervals.icu" WebApp button → /settings onboarding. Existing athletes get the generic dashboard entry.
-/morning    — trigger morning report via dramatiq actor
-/dashboard  — dashboard link (Mini App)
+/dashboard  — dashboard link (Mini App) — opens today's morning report in webapp
 /workout    — interactive workout generation: sport picker → dry-run preview → "Отправить в Intervals" button
 /race       — lightweight entry point for race creation: sends a priming message; user describes the race in free-form, preview+confirm via `suggest_race` MCP tool
 /web        — one-time code for desktop login (5 min TTL)
@@ -217,7 +216,7 @@ GET  /static/exercises/{id}.html        — generated exercise card HTML (Static
 GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles)
 ```
 
-**Dashboard API** (scaffold, mock data): `/api/dashboard`, `/api/training-load`, `/api/goal`, `/api/weekly-summary`, job trigger stubs.
+**Dashboard API** (real per-user, in `api/routers/dashboard.py`): `/api/training-load`, `/api/activities`, `/api/recovery-trend`, `/api/weekly-recap`, `/api/goal` (`{has_goal: false}` when no active race; React hides the Goal tab in that case). Activities/recap drop sports that don't normalize to Swim/Ride/Run (yoga, hike, weights → not on the chart and excluded from week TSS). Still mock in `api/dashboard_routes.py`: `/api/dashboard` (Today tab), `/api/jobs/morning-report`, `/api/jobs/sync-wellness`.
 
 **Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256, 15-min freshness) or `Bearer <jwt>`. Demo mode: `POST /api/auth/demo` with `DEMO_PASSWORD` → JWT with `purpose=demo` claim, resolved to owner's User with virtual `role="demo"` (read-only, mutation endpoints blocked via `require_athlete`). Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id, blocks demo), `require_owner`. `get_data_user_id(user)` always returns `user.id`. API DTOs centralized in `api/dto.py`.
 
@@ -405,7 +404,7 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 ### Multi-Tenant Data Flow
 
 ```
-User sends /morning → @athlete_required resolves User from chat_id
+Wellness cron → actor_user_wellness (per-user) → auto-fires
   → actor_compose_user_morning_report.send(user=UserDTO)
   → Dramatiq actor (sync) → MCPTool (sync HTTP to /mcp)
   → MCPAuthMiddleware → User.get_by_mcp_token → set_current_user_id

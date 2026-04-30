@@ -11,6 +11,14 @@ export interface IntervalsStatus {
   scope: string | null
 }
 
+export interface AuthMeGoal {
+  id?: number | null
+  event_name: string
+  event_date: string
+  ctl_target?: number | null
+  per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
+}
+
 export interface AuthMeResponse {
   role: 'owner' | 'viewer' | 'demo' | 'anonymous'
   authenticated: boolean
@@ -22,6 +30,9 @@ export interface AuthMeResponse {
   // until this flips true.
   bot_chat_initialized?: boolean
   bot_username?: string | null
+  // Goal block: null when athlete has no active race. Dashboard hides the
+  // Goal tab entirely in that case (END-12 scoping).
+  goal?: AuthMeGoal | null
 }
 
 // Recovery
@@ -313,39 +324,56 @@ export interface TrainingLoadSeries {
   ctl: number[]
   atl: number[]
   tsb: number[]
-  ctl_swim: number[]
-  ctl_ride: number[]
-  ctl_run: number[]
 }
 
 export interface ActivitiesSeries {
   activities: { date: string; sport: string; tss: number }[]
 }
 
-export interface GoalResponse {
-  event_name: string
-  event_date: string
-  weeks_remaining: number
-  overall_pct: number
-  swim_pct: number
-  swim_ctl: number
-  swim_target: number
-  bike_pct: number
-  bike_ctl: number
-  bike_target: number
-  run_pct: number
-  run_ctl: number
-  run_target: number
+export interface GoalSportProgress {
+  ctl_current: number | null
+  ctl_target: number
+  pct: number | null
 }
 
-export interface WeeklySummary {
+// Discriminated union: ``has_goal: false`` means the athlete has no active
+// race and the Goal tab is hidden. ``has_goal: true`` always carries the
+// overall CTL bar fields; ``per_sport`` is only present when
+// ``per_sport_targets`` is set on the AthleteGoal (END-12 scoping decision —
+// don't fake per-sport bars from a single overall target).
+export type GoalResponse =
+  | { has_goal: false }
+  | {
+      has_goal: true
+      event_name: string
+      event_date: string
+      weeks_remaining: number
+      days_remaining: number
+      ctl_current: number | null
+      ctl_target: number | null
+      overall_pct: number | null
+      per_sport?: {
+        swim?: GoalSportProgress
+        ride?: GoalSportProgress
+        run?: GoalSportProgress
+      }
+    }
+
+export interface WeeklyRecapBucket {
   week_start: string
   week_end: string
   by_sport: Record<string, { duration_sec: number; distance_m: number; tss: number }>
+  ctl_start: number | null
+  ctl_end: number | null
+  ctl_delta: number | null
+  tsb_end: number | null
 }
 
-export interface ScheduledList {
-  workouts: { date: string; sport: string; workout_name: string; planned_tss: number }[]
+export interface WeeklyRecapResponse {
+  weeks: WeeklyRecapBucket[]
+  offset: number
+  today: string
+  has_prev: boolean
 }
 
 // Recovery Trend (Dashboard)

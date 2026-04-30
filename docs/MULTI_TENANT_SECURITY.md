@@ -33,7 +33,7 @@
 | Roles                    | 3 роли: anonymous / viewer / owner                                                           | `api/deps.py`                     |
 | Owner detection          | `user.id == TELEGRAM_CHAT_ID` (hardcoded)                                                    | `api/deps.py`, `bot/main.py`      |
 | Rate limiting            | Verify-code: 5 attempts / 5 min per IP                                                       | `api/auth.py`                     |
-| Bot access               | `/morning` — owner only, остальное — все                                                     | `bot/main.py`                     |
+| Bot access               | `@athlete_required` — атлет с `athlete_id`, всё остальное по `@user_required`                 | `bot/decorator.py`                |
 | Secrets                  | `pydantic SecretStr` + `.env`                                                                | `config.py`                       |
 | DB                       | **Phase 1 done:** `users` table + `user_id` FK на 13 таблицах, callers hardcoded `user_id=1` | `data/database.py`                |
 | Crypto                   | Fernet encryption для per-user secrets                                                       | `data/crypto.py`                  |
@@ -94,7 +94,7 @@
 
 #### T5. Bot Command Injection (Tampering)
 
-- **Что:** Чужой Telegram user отправляет /morning → видит чужие данные
+- **Что:** Чужой Telegram user отправляет `/dashboard` или `/workout` → видит чужие данные
 - **Где:** `bot/main.py` — проверка `TELEGRAM_CHAT_ID` только в отдельных handlers
 - **Severity:** Medium (сейчас single-tenant, будет Critical в multi-tenant)
 - **Mitigation:** Bot middleware для tenant resolution по chat_id
@@ -425,7 +425,7 @@ async def resolve_tenant(update: Update) -> User | None:
 **Каждый bot handler** получает `user` через middleware, а не проверяет `TELEGRAM_CHAT_ID`:
 
 ```python
-async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await resolve_tenant(update)
     if not user:
         await update.message.reply_text("Вы не зарегистрированы. /start для начала.")

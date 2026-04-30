@@ -177,6 +177,7 @@ def _build_payload(
 
     return {
         "user_id": user.id,
+        "chat_id": int(user.chat_id),
         "idempotency_key": f"act-{activity.id}-v1",
         "activity_id": str(activity.id),
         "user": user_block,

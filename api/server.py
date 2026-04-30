@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from telegram import Update
 
 from api.dashboard_routes import router as dashboard_router
+from api.routers.dashboard import router as dashboard_real_router
 from api.routes import router
 from api.telegram_webhook import router as telegram_webhook_router
 from bot.main import build_application
@@ -147,6 +148,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(router)
+app.include_router(dashboard_real_router)
 app.include_router(dashboard_router)
 app.include_router(telegram_webhook_router)
 

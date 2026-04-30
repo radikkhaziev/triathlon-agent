@@ -5,13 +5,12 @@ import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { apiFetch } from '../api/client'
-import { CHART_COLORS } from '../lib/constants'
-import type { TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklySummary, ScheduledList, RecoveryTrendSeries } from '../api/types'
+import { CHART_COLORS, SPORT_ICONS, TSB_ZONE_COLORS } from '../lib/constants'
+import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
 
 Chart.register(...registerables)
 
-const TABS = ['load', 'goal', 'week'] as const
-type TabKey = typeof TABS[number]
+type TabKey = 'load' | 'goal' | 'week'
 
 const TAB_LABELS: Record<TabKey, string> = {
   load: 'Load',
@@ -21,12 +20,31 @@ const TAB_LABELS: Record<TabKey, string> = {
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<TabKey>('load')
+  // null = unknown (still loading OR /api/auth/me failed). We optimistically
+  // render all three tabs in that case so the common path (race set) doesn't
+  // flicker a missing tab in for a frame, and so a flaky network doesn't
+  // strand the user without a Goal tab they actually own. If GoalTab itself
+  // can't fetch, it renders <ErrorMessage/> with a retry path. Only an
+  // explicit `false` from a successful response collapses the tabs to two.
+  const [hasGoal, setHasGoal] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    apiFetch<AuthMeResponse>('/api/auth/me')
+      .then(data => setHasGoal(!!data.goal))
+      .catch(() => setHasGoal(null))
+  }, [])
+
+  useEffect(() => {
+    if (hasGoal === false && activeTab === 'goal') setActiveTab('load')
+  }, [hasGoal, activeTab])
+
+  const tabs: TabKey[] = hasGoal === false ? ['load', 'week'] : ['load', 'goal', 'week']
 
   return (
     <Layout maxWidth="480px">
       {/* Sticky Tabs */}
       <div className="flex gap-1 py-3 sticky top-0 bg-bg z-10">
-        {TABS.map(tab => (
+        {tabs.map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -195,145 +213,309 @@ function LoadTab() {
   )
 }
 
+// Sport key → display label + emoji + color. Reuses CHART_COLORS so the
+// Goal-tab bars match the Load-tab TSS chart, and SPORT_ICONS so the
+// vocabulary lines up with the bot (END-12 visuals decision).
+const SPORT_META: Record<'swim' | 'ride' | 'run', { label: string; emoji: string; color: string }> = {
+  swim: { label: 'Swim', emoji: SPORT_ICONS.Swim, color: CHART_COLORS.swim },
+  ride: { label: 'Ride', emoji: SPORT_ICONS.Ride, color: CHART_COLORS.ride },
+  run: { label: 'Run', emoji: SPORT_ICONS.Run, color: CHART_COLORS.run },
+}
+
+function ProgressBar({
+  label,
+  current,
+  target,
+  pct,
+  color,
+}: {
+  label: React.ReactNode
+  current: number | null
+  target: number | null
+  pct: number | null
+  color: string
+}) {
+  // Bar fill is clamped to 100% so an over-target athlete (pct > 100) doesn't
+  // overflow the row, but the numeric pct is shown as-is so they can see the
+  // overshoot. A null pct (no target or no current CTL) renders an empty bar
+  // and "—" instead of a misleading 0%.
+  const fill = pct === null ? 0 : Math.min(100, Math.max(0, pct))
+  return (
+    <div className="flex items-center gap-2 mb-2">
+      <span className="w-[72px] text-[13px] font-semibold">{label}</span>
+      <div className="flex-1 h-2.5 bg-bg rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-[width] duration-500"
+          style={{ width: `${fill}%`, background: color }}
+        />
+      </div>
+      <span className="w-12 text-[13px] text-right tabular-nums">
+        {pct === null ? '—' : `${pct}%`}
+      </span>
+      <span className="w-16 text-[11px] text-right text-text-dim tabular-nums">
+        {current === null ? '—' : current.toFixed(0)}
+        {target !== null ? ` / ${Math.round(target)}` : ''}
+      </span>
+    </div>
+  )
+}
+
 function GoalTab() {
-  const chartRef = useRef<HTMLCanvasElement>(null)
-  const chartInstRef = useRef<Chart | null>(null)
   const [goal, setGoal] = useState<GoalResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    Promise.all([
-      apiFetch<GoalResponse>('/api/goal'),
-      apiFetch<TrainingLoadSeries>('/api/training-load?days=84'),
-    ]).then(([goalData, loadData]) => {
-      setGoal(goalData)
-      if (chartRef.current && loadData.dates?.length) {
-        chartInstRef.current?.destroy()
-        const labels = loadData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-        chartInstRef.current = new Chart(chartRef.current, {
-          type: 'line',
-          data: {
-            labels,
-            datasets: [
-              { label: 'Swim CTL', data: loadData.ctl_swim || [], borderColor: CHART_COLORS.swim, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-              { label: 'Ride CTL', data: loadData.ctl_ride || [], borderColor: CHART_COLORS.ride, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-              { label: 'Run CTL', data: loadData.ctl_run || [], borderColor: CHART_COLORS.run, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-            ],
-          },
-          options: chartOptions('CTL by Sport'),
-        })
-      }
-    }).catch(err => setError(err instanceof Error ? err.message : 'Failed to load')).finally(() => setLoading(false))
-
-    return () => { chartInstRef.current?.destroy() }
-  }, [])
-
-  if (loading) return <LoadingSpinner />
-  if (error) return <ErrorMessage message={error} />
-  if (!goal) return <div className="text-center py-6 text-text-dim">No goal data.</div>
-
-  return (
-    <>
-      <div className="text-center py-4 text-xl font-bold">
-        <span className="text-[var(--button)]">{goal.weeks_remaining}</span> weeks to {goal.event_name}
-      </div>
-      {(['swim', 'bike', 'run'] as const).map(sport => {
-        const pct = goal[`${sport}_pct`]
-        const colors: Record<string, string> = { swim: '#3b82f6', bike: '#22c55e', run: '#f59e0b' }
-        return (
-          <div key={sport} className="flex items-center gap-2 mb-2">
-            <span className="w-[50px] text-[13px] font-semibold capitalize">{sport}</span>
-            <div className="flex-1 h-2.5 bg-bg rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.min(100, pct)}%`, background: colors[sport] }} />
-            </div>
-            <span className="w-10 text-[13px] text-right">{pct.toFixed(0)}%</span>
-          </div>
-        )
-      })}
-      <ChartContainer><canvas ref={chartRef} /></ChartContainer>
-    </>
-  )
-}
-
-function WeekTab() {
-  const [summary, setSummary] = useState<WeeklySummary | null>(null)
-  const [sched, setSched] = useState<ScheduledList | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    Promise.all([
-      apiFetch<WeeklySummary>('/api/weekly-summary'),
-      apiFetch<ScheduledList>('/api/scheduled?days=7'),
-    ]).then(([w, s]) => { setSummary(w); setSched(s) })
+    apiFetch<GoalResponse>('/api/goal')
+      .then(setGoal)
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setLoading(false))
   }, [])
 
   if (loading) return <LoadingSpinner />
   if (error) return <ErrorMessage message={error} />
-
-  const sportEmoji: Record<string, string> = { swimming: '🏊', cycling: '🚴', running: '🏃' }
-
-  const sportVals = Object.values(summary?.by_sport || {})
-  const totalDur = sportVals.reduce((a, s) => a + s.duration_sec, 0)
-  const totalDist = sportVals.reduce((a, s) => a + s.distance_m, 0)
-  const totalTss = sportVals.reduce((a, s) => a + s.tss, 0)
-  const showTotal = sportVals.length > 1
+  // The Dashboard shell already hides the Goal tab when the athlete has no
+  // race, so we should never actually hit `has_goal: false` here. Keep a
+  // lightweight fallback in case the two fetches race (Dashboard reads
+  // /api/auth/me, GoalTab reads /api/goal — the goal could be deleted
+  // between the two).
+  if (!goal || !goal.has_goal) {
+    return <div className="text-center py-6 text-text-dim">No race set.</div>
+  }
 
   return (
     <>
-      {sched?.workouts?.length ? (
-        <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
-          <div className="text-sm font-bold mb-2">Planned Workouts</div>
-          <table className="w-full border-collapse text-[13px]">
-            <thead>
-              <tr>
-                <th className="text-left py-1.5 px-1 border-b border-text-dim text-text-dim font-medium">Date</th>
-                <th className="text-left py-1.5 px-1 border-b border-text-dim text-text-dim font-medium">Workout</th>
-                <th className="text-left py-1.5 px-1 border-b border-text-dim text-text-dim font-medium">TSS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sched.workouts.map((w) => (
-                <tr key={`${w.date}-${w.sport}-${w.workout_name}`}>
-                  <td className="py-2 px-1 border-b border-[var(--surface)]">{w.date}</td>
-                  <td className="py-2 px-1 border-b border-[var(--surface)]">{sportEmoji[w.sport] || '🏋'} {w.workout_name}</td>
-                  <td className="py-2 px-1 border-b border-[var(--surface)]">{w.planned_tss ? w.planned_tss.toFixed(0) : '\u2014'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="text-center py-6 text-text-dim text-sm">No scheduled workouts</div>
-      )}
+      <div className="text-center py-4 text-xl font-bold">
+        <span className="text-[var(--button)]">{goal.weeks_remaining}</span> weeks to {goal.event_name}
+      </div>
 
-      {summary && (
-        <div className="bg-[var(--surface)] rounded-xl p-4 mb-3">
-          <div className="text-sm font-bold mb-2">Weekly Summary</div>
-          {Object.entries(summary.by_sport || {}).map(([sport, s]) => (
-            <div key={sport} className="flex justify-between items-center py-2 border-b border-bg last:border-b-0">
-              <span className="text-sm">{sportEmoji[sport] || '🏋'} <span className="font-semibold capitalize">{sport}</span></span>
-              <div className="flex gap-3 text-[13px]">
-                <span className="text-text-dim">{(s.duration_sec / 3600).toFixed(1)}h</span>
-                <span className="text-text-dim">{(s.distance_m / 1000).toFixed(1)}km</span>
-                <span className="font-semibold">TSS {s.tss.toFixed(0)}</span>
-              </div>
-            </div>
-          ))}
-          {showTotal && (
-            <div className="flex justify-between items-center pt-2 mt-1">
-              <span className="text-sm font-bold">Total</span>
-              <div className="flex gap-3 text-[13px]">
-                <span className="text-text-dim">{(totalDur / 3600).toFixed(1)}h</span>
-                <span className="text-text-dim">{(totalDist / 1000).toFixed(1)}km</span>
-                <span className="font-bold">TSS {totalTss.toFixed(0)}</span>
-              </div>
-            </div>
-          )}
+      <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
+        <ProgressBar
+          label={<span>Overall CTL</span>}
+          current={goal.ctl_current}
+          target={goal.ctl_target}
+          pct={goal.overall_pct}
+          color={CHART_COLORS.ctl}
+        />
+
+        {goal.per_sport && (
+          <div className="mt-3 pt-3 border-t border-bg">
+            {(['swim', 'ride', 'run'] as const).map(sport => {
+              const block = goal.per_sport?.[sport]
+              if (!block) return null
+              const meta = SPORT_META[sport]
+              return (
+                <ProgressBar
+                  key={sport}
+                  label={<span>{meta.emoji} {meta.label}</span>}
+                  current={block.ctl_current}
+                  target={block.ctl_target}
+                  pct={block.pct}
+                  color={meta.color}
+                />
+              )
+            })}
+          </div>
+        )}
+
+        {!goal.per_sport && goal.ctl_target && (
+          <div className="text-[11px] text-text-dim mt-3 pt-3 border-t border-bg">
+            Set per-sport CTL targets in Settings to see swim / ride / run progress.
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+// Sport buckets are keyed by the backend's normalized name (swimming / cycling
+// / running — what _SPORT_MAP in api/routers/dashboard.py emits). Anything else
+// is dropped server-side, so we don't need a fallback row in the UI.
+const WEEK_SPORT_META: Record<string, { label: string; emoji: string }> = {
+  swimming: { label: 'Swim', emoji: '🏊' },
+  cycling: { label: 'Ride', emoji: '🚴' },
+  running: { label: 'Run', emoji: '🏃' },
+}
+const WEEK_SPORT_ORDER = ['swimming', 'cycling', 'running']
+
+function formatHm(seconds: number): string {
+  if (seconds <= 0) return '—'
+  // Round to total minutes first, then split — splitting before rounding can
+  // bubble 59.5min up to "60m" or "1h 60m" (Copilot review #283).
+  const totalMin = Math.round(seconds / 60)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  if (h === 0) return `${m}m`
+  if (m === 0) return `${h}h`
+  return `${h}h ${m}m`
+}
+
+// Garmin-style: meters → km. Sub-1km still shows in metres so 800m doesn't
+// round to "0.8 km" and lose readability for short swim sessions. Above 100km
+// we drop the decimal — the extra digit is noise at that scale.
+function formatKm(meters: number): string {
+  if (meters <= 0) return '—'
+  if (meters < 1000) return `${Math.round(meters)} m`
+  const km = meters / 1000
+  return km >= 100 ? `${km.toFixed(0)} km` : `${km.toFixed(1)} km`
+}
+
+function formatWeekRange(weekStart: string, weekEnd: string): string {
+  const start = new Date(weekStart + 'T00:00:00')
+  const end = new Date(weekEnd + 'T00:00:00')
+  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
+  return `${start.toLocaleDateString('en-US', opts)} – ${end.toLocaleDateString('en-US', opts)}`
+}
+
+function tsbZone(tsb: number): { label: string; color: string } {
+  if (tsb > 10) return { label: 'Under', color: TSB_ZONE_COLORS.under }
+  if (tsb >= -10) return { label: 'Optimal', color: TSB_ZONE_COLORS.optimal }
+  if (tsb >= -25) return { label: 'Productive', color: TSB_ZONE_COLORS.productive }
+  return { label: 'Risk', color: TSB_ZONE_COLORS.risk }
+}
+
+function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
+  const { ctl_start, ctl_end, ctl_delta, tsb_end } = week
+  // Bootstrap or pre-Intervals weeks have no wellness rows at the bookends —
+  // render nothing rather than a half-rendered "CTL — → 73 (—)" row.
+  if (ctl_start === null || ctl_end === null) return null
+
+  const deltaStr =
+    ctl_delta === null ? '' : ctl_delta > 0 ? `+${ctl_delta.toFixed(1)}` : ctl_delta.toFixed(1)
+  const deltaColor =
+    ctl_delta === null
+      ? 'var(--text-dim)'
+      : ctl_delta > 0.5
+        ? TSB_ZONE_COLORS.optimal
+        : ctl_delta < -0.5
+          ? TSB_ZONE_COLORS.risk
+          : 'var(--text-dim)'
+  const zone = tsb_end !== null ? tsbZone(tsb_end) : null
+  const tsbStr = tsb_end === null ? '—' : tsb_end > 0 ? `+${tsb_end.toFixed(0)}` : tsb_end.toFixed(0)
+
+  return (
+    <div className="flex justify-between items-center text-[12px] text-text-dim mt-1.5">
+      <span>
+        CTL{' '}
+        <span className="font-mono text-text">
+          {ctl_start !== null ? ctl_start.toFixed(0) : '—'}
+          {' → '}
+          {ctl_end !== null ? ctl_end.toFixed(0) : '—'}
+        </span>{' '}
+        {ctl_delta !== null && (
+          <span className="font-mono font-semibold" style={{ color: deltaColor }}>
+            ({deltaStr})
+          </span>
+        )}
+      </span>
+      {zone && (
+        <span className="flex items-center gap-1.5">
+          <span className="font-mono" style={{ color: zone.color }}>TSB {tsbStr}</span>
+          <span
+            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
+            style={{ background: zone.color }}
+          >
+            {zone.label}
+          </span>
+        </span>
+      )}
+    </div>
+  )
+}
+
+function WeekCard({ week, isCurrent }: { week: WeeklyRecapBucket; isCurrent: boolean }) {
+  const sports = WEEK_SPORT_ORDER.filter(s => week.by_sport[s])
+  const totalTss = sports.reduce((a, s) => a + (week.by_sport[s]?.tss || 0), 0)
+
+  return (
+    <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
+      <div className="flex justify-between items-baseline mb-1">
+        <div className="text-sm font-bold">
+          {formatWeekRange(week.week_start, week.week_end)}
+          {isCurrent && <span className="ml-2 text-[10px] uppercase font-semibold text-text-dim">This week</span>}
         </div>
+        <div className="text-[13px] font-semibold">TSS {totalTss.toFixed(0)}</div>
+      </div>
+      {sports.length === 0 ? (
+        <div className="text-[13px] text-text-dim py-1">No activities</div>
+      ) : (
+        sports.map(sport => {
+          const s = week.by_sport[sport]
+          const meta = WEEK_SPORT_META[sport]
+          return (
+            <div key={sport} className="flex justify-between items-center py-1 text-[13px]">
+              <span>{meta.emoji} <span className="font-semibold">{meta.label}</span></span>
+              <div className="flex gap-3 tabular-nums">
+                <span className="text-text-dim w-14 text-right">{formatHm(s.duration_sec)}</span>
+                <span className="text-text-dim w-16 text-right">{formatKm(s.distance_m)}</span>
+                <span className="font-semibold w-14 text-right">{s.tss.toFixed(0)}</span>
+              </div>
+            </div>
+          )
+        })
+      )}
+      <WeekLoadCard week={week} />
+    </div>
+  )
+}
+
+function WeekTab() {
+  const [recap, setRecap] = useState<WeeklyRecapResponse | null>(null)
+  const [offset, setOffset] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    apiFetch<WeeklyRecapResponse>(`/api/weekly-recap?weeks=4&offset=${offset}`)
+      .then(setRecap)
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
+      .finally(() => setLoading(false))
+  }, [offset])
+
+  if (loading && !recap) return <LoadingSpinner />
+  if (error) return <ErrorMessage message={error} />
+  if (!recap) return null
+
+  // ``has_prev`` reflects whether ANY activity exists before the window start,
+  // so we can scroll into recovery weeks with empty buckets without dead-end
+  // navigation. The server caps ``offset`` at -52 (FastAPI ge=-52); without this
+  // clamp athletes with >1y of history would see has_prev=true at the cap and
+  // the next click would 422. ``canNext`` is bound to offset directly — once
+  // the freshest visible week is the current week (offset 0), Later locks.
+  const canPrev = recap.has_prev && offset > -52
+  const canNext = offset < 0
+  const range = recap.weeks.length > 0
+    ? formatWeekRange(recap.weeks[recap.weeks.length - 1].week_start, recap.weeks[0].week_end)
+    : null
+
+  return (
+    <>
+      <div className="flex justify-between items-center mb-2">
+        <button
+          onClick={() => canPrev && setOffset(o => Math.max(o - 4, -52))}
+          disabled={!canPrev}
+          className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
+        >
+          ← Earlier
+        </button>
+        <span className="text-[12px] text-text-dim">{range}</span>
+        <button
+          onClick={() => canNext && setOffset(o => o + 4)}
+          disabled={!canNext}
+          className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
+        >
+          Later →
+        </button>
+      </div>
+
+      {recap.weeks.length === 0 ? (
+        <div className="text-center py-6 text-text-dim text-sm">No activities in this window</div>
+      ) : (
+        recap.weeks.map((w, i) => (
+          <WeekCard key={w.week_start} week={w} isCurrent={offset === 0 && i === 0} />
+        ))
       )}
     </>
   )

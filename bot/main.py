@@ -39,10 +39,10 @@ from bot.i18n import set_language as _set_lang
 from bot.scheduler import create_scheduler
 from bot.tools import MCPClient
 from config import settings
-from data.db import Activity, ApiUsageDaily, IqosDaily, StarTransaction, User, UserDTO, Wellness, get_session
+from data.db import Activity, ApiUsageDaily, IqosDaily, StarTransaction, User, UserDTO, get_session
 from data.redis_client import close_redis, get_redis, init_redis
 from sentry_config import init_sentry
-from tasks.actors import actor_compose_user_morning_report, actor_update_zones
+from tasks.actors import actor_update_zones
 from tasks.formatter import rpe_label_with_emoji
 from tasks.utils import RampTrainingSuggestion
 
@@ -133,34 +133,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @athlete_required
 async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
-    """Handle /dashboard command — alias for /morning."""
+    """Handle /dashboard command — open the webapp with today's report."""
     webapp_url = settings.API_BASE_URL
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(_("Открыть приложение"), web_app=WebAppInfo(url=webapp_url))]]
     )
     await update.message.reply_text(_("Web Dashboard"), reply_markup=keyboard)
-
-
-@athlete_required
-async def morning(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
-    """Handle /morning command — show report if ready, otherwise dispatch generation."""
-    dt = datetime.now(TZ).date()
-    row = await Wellness.get(user.id, dt)
-    webapp_url = settings.API_BASE_URL
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(_("Открыть отчёт"), web_app=WebAppInfo(url=webapp_url))]])
-
-    if not row:
-        await update.message.reply_text(_("Нет данных за сегодня. Данные обновляются автоматически каждые 10 минут."))
-        return
-
-    if row.ai_recommendation:
-        await update.message.reply_text(_("Утренний отчёт готов."), reply_markup=keyboard)
-        return
-
-    # Report not generated yet — dispatch dramatiq task
-    actor_compose_user_morning_report.send(user=UserDTO.model_validate(user).model_dump())
-
-    await update.message.reply_text(_("Отчёт формируется, подождите пару минут."), reply_markup=keyboard)
 
 
 @user_required
@@ -1744,7 +1722,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("donate", donate))
     app.add_handler(CallbackQueryHandler(donate_callback, pattern=r"^donate:\d+$"))
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("morning", morning))
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("web", web_login))
     app.add_handler(CommandHandler("stick", stick))

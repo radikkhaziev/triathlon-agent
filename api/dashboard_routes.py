@@ -7,7 +7,7 @@ Replace with real DB queries when ready.
 import random
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
 from api.deps import require_viewer
 from data.db import User
@@ -83,77 +83,6 @@ def _generate_load_series(days: int) -> dict:
 _LOAD_84 = _generate_load_series(84)
 
 
-def _generate_activities(days: int) -> list[dict]:
-    """Generate realistic activity log."""
-    rng = random.Random(123)
-    activities = []
-    today = date(2026, 3, 25)
-
-    sport_config = {
-        "swimming": {"tss_range": (30, 55), "prob": 0.3},
-        "cycling": {"tss_range": (50, 130), "prob": 0.4},
-        "running": {"tss_range": (40, 90), "prob": 0.3},
-    }
-
-    for i in range(days):
-        d = today - timedelta(days=days - 1 - i)
-        dow = d.weekday()
-
-        if dow == 0:  # Monday — rest or easy swim
-            if rng.random() < 0.4:
-                activities.append({"date": str(d), "sport": "swimming", "tss": rng.randint(25, 35)})
-            continue
-
-        # 1-2 activities per day
-        n_activities = 1 if rng.random() < 0.7 else 2
-        for _ in range(n_activities):
-            sport = rng.choices(
-                list(sport_config.keys()),
-                weights=[c["prob"] for c in sport_config.values()],
-            )[0]
-            lo, hi = sport_config[sport]["tss_range"]
-            # Sunday = long
-            if dow == 6:
-                lo, hi = int(lo * 1.3), int(hi * 1.3)
-            activities.append({"date": str(d), "sport": sport, "tss": rng.randint(lo, hi)})
-
-    return activities
-
-
-def _generate_recovery_series(days: int) -> dict:
-    """Generate realistic recovery score + RMSSD series."""
-    dates = _date_range(days)
-    rng = random.Random(77)
-
-    recovery = []
-    hrv = []
-
-    for i in range(days):
-        day_of_week = date.fromisoformat(dates[i]).weekday()
-        # Recovery tends to be higher after rest days, lower after hard training days
-        if day_of_week == 0:  # Monday — post-rest
-            rec = rng.uniform(75, 92)
-            hrv_val = rng.uniform(52, 60)
-        elif day_of_week in (5, 6):  # Weekend — post-hard-session
-            rec = rng.uniform(45, 68)
-            hrv_val = rng.uniform(40, 50)
-        else:
-            rec = rng.uniform(60, 85)
-            hrv_val = rng.uniform(45, 56)
-
-        # Slight upward trend over the period
-        rec += i / days * 5
-        hrv_val += i / days * 3
-
-        recovery.append(round(min(100, rec), 0))
-        hrv.append(round(hrv_val, 1))
-
-    return {"dates": dates, "recovery": recovery, "hrv": hrv}
-
-
-_RECOVERY_21 = _generate_recovery_series(21)
-
-
 # --- Endpoints ---
 
 
@@ -183,116 +112,6 @@ async def dashboard(user: User = Depends(require_viewer)) -> dict:
             "добавь 1 тренировку в неделю для ускорения."
         ),
     }
-
-
-@router.get("/api/training-load")
-async def training_load(days: int = Query(default=84, le=365), user: User = Depends(require_viewer)) -> dict:
-    """CTL/ATL/TSB + per-sport CTL time series."""
-    if days >= 84:
-        return _LOAD_84
-    # Slice the tail
-    return {k: v[-days:] if isinstance(v, list) else v for k, v in _LOAD_84.items()}
-
-
-@router.get("/api/activities")
-async def activities(days: int = Query(default=28, le=180), user: User = Depends(require_viewer)) -> dict:
-    """Completed activities with sport and TSS."""
-    return {"activities": _generate_activities(days)}
-
-
-@router.get("/api/recovery-trend")
-async def recovery_trend(days: int = Query(default=21, ge=1, le=90), user: User = Depends(require_viewer)) -> dict:
-    """Recovery score + RMSSD trend over N days."""
-    if days >= 21:
-        return _RECOVERY_21
-    return {k: v[-days:] if isinstance(v, list) else v for k, v in _RECOVERY_21.items()}
-
-
-@router.get("/api/goal")
-async def goal(user: User = Depends(require_viewer)) -> dict:
-    """Race goal progress."""
-    return {
-        "event_name": "Ironman 70.3",
-        "event_date": "2026-09-15",
-        "weeks_remaining": 25,
-        "overall_pct": 63,
-        "swim_pct": 60,
-        "swim_ctl": 9.0,
-        "swim_target": 15,
-        "bike_pct": 72,
-        "bike_ctl": 25.2,
-        "bike_target": 35,
-        "run_pct": 55,
-        "run_ctl": 13.8,
-        "run_target": 25,
-    }
-
-
-@router.get("/api/weekly-summary")
-async def weekly_summary(user: User = Depends(require_viewer)) -> dict:
-    """This week's completed training summary by sport."""
-    return {
-        "week_start": "2026-03-23",
-        "week_end": "2026-03-29",
-        "by_sport": {
-            "swimming": {"duration_sec": 3600, "distance_m": 3000, "tss": 42},
-            "cycling": {"duration_sec": 12600, "distance_m": 85000, "tss": 158},
-            "running": {"duration_sec": 5400, "distance_m": 11500, "tss": 88},
-        },
-    }
-
-
-@router.get("/api/scheduled")
-async def scheduled_workouts(days: int = Query(default=7, le=30), user: User = Depends(require_viewer)) -> dict:
-    """Planned workouts for the next N days."""
-    today = date(2026, 3, 25)
-    workouts = [
-        {"date": str(today), "sport": "cycling", "workout_name": "Endurance Z2 + 2×10min Tempo", "planned_tss": 85},
-        {
-            "date": str(today + timedelta(days=1)),
-            "sport": "swimming",
-            "workout_name": "Technique + 10×100m @CSS",
-            "planned_tss": 42,
-        },
-        {
-            "date": str(today + timedelta(days=1)),
-            "sport": "running",
-            "workout_name": "Easy Recovery 40min Z1",
-            "planned_tss": 35,
-        },
-        {
-            "date": str(today + timedelta(days=2)),
-            "sport": "cycling",
-            "workout_name": "Sweet Spot 3×12min",
-            "planned_tss": 95,
-        },
-        {
-            "date": str(today + timedelta(days=3)),
-            "sport": "running",
-            "workout_name": "Tempo 4×8min Z3",
-            "planned_tss": 72,
-        },
-        {
-            "date": str(today + timedelta(days=4)),
-            "sport": "swimming",
-            "workout_name": "Endurance 3km steady",
-            "planned_tss": 45,
-        },
-        {
-            "date": str(today + timedelta(days=5)),
-            "sport": "cycling",
-            "workout_name": "Long Ride Z2 3.5h",
-            "planned_tss": 160,
-        },
-        {
-            "date": str(today + timedelta(days=6)),
-            "sport": "running",
-            "workout_name": "Long Run Z2 1h30",
-            "planned_tss": 105,
-        },
-    ]
-    cutoff = str(today + timedelta(days=days))
-    return {"workouts": [w for w in workouts if w["date"] < cutoff]}
 
 
 # --- Job trigger stubs ---

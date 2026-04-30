@@ -71,7 +71,7 @@ def user_required(fn):
     Weaker than `athlete_required` — does NOT require `athlete_id`. Use for
     commands that make sense for not-yet-onboarded users: `/silent`, `/lang`,
     `/donate`, `/whoami`, etc. For commands that read athlete-scoped data
-    (`/morning`, `/workout`), stick with `athlete_required`.
+    (`/dashboard`, `/workout`), stick with `athlete_required`.
 
     Lookup: `User.get_by_chat_id(update.effective_user.id)`. The column name
     `users.chat_id` is legacy — it stores the Telegram **user** ID, which in

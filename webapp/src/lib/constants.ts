@@ -35,3 +35,13 @@ export const CHART_COLORS = {
   ride: 'rgb(34, 197, 94)',
   run: 'rgb(245, 158, 11)',
 }
+
+// TSB zone hex palette — solid (not rgba) because we render these as inline
+// SVG/text fills, not Chart.js datasets. Bands match `data/utils.py:tsb_zone`:
+// >+10 under, -10..+10 optimal, -25..-10 productive, <-25 risk.
+export const TSB_ZONE_COLORS = {
+  under: '#3b82f6',
+  optimal: '#22c55e',
+  productive: '#f59e0b',
+  risk: '#ef4444',
+} as const
