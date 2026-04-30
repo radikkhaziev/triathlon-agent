@@ -1,6 +1,6 @@
-"""Smoke tests for the real Load-tab endpoints (END-14).
+"""Smoke tests for the real Load- and Goal-tab endpoints (END-12, END-14).
 
-We only validate the contract the React Load tab depends on:
+We only validate the contract the React Dashboard depends on:
 - shape of the response,
 - date window respected,
 - filtering rules (NULL TSS dropped, non-bucketable sports dropped),
@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.deps import require_viewer
 from api.routers.dashboard import router as dashboard_router
-from data.db import Activity, ActivityDetail, User, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
 from data.intervals.dto import ActivityDTO
 
 
@@ -350,6 +350,208 @@ class TestRecoveryTrend:
 
         assert resp.json() == {"dates": [], "recovery": [], "hrv": []}
 
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# /api/goal
+# ---------------------------------------------------------------------------
+
+
+async def _seed_goal(
+    user_id: int,
+    *,
+    event_date: date,
+    ctl_target: float | None = 75.0,
+    per_sport_targets: dict | None = None,
+    event_name: str = "Ironman 70.3",
+    category: str = "RACE_A",
+) -> None:
+    async with get_session() as session:
+        session.add(
+            AthleteGoal(
+                user_id=user_id,
+                category=category,
+                event_name=event_name,
+                event_date=event_date,
+                sport_type="triathlon",
+                ctl_target=ctl_target,
+                per_sport_targets=per_sport_targets,
+                is_active=True,
+            )
+        )
+        await session.commit()
+
+
+async def _seed_wellness_with_sport_ctl(
+    user_id: int,
+    dt: date,
+    *,
+    ctl: float,
+    sport_info: list[dict],
+) -> None:
+    async with get_session() as session:
+        session.add(
+            Wellness(
+                user_id=user_id,
+                date=dt.isoformat(),
+                ctl=ctl,
+                atl=ctl,  # value irrelevant, just satisfy NOT NULL constraints
+                sport_info=sport_info,
+                updated=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+
+class TestGoal:
+    async def test_no_goal_returns_has_goal_false(self, client):
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"has_goal": False}
+
+    async def test_goal_without_per_sport_targets(self, client):
+        """Athlete with overall target only — single overall bar, no per_sport block."""
+        await _seed_goal(1, event_date=_FIXED_TODAY + timedelta(days=70), ctl_target=80.0)
+        await _seed_wellness(1, _FIXED_TODAY, ctl=60.0, atl=55.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["has_goal"] is True
+        assert data["event_name"] == "Ironman 70.3"
+        assert data["weeks_remaining"] == 10  # 70 // 7
+        assert data["days_remaining"] == 70
+        assert data["ctl_current"] == 60.0
+        assert data["ctl_target"] == 80.0
+        assert data["overall_pct"] == 75  # 60/80 * 100
+        # Per-sport block must be omitted when targets are absent (END-12 scoping
+        # decision — don't fake bars from canonical 70.3 ratios).
+        assert "per_sport" not in data
+
+    async def test_goal_with_per_sport_targets(self, client):
+        await _seed_goal(
+            1,
+            event_date=_FIXED_TODAY + timedelta(days=84),
+            ctl_target=80.0,
+            per_sport_targets={"swim": 15.0, "ride": 35.0, "run": 25.0},
+        )
+        await _seed_wellness_with_sport_ctl(
+            1,
+            _FIXED_TODAY,
+            ctl=60.0,
+            sport_info=[
+                {"type": "Swim", "ctl": 12.0},
+                {"type": "Ride", "ctl": 28.0},
+                {"type": "Run", "ctl": 20.0},
+            ],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["has_goal"] is True
+        assert data["weeks_remaining"] == 12
+        assert data["per_sport"] == {
+            "swim": {"ctl_current": 12.0, "ctl_target": 15.0, "pct": 80},
+            "ride": {"ctl_current": 28.0, "ctl_target": 35.0, "pct": 80},
+            "run": {"ctl_current": 20.0, "ctl_target": 25.0, "pct": 80},
+        }
+
+    async def test_per_sport_drops_sports_without_target(self, client):
+        """A target=0 or missing entry means "not part of this race plan" — drop, don't render 0%."""
+        await _seed_goal(
+            1,
+            event_date=_FIXED_TODAY + timedelta(days=42),
+            ctl_target=50.0,
+            per_sport_targets={"run": 25.0, "swim": 0.0},  # ride missing, swim zeroed
+        )
+        await _seed_wellness_with_sport_ctl(
+            1,
+            _FIXED_TODAY,
+            ctl=40.0,
+            sport_info=[
+                {"type": "Swim", "ctl": 5.0},
+                {"type": "Ride", "ctl": 22.0},
+                {"type": "Run", "ctl": 18.0},
+            ],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert "per_sport" in data
+        assert set(data["per_sport"].keys()) == {"run"}
+        assert data["per_sport"]["run"]["pct"] == 72  # 18 / 25
+
+    async def test_overall_pct_handles_missing_target(self, client):
+        """Athlete set the race but never set a CTL target — overall_pct must be null, not /0."""
+        await _seed_goal(1, event_date=_FIXED_TODAY + timedelta(days=21), ctl_target=None)
+        await _seed_wellness(1, _FIXED_TODAY, ctl=60.0, atl=55.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["has_goal"] is True
+        assert data["ctl_target"] is None
+        assert data["overall_pct"] is None
+        assert data["ctl_current"] == 60.0
+
+    async def test_zero_weeks_remaining_on_race_day(self, client):
+        """Day-of-event reads "0 weeks", not rounded up to 1."""
+        await _seed_goal(1, event_date=_FIXED_TODAY, ctl_target=80.0)
+        await _seed_wellness(1, _FIXED_TODAY, ctl=70.0, atl=55.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["weeks_remaining"] == 0
+        assert data["days_remaining"] == 0
+
+    async def test_past_race_clamps_to_zero(self, client):
+        """Athlete forgot to deactivate a past goal — both counters clamp to 0
+        rather than returning a negative `days_remaining` in the JSON."""
+        await _seed_goal(1, event_date=_FIXED_TODAY - timedelta(days=10), ctl_target=80.0)
+        await _seed_wellness(1, _FIXED_TODAY, ctl=70.0, atl=55.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["weeks_remaining"] == 0
+        assert data["days_remaining"] == 0
+
+    async def test_no_wellness_yet(self, client):
+        """Brand-new athlete with a goal but no wellness rows yet renders an
+        empty bar instead of crashing the endpoint."""
+        await _seed_goal(1, event_date=_FIXED_TODAY + timedelta(days=30), ctl_target=80.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["has_goal"] is True
+        assert data["ctl_current"] is None
+        assert data["overall_pct"] is None
+
+    async def test_per_user_scoping(self, client):
+        """Goal for another user must not leak into the response."""
+        async with get_session() as session:
+            session.add(User(id=2, chat_id="other_user", role="athlete"))
+            await session.commit()
+        await _seed_goal(2, event_date=_FIXED_TODAY + timedelta(days=14), ctl_target=90.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        # User 1 has no goal of their own; user 2's must not leak through
+        assert resp.json() == {"has_goal": False}
 
 # ---------------------------------------------------------------------------
 # /api/weekly-recap
