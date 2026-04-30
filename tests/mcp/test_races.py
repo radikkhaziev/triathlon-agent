@@ -721,3 +721,48 @@ class TestGenerateRacePlanValidator:
         plan["legs"][0]["pacing"] = {"low": "easy", "target": "tempo", "cap": "threshold"}
         errors = _validate_race_plan(plan, athlete_max_hr=190)
         assert errors == []
+
+    def test_logs_unparseable_corridor_fields(self, caplog):
+        """END-70: every unparseable leg/field combo emits a structured log
+        tagged with goal_id, leg, field, value so we can eyeball the rate of
+        qualitative pacing labels after dog-food races land.
+        """
+        import logging
+
+        from mcp_server.tools.races import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["leg"] = "run"
+        plan["legs"][0]["pacing"] = {"low": "easy", "target": "tempo", "cap": "5:00/km"}
+
+        with caplog.at_level(logging.INFO, logger="mcp_server.tools.races"):
+            errors = _validate_race_plan(plan, athlete_max_hr=190, goal_id=42)
+
+        assert errors == []
+        skip_records = [
+            r for r in caplog.records if getattr(r, "race_plan_corridor_unparseable", False)
+        ]
+        # Two unparseable fields (low="easy", target="tempo"); cap="5:00/km" parses.
+        assert len(skip_records) == 2
+        fields_logged = {(r.leg, r.field, r.value) for r in skip_records}
+        assert fields_logged == {("run", "low", "easy"), ("run", "target", "tempo")}
+        for r in skip_records:
+            assert r.goal_id == 42
+
+    def test_unparseable_log_tolerates_missing_goal_id(self, caplog):
+        """goal_id is optional — older callers (or tests) shouldn't crash."""
+        import logging
+
+        from mcp_server.tools.races import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "easy", "target": "tempo", "cap": "threshold"}
+
+        with caplog.at_level(logging.INFO, logger="mcp_server.tools.races"):
+            _validate_race_plan(plan, athlete_max_hr=190)
+
+        skip_records = [
+            r for r in caplog.records if getattr(r, "race_plan_corridor_unparseable", False)
+        ]
+        assert len(skip_records) == 3
+        assert all(r.goal_id is None for r in skip_records)

@@ -832,7 +832,12 @@ def _parse_corridor_value(s: Any) -> tuple[float, str] | None:
     return None
 
 
-def _validate_race_plan(plan: dict[str, Any], *, athlete_max_hr: int | None) -> list[str]:
+def _validate_race_plan(
+    plan: dict[str, Any],
+    *,
+    athlete_max_hr: int | None,
+    goal_id: int | None = None,
+) -> list[str]:
     """Defensive post-generation checks the JSON schema can't enforce.
 
     Returns a list of human-readable error strings (empty == valid). Used to
@@ -848,7 +853,31 @@ def _validate_race_plan(plan: dict[str, Any], *, athlete_max_hr: int | None) -> 
 
         # Corridor ordering: low < target < cap in effort space.
         pacing = leg.get("pacing") or {}
-        parsed = [_parse_corridor_value(pacing.get(k)) for k in ("low", "target", "cap")]
+        fields = ("low", "target", "cap")
+        raw_values = [pacing.get(k) for k in fields]
+        parsed = [_parse_corridor_value(v) for v in raw_values]
+
+        # Instrument the silent skip-on-unparseable path so we can eyeball how
+        # often the model emits qualitative pacing labels ("easy", "tempo")
+        # instead of numeric corridors. If the rate trends >5% of plans we
+        # tighten the prompt or convert this validator to reject (END-70).
+        for field, raw, p in zip(fields, raw_values, parsed):
+            if p is None:
+                logger.info(
+                    "race_plan.corridor_unparseable goal_id=%s leg=%r field=%s value=%r",
+                    goal_id,
+                    leg_name,
+                    field,
+                    raw,
+                    extra={
+                        "race_plan_corridor_unparseable": True,
+                        "goal_id": goal_id,
+                        "leg": leg_name,
+                        "field": field,
+                        "value": raw,
+                    },
+                )
+
         if all(p is not None for p in parsed):
             units = {u for _, u in parsed}  # type: ignore[misc]
             if len(units) == 1:
@@ -1073,7 +1102,11 @@ async def generate_race_plan(goal_id: int | None = None, dry_run: bool = False) 
     # Defensive post-generation pass — schema can't enforce per-athlete HR or
     # corridor monotonicity. Refuse persistence on validation failure so we
     # don't ship a nonsensical plan to the athlete.
-    validation_errors = _validate_race_plan(plan_input, athlete_max_hr=_athlete_max_hr(zones_rows))
+    validation_errors = _validate_race_plan(
+        plan_input,
+        athlete_max_hr=_athlete_max_hr(zones_rows),
+        goal_id=goal.id,
+    )
     if validation_errors:
         logger.warning(
             "generate_race_plan: validation rejected plan for user %d, goal %d: %s",
