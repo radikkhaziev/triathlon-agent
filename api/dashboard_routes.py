@@ -185,11 +185,12 @@ async def dashboard(user: User = Depends(require_viewer)) -> dict:
     }
 
 
-# NOTE: The next three handlers are superseded at runtime by the real Load-tab
-# handlers in `api/routers/dashboard.py` (registered first in `api/server.py`).
-# `include_in_schema=False` keeps them out of OpenAPI so generated clients/docs
-# don't see two contradictory contracts for the same path. Removed entirely once
-# [END-12] / [END-13] cut over and the whole mock module is deleted.
+# NOTE: The next three handlers are superseded at runtime by the real Load /
+# Goal handlers in `api/routers/dashboard.py` (registered first in
+# `api/server.py`). `include_in_schema=False` keeps them out of OpenAPI so
+# generated clients/docs don't see two contradictory contracts for the same
+# path. Removed entirely once [END-13] cuts over and the whole mock module
+# is deleted.
 
 
 @router.get("/api/training-load", include_in_schema=False)
@@ -213,26 +214,6 @@ async def recovery_trend(days: int = Query(default=21, ge=1, le=90), user: User 
     if days >= 21:
         return _RECOVERY_21
     return {k: v[-days:] if isinstance(v, list) else v for k, v in _RECOVERY_21.items()}
-
-
-@router.get("/api/goal")
-async def goal(user: User = Depends(require_viewer)) -> dict:
-    """Race goal progress."""
-    return {
-        "event_name": "Ironman 70.3",
-        "event_date": "2026-09-15",
-        "weeks_remaining": 25,
-        "overall_pct": 63,
-        "swim_pct": 60,
-        "swim_ctl": 9.0,
-        "swim_target": 15,
-        "bike_pct": 72,
-        "bike_ctl": 25.2,
-        "bike_target": 35,
-        "run_pct": 55,
-        "run_ctl": 13.8,
-        "run_target": 25,
-    }
 
 
 @router.get("/api/weekly-summary")
