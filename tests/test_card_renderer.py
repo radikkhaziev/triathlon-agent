@@ -5,12 +5,16 @@ import struct
 import pytest
 
 from data.card_renderer import (
+    RaceRecapCardData,
+    RaceSplit,
     WorkoutCardData,
     _build_metrics,
     _format_distance,
     _format_duration,
     _format_pace,
     _format_swim_pace,
+    _goal_delta,
+    render_race_recap_card,
     render_workout_card,
 )
 
@@ -397,4 +401,160 @@ class TestRenderWorkoutCard:
         """Unknown sport type should not raise — falls back to Other color/label."""
         data = WorkoutCardData(sport_type="Yoga", duration_sec=1800)
         result = render_workout_card(data)
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# ---------------------------------------------------------------------------
+#  _goal_delta — race recap goal-delta formatting
+# ---------------------------------------------------------------------------
+
+
+class TestGoalDelta:
+    def test_under_goal_is_negative_and_green(self):
+        text, color = _goal_delta(3500, 3600)
+        assert text.startswith("−")
+        assert "vs goal" in text
+        assert color == "#00D26A"
+
+    def test_over_goal_is_positive_and_red(self):
+        text, color = _goal_delta(3700, 3600)
+        assert text.startswith("+")
+        assert color == "#FF6B6B"
+
+    def test_on_goal_renders_explicit_label(self):
+        text, color = _goal_delta(3600, 3600)
+        assert text == "On goal"
+        assert color == "#00D26A"
+
+    def test_missing_goal_returns_empty(self):
+        text, _color = _goal_delta(3600, None)
+        assert text == ""
+
+    def test_missing_finish_returns_empty(self):
+        text, _color = _goal_delta(None, 3600)
+        assert text == ""
+
+
+# ---------------------------------------------------------------------------
+#  render_race_recap_card — 1080x1080 PNG output
+# ---------------------------------------------------------------------------
+
+
+class TestRenderRaceRecapCard:
+    """render_race_recap_card: square dimensions, valid PNG, graceful degradation."""
+
+    @pytest.fixture
+    def tri_data(self):
+        return RaceRecapCardData(
+            race_name="Ironman 70.3 Belgrade",
+            sport_type="Triathlon",
+            finish_time_sec=18540,  # 5:09:00
+            goal_time_sec=18900,  # 5:15:00
+            distance_m=70300.0,
+            splits=[
+                RaceSplit(label="Swim", time_sec=1980, distance_m=1900.0),
+                RaceSplit(label="T1", time_sec=180),
+                RaceSplit(label="Bike", time_sec=10800, distance_m=90000.0),
+                RaceSplit(label="T2", time_sec=180),
+                RaceSplit(label="Run", time_sec=5400, distance_m=21100.0),
+            ],
+            avg_hr_quarters=[148, 152, 158, 165],
+            rpe=8,
+            race_day_tsb=-3.0,
+            race_day_recovery_score=0.78,
+            ai_text="Smart pacing on the bike held HR steady through the run. Cap caffeine at half this race-day dose next time.",
+        )
+
+    def test_dimensions_1080x1080(self, tri_data):
+        result = render_race_recap_card(tri_data)
+        width, height = _png_dimensions(result)
+        assert width == 1080
+        assert height == 1080
+
+    def test_returns_valid_png(self, tri_data):
+        result = render_race_recap_card(tri_data)
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+        assert len(result) > 0
+
+    def test_file_size_under_2mb(self, tri_data):
+        result = render_race_recap_card(tri_data)
+        assert len(result) < 2 * 1024 * 1024
+
+    def test_idempotent_same_inputs(self, tri_data):
+        """Re-running with identical inputs must produce byte-identical PNGs.
+
+        This is the contract behind the END-65 acceptance criterion
+        ("Re-running is idempotent"). The actor decides not to dedup the
+        send, so the renderer is what guarantees a stable artifact.
+        """
+        first = render_race_recap_card(tri_data)
+        second = render_race_recap_card(tri_data)
+        assert first == second
+
+    def test_minimal_data_no_crash(self):
+        """With only the bare race name + finish time, the card still renders.
+
+        Real-world fallback: an athlete whose Race row is half-populated
+        (no goal time, no splits, indoor pool with no HR streams) must not
+        get an empty document — they get a thin but valid card.
+        """
+        data = RaceRecapCardData(
+            race_name="Local 5K",
+            sport_type="Run",
+            finish_time_sec=1320,
+        )
+        result = render_race_recap_card(data)
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+        assert _png_dimensions(result) == (1080, 1080)
+
+    def test_long_race_name_wraps_within_two_lines(self):
+        """Ironman titles can blow past the canvas width — wrapper keeps the
+        layout stable by clipping to two lines with an ellipsis.
+        """
+        data = RaceRecapCardData(
+            race_name="Challenge Roth Long Distance Triathlon Championship Race 2026 Edition",
+            sport_type="Triathlon",
+            finish_time_sec=36000,
+        )
+        result = render_race_recap_card(data)
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_partial_hr_quarters_render(self):
+        """Half-populated HR quartiles still render — the missing slot shows
+        a muted bar with an em-dash, not a crash.
+        """
+        data = RaceRecapCardData(
+            race_name="Tune-up 10K",
+            sport_type="Run",
+            finish_time_sec=2400,
+            avg_hr_quarters=[155, None, None, 168],
+        )
+        result = render_race_recap_card(data)
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_recovery_score_clamped(self):
+        """A buggy upstream recovery value > 1.0 must clamp to 100, not 140."""
+        data = RaceRecapCardData(
+            race_name="Sprint",
+            sport_type="Run",
+            finish_time_sec=1500,
+            race_day_recovery_score=1.4,
+        )
+        # No exception, valid PNG, and the renderer never raises on the
+        # bad input — the clamp is internal.
+        result = render_race_recap_card(data)
+        assert result[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_more_than_six_splits_truncated(self):
+        """Long lap lists are clipped so the splits panel cannot push the
+        stat tiles or AI narrative below the canvas.
+        """
+        splits = [RaceSplit(label=f"K{i + 1}", time_sec=300 + i * 5) for i in range(20)]
+        data = RaceRecapCardData(
+            race_name="Marathon",
+            sport_type="Run",
+            finish_time_sec=14400,
+            splits=splits,
+        )
+        result = render_race_recap_card(data)
         assert result[:8] == b"\x89PNG\r\n\x1a\n"

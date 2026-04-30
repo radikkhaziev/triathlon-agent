@@ -505,7 +505,16 @@ def _actor_send_activity_notification(
 
     # Card / Video buttons. Card always available. Video requires VIDEO_API_URL
     # to be configured; otherwise the button is omitted (feature flag).
-    media_row = [{"text": "📸 Card", "callback_data": f"card:{activity_id}"}]
+    #
+    # On a race activity, swap the standard 📸 Card button for the race-recap
+    # variant (END-65). The recap composition is also auto-fired below so the
+    # athlete receives the share artifact without tapping anything — the
+    # button is kept as a manual re-render path (re-running is idempotent and
+    # overwrites the previous PNG by activity_id).
+    if activity_row.is_race:
+        media_row = [{"text": _("📸 Карточка гонки"), "callback_data": f"race_card:{activity_id}"}]
+    else:
+        media_row = [{"text": "📸 Card", "callback_data": f"card:{activity_id}"}]
     # Temporarily disabled — video render is offline.
     # if settings.VIDEO_API_URL:
     #     media_row.append({"text": "🎬 Video (beta)", "callback_data": f"video:{activity_id}"})
@@ -516,6 +525,17 @@ def _actor_send_activity_notification(
         reply_markup = {"inline_keyboard": [media_row]}
 
     tg.send_message(text=summary, reply_markup=reply_markup)
+
+    # Race auto-fire: post-activity notification has already gone out, so
+    # dispatch the recap composition as a follow-up document. We only fire
+    # when a Race row exists — the card needs goal/leg context that
+    # ``tag_race`` populates, and firing without it would surface a thin
+    # card with no goal delta or fitness snapshot. Without a Race row we
+    # leave the manual button as the recovery path.
+    if activity_row.is_race and race_row is not None:
+        from tasks.actors.card import actor_generate_race_recap_card
+
+        actor_generate_race_recap_card.send(user=user, activity_id=activity_id)
 
 
 def _is_ramp_test_activity(user_id: int, activity: Activity) -> bool:

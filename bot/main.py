@@ -303,6 +303,38 @@ async def handle_card_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 @athlete_required
+async def handle_race_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
+    """Handle 📸 Карточка гонки button — dispatch race recap card generation (END-65).
+
+    Mirrors ``handle_card_callback`` but routes to the race-specific actor.
+    Single-shot button removal prevents duplicate dispatch on flaky taps;
+    the actor itself is idempotent on ``activity_id`` so accidental re-fires
+    just overwrite the previous render.
+    """
+    from tasks.actors import actor_generate_race_recap_card
+
+    query = update.callback_query
+    parts = query.data.split(":")
+    if len(parts) != 2:
+        await query.answer()
+        return
+
+    activity_id = parts[1]
+    await query.answer("📸 Generating race card...")
+
+    remaining_markup = _strip_rows_with_prefix(
+        query.message.reply_markup if query.message else None, "race_card:"
+    )
+    try:
+        await query.edit_message_reply_markup(reply_markup=remaining_markup)
+    except TelegramError:
+        logger.warning("handle_race_card_callback: failed to strip race card button", exc_info=True)
+
+    user_dto = UserDTO.model_validate(user)
+    actor_generate_race_recap_card.send(user=user_dto, activity_id=activity_id)
+
+
+@athlete_required
 async def handle_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle 🎬 Video button — pipeline avatar download → video render request.
 
@@ -1751,6 +1783,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(handle_rpe_callback, pattern=r"^rpe:"))
     app.add_handler(CallbackQueryHandler(handle_card_callback, pattern=r"^card:"))
+    app.add_handler(CallbackQueryHandler(handle_race_card_callback, pattern=r"^race_card:"))
     # Temporarily disabled — video render is offline.
     # app.add_handler(CallbackQueryHandler(handle_video_callback, pattern=r"^video:"))
     # Race creation confirm/cancel — standalone, not inside ConversationHandler.
