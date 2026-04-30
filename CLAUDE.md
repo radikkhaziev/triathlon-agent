@@ -156,8 +156,7 @@ Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any a
 
 ```
 /start      — welcome + create User in DB. Branches on `athlete_id`: new users get "🔗 Подключить Intervals.icu" WebApp button → /settings onboarding. Existing athletes get the generic dashboard entry.
-/morning    — trigger morning report via dramatiq actor
-/dashboard  — dashboard link (Mini App)
+/dashboard  — dashboard link (Mini App) — opens today's morning report in webapp
 /workout    — interactive workout generation: sport picker → dry-run preview → "Отправить в Intervals" button
 /race       — lightweight entry point for race creation: sends a priming message; user describes the race in free-form, preview+confirm via `suggest_race` MCP tool
 /web        — one-time code for desktop login (5 min TTL)
@@ -405,7 +404,7 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 ### Multi-Tenant Data Flow
 
 ```
-User sends /morning → @athlete_required resolves User from chat_id
+Wellness cron → actor_user_wellness (per-user) → auto-fires
   → actor_compose_user_morning_report.send(user=UserDTO)
   → Dramatiq actor (sync) → MCPTool (sync HTTP to /mcp)
   → MCPAuthMiddleware → User.get_by_mcp_token → set_current_user_id
