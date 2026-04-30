@@ -70,10 +70,10 @@ function TsbZoneBadge({ tsb }: { tsb: number | null }) {
   const { t } = useTranslation()
   if (tsb === null) return null
   let label: string, color: string
-  if (tsb > 10) { label = t('dashboard.undertraining'); color = '#3b82f6' }
-  else if (tsb >= -10) { label = t('dashboard.optimal'); color = '#22c55e' }
-  else if (tsb >= -25) { label = t('dashboard.productive_overreach'); color = '#f59e0b' }
-  else { label = t('dashboard.overtraining_risk'); color = '#ef4444' }
+  if (tsb > 10) { label = t('dashboard.undertraining'); color = TSB_ZONE_COLORS.under }
+  else if (tsb >= -10) { label = t('dashboard.optimal'); color = TSB_ZONE_COLORS.optimal }
+  else if (tsb >= -25) { label = t('dashboard.productive_overreach'); color = TSB_ZONE_COLORS.productive }
+  else { label = t('dashboard.overtraining_risk'); color = TSB_ZONE_COLORS.risk }
 
   const tsbStr = tsb > 0 ? `+${tsb.toFixed(0)}` : tsb.toFixed(0)
   return (
@@ -114,11 +114,10 @@ function LoadTab() {
   // Chart creation runs in a separate effect that fires AFTER `data` commits
   // and the canvases mount. The earlier "create charts inside Promise.then"
   // shape silently no-op'd because the refs were still null while the spinner
-  // was rendered (END-51).
+  // was rendered (END-51). Cleanup (return below) destroys old charts before
+  // each re-run, so we don't need to clear `chartsRef` at the top.
   useEffect(() => {
     if (!data) return
-    chartsRef.current.forEach(c => c.destroy())
-    chartsRef.current = []
 
     const { load: loadData, activities: actData, recovery: recData } = data
 
