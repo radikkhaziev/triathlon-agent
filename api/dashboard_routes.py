@@ -185,7 +185,14 @@ async def dashboard(user: User = Depends(require_viewer)) -> dict:
     }
 
 
-@router.get("/api/training-load")
+# NOTE: The next three handlers are superseded at runtime by the real Load-tab
+# handlers in `api/routers/dashboard.py` (registered first in `api/server.py`).
+# `include_in_schema=False` keeps them out of OpenAPI so generated clients/docs
+# don't see two contradictory contracts for the same path. Removed entirely once
+# [END-12] / [END-13] cut over and the whole mock module is deleted.
+
+
+@router.get("/api/training-load", include_in_schema=False)
 async def training_load(days: int = Query(default=84, le=365), user: User = Depends(require_viewer)) -> dict:
     """CTL/ATL/TSB + per-sport CTL time series."""
     if days >= 84:
@@ -194,13 +201,13 @@ async def training_load(days: int = Query(default=84, le=365), user: User = Depe
     return {k: v[-days:] if isinstance(v, list) else v for k, v in _LOAD_84.items()}
 
 
-@router.get("/api/activities")
+@router.get("/api/activities", include_in_schema=False)
 async def activities(days: int = Query(default=28, le=180), user: User = Depends(require_viewer)) -> dict:
     """Completed activities with sport and TSS."""
     return {"activities": _generate_activities(days)}
 
 
-@router.get("/api/recovery-trend")
+@router.get("/api/recovery-trend", include_in_schema=False)
 async def recovery_trend(days: int = Query(default=21, ge=1, le=90), user: User = Depends(require_viewer)) -> dict:
     """Recovery score + RMSSD trend over N days."""
     if days >= 21:
