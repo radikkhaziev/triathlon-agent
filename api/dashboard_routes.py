@@ -7,7 +7,7 @@ Replace with real DB queries when ready.
 import random
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
 from api.deps import require_viewer
 from data.db import User
@@ -83,77 +83,6 @@ def _generate_load_series(days: int) -> dict:
 _LOAD_84 = _generate_load_series(84)
 
 
-def _generate_activities(days: int) -> list[dict]:
-    """Generate realistic activity log."""
-    rng = random.Random(123)
-    activities = []
-    today = date(2026, 3, 25)
-
-    sport_config = {
-        "swimming": {"tss_range": (30, 55), "prob": 0.3},
-        "cycling": {"tss_range": (50, 130), "prob": 0.4},
-        "running": {"tss_range": (40, 90), "prob": 0.3},
-    }
-
-    for i in range(days):
-        d = today - timedelta(days=days - 1 - i)
-        dow = d.weekday()
-
-        if dow == 0:  # Monday — rest or easy swim
-            if rng.random() < 0.4:
-                activities.append({"date": str(d), "sport": "swimming", "tss": rng.randint(25, 35)})
-            continue
-
-        # 1-2 activities per day
-        n_activities = 1 if rng.random() < 0.7 else 2
-        for _ in range(n_activities):
-            sport = rng.choices(
-                list(sport_config.keys()),
-                weights=[c["prob"] for c in sport_config.values()],
-            )[0]
-            lo, hi = sport_config[sport]["tss_range"]
-            # Sunday = long
-            if dow == 6:
-                lo, hi = int(lo * 1.3), int(hi * 1.3)
-            activities.append({"date": str(d), "sport": sport, "tss": rng.randint(lo, hi)})
-
-    return activities
-
-
-def _generate_recovery_series(days: int) -> dict:
-    """Generate realistic recovery score + RMSSD series."""
-    dates = _date_range(days)
-    rng = random.Random(77)
-
-    recovery = []
-    hrv = []
-
-    for i in range(days):
-        day_of_week = date.fromisoformat(dates[i]).weekday()
-        # Recovery tends to be higher after rest days, lower after hard training days
-        if day_of_week == 0:  # Monday — post-rest
-            rec = rng.uniform(75, 92)
-            hrv_val = rng.uniform(52, 60)
-        elif day_of_week in (5, 6):  # Weekend — post-hard-session
-            rec = rng.uniform(45, 68)
-            hrv_val = rng.uniform(40, 50)
-        else:
-            rec = rng.uniform(60, 85)
-            hrv_val = rng.uniform(45, 56)
-
-        # Slight upward trend over the period
-        rec += i / days * 5
-        hrv_val += i / days * 3
-
-        recovery.append(round(min(100, rec), 0))
-        hrv.append(round(hrv_val, 1))
-
-    return {"dates": dates, "recovery": recovery, "hrv": hrv}
-
-
-_RECOVERY_21 = _generate_recovery_series(21)
-
-
 # --- Endpoints ---
 
 
@@ -183,37 +112,6 @@ async def dashboard(user: User = Depends(require_viewer)) -> dict:
             "добавь 1 тренировку в неделю для ускорения."
         ),
     }
-
-
-# NOTE: The next three handlers are superseded at runtime by the real Load /
-# Goal handlers in `api/routers/dashboard.py` (registered first in
-# `api/server.py`). `include_in_schema=False` keeps them out of OpenAPI so
-# generated clients/docs don't see two contradictory contracts for the same
-# path. Removed entirely once [END-13] cuts over and the whole mock module
-# is deleted.
-
-
-@router.get("/api/training-load", include_in_schema=False)
-async def training_load(days: int = Query(default=84, le=365), user: User = Depends(require_viewer)) -> dict:
-    """CTL/ATL/TSB + per-sport CTL time series."""
-    if days >= 84:
-        return _LOAD_84
-    # Slice the tail
-    return {k: v[-days:] if isinstance(v, list) else v for k, v in _LOAD_84.items()}
-
-
-@router.get("/api/activities", include_in_schema=False)
-async def activities(days: int = Query(default=28, le=180), user: User = Depends(require_viewer)) -> dict:
-    """Completed activities with sport and TSS."""
-    return {"activities": _generate_activities(days)}
-
-
-@router.get("/api/recovery-trend", include_in_schema=False)
-async def recovery_trend(days: int = Query(default=21, ge=1, le=90), user: User = Depends(require_viewer)) -> dict:
-    """Recovery score + RMSSD trend over N days."""
-    if days >= 21:
-        return _RECOVERY_21
-    return {k: v[-days:] if isinstance(v, list) else v for k, v in _RECOVERY_21.items()}
 
 
 # --- Job trigger stubs ---

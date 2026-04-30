@@ -5,7 +5,7 @@ import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { apiFetch } from '../api/client'
-import { CHART_COLORS, SPORT_ICONS } from '../lib/constants'
+import { CHART_COLORS, SPORT_ICONS, TSB_ZONE_COLORS } from '../lib/constants'
 import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
 
 Chart.register(...registerables)
@@ -363,10 +363,10 @@ function formatWeekRange(weekStart: string, weekEnd: string): string {
 }
 
 function tsbZone(tsb: number): { label: string; color: string } {
-  if (tsb > 10) return { label: 'Under', color: '#3b82f6' }
-  if (tsb >= -10) return { label: 'Optimal', color: '#22c55e' }
-  if (tsb >= -25) return { label: 'Productive', color: '#f59e0b' }
-  return { label: 'Risk', color: '#ef4444' }
+  if (tsb > 10) return { label: 'Under', color: TSB_ZONE_COLORS.under }
+  if (tsb >= -10) return { label: 'Optimal', color: TSB_ZONE_COLORS.optimal }
+  if (tsb >= -25) return { label: 'Productive', color: TSB_ZONE_COLORS.productive }
+  return { label: 'Risk', color: TSB_ZONE_COLORS.risk }
 }
 
 function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
@@ -381,9 +381,9 @@ function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
     ctl_delta === null
       ? 'var(--text-dim)'
       : ctl_delta > 0.5
-        ? '#22c55e'
+        ? TSB_ZONE_COLORS.optimal
         : ctl_delta < -0.5
-          ? '#ef4444'
+          ? TSB_ZONE_COLORS.risk
           : 'var(--text-dim)'
   const zone = tsb_end !== null ? tsbZone(tsb_end) : null
   const tsbStr = tsb_end === null ? '—' : tsb_end > 0 ? `+${tsb_end.toFixed(0)}` : tsb_end.toFixed(0)

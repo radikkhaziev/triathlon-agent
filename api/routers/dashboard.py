@@ -1,9 +1,9 @@
 """Dashboard API routes — real per-user data for the Mini App Dashboard.
 
-These handlers replace the seeded mocks in ``api/dashboard_routes.py`` for the
-**Load**, **Goal**, and **Week** tabs. They are mounted *before* the mock
-router in ``api/server.py`` so FastAPI's first-match-wins routing picks the
-real handlers.
+Backs the **Load**, **Goal**, and **Week** tabs. The legacy mocks in
+``api/dashboard_routes.py`` (``/api/dashboard`` + job-trigger stubs) are still
+in place for the Today tab and the as-yet-unwired job buttons; the path
+collisions that existed during the END-12/13 cut-over are gone.
 """
 
 import zoneinfo
@@ -22,7 +22,10 @@ router = APIRouter()
 
 # Canonical Intervals.icu type → React-tab sport key. Anything that doesn't
 # normalize into Swim/Ride/Run gets dropped (matches the stacked-TSS chart,
-# which only has three series).
+# which only has three series). Knock-on for `/api/weekly-recap`: an "Other"
+# bucket — yoga, hike, weights, mobility — never lands in `by_sport`, so its
+# TSS is also missing from the per-week total the frontend sums client-side.
+# Acceptable trade-off for triathletes; revisit when adding a strength tab.
 _SPORT_MAP = {
     "Swim": "swimming",
     "Ride": "cycling",
@@ -176,8 +179,7 @@ async def weekly_recap(
         rows = result.all()
 
         wellness_result = await session.execute(
-            select(Wellness.date, Wellness.ctl, Wellness.atl)
-            .where(
+            select(Wellness.date, Wellness.ctl, Wellness.atl).where(
                 Wellness.user_id == uid,
                 Wellness.date >= wellness_start.isoformat(),
                 Wellness.date <= window_end.isoformat(),
@@ -199,8 +201,7 @@ async def weekly_recap(
     # gaps; we keep them so the frontend can still render the row, just with
     # "—" for the load card.
     wellness_by_date: dict[str, tuple[float | None, float | None]] = {
-        d: (float(c) if c is not None else None, float(a) if a is not None else None)
-        for d, c, a in wellness_rows
+        d: (float(c) if c is not None else None, float(a) if a is not None else None) for d, c, a in wellness_rows
     }
 
     # Pre-bucket activities by week index (0 = oldest, weeks-1 = newest).
@@ -310,11 +311,7 @@ async def goal(user: User = Depends(require_viewer)) -> dict:
     sport_ctl = extract_sport_ctl(row.sport_info) if row else {"swim": None, "ride": None, "run": None}
     targets: dict = g.per_sport_targets or {}
 
-    overall_pct = (
-        round(current_ctl / g.ctl_target * 100)
-        if (current_ctl is not None and g.ctl_target)
-        else None
-    )
+    overall_pct = round(100 * current_ctl / g.ctl_target) if (current_ctl is not None and g.ctl_target) else None
 
     response: dict = {
         "has_goal": True,
@@ -339,7 +336,7 @@ async def goal(user: User = Depends(require_viewer)) -> dict:
         per_sport[sport] = {
             "ctl_current": round(cur, 1) if cur is not None else None,
             "ctl_target": target,
-            "pct": round(cur / target * 100) if cur is not None else None,
+            "pct": round(100 * cur / target) if cur is not None else None,
         }
     if per_sport:
         response["per_sport"] = per_sport

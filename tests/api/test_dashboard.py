@@ -19,7 +19,6 @@ from api.routers.dashboard import router as dashboard_router
 from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
 from data.intervals.dto import ActivityDTO
 
-
 _FIXED_TODAY = date(2026, 4, 30)
 
 
@@ -282,6 +281,27 @@ class TestActivities:
             d = date.fromisoformat(a["date"])
             assert oldest_allowed <= d <= _FIXED_TODAY
 
+    async def test_per_user_scoping(self, client):
+        """Activities for another user must not leak into the response."""
+        async with get_session() as session:
+            session.add(User(id=2, chat_id="other_user", role="athlete"))
+            await session.commit()
+        await Activity.save_bulk(
+            2,
+            activities=[_make_activity(aid="i_other", dt=_FIXED_TODAY, sport="Run", tss=99.0)],
+        )
+        await Activity.save_bulk(
+            1,
+            activities=[_make_activity(aid="i_self", dt=_FIXED_TODAY, sport="Run", tss=42.0)],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/activities?days=28")
+
+        activities = resp.json()["activities"]
+        assert len(activities) == 1
+        assert activities[0]["tss"] == 42.0
+
 
 # ---------------------------------------------------------------------------
 # /api/recovery-trend
@@ -320,9 +340,7 @@ class TestRecoveryTrend:
     async def test_skips_rows_with_neither_recovery_nor_hrv(self, client):
         """A wellness row with both fields NULL is the same as no row for the chart."""
         await _seed_wellness(1, _FIXED_TODAY, recovery_score=70.0, hrv=50.0)
-        await _seed_wellness(
-            1, _FIXED_TODAY - timedelta(days=1), recovery_score=None, hrv=None
-        )
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), recovery_score=None, hrv=None)
 
         async with client as c:
             resp = await c.get("/api/recovery-trend?days=21")
@@ -333,9 +351,7 @@ class TestRecoveryTrend:
 
     async def test_keeps_rows_with_only_one_metric(self, client):
         """Recovery alone (or HRV alone) is still a meaningful point on the dual-axis chart."""
-        await _seed_wellness(
-            1, _FIXED_TODAY, recovery_score=70.0, hrv=None
-        )
+        await _seed_wellness(1, _FIXED_TODAY, recovery_score=70.0, hrv=None)
 
         async with client as c:
             resp = await c.get("/api/recovery-trend?days=21")
@@ -351,7 +367,6 @@ class TestRecoveryTrend:
         assert resp.json() == {"dates": [], "recovery": [], "hrv": []}
 
 
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # /api/goal
 # ---------------------------------------------------------------------------
@@ -552,6 +567,7 @@ class TestGoal:
 
         # User 1 has no goal of their own; user 2's must not leak through
         assert resp.json() == {"has_goal": False}
+
 
 # ---------------------------------------------------------------------------
 # /api/weekly-recap
