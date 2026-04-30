@@ -166,7 +166,7 @@ class TestTrainingLoad:
         """Wellness rows for another user must not leak into the response."""
         # Create user 2, seed a wellness row, then call as user 1
         async with get_session() as session:
-            session.add(User(id=2, chat_id="other_user", role="athlete"))
+            session.add(User(id=2, chat_id="23456", role="athlete"))
             await session.commit()
         await _seed_wellness(2, _FIXED_TODAY)
         await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1))
@@ -284,7 +284,7 @@ class TestActivities:
     async def test_per_user_scoping(self, client):
         """Activities for another user must not leak into the response."""
         async with get_session() as session:
-            session.add(User(id=2, chat_id="other_user", role="athlete"))
+            session.add(User(id=2, chat_id="23456", role="athlete"))
             await session.commit()
         await Activity.save_bulk(
             2,
@@ -558,7 +558,7 @@ class TestGoal:
     async def test_per_user_scoping(self, client):
         """Goal for another user must not leak into the response."""
         async with get_session() as session:
-            session.add(User(id=2, chat_id="other_user", role="athlete"))
+            session.add(User(id=2, chat_id="23456", role="athlete"))
             await session.commit()
         await _seed_goal(2, event_date=_FIXED_TODAY + timedelta(days=14), ctl_target=90.0)
 
@@ -741,7 +741,7 @@ class TestWeeklyRecap:
     async def test_per_user_scoping(self, client):
         """Activities from another user must not leak into the recap."""
         async with get_session() as session:
-            session.add(User(id=2, chat_id="other_user", role="athlete"))
+            session.add(User(id=2, chat_id="23456", role="athlete"))
             await session.commit()
         await Activity.save_bulk(
             2,

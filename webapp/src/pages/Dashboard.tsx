@@ -20,10 +20,12 @@ const TAB_LABELS: Record<TabKey, string> = {
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<TabKey>('load')
-  // null = still loading, true/false = known. We optimistically render all
-  // three tabs while loading so the common case (race set) doesn't flicker
-  // a missing tab in for a frame; if the athlete turns out to have no goal
-  // we drop the Goal tab and bounce them back to Load.
+  // null = unknown (still loading OR /api/auth/me failed). We optimistically
+  // render all three tabs in that case so the common path (race set) doesn't
+  // flicker a missing tab in for a frame, and so a flaky network doesn't
+  // strand the user without a Goal tab they actually own. If GoalTab itself
+  // can't fetch, it renders <ErrorMessage/> with a retry path. Only an
+  // explicit `false` from a successful response collapses the tabs to two.
   const [hasGoal, setHasGoal] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -338,8 +340,11 @@ const WEEK_SPORT_ORDER = ['swimming', 'cycling', 'running']
 
 function formatHm(seconds: number): string {
   if (seconds <= 0) return '—'
-  const h = Math.floor(seconds / 3600)
-  const m = Math.round((seconds % 3600) / 60)
+  // Round to total minutes first, then split — splitting before rounding can
+  // bubble 59.5min up to "60m" or "1h 60m" (Copilot review #283).
+  const totalMin = Math.round(seconds / 60)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
   if (h === 0) return `${m}m`
   if (m === 0) return `${h}h`
   return `${h}h ${m}m`
@@ -462,6 +467,7 @@ function WeekTab() {
 
   useEffect(() => {
     setLoading(true)
+    setError(null)
     apiFetch<WeeklyRecapResponse>(`/api/weekly-recap?weeks=4&offset=${offset}`)
       .then(setRecap)
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
