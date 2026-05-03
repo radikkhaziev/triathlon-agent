@@ -1,4 +1,4 @@
-"""Tests for mcp_server/tools/races.py — suggest_race.
+"""Tests for mcp_server/tools/races.py — suggest_race + generate_race_plan.
 
 Covers:
 - dry_run preview text (create vs update path)
@@ -7,10 +7,14 @@ Covers:
 - recovery fallback: local goal missing but Intervals has event → picks update
 - ctl_target pass-through + separate write path
 - no Intervals HTTP in dry-run
+- generate_race_plan: validator refusals (>120d, <6 activities) and dry-run
+  happy path with anthropic.AsyncAnthropic patched, plus the no-tool_use-block
+  fallback.
 """
 
 from datetime import date, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -455,3 +459,265 @@ class TestDeleteRaceGoal:
 
         deactivate.assert_not_called()
         assert "Error" in out
+
+
+# ---------------------------------------------------------------------------
+# generate_race_plan
+# ---------------------------------------------------------------------------
+
+
+def _race_goal(*, id: int = 7, days_to_race: int = 30, sport_type: str = "Run"):
+    """Athlete-goals row stand-in for generate_race_plan's resolver."""
+    return SimpleNamespace(
+        id=id,
+        user_id=1,
+        category="RACE_A",
+        event_name="Drina Trail",
+        event_date=date.today() + timedelta(days=days_to_race),
+        sport_type=sport_type,
+        disciplines=None,
+        ctl_target=55,
+    )
+
+
+def _activity(idx: int, *, minutes: int = 75, hr: float = 145.0):
+    """Minimal Activity duck-type for _summarize_activities."""
+    return SimpleNamespace(
+        type="Run",
+        moving_time=minutes * 60,
+        icu_training_load=70.0,
+        average_hr=hr,
+        start_date_local=(date.today() - timedelta(days=idx)).isoformat(),
+        is_race=False,
+    )
+
+
+def _patch_session_for_plan():
+    """get_session() patch that yields a session with no wellness row."""
+    session = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=scalar_result)
+    session.get = AsyncMock(return_value=None)
+    session.commit = AsyncMock()
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=ctx), session
+
+
+def _valid_plan_input() -> dict:
+    """Realistic submit_race_plan tool_input that should pass validator."""
+    return {
+        "warmup": "10 min easy + 4×30s strides.",
+        "legs": [
+            {
+                "leg": "run",
+                "distance": "21.1 km",
+                "pacing": {"low": "5:30/km", "target": "5:10/km", "cap": "4:50/km"},
+                "hr_ceiling_bpm": 175,
+                "notes": "Hold target through km 16; cap only after.",
+            }
+        ],
+        "fueling": {"carbs_g_per_hour": 70, "notes": "Gel every 25 min."},
+        "transitions": [],
+        "contingencies": [
+            {"scenario": "heat", "plan": "Slow target by 5%."},
+            {"scenario": "cramp", "plan": "Walk to feed, take salt."},
+            {"scenario": "off-pace", "plan": "Drop to low, hold to km 18."},
+        ],
+        "headline": "Steady to km 16, race the last 5k.",
+    }
+
+
+def _anthropic_response(blocks: list[Any], stop_reason: str = "tool_use"):
+    """Build a fake Anthropic Messages response with .content / .stop_reason."""
+    return SimpleNamespace(content=blocks, stop_reason=stop_reason)
+
+
+def _tool_use_block(plan_input: dict, *, name: str = "submit_race_plan"):
+    return SimpleNamespace(type="tool_use", name=name, input=plan_input)
+
+
+def _patch_anthropic(plan_input: dict | None, *, stop_reason: str = "tool_use"):
+    """Patch anthropic.AsyncAnthropic so .messages.create returns one tool_use block.
+
+    ``plan_input=None`` simulates the model bailing without calling the tool —
+    only an end_turn text block is returned.
+    """
+    blocks: list = []
+    if plan_input is not None:
+        blocks.append(_tool_use_block(plan_input))
+    else:
+        blocks.append(SimpleNamespace(type="text", text="…", name=None, input=None))
+
+    fake_client = MagicMock()
+    fake_client.messages = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=_anthropic_response(blocks, stop_reason))
+    return MagicMock(return_value=fake_client)
+
+
+class TestGenerateRacePlanRefusals:
+    @pytest.mark.asyncio
+    async def test_refuses_when_no_active_race_a(self):
+        from mcp_server.tools.races import generate_race_plan
+
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=None)),
+        ):
+            out = await generate_race_plan()
+
+        assert "error" in out
+        assert "RACE_A" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_race_more_than_120d_out(self):
+        """Validator must refuse even before the Claude call when goal is too far out."""
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=200)
+        anthropic_patch = _patch_anthropic(_valid_plan_input())
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_MODULE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            out = await generate_race_plan()
+
+        assert "error" in out
+        assert ">120" in out["error"]
+        assert out["days_to_race"] == 200
+        # No Claude spend on a refused-by-window plan.
+        anthropic_patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_fewer_than_6_activities(self):
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=30)
+        anthropic_patch = _patch_anthropic(_valid_plan_input())
+        thin_log = ([_activity(i) for i in range(3)], None)
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_MODULE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch(f"{_MODULE}.Activity.get_range", AsyncMock(return_value=thin_log)),
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            out = await generate_race_plan()
+
+        assert "error" in out
+        assert out["activity_count"] == 3
+        anthropic_patch.assert_not_called()
+
+
+class TestGenerateRacePlanDryRun:
+    @pytest.mark.asyncio
+    async def test_dry_run_happy_path_returns_payload_without_persisting(self):
+        """dry_run=True calls Claude, validates, returns payload, never saves."""
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=30)
+        anthropic_patch = _patch_anthropic(_valid_plan_input())
+        save_mock = AsyncMock()
+
+        get_session_patch, _ = _patch_session_for_plan()
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_MODULE}.Activity.get_range", AsyncMock(return_value=([_activity(i) for i in range(8)], None))),
+            patch(f"{_MODULE}.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}.get_session", get_session_patch),
+            patch(f"{_MODULE}.RacePlan.save", save_mock),
+            patch(f"{_MODULE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch(f"{_MODULE}.settings") as fake_settings,
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await generate_race_plan(dry_run=True)
+
+        assert out["dry_run"] is True
+        assert out["id"] is None
+        assert out["preliminary"] is True  # 30 days > 14 → preliminary
+        assert out["payload"]["plan"]["headline"].startswith("Steady")
+        save_mock.assert_not_called()
+        # The Claude client was actually constructed once.
+        anthropic_patch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_tool_use_block_returned_returns_error(self):
+        """If Claude returns only text and skips submit_race_plan, surface a clean error."""
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=30)
+        anthropic_patch = _patch_anthropic(plan_input=None, stop_reason="end_turn")
+        save_mock = AsyncMock()
+
+        get_session_patch, _ = _patch_session_for_plan()
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_MODULE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_MODULE}.Activity.get_range", AsyncMock(return_value=([_activity(i) for i in range(8)], None))),
+            patch(f"{_MODULE}.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch(f"{_MODULE}.get_session", get_session_patch),
+            patch(f"{_MODULE}.RacePlan.save", save_mock),
+            patch(f"{_MODULE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch(f"{_MODULE}.settings") as fake_settings,
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await generate_race_plan(dry_run=True)
+
+        assert "error" in out
+        assert "structured plan" in out["error"]
+        save_mock.assert_not_called()
+
+
+class TestGenerateRacePlanValidator:
+    """Direct unit tests for _validate_race_plan covering schema-uncatchable cases."""
+
+    def test_accepts_valid_plan(self):
+        from mcp_server.tools.races import _validate_race_plan
+
+        errors = _validate_race_plan(_valid_plan_input(), athlete_max_hr=190)
+        assert errors == []
+
+    def test_rejects_inverted_pace_corridor(self):
+        """For pace, low (slow) > target > cap (fast). Inverted → error."""
+        from mcp_server.tools.races import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "4:50/km", "target": "5:10/km", "cap": "5:30/km"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("corridor" in e for e in errors)
+
+    def test_rejects_inverted_power_corridor(self):
+        """For power, low (W) < target < cap. Inverted → error."""
+        from mcp_server.tools.races import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "260W", "target": "240W", "cap": "220W"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("corridor" in e for e in errors)
+
+    def test_rejects_hr_ceiling_above_athlete_max_plus_5(self):
+        from mcp_server.tools.races import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["hr_ceiling_bpm"] = 210
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("hr_ceiling_bpm" in e for e in errors)
+
+    def test_skips_unparseable_pacing(self):
+        """Free-form leg notes (e.g. 'easy', 'tempo') shouldn't trigger a false reject."""
+        from mcp_server.tools.races import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "easy", "target": "tempo", "cap": "threshold"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert errors == []
