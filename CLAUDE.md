@@ -383,7 +383,7 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 
 ## Key Implementation Notes
 
-- **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00 (Mon-Sat; Sun suppressed — weekly covers it), weekly report Sunday at 19:00
+- **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00, weekly report Sunday 18:00
 - **Both HRV algorithms** always computed; `HRV_ALGORITHM` selects primary
 - **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls. Prompt caching: **two `cache_control: ephemeral` segments** — `get_static_system_prompt()` (instructions, never changes) and `render_athlete_block(...)` (today + profile + goal + zones + facts + language). `save_fact` / goal update invalidates only the ~240-tok tail; the ~780-tok static prefix stays hot on Anthropic's prefix cache (see USER_CONTEXT_SPEC §6). Tool filtering: 6 groups, keyword-based, core+tracking+workouts always included (~75% token reduction for simple messages)
 - **All timestamps** UTC in DB, local timezone for display
