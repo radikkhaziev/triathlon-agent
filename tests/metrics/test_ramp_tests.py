@@ -83,7 +83,6 @@ class TestCreateRampTest:
         assert event.category == "WORKOUT"
         assert event.type == "Ride"
         assert "AI: Ramp Test" in event.name
-        assert "AI: Ramp Test" in event.name
         assert "(generated)" not in event.name  # suffix=None → no label
         assert event.workout_doc is not None
         assert len(event.workout_doc["steps"]) == 8

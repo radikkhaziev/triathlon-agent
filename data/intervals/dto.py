@@ -347,20 +347,30 @@ class PlannedWorkoutDTO(BaseModel):
         Always uses workout_doc — works for both time-based and distance-based steps.
         Verified: Intervals.icu parses workout_doc distance correctly (Этап 0 tests).
         Plain text description does NOT parse distance steps.
+
+        Rationale is nested inside ``workout_doc.description`` rather than the
+        top-level ``description`` field. Intervals.icu silently drops
+        ``workout_doc.steps`` for Swim events whenever any top-level
+        ``description`` is present (verified live, regression appeared
+        ~2026-04-30). Routing through workout_doc preserves steps for every
+        sport and keeps a single code path.
         """
         target = "PACE" if self.has_distance_steps and self.sport in ("Swim", "Run") else None
 
         # Strip duplicate "AI: " prefix if Claude already added it
         clean_name = self.name[4:] if self.name.startswith("AI: ") else self.name
 
+        workout_doc: dict = {"steps": [s.model_dump(exclude_none=True) for s in self.steps]}
+        if self.rationale:
+            workout_doc["description"] = self.rationale
+
         return EventExDTO(
             category="WORKOUT",
             type=self.sport,
             name=f"AI: {clean_name}" + (f" ({self.suffix})" if self.suffix else ""),
-            description=self.rationale or "",
             start_date_local=f"{self.target_date}T00:00:00",
             moving_time=self.duration_minutes * 60,
             external_id=self.external_id,
-            workout_doc={"steps": [s.model_dump(exclude_none=True) for s in self.steps]},
+            workout_doc=workout_doc,
             target=target,
         )

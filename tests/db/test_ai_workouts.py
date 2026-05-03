@@ -124,13 +124,37 @@ class TestPlannedWorkout:
         assert interval["reps"] == 4
         assert len(interval["steps"]) == 2
 
-    def test_no_description_in_event(self):
-        """workout_doc carries the actual workout — description stays empty
-        (Intervals.icu requires it as a string field, but content goes in
-        workout_doc)."""
+    def test_no_top_level_description(self):
+        """Top-level description is omitted entirely. Intervals.icu silently drops
+        workout_doc.steps for Swim events whenever any top-level description is
+        present (regression observed ~2026-04-30); rationale lives in
+        workout_doc.description instead."""
         w = self._make_workout()
         event = w.to_intervals_event()
-        assert not event.description
+        assert event.description is None
+
+    def test_rationale_lands_in_workout_doc(self):
+        w = self._make_workout(rationale="recovery day, easy aerobic")
+        event = w.to_intervals_event()
+        assert event.description is None
+        assert event.workout_doc["description"] == "recovery day, easy aerobic"
+
+    def test_empty_rationale_omits_workout_doc_description(self):
+        """Empty string in workout_doc.description would also trip the Swim drop —
+        the key must be absent, not present-but-empty."""
+        w = self._make_workout(rationale="")
+        event = w.to_intervals_event()
+        assert "description" not in event.workout_doc
+
+    def test_payload_has_no_top_level_description(self):
+        """Wire payload (model_dump exclude_none) must omit top-level description
+        for every sport — regression guard for the Swim workout_doc.steps drop."""
+        for sport in ("Swim", "Run", "Ride", "WeightTraining"):
+            steps = [WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 70})]
+            w = self._make_workout(sport=sport, steps=steps, duration_minutes=10, rationale="x")
+            payload = w.to_intervals_event().model_dump(exclude_none=True)
+            assert "description" not in payload, f"{sport} leaked top-level description"
+            assert payload["workout_doc"]["description"] == "x"
 
     def test_rejects_step_without_target(self):
         """Targetless terminal steps leave watches unable to alert — must raise."""
