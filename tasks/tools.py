@@ -790,6 +790,8 @@ class MCPTool:
         "get_hrv_analysis",
         "get_rhr_analysis",
         "get_recovery",
+        "get_polarization_index",
+        "get_progression_analysis",
     }
 
     def _list_mcp_tools(self, *, _retry: bool = True) -> list[dict]:
@@ -832,6 +834,13 @@ class MCPTool:
 
             all_tools = self._list_mcp_tools()
             tools = [t for t in all_tools if t["name"] in self.WEEKLY_TOOL_NAMES]
+
+            for name in set(re.findall(r"get_[a-z_]+", system)):
+                if name not in self.WEEKLY_TOOL_NAMES:
+                    logger.warning(
+                        "Weekly prompt mentions tool %s not in WEEKLY_TOOL_NAMES — skipping",
+                        name,
+                    )
 
             messages: list[dict] = [{"role": "user", "content": "Сгенерируй недельный отчёт"}]
 
