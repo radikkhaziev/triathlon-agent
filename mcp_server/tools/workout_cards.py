@@ -393,15 +393,19 @@ async def compose_workout(
                 target_date=dt,
             )
             event = pw.to_intervals_event()
-            # Override with compose_workout specifics
+            # Override with compose_workout specifics. Description is nested
+            # inside workout_doc to dodge the Intervals.icu Swim-strip regression
+            # (see PlannedWorkoutDTO.to_intervals_event docstring).
             desc_prefix = f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}"
-            desc = f"{desc_prefix}\n\n{event.description}" if event.description else desc_prefix
+            new_doc = dict(event.workout_doc or {})
+            existing = new_doc.get("description")
+            new_doc["description"] = f"{desc_prefix}\n\n{existing}" if existing else desc_prefix
             event = event.model_copy(
                 update={
                     "start_date_local": f"{date_str}T06:00:00",
                     "name": name,  # no "AI:" prefix for workout cards
                     "external_id": ext_id,
-                    "description": desc,
+                    "workout_doc": new_doc,
                 }
             )
             async with IntervalsAsyncClient.for_user(user_id) as client:

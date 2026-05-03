@@ -86,6 +86,45 @@ class TestSaveScheduledWorkoutsLastSyncedAt:
         assert target.name == "New name"
         assert target.last_synced_at >= first_sync
 
+    async def test_description_falls_back_to_workout_doc(self):
+        """AI-pushed events carry rationale inside workout_doc.description (not
+        top-level) to dodge the Intervals.icu Swim workout_doc.steps drop —
+        save_bulk must read it back so the webapp Plan page still sees the text."""
+        workout_id = _uid(3)
+        dto = ScheduledWorkoutDTO(
+            id=workout_id,
+            start_date_local=date(2026, 3, 25),
+            name="AI: Z2 Run",
+            category="WORKOUT",
+            type="Run",
+            description=None,
+            workout_doc={"steps": [], "description": "recovery day, easy aerobic"},
+        )
+        ScheduledWorkout.save_bulk(1, [dto])
+        rows = await ScheduledWorkout.get_for_date(1, date(2026, 3, 25))
+        target = next((r for r in rows if r.id == workout_id), None)
+        assert target is not None
+        assert target.description == "recovery day, easy aerobic"
+
+    async def test_top_level_description_wins_over_workout_doc(self):
+        """When Intervals.icu provides a top-level description (Humango plans,
+        legacy events), it takes precedence over workout_doc.description."""
+        workout_id = _uid(4)
+        dto = ScheduledWorkoutDTO(
+            id=workout_id,
+            start_date_local=date(2026, 3, 25),
+            name="Plan workout",
+            category="WORKOUT",
+            type="Ride",
+            description="top-level wins",
+            workout_doc={"steps": [], "description": "doc-level loses"},
+        )
+        ScheduledWorkout.save_bulk(1, [dto])
+        rows = await ScheduledWorkout.get_for_date(1, date(2026, 3, 25))
+        target = next((r for r in rows if r.id == workout_id), None)
+        assert target is not None
+        assert target.description == "top-level wins"
+
     async def test_all_rows_get_last_synced_at(self):
         base = _uid(10)
         workouts = [

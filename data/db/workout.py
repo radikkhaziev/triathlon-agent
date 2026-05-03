@@ -82,7 +82,10 @@ class ScheduledWorkout(Base):
             row.name = w.name
             row.category = w.category
             row.type = w.type
-            row.description = w.description
+            # AI-pushed events carry their rationale inside workout_doc.description
+            # (top-level description is omitted to dodge the Intervals.icu Swim
+            # workout_doc.steps drop — see PlannedWorkoutDTO.to_intervals_event).
+            row.description = w.description or (w.workout_doc or {}).get("description")
             row.moving_time = w.moving_time
             row.distance = w.distance
             row.workout_doc = w.workout_doc
