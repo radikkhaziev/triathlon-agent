@@ -6,7 +6,6 @@
     "insufficient_data": "Нет данных"
   },
   "nav": {
-    "today": "Сегодня",
     "plan": "План",
     "activities": "Активности",
     "wellness": "Здоровье",
@@ -74,20 +73,11 @@
     "productive_overreach": "Продуктивная перегрузка",
     "overtraining_risk": "Риск перетренированности"
   },
-  "today": {
-    "title": "Сегодня",
-    "load_error": "Не удалось загрузить данные.",
-    "no_data": "Нет данных на сегодня.",
-    "plan_today": "План на сегодня",
-    "workout": "Тренировка",
-    "last_activity": "Последняя активность",
-    "ai_recommendation": "AI Рекомендация",
-    "details": "Детали"
-  },
   "wellness": {
     "title": "Здоровье",
     "load_error": "Не удалось загрузить данные.",
     "no_data": "Нет данных за эту дату",
+    "ai_recommendation": "AI Рекомендация",
     "recovery": "Восстановление",
     "sleep": "Сон",
     "duration": "Длительность",

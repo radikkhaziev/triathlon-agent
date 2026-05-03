@@ -32,7 +32,7 @@ export default function Wellness() {
         onNext={next}
       />
 
-      {isToday && data?.role === 'owner' && (
+      {isToday && (
         <SyncButton
           endpoint="/api/jobs/sync-wellness"
           lastSyncedAt={data?.updated_at ?? null}
