@@ -14,16 +14,15 @@ export interface NavItem {
 
 /** Primary mobile tabs — shown in the bottom bar on phones. */
 export const PRIMARY_NAV_ITEMS: NavItem[] = [
-  { path: '/', labelKey: 'nav.today', icon: '🏠' },
-  { path: '/plan', labelKey: 'nav.plan', icon: '📋' },
-  { path: '/activities', labelKey: 'nav.activities', icon: '🏃' },
   { path: '/wellness', labelKey: 'nav.wellness', icon: '💚' },
+  { path: '/dashboard', labelKey: 'nav.dashboard', icon: '📊' },
+  { path: '/activities', labelKey: 'nav.activities', icon: '🏃' },
+  { path: '/progress', labelKey: 'nav.progress', icon: '📈' },
 ]
 
 /** Secondary items — hidden behind the "More" button on mobile. */
 export const MORE_NAV_ITEMS: NavItem[] = [
-  { path: '/progress', labelKey: 'nav.progress', icon: '📈' },
-  { path: '/dashboard', labelKey: 'nav.dashboard', icon: '📊' },
+  { path: '/plan', labelKey: 'nav.plan', icon: '📋' },
   { path: '/settings', labelKey: 'nav.settings', icon: '⚙️' },
 ]
 

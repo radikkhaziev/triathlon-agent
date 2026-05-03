@@ -5,7 +5,7 @@ import { apiFetch, ApiError } from '../api/client'
 
 /**
  * Empty state for authenticated users without a connected Intervals.icu
- * account. Shown on Today (and anywhere else that needs athlete data) while
+ * account. Shown on data routes (Wellness, Plan, Activities, …) while
  * the user hasn't finished onboarding.
  *
  * The CTA triggers an XHR POST to `/api/intervals/auth/init` (so `apiFetch`

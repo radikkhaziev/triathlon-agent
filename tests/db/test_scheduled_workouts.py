@@ -125,6 +125,26 @@ class TestSaveScheduledWorkoutsLastSyncedAt:
         assert target is not None
         assert target.description == "top-level wins"
 
+    async def test_empty_top_level_description_does_not_fall_back(self):
+        """Explicit "" from Intervals.icu means the source left it blank — don't
+        promote workout_doc.description into the slot. Truthiness check would
+        fall back; only `is None` respects the explicit-but-empty signal."""
+        workout_id = _uid(5)
+        dto = ScheduledWorkoutDTO(
+            id=workout_id,
+            start_date_local=date(2026, 3, 25),
+            name="Edge",
+            category="WORKOUT",
+            type="Run",
+            description="",
+            workout_doc={"steps": [], "description": "should not surface"},
+        )
+        ScheduledWorkout.save_bulk(1, [dto])
+        rows = await ScheduledWorkout.get_for_date(1, date(2026, 3, 25))
+        target = next((r for r in rows if r.id == workout_id), None)
+        assert target is not None
+        assert target.description == ""
+
     async def test_all_rows_get_last_synced_at(self):
         base = _uid(10)
         workouts = [

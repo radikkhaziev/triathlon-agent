@@ -70,7 +70,7 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 **Key patterns:** ORM uses `@dual` (auto sync/async dispatch), `@with_session`/`@with_sync_session`. `AthleteSettings.get_thresholds()` + `AthleteGoal.get_goal_dto()`. MCP tools use `get_current_user_id()` from contextvars. Sentry with `@sentry_tool` for MCP. Bot decorators: `@athlete_required` (needs `athlete_id`), `@user_required` (any active user — for `/lang`, `/silent`, `/donate`). API DTOs in `api/dto.py`.
 
-**Webapp pages:** Today, Landing, Login, Wellness, Plan, Activities, Activity, Dashboard, Settings. Bottom tabs. `/report` → `/wellness`. Global auth gate in `App.tsx`: users without `athlete_id` see `<OnboardingPrompt />` on all data routes until OAuth onboarding completes. PWA manifest + favicon/icons (SVG + ICO + apple-touch + android-chrome).
+**Webapp pages:** Landing, Login, Wellness (home), Plan, Activities, Activity, Dashboard, Progress, Settings. Bottom tabs: Primary [Wellness, Dashboard, Activities, Progress] / More [Plan, Settings]. Root `/` redirects to `/wellness` for authenticated athletes; `/report` also aliases to `/wellness`. Global auth gate in `App.tsx`: users without `athlete_id` see `<OnboardingPrompt />` on all data routes until OAuth onboarding completes. PWA manifest + favicon/icons (SVG + ICO + apple-touch + android-chrome).
 
 ---
 
@@ -216,7 +216,7 @@ GET  /static/exercises/{id}.html        — generated exercise card HTML (Static
 GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles)
 ```
 
-**Dashboard API** (real per-user, in `api/routers/dashboard.py`): `/api/training-load`, `/api/activities`, `/api/recovery-trend`, `/api/weekly-recap`, `/api/goal` (`{has_goal: false}` when no active race; React hides the Goal tab in that case). Activities/recap drop sports that don't normalize to Swim/Ride/Run (yoga, hike, weights → not on the chart and excluded from week TSS). Still mock in `api/dashboard_routes.py`: `/api/dashboard` (Today tab), `/api/jobs/morning-report`, `/api/jobs/sync-wellness`.
+**Dashboard API** (real per-user, in `api/routers/dashboard.py`): `/api/training-load`, `/api/activities`, `/api/recovery-trend`, `/api/weekly-recap`, `/api/goal` (`{has_goal: false}` when no active race; React hides the Goal tab in that case). Activities/recap drop sports that don't normalize to Swim/Ride/Run (yoga, hike, weights → not on the chart and excluded from week TSS). Still mock in `api/dashboard_routes.py`: `/api/dashboard` (legacy, no current consumer after Today page removal), `/api/jobs/morning-report`, `/api/jobs/sync-wellness`.
 
 **Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256, 15-min freshness) or `Bearer <jwt>`. Demo mode: `POST /api/auth/demo` with `DEMO_PASSWORD` → JWT with `purpose=demo` claim, resolved to owner's User with virtual `role="demo"` (read-only, mutation endpoints blocked via `require_athlete`). Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id, blocks demo), `require_owner`. `get_data_user_id(user)` always returns `user.id`. API DTOs centralized in `api/dto.py`.
 
@@ -226,7 +226,7 @@ GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles
 
 React 18 + TypeScript + Vite 6 + React Router v7 + Tailwind CSS v3 + Chart.js v4 + React Context. Light theme, Inter font, mobile-first, Telegram Mini App compatible.
 
-**Routes:** `/` (Today/Landing), `/wellness`, `/plan`, `/activities`, `/activity/:id`, `/dashboard` (3 tabs), `/settings`, `/login`. Bottom tabs navigation.
+**Routes:** `/` → redirect to `/wellness` for authenticated users, Landing for guests. `/wellness` (home), `/plan`, `/activities`, `/activity/:id`, `/dashboard` (3 tabs), `/progress`, `/settings`, `/login`. `/report` is a legacy alias → `/wellness` (used by morning-report Telegram link). Bottom tabs navigation. Wellness page exposes a manual sync button (`POST /api/jobs/sync-wellness`) to all athletes on today's view.
 
 **Auth:** `AuthProvider` (React Context): Telegram initData → JWT fallback → anonymous. `useAuth()` hook. Desktop: `/web` → 6-digit code → JWT. **Global auth gate** in `App.tsx`: fetches `/api/auth/me` on login, checks `intervals.athlete_id`. If missing → all data routes render `<OnboardingPrompt />` (issue #185). Settings and Login always accessible for OAuth onboarding.
 

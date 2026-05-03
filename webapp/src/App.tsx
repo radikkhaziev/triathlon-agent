@@ -11,7 +11,6 @@ import OnboardingPrompt from './components/OnboardingPrompt'
 import BotChatBanner from './components/BotChatBanner'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
-import Today from './pages/Today'
 import Wellness from './pages/Wellness'
 import Plan from './pages/Plan'
 import Activities from './pages/Activities'
@@ -94,9 +93,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={
         !isAuthenticated ? <Landing /> :
-        showLoading ? <LoadingPage /> :
-        gated ? <OnboardingPrompt /> :
-        <Today />
+        <Navigate to="/wellness" replace />
       } />
       <Route path="/login" element={<Login />} />
       <Route path="/settings" element={<Settings />} />
