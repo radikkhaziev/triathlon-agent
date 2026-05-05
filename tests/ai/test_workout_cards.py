@@ -446,9 +446,15 @@ class TestExerciseCardTemplate:
 class TestComposeWorkoutValidation:
     @pytest.fixture(autouse=True)
     def _set_user_context(self):
-        from mcp_server.context import set_current_user_id
+        # Restore the previous contextvar value on teardown. ``mcp_user_id``
+        # leaks across tests in the same asyncio task — without resetting
+        # we'd inherit ``user_id=1`` into every subsequent test that reads
+        # ``get_current_user_id()`` (race tests, github tool tests, etc.).
+        from mcp_server.context import _current_user_id
 
-        set_current_user_id(1)
+        token = _current_user_id.set(1)
+        yield
+        _current_user_id.reset(token)
 
     async def test_missing_id_field_returns_error(self):
         """Entry without 'id' key should return an error immediately."""
@@ -541,9 +547,13 @@ class TestComposeWorkoutValidation:
 class TestComposeWorkoutPushDescription:
     @pytest.fixture(autouse=True)
     def _set_user_context(self):
-        from mcp_server.context import set_current_user_id
+        # Same teardown discipline as ``TestComposeWorkoutValidation`` —
+        # see that fixture's comment for the contextvar-leak rationale.
+        from mcp_server.context import _current_user_id
 
-        set_current_user_id(1)
+        token = _current_user_id.set(1)
+        yield
+        _current_user_id.reset(token)
 
     async def _push_and_capture_event(self, tmp_path, *, sport: str):
         """Drive ``compose_workout`` through the push branch and return the
@@ -618,12 +628,19 @@ class TestComposeWorkoutPushDescription:
         builder emits target-less steps which fail PlannedWorkoutDTO
         validation, and pydantic's @model_validator can't be cleanly
         monkeypatched per-test). Pin the allow-list constant directly —
-        adding "Swim" to it would re-trigger the Intervals workout_doc.steps
-        regression on Swim events."""
-        from mcp_server.tools.workout_cards import _TOP_LEVEL_DESC_SPORTS, VALID_SPORTS
+        adding "Swim" (or any future swim-like sport) to it would re-trigger
+        the Intervals workout_doc.steps regression on Swim events.
 
+        We assert the explicit set, NOT a derivation from ``VALID_SPORTS`` —
+        the whole point of switching from a deny-list to an allow-list is
+        that a new sport added to ``VALID_SPORTS`` must NOT auto-include
+        here. If you add a new sport that genuinely needs top-level
+        description, update this test together with the source constant.
+        """
+        from mcp_server.tools.workout_cards import _TOP_LEVEL_DESC_SPORTS
+
+        assert _TOP_LEVEL_DESC_SPORTS == frozenset({"Run", "Ride", "Other"})
         assert "Swim" not in _TOP_LEVEL_DESC_SPORTS
-        assert _TOP_LEVEL_DESC_SPORTS == VALID_SPORTS - {"Swim"}
 
 
 # ---------------------------------------------------------------------------

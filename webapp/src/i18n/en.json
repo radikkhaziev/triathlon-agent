@@ -72,6 +72,11 @@
     "optimal": "Optimal",
     "productive_overreach": "Productive overreach",
     "overtraining_risk": "Overtraining risk",
+    "charts": {
+      "training_load_12w": "Training Load (12 weeks)",
+      "daily_tss_by_sport": "Daily TSS by Sport",
+      "recovery_hrv_21d": "Recovery & HRV (21 days)"
+    },
     "week": {
       "earlier": "← Earlier",
       "later": "Later →",

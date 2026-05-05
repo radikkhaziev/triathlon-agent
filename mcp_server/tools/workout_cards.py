@@ -21,10 +21,15 @@ VALID_SPORTS = frozenset({"Swim", "Ride", "Run", "Other"})
 
 # Sports for which we mirror the workout-card prefix into top-level
 # ``event.description`` so the URL is visible in Intervals.icu web UI.
-# Swim is excluded — Intervals.icu silently drops ``workout_doc.steps`` for
-# Swim events whenever ``event.description`` is set (regression observed
-# 2026-04-30, see ``PlannedWorkoutDTO.to_intervals_event`` docstring).
-_TOP_LEVEL_DESC_SPORTS = frozenset(VALID_SPORTS - {"Swim"})
+# Explicitly enumerated (NOT derived as ``VALID_SPORTS - {"Swim"}``) so a
+# future swim-like sport added to ``VALID_SPORTS`` (e.g. ``OpenWaterSwim``)
+# does NOT auto-classify as safe and silently re-enable the regression that
+# strips ``workout_doc.steps`` whenever a Swim event has top-level
+# ``description`` set (observed 2026-04-30, see
+# ``PlannedWorkoutDTO.to_intervals_event`` docstring). Adding a new sport
+# here must be a deliberate decision after verifying it doesn't trigger the
+# Intervals.icu strip-on-description regression.
+_TOP_LEVEL_DESC_SPORTS = frozenset({"Run", "Ride", "Other"})
 
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

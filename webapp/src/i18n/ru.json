@@ -72,6 +72,11 @@
     "optimal": "Оптимум",
     "productive_overreach": "Продуктивная перегрузка",
     "overtraining_risk": "Риск перетренированности",
+    "charts": {
+      "training_load_12w": "Нагрузка (12 недель)",
+      "daily_tss_by_sport": "Ежедневный TSS по видам спорта",
+      "recovery_hrv_21d": "Восстановление и HRV (21 день)"
+    },
     "week": {
       "earlier": "← Раньше",
       "later": "Позже →",

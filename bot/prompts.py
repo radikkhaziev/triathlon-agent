@@ -1,9 +1,6 @@
-import zoneinfo
-from datetime import datetime
-
-from config import settings
 from data.db import AthleteGoal, AthleteSettings
 from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
+from tasks.dto import local_today
 
 # ---------------------------------------------------------------------------
 # V2 — Tool-use system prompt (MCP Phase 2)
@@ -161,8 +158,7 @@ def _lang_name(code: str) -> str:
 def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
-    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    today = local_today().isoformat()
 
     return SYSTEM_PROMPT_WEEKLY.format(
         today=today,
@@ -180,8 +176,7 @@ def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
 def get_system_prompt_v2(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
-    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    today = local_today().isoformat()
     return SYSTEM_PROMPT_V2.format(
         today=today,
         athlete_age=t.age or 0,
@@ -467,8 +462,7 @@ async def render_athlete_block(
     all_settings = await AthleteSettings.get_all(user_id)
     settings_by_sport = {s.sport: s for s in all_settings}
 
-    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    today = local_today().isoformat()
 
     facts_section = ""
     if include_facts:

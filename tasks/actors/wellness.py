@@ -339,8 +339,12 @@ def actor_user_wellness(
     g.run()
 
     _row: Wellness = result.row
+    # Reuse the ``today`` snapshot taken at the top of the actor — re-reading
+    # ``local_today()`` here would let a long-running invocation that crosses
+    # midnight evaluate the same wellness row against two different dates,
+    # which can either skip or double-fire the morning-report dispatch.
     if (
-        _dt == local_today().isoformat()
+        _dt == today.isoformat()
         and not _row.ai_recommendation
         and _row.sleep_score is not None
         and _row.recovery_score is not None

@@ -76,5 +76,10 @@ class TestCreateSchedulerJobConfig:
         scheduler = await create_scheduler()
         wellness = scheduler.get_job("scheduler_wellness_and_reports_job")
         activities = scheduler.get_job("scheduler_activities_job")
+        # Existence first — without these asserts a renamed/removed job would
+        # silently return None and ``getattr(None, ...)`` would yield None,
+        # making the test pass for the wrong reason.
+        assert wellness is not None, "scheduler_wellness_and_reports_job is missing"
+        assert activities is not None, "scheduler_activities_job is missing"
         assert getattr(wellness, "misfire_grace_time", None) in (None, 1)
         assert getattr(activities, "misfire_grace_time", None) in (None, 1)
