@@ -94,6 +94,7 @@ type LoadTabData = {
 }
 
 function LoadTab() {
+  const { t } = useTranslation()
   const loadChartRef = useRef<HTMLCanvasElement>(null)
   const tssChartRef = useRef<HTMLCanvasElement>(null)
   const recoveryChartRef = useRef<HTMLCanvasElement>(null)
@@ -133,7 +134,7 @@ function LoadTab() {
             { label: 'TSB', data: loadData.tsb, borderColor: CHART_COLORS.tsb, backgroundColor: CHART_COLORS.tsb + '15', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
           ],
         },
-        options: chartOptions('Training Load (12 weeks)'),
+        options: chartOptions(t('dashboard.charts.training_load_12w')),
       }))
     }
 
@@ -157,7 +158,7 @@ function LoadTab() {
           ],
         },
         options: {
-          ...chartOptions('Daily TSS by Sport'),
+          ...chartOptions(t('dashboard.charts.daily_tss_by_sport')),
           scales: {
             x: { stacked: true, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
             y: { stacked: true, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } } },
@@ -203,7 +204,7 @@ function LoadTab() {
           maintainAspectRatio: false,
           plugins: {
             legend: { position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 13 } } },
-            title: { display: true, text: 'Recovery & HRV (21 days)', font: { size: 14, weight: 'bold' } },
+            title: { display: true, text: t('dashboard.charts.recovery_hrv_21d'), font: { size: 14, weight: 'bold' } },
           },
           scales: {
             x: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
@@ -215,7 +216,8 @@ function LoadTab() {
     }
 
     return () => { chartsRef.current.forEach(c => c.destroy()); chartsRef.current = [] }
-  }, [data])
+    // ``t`` so chart titles re-render when the user toggles language at runtime.
+  }, [data, t])
 
   if (error) return <ErrorMessage message={error} />
   if (!data) return <LoadingSpinner />

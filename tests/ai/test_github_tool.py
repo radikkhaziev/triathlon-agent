@@ -18,9 +18,16 @@ def _reset_rate_limit_log():
 
 @pytest.fixture(autouse=True)
 def _set_user_context():
-    from mcp_server.context import set_current_user_id
+    """Set ``mcp_user_id`` for the test and restore the previous value on
+    teardown. ``mcp_server.context._current_user_id`` is a contextvar that
+    leaks across tests in the same asyncio task — without restoration, a
+    later test inherits ``user_id=42`` (or 100/101 below) and gets
+    order-dependent failures that are painful to bisect."""
+    from mcp_server.context import _current_user_id
 
-    set_current_user_id(42)
+    token = _current_user_id.set(42)
+    yield
+    _current_user_id.reset(token)
 
 
 class TestAttribution:

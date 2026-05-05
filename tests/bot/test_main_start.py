@@ -72,9 +72,14 @@ class TestStartLanguageContract:
     @pytest.mark.asyncio
     async def test_set_language_runs_before_first_translation_call(self):
         """Order matters: ``_set_lang`` must run before the first ``_(...)``,
-        otherwise ``reply_text`` ships the wrong locale even if the call is
-        made eventually. Verify by recording ordering of the two patched
-        callables on a single side-effect log."""
+        otherwise the welcome strings get translated against the previous
+        contextvar and the user sees the wrong locale. The earlier version
+        of this test asserted ordering relative to ``reply_text``, which is
+        too late — strings are translated when the message is built (one or
+        more ``_()`` calls), and that happens before ``reply_text`` is
+        awaited. Patch ``bot.main._`` directly and assert ``_set_lang`` ran
+        first.
+        """
         from bot.main import start
 
         update = _make_update(chat_id=999)
@@ -85,17 +90,20 @@ class TestStartLanguageContract:
         def _record_set_lang(lang):
             order.append(f"set_lang:{lang}")
 
-        async def _record_reply_text(*args, **kwargs):
-            order.append("reply_text")
-
-        update.message.reply_text = _record_reply_text
+        def _record_translate(text):
+            order.append("translate")
+            return text
 
         with (
             patch("bot.main.User.get_or_create_from_telegram", new=AsyncMock(return_value=user)),
             patch("bot.main._set_lang", side_effect=_record_set_lang),
+            patch("bot.main._", side_effect=_record_translate),
         ):
             await start(update, MagicMock())
 
-        assert order[0] == "set_lang:en"
-        assert "reply_text" in order
-        assert order.index("set_lang:en") < order.index("reply_text")
+        # _set_lang fires exactly once, BEFORE any _() call. If a future edit
+        # moves the assignment below the first translation, this assertion
+        # catches it on the first ``_()`` invocation.
+        assert order, "neither _set_lang nor _ was invoked"
+        assert order[0] == "set_lang:en", f"first event must be set_lang:en, got {order[0]!r} (full order: {order})"
+        assert "translate" in order, "expected at least one _() call after set_lang"
