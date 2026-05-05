@@ -114,7 +114,10 @@ class TestRateLimit:
             blocked = await create_github_issue(title="One too many", body="b")
 
         assert "error" in blocked
-        assert "Daily issue limit reached" in blocked["error"]
+        # Wording is fixed: "per 24h window" reads correctly near the boundary
+        # where a "Daily" cap with "~0.0h to go" would have been misleading.
+        assert "Issue creation limit reached" in blocked["error"]
+        assert "24h" in blocked["error"]
 
     async def test_second_user_unaffected_by_first_users_quota(self):
         """Sliding window is per-``user_id`` — exhausting tenant A must not
@@ -137,3 +140,129 @@ class TestRateLimit:
             ok_for_101 = await create_github_issue(title="From other user", body="b")
 
         assert "error" not in ok_for_101
+
+    async def test_invalid_request_does_not_consume_a_slot(self):
+        """Validation rejection (blank title) must NOT burn a rate-limit
+        slot. Otherwise an athlete spamming malformed calls could lock
+        themselves out for 24h before successfully filing one issue.
+        Regression guard for the bug Copilot caught (PR #301)."""
+        from mcp_server.tools.github import _ISSUE_RATE_MAX_PER_USER, create_github_issue
+
+        with patch(
+            "mcp_server.tools.github.create_issue",
+            new=AsyncMock(return_value={"number": 1, "url": "x", "title": "x"}),
+        ):
+            # Five rejected calls — should NOT touch the bucket.
+            for _ in range(_ISSUE_RATE_MAX_PER_USER):
+                bad = await create_github_issue(title="", body="b")
+                assert bad == {"error": "title is required"}
+
+            # All slots still available; 5 valid calls must succeed.
+            for i in range(_ISSUE_RATE_MAX_PER_USER):
+                ok = await create_github_issue(title=f"Real {i}", body="b")
+                assert "error" not in ok, f"valid call {i} blocked unexpectedly"
+
+    async def test_failed_upstream_does_not_consume_a_slot(self):
+        """If GitHub itself returns 500/422/etc., ``create_issue`` returns
+        ``{"error": ...}``. That call shouldn't burn a slot either — the
+        athlete didn't actually file an issue."""
+        from mcp_server.tools.github import _ISSUE_RATE_MAX_PER_USER, create_github_issue
+
+        upstream_fail = {"error": "GitHub API returned 500: server boom"}
+        with patch(
+            "mcp_server.tools.github.create_issue",
+            new=AsyncMock(return_value=upstream_fail),
+        ):
+            for _ in range(_ISSUE_RATE_MAX_PER_USER):
+                result = await create_github_issue(title="Whatever", body="b")
+                assert result == upstream_fail
+
+        # Now flip to success — all 5 slots must still be open.
+        with patch(
+            "mcp_server.tools.github.create_issue",
+            new=AsyncMock(return_value={"number": 1, "url": "x", "title": "x"}),
+        ):
+            for i in range(_ISSUE_RATE_MAX_PER_USER):
+                ok = await create_github_issue(title=f"Real {i}", body="b")
+                assert "error" not in ok
+
+
+class TestLabelsAllowList:
+    """Athletes can only set a small safe set of labels — repo-managed
+    triage / priority / area metadata is owner-only. Owner bypasses both
+    the filter and the rate limit. See ``docs/MULTI_TENANT_SECURITY.md`` §13.
+    """
+
+    async def test_athlete_labels_filtered_to_allow_list(self):
+        from types import SimpleNamespace
+
+        from mcp_server.tools.github import _ATHLETE_ALLOWED_LABELS, create_github_issue
+
+        # Athlete role — User.get_by_id returns a non-owner.
+        athlete = SimpleNamespace(role="athlete", username="bob", athlete_id="i1")
+        with (
+            patch("mcp_server.tools.github.User.get_by_id", new=AsyncMock(return_value=athlete)),
+            patch(
+                "mcp_server.tools.github.create_issue",
+                new=AsyncMock(return_value={"number": 1, "url": "x", "title": "x"}),
+            ) as mock_create,
+        ):
+            await create_github_issue(
+                title="Bug",
+                body="b",
+                labels=["bug", "priority/high", "area/auth", "needs-spec", "enhancement"],
+            )
+
+        forwarded = mock_create.await_args.kwargs["labels"]
+        assert set(forwarded) == {"bug", "enhancement"}
+        assert all(lbl in _ATHLETE_ALLOWED_LABELS for lbl in forwarded)
+
+    async def test_athlete_with_only_disallowed_labels_falls_back_to_none(self):
+        """If an athlete passes only triage labels, we drop them all and
+        forward ``None`` rather than an empty list — matches the
+        ``data.github.create_issue`` contract that None means "no labels"."""
+        from types import SimpleNamespace
+
+        from mcp_server.tools.github import create_github_issue
+
+        athlete = SimpleNamespace(role="athlete", username="bob", athlete_id="i1")
+        with (
+            patch("mcp_server.tools.github.User.get_by_id", new=AsyncMock(return_value=athlete)),
+            patch(
+                "mcp_server.tools.github.create_issue",
+                new=AsyncMock(return_value={"number": 1, "url": "x", "title": "x"}),
+            ) as mock_create,
+        ):
+            await create_github_issue(
+                title="Bug",
+                body="b",
+                labels=["priority/high", "area/auth", "needs-spec"],
+            )
+
+        assert mock_create.await_args.kwargs["labels"] is None
+
+    async def test_owner_keeps_full_label_control_and_skips_rate_limit(self):
+        from types import SimpleNamespace
+
+        from mcp_server.tools.github import _ISSUE_RATE_MAX_PER_USER, create_github_issue
+
+        owner = SimpleNamespace(role="owner", username="radik", athlete_id="i_owner")
+        with (
+            patch("mcp_server.tools.github.User.get_by_id", new=AsyncMock(return_value=owner)),
+            patch(
+                "mcp_server.tools.github.create_issue",
+                new=AsyncMock(return_value={"number": 1, "url": "x", "title": "x"}),
+            ) as mock_create,
+        ):
+            await create_github_issue(
+                title="Triage me",
+                body="b",
+                labels=["priority/high", "area/auth", "needs-spec"],
+            )
+            # Owner is exempt from the rate limit — well beyond athlete cap.
+            for i in range(_ISSUE_RATE_MAX_PER_USER + 5):
+                ok = await create_github_issue(title=f"Owner issue {i}", body="b")
+                assert "error" not in ok
+
+        first_call_labels = mock_create.await_args_list[0].kwargs["labels"]
+        assert first_call_labels == ["priority/high", "area/auth", "needs-spec"]

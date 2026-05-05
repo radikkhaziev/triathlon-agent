@@ -649,6 +649,18 @@ class TestComposeWorkoutPushDescription:
 
 
 class TestCreateExerciseCardValidation:
+    @pytest.fixture(autouse=True)
+    def _set_user_context(self):
+        # ``create_exercise_card`` reads ``get_current_user_id()`` early to
+        # gate ownership. Was previously relying on contextvar leakage from
+        # ``TestComposeWorkoutValidation`` running first; now that teardown
+        # is in place each class needs its own setup.
+        from mcp_server.context import _current_user_id
+
+        token = _current_user_id.set(1)
+        yield
+        _current_user_id.reset(token)
+
     async def test_path_traversal_blocked(self):
         from mcp_server.tools.workout_cards import create_exercise_card
 
@@ -699,6 +711,16 @@ class TestCreateExerciseCardValidation:
 
 
 class TestUpdateExerciseCardValidation:
+    @pytest.fixture(autouse=True)
+    def _set_user_context(self):
+        # See ``TestCreateExerciseCardValidation._set_user_context`` for the
+        # contextvar-leak rationale.
+        from mcp_server.context import _current_user_id
+
+        token = _current_user_id.set(1)
+        yield
+        _current_user_id.reset(token)
+
     async def test_path_traversal_blocked(self):
         from mcp_server.tools.workout_cards import update_exercise_card
 
