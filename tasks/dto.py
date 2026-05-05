@@ -19,10 +19,13 @@ To validate outside a model, use TypeAdapter::
 """
 
 import datetime as _dt
+import zoneinfo
 from datetime import date
 from typing import Annotated
 
 from pydantic import BaseModel, BeforeValidator
+
+from config import settings
 
 
 def _coerce_date(v: date | str | _dt.datetime) -> date:
@@ -32,6 +35,16 @@ def _coerce_date(v: date | str | _dt.datetime) -> date:
 
 
 DateDTO = Annotated[date, BeforeValidator(_coerce_date)]
+
+
+# Resolved once at import — ``zoneinfo.ZoneInfo`` caches by name, but going
+# through the cache on every actor tick still costs a hash + lookup. Settings
+# are immutable for the process lifetime so a module-level cache is safe.
+_LOCAL_TZ = zoneinfo.ZoneInfo(settings.TIMEZONE)
+
+
+def local_today() -> date:
+    return _dt.datetime.now(_LOCAL_TZ).date()
 
 
 class ORMDTO(BaseModel):

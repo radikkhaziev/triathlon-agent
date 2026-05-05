@@ -28,7 +28,7 @@ from data.db import (
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
 from data.workout_adapter import compute_constraints, needs_adaptation, parse_humango_description
-from tasks.dto import DateDTO
+from tasks.dto import local_today
 from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message
 from tasks.tools import MCPTool, TelegramTool
 
@@ -50,7 +50,7 @@ def actor_echo(message: str) -> str:
 @dramatiq.actor(queue_name="default")
 @validate_call
 def actor_user_scheduled_workouts(user: UserDTO):
-    today = DateDTO.today()
+    today = local_today()
     newest = today + timedelta(days=14)
 
     with IntervalsSyncClient.for_user(user) as client:
@@ -115,7 +115,7 @@ def _actor_send_user_morning_report(
         )
 
     # Workout adaptation check
-    today = DateDTO.today()
+    today = local_today()
 
     hrv_flatt = HrvAnalysis.get(
         user_id=user.id,
@@ -190,7 +190,7 @@ def _clear_sentinel(user_id: int, dt: str) -> None:
 def actor_compose_user_morning_report(
     user: UserDTO,
 ):
-    _dt = DateDTO.today().isoformat()
+    _dt = local_today().isoformat()
 
     # Transaction 1: short lock — claim the slot with sentinel, release immediately.
     # Prevents race: two concurrent actors both see ai_recommendation=None.
@@ -298,7 +298,7 @@ def actor_compose_weekly_report(user: UserDTO):
 def actor_compose_user_evening_report(
     user: UserDTO,
 ) -> None:
-    today = DateDTO.today()
+    today = local_today()
     _dt = today.isoformat()
 
     with get_sync_session() as session:

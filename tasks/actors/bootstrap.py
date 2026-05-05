@@ -22,7 +22,7 @@ from bot.i18n import _, set_language
 from data.db import Activity, User, UserBackfillState, UserDTO, Wellness, get_sync_session
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ActivityDTO, WellnessDTO
-from tasks.dto import DateDTO
+from tasks.dto import DateDTO, local_today
 from tasks.tools import TelegramTool
 
 from .activities import actor_update_activity_details
@@ -51,7 +51,7 @@ def actor_bootstrap_step(
         state = UserBackfillState.get(user.id, session=session)
 
         if state is None:
-            newest = date.today() - timedelta(days=1)
+            newest = local_today() - timedelta(days=1)
             state = UserBackfillState.start(
                 user_id=user.id,
                 period_days=period_days,

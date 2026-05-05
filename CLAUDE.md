@@ -383,10 +383,10 @@ Multi-stage build: Node 20 → React SPA, Python 3.12 → serves built assets. N
 
 ## Key Implementation Notes
 
-- **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00, weekly report Sunday 18:00
+- **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report at 19:00 (`misfire_grace_time=3600, coalesce=True`), weekly report Sunday 18:00 (`misfire_grace_time=7200, coalesce=True`), progression-model retrain Sunday 16:00 (`misfire_grace_time=7200, coalesce=True`). Misfire grace покрывает рестарт/деплой в окне cron-тика — без него APScheduler default `misfire_grace_time=1` молча теряет user-facing отчёт
 - **Both HRV algorithms** always computed; `HRV_ALGORITHM` selects primary
 - **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls. Prompt caching: **two `cache_control: ephemeral` segments** — `get_static_system_prompt()` (instructions, never changes) and `render_athlete_block(...)` (today + profile + goal + zones + facts + language). `save_fact` / goal update invalidates only the ~240-tok tail; the ~780-tok static prefix stays hot on Anthropic's prefix cache (see USER_CONTEXT_SPEC §6). Tool filtering: 6 groups, keyword-based, core+tracking+workouts always included (~75% token reduction for simple messages)
-- **All timestamps** UTC in DB, local timezone for display
+- **All timestamps** UTC in DB, local timezone for display. "Today" в actor'ах и формат-функциях всегда через `tasks.dto.local_today()` (Belgrade tz из `settings.TIMEZONE`), **не** через `date.today()` (контейнер уезжает в UTC если `TZ` env не задан). Контейнеры api/worker экспортируют `TZ=${TIMEZONE:-Europe/Belgrade}` плюс пакет `tzdata` в Dockerfile, так что `date.today()` тоже Belgrade — но `local_today()` остаётся каноном для нового кода.
 - **Telegram bot** — polling (local dev, `TELEGRAM_WEBHOOK_URL` empty) or webhook (production)
 - **Frontend** — React SPA via Vite; dev proxies /api to FastAPI; production serves from webapp/dist/
 - **i18n** — Backend: gettext (contextvars `_()`, `locale/` .po/.mo). Frontend: react-i18next (`webapp/src/i18n/` .json). User.language field, `"Respond in {response_language}"` in Claude prompts
@@ -419,7 +419,7 @@ Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**58 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), **long-term user memory** (`save_fact`/`list_facts`/`deactivate_fact`/`reactivate_fact`/`get_fact_metrics` — see `docs/USER_CONTEXT_SPEC.md`), GitHub issues, API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**58 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), **long-term user memory** (`save_fact`/`list_facts`/`deactivate_fact`/`reactivate_fact`/`get_fact_metrics` — see `docs/USER_CONTEXT_SPEC.md`), GitHub issues (`create_github_issue` athlete-доступен, sliding-window cap 5/24h на user, attribution в body — только `user_id` без `@username`/`athlete_id`, `title ≤ 200` / `body ≤ 8000` cap; см. `docs/MULTI_TENANT_SECURITY.md` §13), API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 

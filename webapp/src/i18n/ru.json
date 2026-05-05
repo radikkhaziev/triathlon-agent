@@ -71,7 +71,18 @@
     "undertraining": "Недогрузка",
     "optimal": "Оптимум",
     "productive_overreach": "Продуктивная перегрузка",
-    "overtraining_risk": "Риск перетренированности"
+    "overtraining_risk": "Риск перетренированности",
+    "week": {
+      "earlier": "← Раньше",
+      "later": "Позже →",
+      "this_week": "Эта неделя",
+      "no_activities": "Нет активностей",
+      "no_activities_window": "В этом окне нет активностей",
+      "tsb_under": "Недо",
+      "tsb_optimal": "Оптимум",
+      "tsb_productive": "Продуктив",
+      "tsb_risk": "Риск"
+    }
   },
   "wellness": {
     "title": "Здоровье",

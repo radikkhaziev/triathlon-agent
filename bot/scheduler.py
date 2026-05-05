@@ -232,12 +232,16 @@ async def create_scheduler() -> AsyncIOScheduler:
         hour=19,
         minute=0,
         id="scheduler_evening_report_job",
+        misfire_grace_time=3600,
+        coalesce=True,
     )
 
     scheduler.add_job(
         scheduler_weekly_report_job,
         trigger=CronTrigger(day_of_week="sun", hour=18, minute=0, timezone=settings.TIMEZONE),
         id="scheduler_weekly_report_job",
+        misfire_grace_time=7200,
+        coalesce=True,
     )
 
     scheduler.add_job(
@@ -252,6 +256,8 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_progression_model_job,
         trigger=CronTrigger(day_of_week="sun", hour=16, minute=0, timezone=settings.TIMEZONE),
         id="scheduler_progression_model_job",
+        misfire_grace_time=7200,
+        coalesce=True,
     )
 
     scheduler.add_job(

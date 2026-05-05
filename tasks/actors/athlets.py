@@ -1,7 +1,7 @@
 """Dramatiq actors — athlete settings (sync thresholds, update zones)."""
 
 import logging
-from datetime import date, timedelta
+from datetime import timedelta
 
 import dramatiq
 from pydantic import validate_call
@@ -9,7 +9,7 @@ from pydantic import validate_call
 from data.db import AthleteGoal, AthleteSettings, User, UserDTO
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
-from tasks.dto import DateDTO
+from tasks.dto import DateDTO, local_today
 
 from ..tools import TelegramTool
 
@@ -100,7 +100,7 @@ def actor_sync_athlete_goals(user: UserDTO):
     ``intervals_event_id``. Each genuinely new event triggers its own Telegram
     notification.
     """
-    today = date.today()
+    today = local_today()
     # Intervals.icu API drops category-filtered results unless newest is set explicitly —
     # reproduced on 2026-04-20 with user 5's RACE_A "Drina trail" 2026-05-05: without newest,
     # `?category=RACE_A` returns []; with newest ~2 years out it returns the event.

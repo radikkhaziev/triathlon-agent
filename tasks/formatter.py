@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date
 from typing import TYPE_CHECKING
 
 from bot.i18n import _, get_language
+from tasks.dto import local_today
 
 if TYPE_CHECKING:
     from data.db import Activity, ActivityHrv, Race, Wellness
@@ -402,7 +402,7 @@ def build_evening_message(
     tomorrow_workouts: list | None = None,
 ) -> str:
     """Build evening report message."""
-    today = date.today()
+    today = local_today()
     date_str = f"{today.day} {_get_months().get(today.month, '')}"
 
     lines: list[str] = [f"📊 {_('Итог дня')} — {date_str}", ""]

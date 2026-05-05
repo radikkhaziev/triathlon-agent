@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 VALID_SPORTS = frozenset({"Swim", "Ride", "Run", "Other"})
 
+# Sports for which we mirror the workout-card prefix into top-level
+# ``event.description`` so the URL is visible in Intervals.icu web UI.
+# Swim is excluded — Intervals.icu silently drops ``workout_doc.steps`` for
+# Swim events whenever ``event.description`` is set (regression observed
+# 2026-04-30, see ``PlannedWorkoutDTO.to_intervals_event`` docstring).
+_TOP_LEVEL_DESC_SPORTS = frozenset(VALID_SPORTS - {"Swim"})
+
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _TEMPLATES_DIR = os.path.join(_PROJECT_ROOT, "templates")
@@ -393,21 +400,29 @@ async def compose_workout(
                 target_date=dt,
             )
             event = pw.to_intervals_event()
-            # Override with compose_workout specifics. Description is nested
-            # inside workout_doc to dodge the Intervals.icu Swim-strip regression
-            # (see PlannedWorkoutDTO.to_intervals_event docstring).
+            # ``workout_doc.description`` is read by Garmin (sent down with the
+            # FIT). Intervals.icu web UI shows the top-level ``description`` —
+            # leaving it empty made the HTML link invisible there even though
+            # Garmin saw it. The Swim-strip regression that motivated nesting
+            # (see ``PlannedWorkoutDTO.to_intervals_event``) only triggers for
+            # Swim, so for any other sport we mirror the prefix into both
+            # fields and the athlete sees the link in both places.
             desc_prefix = f"Exercises: {len(exercises)}, ~{total_duration_min} min\n{url}"
             new_doc = dict(event.workout_doc or {})
             existing = new_doc.get("description")
             new_doc["description"] = f"{desc_prefix}\n\n{existing}" if existing else desc_prefix
-            event = event.model_copy(
-                update={
-                    "start_date_local": f"{date_str}T06:00:00",
-                    "name": name,  # no "AI:" prefix for workout cards
-                    "external_id": ext_id,
-                    "workout_doc": new_doc,
-                }
-            )
+            update = {
+                "start_date_local": f"{date_str}T06:00:00",
+                "name": name,  # no "AI:" prefix for workout cards
+                "external_id": ext_id,
+                "workout_doc": new_doc,
+            }
+            # Allow-list, not deny-list: a future ``OpenWaterSwim`` would
+            # silently re-trigger the steps-strip regression with the negative
+            # form. ``_TOP_LEVEL_DESC_SPORTS`` is the canonical safe set.
+            if sport in _TOP_LEVEL_DESC_SPORTS:
+                update["description"] = desc_prefix
+            event = event.model_copy(update=update)
             async with IntervalsAsyncClient.for_user(user_id) as client:
                 result = await client.create_event(event)
             intervals_id = result.id

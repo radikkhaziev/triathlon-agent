@@ -3,6 +3,7 @@ from datetime import date
 from data.db import ActivityDetail, AiWorkout, ThresholdFreshnessDTO, User, UserDTO, WellnessPostDTO, get_sync_session
 from data.intervals.dto import PlannedWorkoutDTO
 from data.ramp_tests import create_ramp_test
+from tasks.dto import local_today
 
 from .actors.workout import actor_push_workout
 
@@ -64,7 +65,7 @@ class RampTrainingSuggestion:
             sport = self.suggested_sport or "Run"
 
         if dt is None:
-            dt = date.today()
+            dt = local_today()
 
         upcoming = AiWorkout.get_upcoming(user_id=self.user.id, days_ahead=14)
         if any("Ramp Test" in (w.name or "") for w in upcoming):
