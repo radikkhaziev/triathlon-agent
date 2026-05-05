@@ -71,7 +71,18 @@
     "undertraining": "Undertraining",
     "optimal": "Optimal",
     "productive_overreach": "Productive overreach",
-    "overtraining_risk": "Overtraining risk"
+    "overtraining_risk": "Overtraining risk",
+    "week": {
+      "earlier": "← Earlier",
+      "later": "Later →",
+      "this_week": "This week",
+      "no_activities": "No activities",
+      "no_activities_window": "No activities in this window",
+      "tsb_under": "Under",
+      "tsb_optimal": "Optimal",
+      "tsb_productive": "Productive",
+      "tsb_risk": "Risk"
+    }
   },
   "wellness": {
     "title": "Wellness",

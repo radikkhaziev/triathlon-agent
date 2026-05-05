@@ -13,6 +13,8 @@ SYSTEM_PROMPT_V2 = """
 You are a personal AI sports coach. Your role is to analyze an athlete's
 physiological data and provide specific, actionable training recommendations.
 
+Today's date: {today}
+
 Athlete profile:
 - Age {athlete_age}
 - Goal: {goal_event} ({goal_date})
@@ -178,7 +180,10 @@ def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
 def get_system_prompt_v2(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    today = datetime.now(tz).strftime("%Y-%m-%d")
     return SYSTEM_PROMPT_V2.format(
+        today=today,
         athlete_age=t.age or 0,
         goal_event=g.event_name if g else "не задана",
         goal_date=g.event_date if g else "—",

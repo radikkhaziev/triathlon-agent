@@ -12,7 +12,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq-dev libgomp1 curl unzip && \
+    apt-get install -y --no-install-recommends libpq-dev libgomp1 curl unzip tzdata && \
     curl -sSL https://install.python-poetry.org | python3 - && \
     rm -rf /var/lib/apt/lists/*
 

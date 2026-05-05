@@ -526,6 +526,107 @@ class TestComposeWorkoutValidation:
 
 
 # ---------------------------------------------------------------------------
+# compose_workout — push-to-Intervals description routing
+#
+# Regression guard for the bug where the HTML link in the pushed event was
+# ONLY visible in Garmin (which reads ``workout_doc.description``) and NOT
+# in the Intervals.icu web UI (which reads top-level ``event.description``).
+# Fix: mirror prefix into top-level ``description`` for non-Swim sports.
+# Swim still goes only into ``workout_doc.description`` because Intervals
+# silently drops ``workout_doc.steps`` for Swim when top-level description
+# is set (see ``PlannedWorkoutDTO.to_intervals_event`` docstring).
+# ---------------------------------------------------------------------------
+
+
+class TestComposeWorkoutPushDescription:
+    @pytest.fixture(autouse=True)
+    def _set_user_context(self):
+        from mcp_server.context import set_current_user_id
+
+        set_current_user_id(1)
+
+    async def _push_and_capture_event(self, tmp_path, *, sport: str):
+        """Drive ``compose_workout`` through the push branch and return the
+        ``EventExDTO`` handed to ``client.create_event``."""
+        import mcp_server.tools.workout_cards as wc_module
+        from mcp_server.tools.workout_cards import compose_workout
+
+        captured: dict = {}
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def create_event(self, event):
+                captured["event"] = event
+                return SimpleNamespace(id="i_test_event_id")
+
+        card = _make_card(
+            exercise_id="dead_bug",
+            name_ru="Dead Bug",
+            default_sets=2,
+            default_reps=10,
+            default_duration_sec=30,
+        )
+        # workout_cards.py reads card.distance_m on the push path — the
+        # _make_card helper predates that field and doesn't set it.
+        card.distance_m = None
+
+        original_static = wc_module._STATIC_DIR
+        wc_module._STATIC_DIR = str(tmp_path)
+        try:
+            with (
+                patch(
+                    "mcp_server.tools.workout_cards.ExerciseCard.get_by_ids",
+                    new=AsyncMock(return_value=[card]),
+                ),
+                patch("mcp_server.tools.workout_cards.AiWorkout.save", new=AsyncMock()),
+                patch("mcp_server.tools.workout_cards.WorkoutCard.save", new=AsyncMock()),
+                patch(
+                    "mcp_server.tools.workout_cards.IntervalsAsyncClient.for_user",
+                    return_value=_FakeClient(),
+                ),
+                patch("mcp_server.tools.workout_cards.settings") as mock_settings,
+            ):
+                mock_settings.API_BASE_URL = "https://bot.example.com"
+                await compose_workout(
+                    name="Утренняя зарядка",
+                    exercises=[{"id": "dead_bug"}],
+                    target_date="2026-05-05",
+                    push_to_intervals=True,
+                    sport=sport,
+                )
+        finally:
+            wc_module._STATIC_DIR = original_static
+
+        assert "event" in captured, "create_event was never called"
+        return captured["event"]
+
+    async def test_non_swim_mirrors_url_into_top_level_description(self, tmp_path):
+        event = await self._push_and_capture_event(tmp_path, sport="Other")
+        # Top-level description carries the URL — visible in Intervals.icu web UI.
+        assert event.description is not None
+        assert "https://bot.example.com/static/workouts/" in event.description
+        # And workout_doc.description still has it for Garmin.
+        assert "https://bot.example.com/static/workouts/" in event.workout_doc.get("description", "")
+
+    def test_swim_excluded_from_top_level_desc_allow_list(self):
+        """End-to-end push for Swim is hard to drive (compose_workout's card
+        builder emits target-less steps which fail PlannedWorkoutDTO
+        validation, and pydantic's @model_validator can't be cleanly
+        monkeypatched per-test). Pin the allow-list constant directly —
+        adding "Swim" to it would re-trigger the Intervals workout_doc.steps
+        regression on Swim events."""
+        from mcp_server.tools.workout_cards import _TOP_LEVEL_DESC_SPORTS, VALID_SPORTS
+
+        assert "Swim" not in _TOP_LEVEL_DESC_SPORTS
+        assert _TOP_LEVEL_DESC_SPORTS == VALID_SPORTS - {"Swim"}
+
+
+# ---------------------------------------------------------------------------
 # create_exercise_card — ID validation gates DB call
 # ---------------------------------------------------------------------------
 

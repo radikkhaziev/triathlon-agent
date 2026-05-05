@@ -42,7 +42,7 @@ from data.hrv_activity import (
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
 from data.utils import HRV_ELIGIBLE_TYPES
-from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO
+from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO, local_today
 from tasks.formatter import build_post_activity_message, build_ramp_test_message, build_rpe_keyboard
 from tasks.tools import TelegramTool
 
@@ -467,7 +467,7 @@ def _actor_send_activity_notification(
     if hrv_row is None:
         hrv_row = ActivityHrv(activity_id=activity_id, activity_type=activity_row.type or "")
 
-    if activity_row.start_date_local != DateDTO.today().isoformat():
+    if activity_row.start_date_local != local_today().isoformat():
         return  # only notify for today's activities
 
     set_language(user.language or "ru")
@@ -594,7 +594,7 @@ def actor_fetch_user_activities(
     newest: DateDTO | None = None,
     force: bool = False,
 ):
-    today = DateDTO.today()
+    today = local_today()
     _newest = newest or today
     _oldest = oldest or (today - timedelta(days=30))
 

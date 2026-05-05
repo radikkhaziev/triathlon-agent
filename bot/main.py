@@ -82,6 +82,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user.bot_chat_initialized:
         await User.set_bot_chat_initialized(chat_id, True)
         user.bot_chat_initialized = True
+    _set_lang(user.language or "ru")
     logger.info("User resolved via /start: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
 
     # New users (no athlete_id) land in the onboarding flow — a button that

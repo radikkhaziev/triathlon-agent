@@ -156,7 +156,13 @@ function LoadTab() {
             { label: 'Run', data: dates.map(d => byDate[d].run), backgroundColor: CHART_COLORS.run + 'cc', borderRadius: 2 },
           ],
         },
-        options: { ...chartOptions('Daily TSS by Sport'), scales: { x: { stacked: true, ticks: { font: { size: 10 }, maxRotation: 45 } }, y: { stacked: true, ticks: { font: { size: 10 } } } } },
+        options: {
+          ...chartOptions('Daily TSS by Sport'),
+          scales: {
+            x: { stacked: true, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
+            y: { stacked: true, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } } },
+          },
+        },
       }))
     }
 
@@ -196,13 +202,13 @@ function LoadTab() {
           responsive: true,
           maintainAspectRatio: false,
           plugins: {
-            legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
-            title: { display: true, text: 'Recovery & HRV (21 days)', font: { size: 13 } },
+            legend: { position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 13 } } },
+            title: { display: true, text: 'Recovery & HRV (21 days)', font: { size: 14, weight: 'bold' } },
           },
           scales: {
-            x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45 } },
-            y: { min: 0, max: 100, grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } }, position: 'left' },
-            y1: { min: 30, max: 75, grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } }, position: 'right' },
+            x: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
+            y: { min: 0, max: 100, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } }, position: 'left' },
+            y1: { min: 30, max: 75, grid: { drawOnChartArea: false }, ticks: { font: { size: 12 } }, position: 'right' },
           },
         },
       }))
@@ -383,14 +389,15 @@ function formatWeekRange(weekStart: string, weekEnd: string): string {
   return `${start.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}`
 }
 
-function tsbZone(tsb: number): { label: string; color: string } {
-  if (tsb > 10) return { label: 'Under', color: TSB_ZONE_COLORS.under }
-  if (tsb >= -10) return { label: 'Optimal', color: TSB_ZONE_COLORS.optimal }
-  if (tsb >= -25) return { label: 'Productive', color: TSB_ZONE_COLORS.productive }
-  return { label: 'Risk', color: TSB_ZONE_COLORS.risk }
+function tsbZone(tsb: number, t: (k: string) => string): { label: string; color: string } {
+  if (tsb > 10) return { label: t('dashboard.week.tsb_under'), color: TSB_ZONE_COLORS.under }
+  if (tsb >= -10) return { label: t('dashboard.week.tsb_optimal'), color: TSB_ZONE_COLORS.optimal }
+  if (tsb >= -25) return { label: t('dashboard.week.tsb_productive'), color: TSB_ZONE_COLORS.productive }
+  return { label: t('dashboard.week.tsb_risk'), color: TSB_ZONE_COLORS.risk }
 }
 
 function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
+  const { t } = useTranslation()
   const { ctl_start, ctl_end, ctl_delta, tsb_end } = week
   // Bootstrap or pre-Intervals weeks have no wellness rows at the bookends —
   // render nothing rather than a half-rendered "CTL — → 73 (—)" row.
@@ -406,7 +413,7 @@ function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
         : ctl_delta < -0.5
           ? TSB_ZONE_COLORS.risk
           : 'var(--text-dim)'
-  const zone = tsb_end !== null ? tsbZone(tsb_end) : null
+  const zone = tsb_end !== null ? tsbZone(tsb_end, t) : null
   const tsbStr = tsb_end === null ? '—' : tsb_end > 0 ? `+${tsb_end.toFixed(0)}` : tsb_end.toFixed(0)
 
   return (
@@ -440,20 +447,25 @@ function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
 }
 
 function WeekCard({ week, isCurrent }: { week: WeeklyRecapBucket; isCurrent: boolean }) {
+  const { t } = useTranslation()
   const sports = WEEK_SPORT_ORDER.filter(s => week.by_sport[s])
   const totalTss = sports.reduce((a, s) => a + (week.by_sport[s]?.tss || 0), 0)
+  const totalSec = sports.reduce((a, s) => a + (week.by_sport[s]?.duration_sec || 0), 0)
 
   return (
     <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
       <div className="flex justify-between items-baseline mb-1">
         <div className="text-sm font-bold">
           {formatWeekRange(week.week_start, week.week_end)}
-          {isCurrent && <span className="ml-2 text-[10px] uppercase font-semibold text-text-dim">This week</span>}
+          {isCurrent && <span className="ml-2 text-[10px] uppercase font-semibold text-text-dim">{t('dashboard.week.this_week')}</span>}
         </div>
-        <div className="text-[13px] font-semibold">TSS {totalTss.toFixed(0)}</div>
+        <div className="text-[13px] font-semibold tabular-nums">
+          {totalSec > 0 && <span className="text-text-dim font-normal mr-2">{formatHm(totalSec)}</span>}
+          TSS {totalTss.toFixed(0)}
+        </div>
       </div>
       {sports.length === 0 ? (
-        <div className="text-[13px] text-text-dim py-1">No activities</div>
+        <div className="text-[13px] text-text-dim py-1">{t('dashboard.week.no_activities')}</div>
       ) : (
         sports.map(sport => {
           const s = week.by_sport[sport]
@@ -476,6 +488,7 @@ function WeekCard({ week, isCurrent }: { week: WeeklyRecapBucket; isCurrent: boo
 }
 
 function WeekTab() {
+  const { t } = useTranslation()
   const [recap, setRecap] = useState<WeeklyRecapResponse | null>(null)
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -518,7 +531,7 @@ function WeekTab() {
           disabled={!canPrev}
           className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
         >
-          ← Earlier
+          {t('dashboard.week.earlier')}
         </button>
         <span className="text-[12px] text-text-dim">{loading ? '…' : range}</span>
         <button
@@ -526,12 +539,12 @@ function WeekTab() {
           disabled={!canNext}
           className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
         >
-          Later →
+          {t('dashboard.week.later')}
         </button>
       </div>
 
       {recap.weeks.length === 0 ? (
-        <div className="text-center py-6 text-text-dim text-sm">No activities in this window</div>
+        <div className="text-center py-6 text-text-dim text-sm">{t('dashboard.week.no_activities_window')}</div>
       ) : (
         recap.weeks.map((w, i) => (
           <WeekCard key={w.week_start} week={w} isCurrent={offset === 0 && i === 0} />
@@ -544,7 +557,7 @@ function WeekTab() {
 function ChartContainer({ children }: { children: React.ReactNode }) {
   return (
     <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
-      <div style={{ maxHeight: 250 }}>{children}</div>
+      <div style={{ height: 280 }}>{children}</div>
     </div>
   )
 }
@@ -554,12 +567,12 @@ function chartOptions(title: string): Record<string, unknown> {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
-      title: { display: true, text: title, font: { size: 13 } },
+      legend: { position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 13 } } },
+      title: { display: true, text: title, font: { size: 14, weight: 'bold' } },
     },
     scales: {
-      x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45 } },
-      y: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } } },
+      x: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
+      y: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } } },
     },
   }
 }

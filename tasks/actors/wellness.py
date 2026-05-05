@@ -19,7 +19,7 @@ from data.metrics import (
     rmssd_ai_endurance,
     rmssd_flatt_esco,
 )
-from tasks.dto import ORMDTO, DateDTO
+from tasks.dto import ORMDTO, DateDTO, local_today
 
 from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update
 
@@ -259,7 +259,7 @@ def process_wellness_analysis_sync(user: UserDTO, wellness: WellnessDTO) -> None
     from .athlets import actor_sync_athlete_settings
 
     result: ORMDTO = Wellness.save(user_id=user.id, wellness=wellness)
-    dt: date = date.fromisoformat(wellness.id) if wellness.id else date.today()
+    dt: date = date.fromisoformat(wellness.id) if wellness.id else local_today()
 
     if not result.is_changed:
         # Still trigger training_log recompute for the day so activities get
@@ -292,7 +292,7 @@ def actor_user_wellness(
     from .athlets import actor_sync_athlete_settings
     from .reports import actor_compose_user_morning_report
 
-    today = DateDTO.today()
+    today = local_today()
     dt = dt or today
 
     if wellness is None:
@@ -340,7 +340,7 @@ def actor_user_wellness(
 
     _row: Wellness = result.row
     if (
-        _dt == DateDTO.today().isoformat()
+        _dt == local_today().isoformat()
         and not _row.ai_recommendation
         and _row.sleep_score is not None
         and _row.recovery_score is not None
