@@ -83,3 +83,38 @@ class TestCreateSchedulerJobConfig:
         assert activities is not None, "scheduler_activities_job is missing"
         assert getattr(wellness, "misfire_grace_time", None) in (None, 1)
         assert getattr(activities, "misfire_grace_time", None) in (None, 1)
+
+
+def _trigger_field(job, name: str) -> str:
+    """Return a CronTrigger field expression by name, e.g. 'mon-sat' for day_of_week."""
+    for field in job.trigger.fields:
+        if field.name == name:
+            return str(field)
+    raise AssertionError(f"field {name!r} not found on trigger {job.trigger!r}")
+
+
+class TestReportCronSchedule:
+    """The Sunday slot is occupied by the weekly report; the daily evening
+    report MUST skip Sunday or both fire 60 minutes apart and the user gets
+    two overlapping summaries. Pin the cron expressions so a future scheduler
+    edit can't silently re-introduce the duplicate."""
+
+    @pytest.mark.asyncio
+    async def test_evening_report_skips_sunday(self):
+        from bot.scheduler import create_scheduler
+
+        scheduler = await create_scheduler()
+        job = scheduler.get_job("scheduler_evening_report_job")
+        assert job is not None
+        assert _trigger_field(job, "day_of_week") == "mon-sat"
+        assert _trigger_field(job, "hour") == "19"
+
+    @pytest.mark.asyncio
+    async def test_weekly_report_runs_sunday_19h(self):
+        from bot.scheduler import create_scheduler
+
+        scheduler = await create_scheduler()
+        job = scheduler.get_job("scheduler_weekly_report_job")
+        assert job is not None
+        assert _trigger_field(job, "day_of_week") == "sun"
+        assert _trigger_field(job, "hour") == "19"

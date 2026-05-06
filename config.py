@@ -1,4 +1,4 @@
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -67,7 +67,18 @@ class Settings(BaseSettings):
     DEMO_PASSWORD: SecretStr = SecretStr("")
 
     # Strava signature: auto-rename activities with AI-generated promo title/description.
+    # Global kill-switch + per-user allowlist (CSV of user IDs). Both must pass for the
+    # rename actor to dispatch. Allowlist exists because coaching-adjacent surfaces
+    # (AI-generated descriptions) are in private beta — see docs/RACE_PLAN_SPEC.md §11.1.
     STRAVA_SIGNATURE_ENABLED: bool = False
+    STRAVA_SIGNATURE_USER_IDS: set[int] = {1}
+
+    @field_validator("STRAVA_SIGNATURE_USER_IDS", mode="before")
+    @classmethod
+    def _parse_user_id_set(cls, v):
+        if isinstance(v, str):
+            return {int(x) for x in v.split(",") if x.strip()}
+        return v
 
     # Video render service (video.endurai.me). Empty URL = feature disabled,
     # bot does not show the "🎬 Video (beta)" button after activities.

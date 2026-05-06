@@ -465,13 +465,16 @@ class TestDispatchFitness:
 class TestDispatchActivityUploaded:
     @pytest.mark.asyncio
     async def test_saves_and_dispatches_details_and_rename(self):
+        """User in STRAVA_SIGNATURE_USER_IDS allowlist → rename actor dispatched."""
         event = _make_event(ACTIVITY_UPLOADED_EVENT)
         user = _make_user_dto()
         with (
             patch("api.routers.intervals.webhook.Activity") as mock_activity,
             patch("api.routers.intervals.webhook.actor_update_activity_details") as mock_details,
             patch("api.routers.intervals.webhook.actor_rename_activity") as mock_rename,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
         ):
+            mock_settings.STRAVA_SIGNATURE_USER_IDS = {1}
             mock_activity.save_bulk = AsyncMock()
             await _dispatch_activity_uploaded(user, event)
             mock_activity.save_bulk.assert_called_once()
@@ -480,6 +483,29 @@ class TestDispatchActivityUploaded:
             rename_kwargs = mock_rename.send_with_options.call_args.kwargs
             assert rename_kwargs["kwargs"]["activity_id"] == "i317960-2026-04-16-abc123"
             assert rename_kwargs["delay"] == 300000  # 5 min
+
+    @pytest.mark.asyncio
+    async def test_skips_rename_when_user_not_in_allowlist(self):
+        """User outside STRAVA_SIGNATURE_USER_IDS → details dispatched, rename skipped.
+
+        Save + details run unconditionally; only the AI-rename actor is gated by
+        the private-beta allowlist. Without this gate, every tenant would enqueue
+        a no-op every upload.
+        """
+        event = _make_event(ACTIVITY_UPLOADED_EVENT)
+        user = _make_user_dto(id=42)
+        with (
+            patch("api.routers.intervals.webhook.Activity") as mock_activity,
+            patch("api.routers.intervals.webhook.actor_update_activity_details") as mock_details,
+            patch("api.routers.intervals.webhook.actor_rename_activity") as mock_rename,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.STRAVA_SIGNATURE_USER_IDS = {1}
+            mock_activity.save_bulk = AsyncMock()
+            await _dispatch_activity_uploaded(user, event)
+            mock_activity.save_bulk.assert_called_once()
+            mock_details.send.assert_called_once()
+            mock_rename.send_with_options.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_without_activity(self):
