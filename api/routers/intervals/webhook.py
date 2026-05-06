@@ -223,10 +223,11 @@ async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEven
     await Activity.save_bulk(user.id, [dto])
     actor_update_activity_details.send(user=user, activity_id=dto.id)
     # Delayed rename: 5 min after upload, rename with promo description
-    actor_rename_activity.send_with_options(
-        kwargs={"user": user, "activity_id": dto.id},
-        delay=5 * 60 * 1000,  # 5 minutes in milliseconds
-    )
+    if user.id == 1:
+        actor_rename_activity.send_with_options(
+            kwargs={"user": user, "activity_id": dto.id},
+            delay=5 * 60 * 1000,  # 5 minutes in milliseconds
+        )
 
 
 async def _dispatch_activity_updated(user: UserDTO, event: IntervalsWebhookEvent) -> None:
