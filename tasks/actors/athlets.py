@@ -59,6 +59,9 @@ def actor_sync_athlete_settings(
             elif primary == "Run":
                 pace = round(1000 / pace, 1)  # m/s → sec/km
 
+        # MMP model only on Ride sport_settings — Run/Swim payloads omit the block.
+        mmp = ss.mmp_model if primary == "Ride" else None
+
         AthleteSettings.upsert(
             user_id=user.id,
             sport=primary,
@@ -73,6 +76,10 @@ def actor_sync_athlete_settings(
             power_zone_names=ss.power_zone_names,
             pace_zones=ss.pace_zones,
             pace_zone_names=ss.pace_zone_names,
+            critical_power=mmp.critical_power if mmp else None,
+            w_prime=mmp.w_prime if mmp else None,
+            p_max=mmp.p_max if mmp else None,
+            mmp_ftp=mmp.ftp if mmp else None,
         )
         logger.info("Synced athlete_settings %s for user %d", primary, user.id)
 

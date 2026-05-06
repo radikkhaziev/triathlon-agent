@@ -66,6 +66,18 @@ class WellnessDTO(BaseModel):
         return {k: v for k, v in data.items() if k in sync_fields}
 
 
+class MmpModelDTO(BaseModel):
+    """Mean-Max Power model — only delivered for Ride sport_settings (Run/Swim omit)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: str | None = None
+    critical_power: float | None = Field(None, alias="criticalPower")
+    w_prime: float | None = Field(None, alias="wPrime")
+    p_max: float | None = Field(None, alias="pMax")
+    ftp: int | None = None
+
+
 class SportSettingsDTO(BaseModel):
     """Sport settings from Intervals.icu (GET /athlete/{id}/sport-settings/{type})."""
 
@@ -82,6 +94,7 @@ class SportSettingsDTO(BaseModel):
     power_zone_names: list[str] | None = None
     pace_zones: list[float] | None = None
     pace_zone_names: list[str] | None = None
+    mmp_model: MmpModelDTO | None = None
 
 
 class EventExDTO(BaseModel):
@@ -158,6 +171,36 @@ class ActivityDTO(BaseModel):
     sub_type: str | None = None
     source: str | None = None  # e.g. "GARMIN_CONNECT", "OAUTH_CLIENT", "STRAVA"
     icu_rpe: int | None = None  # Borg CR-10 (1-10), from Intervals.icu / Garmin
+
+    # WEBHOOK_DATA_CAPTURE Phase 1: rolling power model + fitness snapshot per
+    # activity. Arrive on ACTIVITY_ACHIEVEMENTS (~60s after upload) for every
+    # activity, regardless of whether a PR was hit. Persisted to activity_details
+    # via _dispatch_achievements.
+    trimp: float | None = None
+    carbs_used: int | None = None
+    icu_rolling_ftp: int | None = None
+    icu_rolling_ftp_delta: int | None = None
+    icu_rolling_w_prime: float | None = None
+    icu_rolling_p_max: float | None = None
+    icu_ctl: float | None = None
+    icu_atl: float | None = None
+    icu_achievements: list[dict] | None = None  # captured into activity_achievements (separate table)
+
+    # Outdoor weather block (indoor / virtual rides have has_weather=False and
+    # other fields None). Persisted to activity_weather via _dispatch_activity_uploaded.
+    has_weather: bool | None = None
+    average_weather_temp: float | None = None
+    min_weather_temp: float | None = None
+    max_weather_temp: float | None = None
+    average_feels_like: float | None = None
+    average_wind_speed: float | None = None
+    average_wind_gust: float | None = None
+    prevailing_wind_deg: int | None = None
+    headwind_percent: float | None = None
+    tailwind_percent: float | None = None
+    average_clouds: float | None = None
+    max_rain: float | None = None
+    max_snow: float | None = None
 
     @field_validator("icu_rpe", mode="before")
     @classmethod

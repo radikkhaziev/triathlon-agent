@@ -35,6 +35,12 @@ from .decorator import dual, with_session, with_sync_session
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for partial-update semantics in `ActivityDetail.patch`. Mirrors
+# the same pattern in data/db/athlete.py:30 (AthleteGoal.update_local_fields):
+# omitted kwarg → no-op, explicit None → clear, value → set. Keeps "I didn't
+# pass this" distinct from "I want to clear this".
+_UNSET: object = object()
+
 
 class Activity(Base):
     """Completed activity synced from Intervals.icu."""
@@ -504,6 +510,17 @@ class ActivityDetail(Base):
     intervals: Mapped[list | None] = mapped_column(JSON, nullable=True)
     pool_length: Mapped[float | None] = mapped_column(Float, nullable=True)  # meters (25 or 50)
 
+    # WEBHOOK_DATA_CAPTURE Phase 1 — populated from ACTIVITY_ACHIEVEMENTS webhook,
+    # not from the activities API endpoint. Filled by `ActivityDetail.patch` from
+    # `_dispatch_achievements`.
+    carbs_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rolling_ftp: Mapped[int | None] = mapped_column(Integer, nullable=True)  # current FTP at activity time
+    rolling_ftp_delta: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rolling_w_prime: Mapped[float | None] = mapped_column(Float, nullable=True)  # anaerobic capacity (J)
+    rolling_p_max: Mapped[float | None] = mapped_column(Float, nullable=True)  # peak power (W)
+    ctl_snapshot: Mapped[float | None] = mapped_column(Float, nullable=True)  # CTL at activity time
+    atl_snapshot: Mapped[float | None] = mapped_column(Float, nullable=True)  # ATL at activity time
+
     # Mapping: Intervals.icu JSON key → (ActivityDetail column, coerce fn).
     # Coercion guards against occasional string values from the API (e.g. pace
     # returned as "5:30") that would otherwise blow up at compare- or commit-time.
@@ -595,6 +612,138 @@ class ActivityDetail(Base):
             return {}
         result = await session.execute(select(cls).where(cls.activity_id.in_(activity_ids)))
         return {r.activity_id: r for r in result.scalars().all()}
+
+    @classmethod
+    @dual
+    def patch(
+        cls,
+        activity_id: str,
+        *,
+        session: Session,
+        carbs_used: int | None = _UNSET,  # type: ignore[assignment]
+        rolling_ftp: int | None = _UNSET,  # type: ignore[assignment]
+        rolling_ftp_delta: int | None = _UNSET,  # type: ignore[assignment]
+        rolling_w_prime: float | None = _UNSET,  # type: ignore[assignment]
+        rolling_p_max: float | None = _UNSET,  # type: ignore[assignment]
+        ctl_snapshot: float | None = _UNSET,  # type: ignore[assignment]
+        atl_snapshot: float | None = _UNSET,  # type: ignore[assignment]
+        trimp: float | None = _UNSET,  # type: ignore[assignment]
+    ) -> ActivityDetail | None:
+        """Partial update for fields populated outside the activities API response.
+
+        ACTIVITY_ACHIEVEMENTS webhook arrives ~60s after ACTIVITY_UPLOADED with
+        `icu_rolling_*`, `icu_ctl/atl`, `carbs_used` — these aren't in the
+        details endpoint. Use this to layer them onto an existing detail row
+        without disturbing the EF/zone fields written by `save()`.
+
+        Sentinel `_UNSET` semantics: omitted → no-op, explicit None → clear.
+        Creates the row if missing (achievements webhook can race ahead of the
+        details fetch on first sync). ``@dual`` keeps the method callable from
+        both sync actors and async dispatchers without blocking the event loop.
+        Concurrency: implemented as ``INSERT ... ON CONFLICT DO UPDATE`` so a
+        webhook redelivery racing the details fetch can't raise ``IntegrityError``.
+        """
+        candidates: dict[str, object] = {
+            "carbs_used": carbs_used,
+            "rolling_ftp": rolling_ftp,
+            "rolling_ftp_delta": rolling_ftp_delta,
+            "rolling_w_prime": rolling_w_prime,
+            "rolling_p_max": rolling_p_max,
+            "ctl_snapshot": ctl_snapshot,
+            "atl_snapshot": atl_snapshot,
+            "trimp": trimp,
+        }
+        fields = {col: val for col, val in candidates.items() if val is not _UNSET}
+        if not fields:
+            return session.get(cls, activity_id)
+
+        stmt = insert(cls).values(activity_id=activity_id, **fields)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["activity_id"],
+            set_={col: getattr(stmt.excluded, col) for col in fields},
+        ).returning(cls)
+        row = session.execute(stmt).scalar_one()
+        session.commit()
+        return row
+
+
+class ActivityWeather(Base):
+    """Outdoor weather block for activities — optional left-join.
+
+    Indoor / virtual rides have no weather, so we keep this off the main
+    `activity_details` to avoid 12 nullable columns. Populated from
+    ACTIVITY_UPLOADED webhook when `has_weather=True`.
+    """
+
+    __tablename__ = "activity_weather"
+
+    activity_id: Mapped[str] = mapped_column(String, ForeignKey("activities.id", ondelete="CASCADE"), primary_key=True)
+    avg_temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_feels_like_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_wind_speed_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_wind_gust_mps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prevailing_wind_deg: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    headwind_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tailwind_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_clouds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_rain_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_snow_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    @classmethod
+    @dual
+    def upsert_from_dto(cls, dto: ActivityDTO, *, session: Session) -> ActivityWeather:
+        """Upsert weather row from an ActivityDTO with `has_weather=True`.
+
+        Caller must check `dto.has_weather` first — this method does NOT short-
+        circuit on indoor activities; it would just write a row of NULLs.
+        ``@dual`` lets async webhook dispatchers and sync actors both call it
+        without blocking the FastAPI event loop on a psycopg2 round-trip.
+        """
+        stmt = insert(cls).values(
+            activity_id=dto.id,
+            avg_temp_c=dto.average_weather_temp,
+            min_temp_c=dto.min_weather_temp,
+            max_temp_c=dto.max_weather_temp,
+            avg_feels_like_c=dto.average_feels_like,
+            avg_wind_speed_mps=dto.average_wind_speed,
+            avg_wind_gust_mps=dto.average_wind_gust,
+            prevailing_wind_deg=dto.prevailing_wind_deg,
+            headwind_pct=dto.headwind_percent,
+            tailwind_pct=dto.tailwind_percent,
+            avg_clouds=dto.average_clouds,
+            max_rain_mm=dto.max_rain,
+            max_snow_mm=dto.max_snow,
+            captured_at=datetime.now(timezone.utc),
+        )
+        excl = stmt.excluded
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["activity_id"],
+            set_={
+                "avg_temp_c": excl.avg_temp_c,
+                "min_temp_c": excl.min_temp_c,
+                "max_temp_c": excl.max_temp_c,
+                "avg_feels_like_c": excl.avg_feels_like_c,
+                "avg_wind_speed_mps": excl.avg_wind_speed_mps,
+                "avg_wind_gust_mps": excl.avg_wind_gust_mps,
+                "prevailing_wind_deg": excl.prevailing_wind_deg,
+                "headwind_pct": excl.headwind_pct,
+                "tailwind_pct": excl.tailwind_pct,
+                "avg_clouds": excl.avg_clouds,
+                "max_rain_mm": excl.max_rain_mm,
+                "max_snow_mm": excl.max_snow_mm,
+                "captured_at": excl.captured_at,
+            },
+        ).returning(cls)
+        row = session.execute(stmt).scalar_one()
+        session.commit()
+        return row
 
 
 class Race(Base):

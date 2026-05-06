@@ -62,6 +62,14 @@ class AthleteSettings(Base):
     pace_zones: Mapped[list | None] = mapped_column(JSON, nullable=True)
     pace_zone_names: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Zone 1", "Zone 2", ...]
 
+    # WEBHOOK_DATA_CAPTURE Phase 1: MMP (Mean-Max Power) model from
+    # SPORT_SETTINGS_UPDATED.mmp_model. Only Ride sport_settings carries this
+    # block — Run/Swim rows leave these NULL.
+    critical_power: Mapped[float | None] = mapped_column(Float, nullable=True)
+    w_prime: Mapped[float | None] = mapped_column(Float, nullable=True)  # anaerobic capacity (J)
+    p_max: Mapped[float | None] = mapped_column(Float, nullable=True)  # peak power (W)
+    mmp_ftp: Mapped[int | None] = mapped_column(Integer, nullable=True)  # FTP from MMP curve (may differ from `ftp`)
+
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -90,6 +98,10 @@ class AthleteSettings(Base):
         power_zone_names: list | None = None,
         pace_zones: list | None = None,
         pace_zone_names: list | None = None,
+        critical_power: float | None = None,
+        w_prime: float | None = None,
+        p_max: float | None = None,
+        mmp_ftp: int | None = None,
         session: Session,
     ) -> AthleteSettings:
         now = datetime.now(timezone.utc)
@@ -107,6 +119,10 @@ class AthleteSettings(Base):
             power_zone_names=power_zone_names,
             pace_zones=pace_zones,
             pace_zone_names=pace_zone_names,
+            critical_power=critical_power,
+            w_prime=w_prime,
+            p_max=p_max,
+            mmp_ftp=mmp_ftp,
             synced_at=now,
         )
         # On conflict: keep existing value when new value is None (COALESCE)
@@ -125,6 +141,10 @@ class AthleteSettings(Base):
                 "power_zone_names": func.coalesce(excl.power_zone_names, cls.power_zone_names),
                 "pace_zones": func.coalesce(excl.pace_zones, cls.pace_zones),
                 "pace_zone_names": func.coalesce(excl.pace_zone_names, cls.pace_zone_names),
+                "critical_power": func.coalesce(excl.critical_power, cls.critical_power),
+                "w_prime": func.coalesce(excl.w_prime, cls.w_prime),
+                "p_max": func.coalesce(excl.p_max, cls.p_max),
+                "mmp_ftp": func.coalesce(excl.mmp_ftp, cls.mmp_ftp),
                 "synced_at": now,
                 "updated_at": now,
             },

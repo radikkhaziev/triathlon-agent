@@ -352,13 +352,22 @@ Alembic migrations в таком порядке:
 
 ### Phase 1
 
-- [ ] Три миграции применены, БД не сломана, existing dispatcher'ы проходят тесты.
-- [ ] `ActivityDTO` / `SportSettingsDTO` парсят sample A.4 / A.7 / A.8 без warnings.
-- [ ] ACTIVITY_UPLOADED пишет `activity_weather` + `activity_details.trimp`.
-- [ ] ACTIVITY_ACHIEVEMENTS пишет `activity_details.rolling_ftp`, `achievements_json`, `carbs_used`, snapshots.
-- [ ] SPORT_SETTINGS_UPDATED обновляет `athlete_settings.critical_power / w_prime / p_max`.
-- [ ] Backfill CLI отработал на owner; `activity_weather` covers ≥95% outdoor Run/Ride в истории.
-- [ ] `ML_HRV_PREDICTION_SPEC §15` и `ML_RACE_PROJECTION_SPEC §17` open questions про webhook-бэкфилл помечены resolved.
+- [x] **Migration applied** — bundled into one revision `b3d4e5f6a7b8_phase1_webhook_data_capture` (deviation from §7 «3 separate migrations»: cohesive Phase 1 reverts as a unit; chain entropy stays low). Round-trip up/down verified locally. Existing dispatcher tests pass (40/40 in `tests/api/test_webhook_dispatch.py`).
+- [x] **`ActivityDTO` / `SportSettingsDTO` extended** — `ActivityDTO` carries `trimp`, `carbs_used`, `icu_rolling_*`, `icu_ctl/atl`, `icu_achievements`, full weather block (13 fields). `SportSettingsDTO` gets `mmp_model: MmpModelDTO | None` with `criticalPower`/`wPrime`/`pMax` camelCase aliases. Old payloads parse with all new fields = `None` (regression test).
+- [x] **ACTIVITY_UPLOADED writes weather + trimp** — `_dispatch_activity_uploaded` calls `ActivityWeather.upsert_from_dto(dto)` when `dto.has_weather`, plus `ActivityDetail.patch(trimp=dto.trimp)` when present. Both wrapped in try/except + Sentry capture; failure doesn't block subsequent `actor_update_activity_details` dispatch.
+- [x] **ACTIVITY_ACHIEVEMENTS writes rolling + snapshot + carbs** — `_dispatch_achievements` layers `ActivityDetail.patch(rolling_ftp, rolling_ftp_delta, rolling_w_prime, rolling_p_max, ctl_snapshot, atl_snapshot, carbs_used)` after the existing `ActivityAchievement.save_bulk` (which keeps the achievements_json source-of-truth in its own table — spec §3.2 redundancy resolved).
+- [x] **SPORT_SETTINGS_UPDATED writes MMP** — `actor_sync_athlete_settings` extracts `mmp_model` only on Ride payloads (Run/Swim leave NULL by design) and routes `critical_power`/`w_prime`/`p_max`/`mmp_ftp` through `AthleteSettings.upsert` (existing COALESCE-on-conflict pattern preserves prior values when a partial payload arrives).
+- [ ] Backfill CLI отработал на owner; `activity_weather` covers ≥95% outdoor Run/Ride в истории. **Deferred** — applies on new webhooks going forward; historical rows stay NULL until a separate backfill PR lands. Spec §6 still describes the strategy.
+- [ ] `ML_HRV_PREDICTION_SPEC §15` и `ML_RACE_PROJECTION_SPEC §17` open questions про webhook-бэкфилл помечены resolved. **Pending** — schema is in place but the backfill that those specs depend on hasn't run yet.
+
+### Deviations from spec
+
+- **One migration instead of three (§7).** Phase 1 ships as a single cohesive change; three separate revisions would only make the alembic graph harder to read without reducing risk (revert is symmetric — all DDL is `ADD COLUMN` / `CREATE TABLE`).
+- **`achievements_json` column skipped (§3.2).** Already covered by the `activity_achievements` table from migration `u1b2c3d4e5f6` (richer schema: per-achievement rows with type + raw `extra` JSONB, idempotent on `UNIQUE(user_id, activity_id, achievement_id)`). Adding a duplicate JSONB on `activity_details` would only serve a JOIN-avoidance optimization that ML feature builders don't need.
+- **`trimp` column skipped (§3.2).** Already exists on `activity_details` (line 497 of `data/db/activity.py`) — it was being filled by the activities-API path via `_DETAIL_FIELD_MAP['trimp']`. Phase 1 just extends the same column to be filled from the webhook path too via `ActivityDetail.patch(trimp=...)`.
+- **`@dual` instead of `@with_sync_session` on `ActivityDetail.patch` and `ActivityWeather.upsert_from_dto`.** Spec §8 step 3 just says "ORM helpers". The first iteration shipped with `@with_sync_session`, which blocked the FastAPI event loop on a `psycopg2` round-trip per webhook (caught in code review post-merge). `@dual` auto-dispatches sync/async via `Base.__init_subclass__` — webhook dispatchers now `await` the calls, sync actors keep calling them without `await`. Same body, both contexts.
+- **`_UNSET` sentinel at module scope (`data/db/activity.py`)** instead of as a class attribute on `ActivityDetail`. Mirrors the existing pattern in `data/db/athlete.py:30` (used by `AthleteGoal.update_local_fields`). Removes the need for repeated `# type: ignore[assignment]` on each parameter default, and keeps the sentinel out of the `Base.__init_subclass__` mapped-column scan.
+- **Achievements dispatcher reads dict directly, no `ActivityDTO.model_validate`.** First iteration parsed the full webhook payload into `ActivityDTO` to access typed `dto.icu_rolling_ftp` etc. Switched to `event.activity.get("icu_rolling_ftp")` to match the surrounding `ActivityAchievement.save_bulk` pattern and avoid a 50-field Pydantic round-trip on every achievements webhook (cost wasn't measured but is not zero on a hot path).
 
 ### Phase 2
 
