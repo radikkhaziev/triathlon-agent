@@ -776,7 +776,13 @@ class MCPTool:
             logger.exception("Morning report generation failed for %s", _dt)
             return None
 
-    # Tools allowed in weekly report (no Garmin, no workout creation, no admin)
+    # Tools allowed in weekly report (no Garmin, no workout creation, no admin).
+    # Some entries (get_activities, get_hrv_analysis, get_recovery, get_rhr_analysis,
+    # get_wellness_range) aren't named in SYSTEM_PROMPT_WEEKLY explicitly — Claude
+    # discovers them via tools/list and uses them as fallback context. Don't trim
+    # without checking that the weekly section that depends on them still has data.
+    # The drift-test in tests/tasks/test_weekly_tool_names.py only catches the
+    # opposite direction (prompt mentions a tool that's NOT whitelisted).
     WEEKLY_TOOL_NAMES = {
         "get_weekly_summary",
         "get_personal_patterns",
@@ -790,6 +796,8 @@ class MCPTool:
         "get_hrv_analysis",
         "get_rhr_analysis",
         "get_recovery",
+        "get_polarization_index",
+        "get_progression_analysis",
     }
 
     def _list_mcp_tools(self, *, _retry: bool = True) -> list[dict]:

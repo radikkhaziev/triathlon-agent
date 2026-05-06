@@ -222,8 +222,11 @@ async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEven
     dto = ActivityDTO.model_validate(event.activity)
     await Activity.save_bulk(user.id, [dto])
     actor_update_activity_details.send(user=user, activity_id=dto.id)
-    # Delayed rename: 5 min after upload, rename with promo description
-    if user.id == 1:
+    # Delayed rename (5 min) — gated by per-user allowlist while AI-generated
+    # title/description are in private beta. Global kill-switch lives in the
+    # actor (settings.STRAVA_SIGNATURE_ENABLED); allowlist keeps the queue clean
+    # for tenants who would otherwise enqueue a no-op every upload.
+    if user.id in settings.STRAVA_SIGNATURE_USER_IDS:
         actor_rename_activity.send_with_options(
             kwargs={"user": user, "activity_id": dto.id},
             delay=5 * 60 * 1000,  # 5 minutes in milliseconds
