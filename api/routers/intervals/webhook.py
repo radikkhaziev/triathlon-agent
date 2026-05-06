@@ -13,7 +13,16 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from api.dto import IntervalsWebhookEvent, IntervalsWebhookPayload
 from config import settings
-from data.db import Activity, ActivityAchievement, FitnessProjection, User, UserDTO, get_session
+from data.db import (
+    Activity,
+    ActivityAchievement,
+    ActivityDetail,
+    ActivityWeather,
+    FitnessProjection,
+    User,
+    UserDTO,
+    get_session,
+)
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
 from tasks.actors import (
     actor_rename_activity,
@@ -45,6 +54,19 @@ _EVENT_RECORD_MODELS: dict[str, type[BaseModel] | None] = {
 }
 
 _KNOWN_EVENT_TYPES = frozenset(_EVENT_RECORD_MODELS.keys())
+
+# ACTIVITY_ACHIEVEMENTS payload key → ActivityDetail.patch kwarg. Only keys
+# actually present in `event.activity` are forwarded — see comment near the
+# patch call about preserving the `_UNSET` vs explicit-None contract.
+_ACHIEVEMENT_PATCH_FIELDS: dict[str, str] = {
+    "carbs_used": "carbs_used",
+    "icu_rolling_ftp": "rolling_ftp",
+    "icu_rolling_ftp_delta": "rolling_ftp_delta",
+    "icu_rolling_w_prime": "rolling_w_prime",
+    "icu_rolling_p_max": "rolling_p_max",
+    "icu_ctl": "ctl_snapshot",
+    "icu_atl": "atl_snapshot",
+}
 
 
 def _format_validation_errors(exc: ValidationError) -> list[str]:
@@ -185,6 +207,27 @@ async def _dispatch_achievements(user: UserDTO, event: IntervalsWebhookEvent) ->
                     activity_id,
                     e,
                 )
+
+            # WEBHOOK_DATA_CAPTURE Phase 1: layer rolling power model + CTL/ATL
+            # snapshot + carbs onto activity_details. The achievements webhook
+            # is the only place these arrive, regardless of whether a PR was
+            # hit. Read directly from the dict (matches `ActivityAchievement.
+            # save_bulk`'s style) — no Pydantic round-trip on every webhook.
+            # Pass only keys actually present in the payload — `patch()` treats
+            # explicit `None` as "clear", so a partial webhook (without e.g.
+            # `icu_rolling_ftp`) must NOT collide with the `_UNSET` sentinel.
+            try:
+                a = event.activity
+                patch_kwargs = {kw: a[src] for src, kw in _ACHIEVEMENT_PATCH_FIELDS.items() if src in a}
+                if patch_kwargs:
+                    await ActivityDetail.patch(str(activity_id), **patch_kwargs)
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                logger.warning(
+                    "ActivityDetail.patch(rolling/snapshot) failed for activity_id=%s: %s",
+                    activity_id,
+                    e,
+                )
     actor_send_achievement_notification.send(user=user, activity=event.activity)
 
 
@@ -221,6 +264,24 @@ async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEven
 
     dto = ActivityDTO.model_validate(event.activity)
     await Activity.save_bulk(user.id, [dto])
+
+    # WEBHOOK_DATA_CAPTURE Phase 1: persist weather + trimp before kicking off
+    # the details-fetch actor. Both come straight from the webhook payload, no
+    # extra API call. Indoor / virtual rides have has_weather=False — skip.
+    # `@dual` on each ORM method keeps the FastAPI event loop unblocked.
+    if dto.has_weather:
+        try:
+            await ActivityWeather.upsert_from_dto(dto)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            logger.warning("ActivityWeather.upsert_from_dto failed for %s: %s", dto.id, e)
+    if dto.trimp is not None:
+        try:
+            await ActivityDetail.patch(dto.id, trimp=dto.trimp)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            logger.warning("ActivityDetail.patch(trimp) failed for %s: %s", dto.id, e)
+
     actor_update_activity_details.send(user=user, activity_id=dto.id)
     # Delayed rename (5 min) — gated by per-user allowlist while AI-generated
     # title/description are in private beta. Global kill-switch lives in the

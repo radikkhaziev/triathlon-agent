@@ -120,6 +120,75 @@ ACTIVITY_UPLOADED_EVENT = {
     "records": [],
 }
 
+ACTIVITY_UPLOADED_WITH_WEATHER_EVENT = {
+    "athlete_id": "i317960",
+    "type": "ACTIVITY_UPLOADED",
+    "timestamp": "2026-05-06T08:00:00.000+00:00",
+    "activity": {
+        "id": "i317960-2026-05-06-outdoor",
+        "start_date_local": "2026-05-06T08:00:00",
+        "type": "Run",
+        "moving_time": 3600,
+        "distance": 10000,
+        "trimp": 87.4,
+        "has_weather": True,
+        "average_weather_temp": 18.2,
+        "min_weather_temp": 14.0,
+        "max_weather_temp": 22.5,
+        "average_feels_like": 17.8,
+        "average_wind_speed": 3.5,
+        "average_wind_gust": 6.1,
+        "prevailing_wind_deg": 200,
+        "headwind_percent": 35.0,
+        "tailwind_percent": 65.0,
+        "average_clouds": 25.0,
+        "max_rain": 0.0,
+        "max_snow": 0.0,
+    },
+    "records": [],
+}
+
+ACTIVITY_UPLOADED_INDOOR_WITH_TRIMP_EVENT = {
+    # Indoor / trainer rides have has_weather=False but still carry trimp.
+    # Catches the regression where someone wraps both writes in the same
+    # `if dto.has_weather` block.
+    "athlete_id": "i317960",
+    "type": "ACTIVITY_UPLOADED",
+    "timestamp": "2026-05-06T19:00:00.000+00:00",
+    "activity": {
+        "id": "i317960-2026-05-06-trainer",
+        "start_date_local": "2026-05-06T19:00:00",
+        "type": "VirtualRide",
+        "moving_time": 3000,
+        "trimp": 65.2,
+        "has_weather": False,
+    },
+    "records": [],
+}
+
+SPORT_SETTINGS_WITH_MMP_EVENT = {
+    "athlete_id": "i317960",
+    "type": "SPORT_SETTINGS_UPDATED",
+    "timestamp": "2026-05-06T12:00:00.000+00:00",
+    "sportSettings": [
+        {
+            "id": 10,
+            "types": ["Ride", "VirtualRide"],
+            "lthr": 163,
+            "max_hr": 179,
+            "ftp": 250,
+            "mmp_model": {
+                "type": "CP",
+                "criticalPower": 245.5,
+                "wPrime": 25000.0,
+                "pMax": 1100.0,
+                "ftp": 250,
+            },
+        },
+    ],
+    "records": [],
+}
+
 ACTIVITY_DELETED_EVENT = {
     "athlete_id": "i317960",
     "type": "ACTIVITY_DELETED",
@@ -282,6 +351,34 @@ class TestDispatchSportSettings:
             assert len(call_kwargs["sport_settings"]) == 2
             assert call_kwargs["sport_settings"][0].lthr == 163
 
+    def test_parses_mmp_model_for_ride(self):
+        """SPORT_SETTINGS_UPDATED with mmp_model block (Ride only) → SportSettingsDTO
+        carries critical_power / w_prime / p_max for downstream actor to persist.
+
+        The actor wires these through to AthleteSettings.upsert; here we verify
+        the DTO parsing is the source-of-truth (handler-side regression catches
+        any future alias drift on criticalPower / wPrime / pMax)."""
+        event = _make_event(SPORT_SETTINGS_WITH_MMP_EVENT)
+        user = _make_user_dto()
+        with patch("api.routers.intervals.webhook.actor_sync_athlete_settings") as mock:
+            _dispatch_sport_settings(user, event)
+            mock.send.assert_called_once()
+            settings_arg = mock.send.call_args.kwargs["sport_settings"][0]
+            assert settings_arg.mmp_model is not None
+            assert settings_arg.mmp_model.critical_power == 245.5
+            assert settings_arg.mmp_model.w_prime == 25000.0
+            assert settings_arg.mmp_model.p_max == 1100.0
+            assert settings_arg.mmp_model.ftp == 250
+
+    def test_run_settings_have_no_mmp_model(self):
+        """Run/Swim sport_settings payloads omit mmp_model — DTO must default to None."""
+        event = _make_event(SPORT_SETTINGS_UPDATED_EVENT)
+        user = _make_user_dto()
+        with patch("api.routers.intervals.webhook.actor_sync_athlete_settings") as mock:
+            _dispatch_sport_settings(user, event)
+            for ss in mock.send.call_args.kwargs["sport_settings"]:
+                assert ss.mmp_model is None
+
 
 class TestDispatchScopeChanged:
     @pytest.mark.asyncio
@@ -333,13 +430,24 @@ class TestDispatchAchievements:
                 new=AsyncMock(return_value=True),
             ),
             patch("api.routers.intervals.webhook.ActivityAchievement.save_bulk", new=AsyncMock(return_value=1)),
+            patch("api.routers.intervals.webhook.ActivityDetail") as mock_detail,
             patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock,
         ):
+            mock_detail.patch = AsyncMock()  # @dual returns awaitable in async dispatcher context
             await _dispatch_achievements(user, event)
             mock.send.assert_called_once()
             call_kwargs = mock.send.call_args.kwargs
             assert call_kwargs["user"] == user
             assert call_kwargs["activity"]["icu_rolling_ftp"] == 210
+
+            # WEBHOOK_DATA_CAPTURE Phase 1 contract: rolling power model + CTL/ATL
+            # snapshot get layered onto activity_details from the achievements payload.
+            mock_detail.patch.assert_called_once()
+            patch_kwargs = mock_detail.patch.call_args.kwargs
+            assert patch_kwargs["rolling_ftp"] == 210
+            assert patch_kwargs["rolling_ftp_delta"] == 2
+            assert patch_kwargs["ctl_snapshot"] == 19.49
+            assert patch_kwargs["atl_snapshot"] == 38.01
 
     @pytest.mark.asyncio
     async def test_skips_persist_when_activity_unknown_to_user(self):
@@ -358,11 +466,17 @@ class TestDispatchAchievements:
                 "api.routers.intervals.webhook.ActivityAchievement.save_bulk",
                 new=AsyncMock(),
             ) as mock_save,
+            patch("api.routers.intervals.webhook.ActivityDetail") as mock_detail,
             patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock_notify,
         ):
+            mock_detail.patch = AsyncMock()
             await _dispatch_achievements(user, event)
 
         mock_save.assert_not_called()
+        # Same guard must protect ActivityDetail.patch — both writes live inside the
+        # `else: exists_for_user` branch. Locks in the multi-tenant invariant against
+        # an accidental refactor that flattens the branches.
+        mock_detail.patch.assert_not_called()
         mock_notify.send.assert_called_once()
 
     @pytest.mark.asyncio
@@ -429,13 +543,21 @@ class TestDispatchAchievements:
                 "api.routers.intervals.webhook.ActivityAchievement.save_bulk",
                 new=AsyncMock(side_effect=RuntimeError("DB down")),
             ),
+            # Stub ActivityDetail.patch — without this it would FK-violate against
+            # the empty test DB and add a second Sentry capture call, drowning out
+            # the assertion about achievement-save isolation. AsyncMock because
+            # patch is awaited from the async dispatcher (via @dual).
+            patch("api.routers.intervals.webhook.ActivityDetail.patch", new=AsyncMock()),
             patch("api.routers.intervals.webhook.actor_send_achievement_notification") as mock_notify,
             patch("api.routers.intervals.webhook.sentry_sdk.capture_exception") as mock_capture,
         ):
             await _dispatch_achievements(user, event)
 
         mock_notify.send.assert_called_once()
-        mock_capture.assert_called_once()
+        # Explicit count + isinstance: count guards against silent drift if a future
+        # dispatcher change adds another exception path; isinstance pins which one we caught.
+        assert mock_capture.call_count == 1, mock_capture.call_args_list
+        assert isinstance(mock_capture.call_args.args[0], RuntimeError)
 
 
 class TestDispatchFitness:
@@ -515,6 +637,89 @@ class TestDispatchActivityUploaded:
             mock_activity.save_bulk = AsyncMock()
             await _dispatch_activity_uploaded(user, event)
             mock_activity.save_bulk.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_persists_weather_and_trimp_for_outdoor_activity(self):
+        """ACTIVITY_UPLOADED with has_weather=True → ActivityWeather row + trimp patched.
+
+        WEBHOOK_DATA_CAPTURE Phase 1: the webhook delivers weather + trimp inline
+        on the activity payload — no extra API call needed. Verify both write
+        paths fire from the same dispatch.
+        """
+        event = _make_event(ACTIVITY_UPLOADED_WITH_WEATHER_EVENT)
+        user = _make_user_dto()
+        with (
+            patch("api.routers.intervals.webhook.Activity") as mock_activity,
+            patch("api.routers.intervals.webhook.actor_update_activity_details"),
+            patch("api.routers.intervals.webhook.actor_rename_activity"),
+            patch("api.routers.intervals.webhook.ActivityWeather") as mock_weather,
+            patch("api.routers.intervals.webhook.ActivityDetail") as mock_detail,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.STRAVA_SIGNATURE_USER_IDS = set()  # rename gated off — irrelevant here
+            mock_activity.save_bulk = AsyncMock()
+            mock_weather.upsert_from_dto = AsyncMock()  # @dual — awaited from async dispatcher
+            mock_detail.patch = AsyncMock()
+            await _dispatch_activity_uploaded(user, event)
+
+            mock_weather.upsert_from_dto.assert_called_once()
+            dto_arg = mock_weather.upsert_from_dto.call_args.args[0]
+            assert dto_arg.id == "i317960-2026-05-06-outdoor"
+            assert dto_arg.average_weather_temp == 18.2
+            assert dto_arg.has_weather is True
+
+            mock_detail.patch.assert_called_once()
+            patch_kwargs = mock_detail.patch.call_args.kwargs
+            assert patch_kwargs["trimp"] == 87.4
+
+    @pytest.mark.asyncio
+    async def test_persists_trimp_for_indoor_activity(self):
+        """has_weather=False but trimp present → weather skipped, trimp patched.
+        Regression guard: if both writes ever get wrapped in a single
+        `if dto.has_weather` block, indoor sessions stop contributing trimp
+        to the HRV-prediction feature builder."""
+        event = _make_event(ACTIVITY_UPLOADED_INDOOR_WITH_TRIMP_EVENT)
+        user = _make_user_dto()
+        with (
+            patch("api.routers.intervals.webhook.Activity") as mock_activity,
+            patch("api.routers.intervals.webhook.actor_update_activity_details"),
+            patch("api.routers.intervals.webhook.actor_rename_activity"),
+            patch("api.routers.intervals.webhook.ActivityWeather") as mock_weather,
+            patch("api.routers.intervals.webhook.ActivityDetail") as mock_detail,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.STRAVA_SIGNATURE_USER_IDS = set()
+            mock_activity.save_bulk = AsyncMock()
+            mock_weather.upsert_from_dto = AsyncMock()
+            mock_detail.patch = AsyncMock()
+            await _dispatch_activity_uploaded(user, event)
+
+            mock_weather.upsert_from_dto.assert_not_called()
+            mock_detail.patch.assert_called_once()
+            assert mock_detail.patch.call_args.kwargs["trimp"] == 65.2
+
+    @pytest.mark.asyncio
+    async def test_skips_weather_when_indoor(self):
+        """has_weather=False (indoor / virtual ride) → no weather row written."""
+        event = _make_event(ACTIVITY_UPLOADED_EVENT)  # has no has_weather field
+        user = _make_user_dto()
+        with (
+            patch("api.routers.intervals.webhook.Activity") as mock_activity,
+            patch("api.routers.intervals.webhook.actor_update_activity_details"),
+            patch("api.routers.intervals.webhook.actor_rename_activity"),
+            patch("api.routers.intervals.webhook.ActivityWeather") as mock_weather,
+            patch("api.routers.intervals.webhook.ActivityDetail") as mock_detail,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.STRAVA_SIGNATURE_USER_IDS = set()
+            mock_activity.save_bulk = AsyncMock()
+            mock_weather.upsert_from_dto = AsyncMock()
+            mock_detail.patch = AsyncMock()
+            await _dispatch_activity_uploaded(user, event)
+
+            mock_weather.upsert_from_dto.assert_not_called()
+            # No trimp in this fixture either → no patch call.
+            mock_detail.patch.assert_not_called()
 
 
 class TestDispatchActivityUpdated:
