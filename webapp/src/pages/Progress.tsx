@@ -6,6 +6,7 @@ import Layout from '../components/Layout'
 import TabSwitcher from '../components/TabSwitcher'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
+import { ChartCard, chartOptions } from '../components/ChartCard'
 import { useApi } from '../hooks/useApi'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
@@ -169,9 +170,9 @@ function EFChart({ data, sport }: { data: ProgressResponse; sport: Sport }) {
   }, [data, sport])
 
   return (
-    <ChartContainer>
+    <ChartCard>
       <canvas ref={chartRef} />
-    </ChartContainer>
+    </ChartCard>
   )
 }
 
@@ -212,7 +213,7 @@ function DecouplingChart({ data, sport }: { data: ProgressResponse; sport: Sport
         maintainAspectRatio: false,
         plugins: {
           legend: { display: false },
-          title: { display: true, text: `Cardiac Drift — ${sport === 'bike' ? 'Bike' : 'Run'}`, font: { size: 13 } },
+          title: { display: true, text: `Cardiac Drift — ${sport === 'bike' ? 'Bike' : 'Run'}`, font: { size: 14, weight: 'bold' } },
           annotation: {
             annotations: {
               greenZone: {
@@ -262,16 +263,18 @@ function DecouplingChart({ data, sport }: { data: ProgressResponse; sport: Sport
             type: 'linear',
             display: true,
             ticks: {
-              font: { size: 10 },
+              font: { size: 12 },
               callback: (val) => labels[val as number] || '',
               maxRotation: 45,
+              autoSkip: true,
+              maxTicksLimit: 10,
             },
-            grid: { color: 'rgba(128,128,128,0.15)' },
+            grid: { color: 'rgba(128,128,128,0.2)' },
           },
           y: {
-            grid: { color: 'rgba(128,128,128,0.15)' },
+            grid: { color: 'rgba(128,128,128,0.2)' },
             ticks: {
-              font: { size: 10 },
+              font: { size: 12 },
               callback: (val) => `${val}%`,
             },
           },
@@ -285,9 +288,9 @@ function DecouplingChart({ data, sport }: { data: ProgressResponse; sport: Sport
   if (activities.length < 2) return null
 
   return (
-    <ChartContainer>
+    <ChartCard>
       <canvas ref={chartRef} />
-    </ChartContainer>
+    </ChartCard>
   )
 }
 
@@ -360,8 +363,8 @@ function SwimCharts({ data }: { data: ProgressResponse }) {
 
   return (
     <>
-      <ChartContainer><canvas ref={paceRef} /></ChartContainer>
-      {hasSwolf && <ChartContainer><canvas ref={swolfRef} /></ChartContainer>}
+      <ChartCard><canvas ref={paceRef} /></ChartCard>
+      {hasSwolf && <ChartCard><canvas ref={swolfRef} /></ChartCard>}
     </>
   )
 }
@@ -705,8 +708,8 @@ function FitnessProjectionChart() {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 }, filter: (item) => !item.text.includes('projection') } },
-          title: { display: true, text: 'Fitness Projection (CTL / ATL)', font: { size: 13 } },
+          legend: { position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 13 }, filter: (item) => !item.text.includes('projection') } },
+          title: { display: true, text: 'Fitness Projection (CTL / ATL)', font: { size: 14, weight: 'bold' } },
           annotation: todayIdx >= 0 ? {
             annotations: {
               todayLine: {
@@ -716,14 +719,14 @@ function FitnessProjectionChart() {
                 borderColor: 'rgba(128,128,128,0.5)',
                 borderWidth: 1,
                 borderDash: [4, 4],
-                label: { content: 'Today', display: true, position: 'start', font: { size: 10 } },
+                label: { content: 'Today', display: true, position: 'start', font: { size: 11 } },
               },
             },
           } : {},
         },
         scales: {
-          x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45, maxTicksLimit: 12 } },
-          y: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } } },
+          x: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
+          y: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } } },
         },
       },
     })
@@ -734,9 +737,9 @@ function FitnessProjectionChart() {
   if (!projection || projection.count === 0) return null
 
   return (
-    <ChartContainer>
+    <ChartCard>
       <canvas ref={chartRef} />
-    </ChartContainer>
+    </ChartCard>
   )
 }
 
@@ -750,27 +753,4 @@ function EmptyState({ sport }: { sport: Sport }) {
       <div className="text-[12px] mt-1">Complete steady-state workouts to track progress</div>
     </div>
   )
-}
-
-function ChartContainer({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
-      <div style={{ maxHeight: 250 }}>{children}</div>
-    </div>
-  )
-}
-
-function chartOptions(title: string): Record<string, unknown> {
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { position: 'top', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } },
-      title: { display: true, text: title, font: { size: 13 } },
-    },
-    scales: {
-      x: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 }, maxRotation: 45 } },
-      y: { grid: { color: 'rgba(128,128,128,0.15)' }, ticks: { font: { size: 10 } } },
-    },
-  }
 }
