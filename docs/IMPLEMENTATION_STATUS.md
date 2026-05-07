@@ -77,6 +77,18 @@ Migration `b3d4e5f6a7b8`, see `docs/WEBHOOK_DATA_CAPTURE_SPEC.md`. Three new per
 
 ---
 
+## Webhook data capture — Phase 2
+
+Migration `c4d5e6f7a8b9`, see `docs/WEBHOOK_DATA_CAPTURE_SPEC.md` Phase 2. Three nullable columns on `activity_details` populated from ACTIVITY_UPLOADED inline:
+
+- `warmup_time_sec` (INT) — `activity.icu_warmup_time`
+- `cooldown_time_sec` (INT) — `activity.icu_cooldown_time`
+- `polarization_index` (REAL) — `activity.polarization_index`
+
+`ActivityDTO` extended with the three matching optional fields. `ActivityDetail.patch` extended with `_UNSET`-default kwargs. `_dispatch_activity_uploaded` now builds a single `upload_patch` dict (skipping `None`) for trimp + Phase 2 fields and calls `ActivityDetail.patch` once — Phase 1 trimp behavior preserved, three new fields land in the same call. Backfill deferred (spec §6 marks Phase 2 backfill as "⚠ Не срочно"); historical rows stay NULL until a separate backfill PR lands.
+
+---
+
 ## Bot-chat gate (issue #266)
 
 `users.bot_chat_initialized` flag tracks whether the user has actually opened a chat with the bot — Login Widget signups land with `False` because Telegram bots can't initiate chats. Set `True` in `bot/main.py:start` and `handle_my_chat_member` MEMBER transition. Read by:

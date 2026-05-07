@@ -275,12 +275,30 @@ async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEven
         except Exception as e:
             sentry_sdk.capture_exception(e)
             logger.warning("ActivityWeather.upsert_from_dto failed for %s: %s", dto.id, e)
+    # WEBHOOK_DATA_CAPTURE Phase 1 + 2: trimp (Phase 1) + warmup/cooldown/
+    # polarization (Phase 2) all ride along on ACTIVITY_UPLOADED. Skip None
+    # values so the _UNSET sentinel preserves whatever was already written
+    # (e.g. by a redelivered webhook or out-of-order details fetch).
+    upload_patch: dict[str, object] = {}
     if dto.trimp is not None:
+        upload_patch["trimp"] = dto.trimp
+    if dto.icu_warmup_time is not None:
+        upload_patch["warmup_time_sec"] = dto.icu_warmup_time
+    if dto.icu_cooldown_time is not None:
+        upload_patch["cooldown_time_sec"] = dto.icu_cooldown_time
+    if dto.polarization_index is not None:
+        upload_patch["polarization_index"] = dto.polarization_index
+    if upload_patch:
         try:
-            await ActivityDetail.patch(dto.id, trimp=dto.trimp)
+            await ActivityDetail.patch(dto.id, **upload_patch)
         except Exception as e:
             sentry_sdk.capture_exception(e)
-            logger.warning("ActivityDetail.patch(trimp) failed for %s: %s", dto.id, e)
+            logger.warning(
+                "ActivityDetail.patch(%s) failed for %s: %s",
+                ",".join(upload_patch.keys()),
+                dto.id,
+                e,
+            )
 
     actor_update_activity_details.send(user=user, activity_id=dto.id)
     # Delayed rename (5 min) — gated by per-user allowlist while AI-generated

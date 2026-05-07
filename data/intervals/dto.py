@@ -202,6 +202,13 @@ class ActivityDTO(BaseModel):
     max_rain: float | None = None
     max_snow: float | None = None
 
+    # WEBHOOK_DATA_CAPTURE Phase 2: warmup/cooldown durations + polarization
+    # index. Arrive on ACTIVITY_UPLOADED inline; persisted to activity_details
+    # via _dispatch_activity_uploaded.
+    icu_warmup_time: int | None = None  # seconds
+    icu_cooldown_time: int | None = None  # seconds
+    polarization_index: float | None = None
+
     @field_validator("icu_rpe", mode="before")
     @classmethod
     def _validate_rpe(cls, v: Any) -> int | None:

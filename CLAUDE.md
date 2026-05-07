@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 + Intervals.icu OAuth Phase 2 + OAuth bootstrap backfill Phase 1+2 + Webhook data capture Phase 1 + User-memory facts Phase 1 complete. Webhook dispatchers 8/10 implemented. **Pending:** ATP Phase 3 personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy `INTERVALS_API_KEY`, user-memory Phase 2 extractor.
+All core modules done. Multi-tenant Phase 1.3 + Intervals.icu OAuth Phase 2 + OAuth bootstrap backfill Phase 1+2 + Webhook data capture Phase 1+2 + User-memory facts Phase 1 complete. Webhook dispatchers 8/10 implemented. **Pending:** ATP Phase 3 personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy `INTERVALS_API_KEY`, user-memory Phase 2 extractor.
 
 > Full feature-by-feature changelog: **`docs/IMPLEMENTATION_STATUS.md`**.
 
