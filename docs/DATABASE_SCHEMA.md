@@ -23,11 +23,11 @@ Eight tables in PostgreSQL 16 (async via SQLAlchemy + Alembic).
 | `ai_recommendation` | Text, nullable | Claude AI output |
 | `ai_recommendation_gemini` | Text, nullable | Gemini AI output (optional, only if GOOGLE_AI_API_KEY set) |
 
-## `hrv_analysis` — dual-algorithm HRV baselines
+## `hrv_analysis` — HRV baselines
 | Column | Type | Notes |
 |---|---|---|
 | `date` | String PK, FK → wellness | |
-| `algorithm` | String PK | "flatt_esco" or "ai_endurance" |
+| `algorithm` | String PK | always `"flatt_esco"` for new rows; legacy `"ai_endurance"` rows preserved (issue #307) but never read |
 | `status` | String | green/yellow/red/insufficient_data |
 | `rmssd_7d`, `rmssd_sd_7d` | Float | 7-day baseline |
 | `rmssd_60d`, `rmssd_sd_60d` | Float | 60-day baseline |
@@ -37,7 +37,7 @@ Eight tables in PostgreSQL 16 (async via SQLAlchemy + Alembic).
 | `days_available` | Integer | data points used |
 | `trend_direction`, `trend_slope`, `trend_r_squared` | nullable | 7d trend |
 
-Both algorithms are **always computed** on every save. `settings.HRV_ALGORITHM` selects which one feeds the recovery score.
+Single algorithm (Flatt & Esco) feeds the recovery score. The `algorithm` column stays in the composite PK so the historical `ai_endurance` rows remain addressable for archive queries; current writes only emit `flatt_esco` rows.
 
 ## `rhr_analysis` — resting HR baselines
 | Column | Type | Notes |

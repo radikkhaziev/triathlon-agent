@@ -3,7 +3,6 @@
 import logging
 import statistics
 from datetime import date
-from typing import Literal
 
 import dramatiq
 from dramatiq import group, pipeline
@@ -12,13 +11,7 @@ from pydantic import validate_call
 from data.db import HrvAnalysis, RhrAnalysis, UserDTO, Wellness, get_sync_session
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, RhrStatusDTO, RmssdStatusDTO, WellnessDTO
-from data.metrics import (
-    TREND_THRESHOLDS,
-    calculate_trend,
-    combined_recovery_score,
-    rmssd_ai_endurance,
-    rmssd_flatt_esco,
-)
+from data.metrics import TREND_THRESHOLDS, calculate_trend, combined_recovery_score, rmssd_flatt_esco
 from tasks.dto import ORMDTO, DateDTO, local_today
 
 from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update
@@ -104,8 +97,8 @@ def _actor_calculate_rhr(
 def _actor_calculate_hrv(
     user: UserDTO,
     dt: DateDTO,
-) -> dict[Literal["flatt_esco", "ai_endurance"], RmssdStatusDTO]:
-    """Dispatcher: loads HRV history from DB, delegates to selected algorithm."""
+) -> RmssdStatusDTO:
+    """Loads HRV history from DB, runs Flatt/Esco baseline."""
 
     MIN_DAYS = 14
 
@@ -113,20 +106,13 @@ def _actor_calculate_hrv(
     n = len(hrv_rows)
 
     if n < MIN_DAYS:
-        _status = RmssdStatusDTO(
+        return RmssdStatusDTO(
             status="insufficient_data",
             days_available=n,
             days_needed=MIN_DAYS - n,
         )
-        return {
-            "flatt_esco": _status,
-            "ai_endurance": _status,
-        }
 
-    return {
-        "flatt_esco": rmssd_flatt_esco(hrv_rows),
-        "ai_endurance": rmssd_ai_endurance(hrv_rows),
-    }
+    return rmssd_flatt_esco(hrv_rows)
 
 
 @dramatiq.actor(queue_name="default")
@@ -172,40 +158,44 @@ def _actor_update_rhr_analysis(
 @dramatiq.actor(queue_name="default")
 @validate_call
 def _actor_update_hrv_analysis(
-    prev: dict[Literal["flatt_esco", "ai_endurance"], RmssdStatusDTO],
+    prev: RmssdStatusDTO,
     *,
     user: UserDTO,
     dt: DateDTO,
 ) -> RmssdStatusDTO:
-    """Persist dual-algorithm HRV results to hrv_analysis table (upsert). Returns primary algorithm result."""
-    for algorithm, rmssd in prev.items():
-        if rmssd.status == "insufficient_data":
-            continue  # skip if not enough data
+    """Persist Flatt/Esco HRV result to hrv_analysis table (upsert).
 
-        _dt = dt.isoformat()
-        with get_sync_session() as session:
-            _hrv_row = session.get(HrvAnalysis, (user.id, _dt, algorithm))
-            if _hrv_row is None:
-                _hrv_row = HrvAnalysis(user_id=user.id, date=_dt, algorithm=algorithm)
-                session.add(_hrv_row)
+    Historical `algorithm='ai_endurance'` rows in the table are left untouched —
+    we stopped writing them when the second algorithm was retired (issue #307);
+    schema keeps `algorithm` in the PK so existing data stays addressable.
+    """
+    if prev.status == "insufficient_data":
+        return prev  # no DB update if not enough data
 
-            _hrv_row.status = rmssd.status
-            _hrv_row.rmssd_7d = rmssd.rmssd_7d
-            _hrv_row.rmssd_sd_7d = rmssd.rmssd_sd_7d
-            _hrv_row.rmssd_60d = rmssd.rmssd_60d
-            _hrv_row.rmssd_sd_60d = rmssd.rmssd_sd_60d
-            _hrv_row.lower_bound = rmssd.lower_bound
-            _hrv_row.upper_bound = rmssd.upper_bound
-            _hrv_row.cv_7d = rmssd.cv_7d
-            _hrv_row.swc = rmssd.swc
-            _hrv_row.days_available = rmssd.days_available
-            if rmssd.trend:
-                _hrv_row.trend_direction = rmssd.trend.direction
-                _hrv_row.trend_slope = rmssd.trend.slope
-                _hrv_row.trend_r_squared = rmssd.trend.r_squared
-            session.commit()
+    _dt = dt.isoformat()
+    with get_sync_session() as session:
+        _hrv_row = session.get(HrvAnalysis, (user.id, _dt, "flatt_esco"))
+        if _hrv_row is None:
+            _hrv_row = HrvAnalysis(user_id=user.id, date=_dt, algorithm="flatt_esco")
+            session.add(_hrv_row)
 
-    return prev["flatt_esco"]
+        _hrv_row.status = prev.status
+        _hrv_row.rmssd_7d = prev.rmssd_7d
+        _hrv_row.rmssd_sd_7d = prev.rmssd_sd_7d
+        _hrv_row.rmssd_60d = prev.rmssd_60d
+        _hrv_row.rmssd_sd_60d = prev.rmssd_sd_60d
+        _hrv_row.lower_bound = prev.lower_bound
+        _hrv_row.upper_bound = prev.upper_bound
+        _hrv_row.cv_7d = prev.cv_7d
+        _hrv_row.swc = prev.swc
+        _hrv_row.days_available = prev.days_available
+        if prev.trend:
+            _hrv_row.trend_direction = prev.trend.direction
+            _hrv_row.trend_slope = prev.trend.slope
+            _hrv_row.trend_r_squared = prev.trend.r_squared
+        session.commit()
+
+    return prev
 
 
 @dramatiq.actor(queue_name="default")

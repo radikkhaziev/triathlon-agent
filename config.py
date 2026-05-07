@@ -33,9 +33,6 @@ class Settings(BaseSettings):
 
     TIMEZONE: str = "Europe/Belgrade"
 
-    # HRV Algorithm
-    HRV_ALGORITHM: str = "flatt_esco"  # "flatt_esco" | "ai_endurance"
-
     # Free-form chat daily request cap. 0 = unlimited (disabled gate).
     # Counted via ``ApiUsageDaily.request_count`` which `bot/agent.py` already
     # increments on every Claude call. Applies to ALL roles including owner —

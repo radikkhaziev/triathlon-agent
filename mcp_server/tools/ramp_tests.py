@@ -3,7 +3,7 @@
 import asyncio
 from datetime import date
 
-from data.db import AiWorkout, ThresholdFreshnessDTO, User
+from data.db import AiWorkout, AthleteSettings, ThresholdFreshnessDTO, User
 from data.intervals.client import IntervalsAsyncClient
 from data.intervals.dto import PlannedWorkoutDTO
 from data.ramp_tests import create_ramp_test
@@ -46,7 +46,12 @@ async def create_ramp_test_tool(
     )  # Get full DTO for days_since
     days_since = freshness.days_since or 0
 
-    workout: PlannedWorkoutDTO = create_ramp_test(sport, dt, days_since)
+    threshold_pace: float | None = None
+    if sport == "Run":
+        run_settings = await AthleteSettings.get(user_id, sport)
+        threshold_pace = run_settings.threshold_pace if run_settings else None
+
+    workout: PlannedWorkoutDTO = create_ramp_test(sport, dt, days_since, threshold_pace=threshold_pace)
 
     event_data = workout.to_intervals_event()
 

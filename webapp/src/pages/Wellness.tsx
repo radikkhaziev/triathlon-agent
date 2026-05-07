@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -6,7 +5,6 @@ import ErrorMessage from '../components/ErrorMessage'
 import DayNav from '../components/DayNav'
 import MetricCard from '../components/MetricCard'
 import StatusBadge from '../components/StatusBadge'
-import TabSwitcher from '../components/TabSwitcher'
 import AiRecommendation from '../components/AiRecommendation'
 import SportCtlBars from '../components/SportCtlBars'
 import SyncButton from '../components/SyncButton'
@@ -19,7 +17,6 @@ export default function Wellness() {
   const { t } = useTranslation()
   const { currentDate, dateStr, isToday, prev, next } = useDayNav()
   const { data, loading, error, reload } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
-  const [hrvTab, setHrvTab] = useState('flatt_esco')
 
   return (
     <Layout title="Wellness">
@@ -78,16 +75,7 @@ export default function Wellness() {
 
           {/* HRV */}
           <Section icon="💓" title="HRV (RMSSD)">
-            <TabSwitcher
-              tabs={[
-                { key: 'flatt_esco', label: 'Flatt & Esco', dot: data.hrv?.primary_algorithm === 'flatt_esco' },
-                { key: 'ai_endurance', label: 'AIEndurance', dot: data.hrv?.primary_algorithm === 'ai_endurance' },
-              ]}
-              active={hrvTab}
-              onChange={setHrvTab}
-            />
-            {hrvTab === 'flatt_esco' && data.hrv?.flatt_esco && <HRVBlockView block={data.hrv.flatt_esco} />}
-            {hrvTab === 'ai_endurance' && data.hrv?.ai_endurance && <HRVBlockView block={data.hrv.ai_endurance} />}
+            {data.hrv && <HRVBlockView block={data.hrv} />}
           </Section>
 
           {/* RHR */}

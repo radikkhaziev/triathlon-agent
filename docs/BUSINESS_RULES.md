@@ -15,17 +15,11 @@
 - CTL = 42-day EMA of TSS ("fitness"), ATL = 7-day EMA ("fatigue"), TSB = CTL - ATL ("form")
 - TSB > +10: under-training | -10..+10: optimal | -10..-25: productive overreach | < -25: overtraining risk
 
-## HRV Recovery — Dual Algorithm
+## HRV Recovery — Flatt & Esco baseline
 
-Both algorithms are **always computed** and stored in `hrv_analysis`. `settings.HRV_ALGORITHM` selects which feeds the recovery score. Minimum 14 days of data required.
+Stored in `hrv_analysis`. Compares today's RMSSD against the 7-day rolling mean with asymmetric bounds (−1 SD lower / +0.5 SD upper). Fast response — detects acute changes within 1–2 days. Minimum 14 days of data required; below that the recovery score falls back to the readiness signal.
 
-| | Flatt & Esco (default) | AIEndurance |
-|---|---|---|
-| Compares | today vs 7d mean | 7d mean vs 60d mean |
-| Bounds | asymmetric −1/+0.5 SD | symmetric ±0.5 SD |
-| Response speed | fast (1-2 days) | slow (3-4 days) |
-| Best for | acute changes, illness, travel | chronic fatigue accumulation |
-| Data needed | 14 days min | 60 days for reliable bounds |
+The AIEndurance algorithm (7d mean vs 60d mean, symmetric ±0.5 SD) was retired in #307 — historical `algorithm='ai_endurance'` rows in `hrv_analysis` are preserved but never read; the `algorithm` column stays in the PK so existing data remains addressable.
 
 **Status interpretation:**
 - `green` (above upper_bound) → train at full load

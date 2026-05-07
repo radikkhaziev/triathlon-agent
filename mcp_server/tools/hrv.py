@@ -27,50 +27,45 @@ def _swc_verdict(today_val: float | None, baseline_60d: float | None, swc: float
 
 
 @mcp.tool()
-async def get_hrv_analysis(date: str, algorithm: str = "") -> dict:
-    """Get HRV status, baselines, and trend. Returns dual-algorithm analysis (flatt_esco + ai_endurance)."""
+async def get_hrv_analysis(date: str) -> dict:
+    """Get HRV status, baselines, and trend (Flatt/Esco baseline)."""
     user_id = get_current_user_id()
     async with get_session() as session:
         result = await session.execute(select(Wellness).where(Wellness.user_id == user_id, Wellness.date == date))
         row = result.scalar_one_or_none()
         hrv_today = float(row.hrv) if row and row.hrv else None
 
-        algorithms = [algorithm] if algorithm else ["flatt_esco", "ai_endurance"]
-        result = {"date": date, "hrv_today": hrv_today}
+        hrv_row = await session.get(HrvAnalysis, (user_id, date, "flatt_esco"))
+        if not hrv_row:
+            return {"date": date, "hrv_today": hrv_today, "status": "insufficient_data"}
 
-        for algo in algorithms:
-            hrv_row = await session.get(HrvAnalysis, (user_id, date, algo))
-            if not hrv_row:
-                result[algo] = {"status": "insufficient_data"}
-                continue
+        delta_pct = None
+        if hrv_today and hrv_row.rmssd_7d and hrv_row.rmssd_7d > 0:
+            delta_pct = round((hrv_today - hrv_row.rmssd_7d) / hrv_row.rmssd_7d * 100, 1)
 
-            delta_pct = None
-            if hrv_today and hrv_row.rmssd_7d and hrv_row.rmssd_7d > 0:
-                delta_pct = round((hrv_today - hrv_row.rmssd_7d) / hrv_row.rmssd_7d * 100, 1)
-
-            result[algo] = {
-                "status": hrv_row.status,
-                "mean_7d": hrv_row.rmssd_7d,
-                "sd_7d": hrv_row.rmssd_sd_7d,
-                "mean_60d": hrv_row.rmssd_60d,
-                "sd_60d": hrv_row.rmssd_sd_60d,
-                "delta_pct": delta_pct,
-                "lower_bound": hrv_row.lower_bound,
-                "upper_bound": hrv_row.upper_bound,
-                "swc": hrv_row.swc,
-                "swc_verdict": _swc_verdict(hrv_today, hrv_row.rmssd_60d, hrv_row.swc),
-                "cv_7d": hrv_row.cv_7d,
-                "cv_verdict": _cv_verdict(hrv_row.cv_7d),
-                "days_available": hrv_row.days_available,
-                "trend": (
-                    {
-                        "direction": hrv_row.trend_direction,
-                        "slope": hrv_row.trend_slope,
-                        "r_squared": hrv_row.trend_r_squared,
-                    }
-                    if hrv_row.trend_direction
-                    else None
-                ),
-            }
-
-    return result
+        return {
+            "date": date,
+            "hrv_today": hrv_today,
+            "status": hrv_row.status,
+            "mean_7d": hrv_row.rmssd_7d,
+            "sd_7d": hrv_row.rmssd_sd_7d,
+            "mean_60d": hrv_row.rmssd_60d,
+            "sd_60d": hrv_row.rmssd_sd_60d,
+            "delta_pct": delta_pct,
+            "lower_bound": hrv_row.lower_bound,
+            "upper_bound": hrv_row.upper_bound,
+            "swc": hrv_row.swc,
+            "swc_verdict": _swc_verdict(hrv_today, hrv_row.rmssd_60d, hrv_row.swc),
+            "cv_7d": hrv_row.cv_7d,
+            "cv_verdict": _cv_verdict(hrv_row.cv_7d),
+            "days_available": hrv_row.days_available,
+            "trend": (
+                {
+                    "direction": hrv_row.trend_direction,
+                    "slope": hrv_row.trend_slope,
+                    "r_squared": hrv_row.trend_r_squared,
+                }
+                if hrv_row.trend_direction
+                else None
+            ),
+        }
