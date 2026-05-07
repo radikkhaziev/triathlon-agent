@@ -16,7 +16,12 @@ dist/
 
 .vscode/
 
-.claude/
+.claude/settings.local.json
+.claude/*.local.json
+.claude/*credentials*
+.claude/worktrees/
+.claude/cache/
+.claude/agent-memory/
 
 # Generated workout card HTML files
 static/exercises/*.html
