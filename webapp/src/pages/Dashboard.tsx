@@ -8,6 +8,7 @@ import { ChartCard, chartOptions } from '../components/ChartCard'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS, SPORT_ICONS, TSB_ZONE_COLORS } from '../lib/constants'
 import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, GoalProgress, GoalProjection, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
+import RacePlanPanel from '../components/RacePlanPanel'
 
 Chart.register(...registerables)
 
@@ -437,6 +438,8 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
           </div>
         )}
       </div>
+
+      <RacePlanPanel goalId={g.id} />
     </>
   )
 }

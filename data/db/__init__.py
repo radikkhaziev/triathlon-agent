@@ -26,6 +26,8 @@ from .garmin import (  # noqa
 )
 from .hrv import HrvAnalysis, PaBaseline, RhrAnalysis  # noqa
 from .progression import ProgressionModelRun  # noqa
+from .race_plan import RacePlan  # noqa
+from .race_plan_compliance import RacePlanCompliance  # noqa
 from .tracking import ApiUsageDaily, IqosDaily, MoodCheckin, StarTransaction  # noqa
 from .user import User  # noqa
 from .user_fact import HARD_CAP_ACTIVE, SOFT_WARN_ACTIVE, TOPIC_CAPS, UserFact  # noqa

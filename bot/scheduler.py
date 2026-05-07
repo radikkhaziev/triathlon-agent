@@ -9,7 +9,7 @@ from pydantic import TypeAdapter
 from sqlalchemy import select
 
 from config import settings
-from data.db import User, UserBackfillState, UserDTO, get_session
+from data.db import AthleteGoal, User, UserBackfillState, UserDTO, get_session
 from tasks.actors import (
     actor_bootstrap_step,
     actor_compose_user_evening_report,
@@ -17,10 +17,12 @@ from tasks.actors import (
     actor_fetch_user_activities,
     actor_retrain_progression_model,
     actor_send_onboarding_hey,
+    actor_send_pre_race_plan_push,
     actor_sync_athlete_goals,
     actor_user_scheduled_workouts,
     actor_user_wellness,
 )
+from tasks.dto import local_today
 
 from .decorator import with_athletes, with_legacy_athletes
 
@@ -196,6 +198,42 @@ async def scheduler_onboarding_hey_job() -> None:
     logger.info("Dispatched onboarding hey-message for %d athletes", len(users))
 
 
+async def scheduler_pre_race_plan_push_job() -> None:
+    """Daily fan-out: any active goals with ``event_date == today + 1``?
+
+    Bypass the ``with_athletes`` decorator — most days no users qualify, so a
+    goal-side query (filtered by event_date) is cheaper than iterating all
+    athletes. The actor handles per-goal idempotency via
+    ``payload.pushed_for_race_date`` (PR2.6 / spec §12 step 5).
+    """
+    target_date = local_today() + timedelta(days=1)
+    async with get_session() as session:
+        result = await session.execute(
+            select(AthleteGoal, User)
+            .join(User, AthleteGoal.user_id == User.id)
+            .where(
+                AthleteGoal.event_date == target_date,
+                AthleteGoal.is_active.is_(True),
+                User.is_active.is_(True),
+            )
+        )
+        # Pre-extract everything we need INSIDE the session-with block. Per
+        # review L1: ORM rows become detached after the ``async with`` exits,
+        # and any future field access (e.g. ``goal.event_name``) on a detached
+        # async row would raise ``MissingGreenlet``. Eager extraction makes the
+        # dispatch loop tolerant to refactors that need richer fields.
+        dispatches = [(goal.id, _UserAdapter.validate_python(user_row)) for goal, user_row in result.all()]
+
+    if not dispatches:
+        logger.debug("No goals scheduled for race tomorrow (%s)", target_date)
+        return
+
+    target_iso = target_date.isoformat()
+    for goal_id, user_dto in dispatches:
+        actor_send_pre_race_plan_push.send(user=user_dto, goal_id=goal_id, race_date=target_iso)
+    logger.info("Dispatched pre-race push for %d goals (race_date=%s)", len(dispatches), target_iso)
+
+
 async def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
@@ -278,6 +316,21 @@ async def create_scheduler() -> AsyncIOScheduler:
         hour="9-21",
         minute=0,
         id="scheduler_onboarding_hey_job",
+    )
+
+    # 24h pre-race plan push (PR2.6, spec §12 step 5). 08:00 local is the
+    # waking-hours sweet spot: athlete sees the plan over morning coffee, has
+    # a full day to read + raise questions in chat, before tomorrow's race.
+    # ``misfire_grace_time=7200`` (2h) covers a deploy/restart window without
+    # silently dropping the only push the athlete gets — coalesce true means
+    # multiple missed firings collapse into one (idempotency in the actor
+    # protects against double-send anyway).
+    scheduler.add_job(
+        scheduler_pre_race_plan_push_job,
+        trigger=CronTrigger(hour=8, minute=0, timezone=settings.TIMEZONE),
+        id="scheduler_pre_race_plan_push_job",
+        misfire_grace_time=7200,
+        coalesce=True,
     )
 
     return scheduler
