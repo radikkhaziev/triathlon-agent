@@ -4,6 +4,7 @@ import { Chart, registerables } from 'chart.js'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
+import { ChartCard, chartOptions } from '../components/ChartCard'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS, SPORT_ICONS, TSB_ZONE_COLORS } from '../lib/constants'
 import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
@@ -77,7 +78,7 @@ function TsbZoneBadge({ tsb }: { tsb: number | null }) {
 
   const tsbStr = tsb > 0 ? `+${tsb.toFixed(0)}` : tsb.toFixed(0)
   return (
-    <div className="bg-[var(--surface)] rounded-xl p-3 mb-3 flex justify-between items-center">
+    <div className="bg-surface border border-border rounded-[14px] p-3 mb-3 flex justify-between items-center">
       <span className="text-[13px] text-text-dim">{t('dashboard.tsb_zone')}</span>
       <div className="flex items-center gap-2">
         <span className="text-[13px] font-mono font-semibold" style={{ color }}>{tsbStr}</span>
@@ -226,10 +227,10 @@ function LoadTab() {
 
   return (
     <>
-      <ChartContainer><canvas ref={loadChartRef} /></ChartContainer>
+      <ChartCard><canvas ref={loadChartRef} /></ChartCard>
       <TsbZoneBadge tsb={currentTsb} />
-      <ChartContainer><canvas ref={tssChartRef} /></ChartContainer>
-      <ChartContainer><canvas ref={recoveryChartRef} /></ChartContainer>
+      <ChartCard><canvas ref={tssChartRef} /></ChartCard>
+      <ChartCard><canvas ref={recoveryChartRef} /></ChartCard>
     </>
   )
 }
@@ -310,7 +311,7 @@ function GoalTab() {
         <span className="text-[var(--button)]">{goal.weeks_remaining}</span> weeks to {goal.event_name}
       </div>
 
-      <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
+      <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
         <ProgressBar
           label={<span>Overall CTL</span>}
           current={goal.ctl_current}
@@ -455,7 +456,7 @@ function WeekCard({ week, isCurrent }: { week: WeeklyRecapBucket; isCurrent: boo
   const totalSec = sports.reduce((a, s) => a + (week.by_sport[s]?.duration_sec || 0), 0)
 
   return (
-    <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
+    <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
       <div className="flex justify-between items-baseline mb-1">
         <div className="text-sm font-bold">
           {formatWeekRange(week.week_start, week.week_end)}
@@ -554,27 +555,4 @@ function WeekTab() {
       )}
     </>
   )
-}
-
-function ChartContainer({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="bg-[var(--surface)] rounded-xl p-3 mb-3">
-      <div style={{ height: 280 }}>{children}</div>
-    </div>
-  )
-}
-
-function chartOptions(title: string): Record<string, unknown> {
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 13 } } },
-      title: { display: true, text: title, font: { size: 14, weight: 'bold' } },
-    },
-    scales: {
-      x: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
-      y: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } } },
-    },
-  }
 }
