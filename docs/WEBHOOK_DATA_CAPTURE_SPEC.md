@@ -371,7 +371,11 @@ Alembic migrations в таком порядке:
 
 ### Phase 2
 
-- [ ] `icu_warmup_time` / `icu_cooldown_time` / `polarization_index` пишутся в `activity_details`.
+- [x] `icu_warmup_time` / `icu_cooldown_time` / `polarization_index` пишутся в `activity_details`. Migration `c4d5e6f7a8b9_phase2_webhook_data_capture` adds three nullable columns (`warmup_time_sec` INT, `cooldown_time_sec` INT, `polarization_index` REAL). `ActivityDTO` carries the three fields (Phase 1 sentinel pattern: optional + `None` default). `ActivityDetail.patch` extended with three `_UNSET`-default kwargs. `_dispatch_activity_uploaded` builds a single `upload_patch` dict from `dto.trimp` + the Phase 2 fields and calls `ActivityDetail.patch` once — keeps Phase 1 trimp behavior, adds the new fields when present, no second try/except. Tests in `tests/api/test_webhook_dispatch.py` (43/43 green): new `ACTIVITY_UPLOADED_PHASE2_EVENT` fixture + `test_persists_phase2_fields_for_outdoor_activity` (positive) + `test_phase2_fields_skip_when_absent` (regression — sentinel preserves omitted-field semantics). Backfill still deferred per §6.
+
+### Deviations from spec (Phase 2)
+
+- **Single-call dispatcher patch.** Spec §5.1 sketched separate `ActivityDetail.patch(...)` lines per field group. Shipped as one dict-builder + one `.patch(**upload_patch)` call so trimp + Phase 2 fields share a single try/except + Sentry capture, and the log line lists exactly which fields were attempted. No behavioral difference vs the spec sketch.
 
 ---
 

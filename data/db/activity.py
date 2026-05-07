@@ -521,6 +521,12 @@ class ActivityDetail(Base):
     ctl_snapshot: Mapped[float | None] = mapped_column(Float, nullable=True)  # CTL at activity time
     atl_snapshot: Mapped[float | None] = mapped_column(Float, nullable=True)  # ATL at activity time
 
+    # WEBHOOK_DATA_CAPTURE Phase 2 — populated from ACTIVITY_UPLOADED webhook.
+    # Sourced from the webhook payload, not the details API.
+    warmup_time_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cooldown_time_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    polarization_index: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Mapping: Intervals.icu JSON key → (ActivityDetail column, coerce fn).
     # Coercion guards against occasional string values from the API (e.g. pace
     # returned as "5:30") that would otherwise blow up at compare- or commit-time.
@@ -628,6 +634,9 @@ class ActivityDetail(Base):
         ctl_snapshot: float | None = _UNSET,  # type: ignore[assignment]
         atl_snapshot: float | None = _UNSET,  # type: ignore[assignment]
         trimp: float | None = _UNSET,  # type: ignore[assignment]
+        warmup_time_sec: int | None = _UNSET,  # type: ignore[assignment]
+        cooldown_time_sec: int | None = _UNSET,  # type: ignore[assignment]
+        polarization_index: float | None = _UNSET,  # type: ignore[assignment]
     ) -> ActivityDetail | None:
         """Partial update for fields populated outside the activities API response.
 
@@ -652,6 +661,9 @@ class ActivityDetail(Base):
             "ctl_snapshot": ctl_snapshot,
             "atl_snapshot": atl_snapshot,
             "trimp": trimp,
+            "warmup_time_sec": warmup_time_sec,
+            "cooldown_time_sec": cooldown_time_sec,
+            "polarization_index": polarization_index,
         }
         fields = {col: val for col, val in candidates.items() if val is not _UNSET}
         if not fields:

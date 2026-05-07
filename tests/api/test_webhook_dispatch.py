@@ -166,6 +166,29 @@ ACTIVITY_UPLOADED_INDOOR_WITH_TRIMP_EVENT = {
     "records": [],
 }
 
+ACTIVITY_UPLOADED_PHASE2_EVENT = {
+    # WEBHOOK_DATA_CAPTURE Phase 2: warmup/cooldown/polarization ride along on
+    # ACTIVITY_UPLOADED. Trimp present too — verifies all four fields land in
+    # the same patch call. polarization_index uses a negative real-world value
+    # (sample A.7 in INTERVALS_WEBHOOKS_RESEARCH.md shows -0.12) to ensure the
+    # `is not None` skip-check doesn't trip on negative or zero values.
+    "athlete_id": "i317960",
+    "type": "ACTIVITY_UPLOADED",
+    "timestamp": "2026-05-07T08:00:00.000+00:00",
+    "activity": {
+        "id": "i317960-2026-05-07-phase2",
+        "start_date_local": "2026-05-07T08:00:00",
+        "type": "Run",
+        "moving_time": 3600,
+        "trimp": 92.1,
+        "icu_warmup_time": 600,
+        "icu_cooldown_time": 480,
+        "polarization_index": -0.12,
+        "has_weather": False,
+    },
+    "records": [],
+}
+
 SPORT_SETTINGS_WITH_MMP_EVENT = {
     "athlete_id": "i317960",
     "type": "SPORT_SETTINGS_UPDATED",
@@ -718,8 +741,68 @@ class TestDispatchActivityUploaded:
             await _dispatch_activity_uploaded(user, event)
 
             mock_weather.upsert_from_dto.assert_not_called()
-            # No trimp in this fixture either → no patch call.
+            # No trimp / warmup / cooldown / polarization in this fixture either → no patch call.
             mock_detail.patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_persists_phase2_fields_for_outdoor_activity(self):
+        """ACTIVITY_UPLOADED with warmup/cooldown/polarization → all four
+        fields (incl. trimp) land in a single ActivityDetail.patch call.
+
+        WEBHOOK_DATA_CAPTURE Phase 2 — these come inline on the upload payload
+        and are not in _DETAIL_FIELD_MAP, so the dispatcher patch is the only
+        write path.
+        """
+        event = _make_event(ACTIVITY_UPLOADED_PHASE2_EVENT)
+        user = _make_user_dto()
+        with (
+            patch("api.routers.intervals.webhook.Activity") as mock_activity,
+            patch("api.routers.intervals.webhook.actor_update_activity_details"),
+            patch("api.routers.intervals.webhook.actor_rename_activity"),
+            patch("api.routers.intervals.webhook.ActivityWeather") as mock_weather,
+            patch("api.routers.intervals.webhook.ActivityDetail") as mock_detail,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.STRAVA_SIGNATURE_USER_IDS = set()
+            mock_activity.save_bulk = AsyncMock()
+            mock_weather.upsert_from_dto = AsyncMock()
+            mock_detail.patch = AsyncMock()
+            await _dispatch_activity_uploaded(user, event)
+
+            mock_detail.patch.assert_called_once()
+            patch_kwargs = mock_detail.patch.call_args.kwargs
+            assert patch_kwargs["trimp"] == 92.1
+            assert patch_kwargs["warmup_time_sec"] == 600
+            assert patch_kwargs["cooldown_time_sec"] == 480
+            assert patch_kwargs["polarization_index"] == -0.12
+
+    @pytest.mark.asyncio
+    async def test_phase2_fields_skip_when_absent(self):
+        """Old payload without Phase 2 fields → no warmup/cooldown/polarization
+        kwargs in the patch call. Sentinel-default `_UNSET` semantics: skip None
+        rather than overwrite with NULL."""
+        event = _make_event(ACTIVITY_UPLOADED_INDOOR_WITH_TRIMP_EVENT)
+        user = _make_user_dto()
+        with (
+            patch("api.routers.intervals.webhook.Activity") as mock_activity,
+            patch("api.routers.intervals.webhook.actor_update_activity_details"),
+            patch("api.routers.intervals.webhook.actor_rename_activity"),
+            patch("api.routers.intervals.webhook.ActivityWeather") as mock_weather,
+            patch("api.routers.intervals.webhook.ActivityDetail") as mock_detail,
+            patch("api.routers.intervals.webhook.settings") as mock_settings,
+        ):
+            mock_settings.STRAVA_SIGNATURE_USER_IDS = set()
+            mock_activity.save_bulk = AsyncMock()
+            mock_weather.upsert_from_dto = AsyncMock()
+            mock_detail.patch = AsyncMock()
+            await _dispatch_activity_uploaded(user, event)
+
+            mock_detail.patch.assert_called_once()
+            patch_kwargs = mock_detail.patch.call_args.kwargs
+            assert "warmup_time_sec" not in patch_kwargs
+            assert "cooldown_time_sec" not in patch_kwargs
+            assert "polarization_index" not in patch_kwargs
+            assert patch_kwargs["trimp"] == 65.2
 
 
 class TestDispatchActivityUpdated:

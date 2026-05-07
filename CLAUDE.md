@@ -56,9 +56,9 @@ triathlon-agent/
 
 **Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling), `fitness_projection` (CTL/ATL/rampRate decay curve from `FITNESS_UPDATED` webhook, dates can be future), `activity_achievements` (per-activity PRs from `ACTIVITY_ACHIEVEMENTS` webhook — power PRs / FTP changes / future milestone types; raw payload preserved in `extra` JSON; UNIQUE on user+activity+achievement_id).
 
-**Training:** `scheduled_workouts`, `activities` (incl. `is_race`/`sub_type`/`rpe` — Borg CR-10 1-10 with `CHECK` constraint, see `docs/RPE_SPEC.md`), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot). See `docs/RACE_TAGGING.md`.
+**Training:** `scheduled_workouts`, `activities` (incl. `is_race`/`sub_type`/`rpe` — Borg CR-10 1-10 with `CHECK` constraint), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot).
 
-**Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`, `star_transactions` (Telegram Stars donation ledger, `UNIQUE(charge_id)` for webhook idempotency, `refunded_at` nullable — see `docs/DONATE_SPEC.md`), `user_backfill_state` (1 row/user, cursor-based bootstrap progress: `oldest_dt`/`newest_dt`/`cursor_dt`/`chunks_done`/`status`+`last_error` + `hey_message` (datetime?) — post-onboarding nudge timestamp, see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`), `user_facts` (long-term memory: free-text traits per `topic` with `fact_language` (BCP-47), `source` (`tool`/`extractor`/`user`), `expires_at`, and soft-delete `deactivated_at`+`deactivated_reason` (`user_request`/`topic_cap`/`hard_cap`/`expired`/`contradicted`) — see `docs/USER_CONTEXT_SPEC.md`).
+**Tracking:** `mood_checkins` (1-5 scales), `iqos_daily`, `api_usage_daily`, `star_transactions` (Telegram Stars donation ledger, `UNIQUE(charge_id)` for webhook idempotency, `refunded_at` nullable), `user_backfill_state` (1 row/user, cursor-based bootstrap progress: `oldest_dt`/`newest_dt`/`cursor_dt`/`chunks_done`/`status`+`last_error` + `hey_message` (datetime?) — post-onboarding nudge timestamp, see `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`), `user_facts` (long-term memory: free-text traits per `topic` with `fact_language` (BCP-47), `source` (`tool`/`extractor`/`user`), `expires_at`, and soft-delete `deactivated_at`+`deactivated_reason` (`user_request`/`topic_cap`/`hard_cap`/`expired`/`contradicted`) — see `docs/USER_CONTEXT_SPEC.md`).
 
 **Garmin (9 tables):** `garmin_sleep`, `garmin_daily_summary`, `garmin_training_readiness`, `garmin_health_status`, `garmin_training_load`, `garmin_fitness_metrics`, `garmin_race_predictions`, `garmin_bio_metrics`, `garmin_abnormal_hr_events`.
 
@@ -66,7 +66,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3 + Intervals.icu OAuth Phase 2 + OAuth bootstrap backfill Phase 1+2 + Webhook data capture Phase 1 + User-memory facts Phase 1 complete. Webhook dispatchers 8/10 implemented. **Pending:** ATP Phase 3 personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy `INTERVALS_API_KEY`, user-memory Phase 2 extractor.
+All core modules done. Multi-tenant Phase 1.3 + Intervals.icu OAuth Phase 2 + OAuth bootstrap backfill Phase 1+2 + Webhook data capture Phase 1+2 + User-memory facts Phase 1 complete. Webhook dispatchers 8/10 implemented. **Pending:** ATP Phase 3 personal patterns cron, MT Phase 2 (JWT upgrade), retire legacy `INTERVALS_API_KEY`, user-memory Phase 2 extractor.
 
 > Full feature-by-feature changelog: **`docs/IMPLEMENTATION_STATUS.md`**.
 
@@ -170,10 +170,10 @@ Stateless. Each message: `agent.chat(text, mcp_token=user.mcp_token)` → Claude
 
 ## Key Implementation Notes
 
-- **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report Mon–Sat 19:00 (`misfire_grace_time=3600, coalesce=True` — Sunday slot taken by weekly), weekly report Sunday 19:00 (`misfire_grace_time=7200, coalesce=True`, replaces Sunday evening report — содержит итог недели + план следующей), progression-model retrain Sunday 16:00 (`misfire_grace_time=7200, coalesce=True`). Misfire grace покрывает рестарт/деплой в окне cron-тика — без него APScheduler default `misfire_grace_time=1` молча теряет user-facing отчёт
+- **Intervals.icu API** — wellness every 10 min (4-8h) then every 30 min (9-22h), workouts hourly at :00 (4-23h), activities every 10 min (4-23h), DFA every 5 min (5-22h), evening report Mon–Sat 19:00 (`misfire_grace_time=3600, coalesce=True` — Sunday slot taken by weekly), weekly report Sunday 19:00 (`misfire_grace_time=7200, coalesce=True`, replaces Sunday evening report — contains the weekly summary + next week's plan), progression-model retrain Sunday 16:00 (`misfire_grace_time=7200, coalesce=True`). Misfire grace covers restart/deploy within the cron-tick window — without it APScheduler's default `misfire_grace_time=1` silently drops the user-facing report
 - **Both HRV algorithms** always computed; `HRV_ALGORITHM` selects primary
 - **Claude API** once per day to minimize costs (morning report). Chat uses per-request calls. Prompt caching: **two `cache_control: ephemeral` segments** — `get_static_system_prompt()` (instructions, never changes) and `render_athlete_block(...)` (today + profile + goal + zones + facts + language). `save_fact` / goal update invalidates only the ~240-tok tail; the ~780-tok static prefix stays hot on Anthropic's prefix cache (see USER_CONTEXT_SPEC §6). Tool filtering: 6 groups, keyword-based, core+tracking+workouts always included (~75% token reduction for simple messages)
-- **All timestamps** UTC in DB, local timezone for display. "Today" в actor'ах и формат-функциях всегда через `tasks.dto.local_today()` (Belgrade tz из `settings.TIMEZONE`), **не** через `date.today()` (контейнер уезжает в UTC если `TZ` env не задан). Контейнеры api/worker экспортируют `TZ=${TIMEZONE:-Europe/Belgrade}` плюс пакет `tzdata` в Dockerfile, так что `date.today()` тоже Belgrade — но `local_today()` остаётся каноном для нового кода.
+- **All timestamps** UTC in DB, local timezone for display. "Today" in actors and formatter functions always goes through `tasks.dto.local_today()` (Belgrade tz from `settings.TIMEZONE`), **not** `date.today()` (the container drifts to UTC if `TZ` env is unset). The api/worker containers export `TZ=${TIMEZONE:-Europe/Belgrade}` plus the `tzdata` package in the Dockerfile, so `date.today()` is also Belgrade — but `local_today()` remains the canonical choice for new code.
 - **Telegram bot** — polling (local dev, `TELEGRAM_WEBHOOK_URL` empty) or webhook (production)
 - **Frontend** — React SPA via Vite; dev proxies /api to FastAPI; production serves from webapp/dist/
 - **i18n** — Backend: gettext (contextvars `_()`, `locale/` .po/.mo). Frontend: react-i18next (`webapp/src/i18n/` .json). User.language field, `"Respond in {response_language}"` in Claude prompts
@@ -206,7 +206,7 @@ Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**58 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), **long-term user memory** (`save_fact`/`list_facts`/`deactivate_fact`/`reactivate_fact`/`get_fact_metrics` — see `docs/USER_CONTEXT_SPEC.md`), GitHub issues (`create_github_issue` athlete-доступен, sliding-window cap 5/24h на user, attribution в body — только `user_id` без `@username`/`athlete_id`, `title ≤ 200` / `body ≤ 8000` cap; см. `docs/MULTI_TENANT_SECURITY.md` §13), API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**58 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), **long-term user memory** (`save_fact`/`list_facts`/`deactivate_fact`/`reactivate_fact`/`get_fact_metrics` — see `docs/USER_CONTEXT_SPEC.md`), GitHub issues (`create_github_issue` available to athletes, sliding-window cap 5/24h per user, attribution in body — `user_id` only, no `@username`/`athlete_id`, `title ≤ 200` / `body ≤ 8000` cap; see `docs/MULTI_TENANT_SECURITY.md` §13), API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 
@@ -248,7 +248,7 @@ Specs and plans in `docs/`. Key references:
 
 - **`IMPLEMENTATION_STATUS.md`** — feature-by-feature changelog, what's done / pending.
 - **`OPERATIONS.md`** — bot commands, API endpoints, webapp routes, CLI, migrations, onboarding, Docker.
-- **`ADAPTIVE_TRAINING_PLAN.md`**, **`MULTI_TENANT_SECURITY.md`**, **`INTERVALS_WEBHOOKS_RESEARCH.md`** (10 event-type payload samples), **`DONATE_SPEC.md`**, **`BOT_MIGRATION_SPEC.md`**, **`OAUTH_BOOTSTRAP_SYNC_SPEC.md`**, **`USER_CONTEXT_SPEC.md`**, **`WEBHOOK_DATA_CAPTURE_SPEC.md`**, **`RPE_SPEC.md`**, **`RACE_TAGGING.md`** — feature specs.
+- **`ADAPTIVE_TRAINING_PLAN.md`**, **`MULTI_TENANT_SECURITY.md`**, **`INTERVALS_WEBHOOKS_RESEARCH.md`** (10 event-type payload samples), **`OAUTH_BOOTSTRAP_SYNC_SPEC.md`**, **`USER_CONTEXT_SPEC.md`**, **`WEBHOOK_DATA_CAPTURE_SPEC.md`**, **`RACE_PLAN_SPEC.md`**, **`TRAINING_PROGRESSION_SPEC.md`**, **`ML_HRV_PREDICTION_SPEC.md`**, **`ML_RACE_PROJECTION_SPEC.md`** — feature specs.
 - **`intervals_icu_openapi.json`** — Intervals.icu API reference. **`knowledge/`** — training methodology.
 
 ---
@@ -257,7 +257,7 @@ Specs and plans in `docs/`. Key references:
 
 1. **Webhook dispatchers** — all done: `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓, `FITNESS_UPDATED` ✓, `APP_SCOPE_CHANGED` ✓, `ACTIVITY_ACHIEVEMENTS` ✓, `ACTIVITY_UPLOADED` ✓, `ACTIVITY_UPDATED` ✓. Skipped: `ACTIVITY_ANALYZED` (rare, re-analysis only), `ACTIVITY_DELETED`.
 2. **OAuth** — ✅ disconnect endpoint, ✅ lazy 401 handling, ✅ bootstrap Phase 1+2 (watchdog cron, retry endpoint, HRV ordering fix, progress UI, last_error allowlist). Remaining: retire legacy `INTERVALS_API_KEY` env vars (Phase 5). When scaling to multi-worker uvicorn, migrate `_retry_backfill_last_success` and `_mcp_config_last_access` to Redis INCR+EXPIRE
-3. **ATP Phase 3 доделка** — `compute_personal_patterns()` еженедельный cron + prompt enrichment. Ждёт 30+ записей в training_log
+3. **ATP Phase 3 finishing work** — `compute_personal_patterns()` weekly cron + prompt enrichment. Waiting on 30+ rows in `training_log`
 4. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`
 
 ---
