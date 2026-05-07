@@ -2,7 +2,6 @@
 
 from mcp.server.fastmcp import FastMCP
 
-from config import settings
 from data.db import AthleteGoal, AthleteSettings
 from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
 from mcp_server.context import get_current_user_id
@@ -101,9 +100,7 @@ def register_resources(mcp: FastMCP) -> None:
             "  moderate 40-70: Z1-Z2 only, 45-60 min\n"
             "  low <40: rest or Z1 <=30 min\n"
             "\n"
-            "HRV Algorithm: " + settings.HRV_ALGORITHM + " (primary)\n"
-            "  Flatt & Esco: today vs 7d mean, asymmetric bounds (-1/+0.5 SD)\n"
-            "  AIEndurance: 7d mean vs 60d mean, symmetric bounds (±0.5 SD)\n"
+            "HRV Algorithm: Flatt & Esco — today vs 7d mean, asymmetric bounds (-1/+0.5 SD)\n"
             "\n"
             "RHR: inverted — elevated RHR = red, low RHR = green\n"
             "  Bounds: ±0.5 SD of 30-day mean\n"

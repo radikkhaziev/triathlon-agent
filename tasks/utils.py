@@ -1,6 +1,15 @@
 from datetime import date
 
-from data.db import ActivityDetail, AiWorkout, ThresholdFreshnessDTO, User, UserDTO, WellnessPostDTO, get_sync_session
+from data.db import (
+    ActivityDetail,
+    AiWorkout,
+    AthleteSettings,
+    ThresholdFreshnessDTO,
+    User,
+    UserDTO,
+    WellnessPostDTO,
+    get_sync_session,
+)
 from data.intervals.dto import PlannedWorkoutDTO
 from data.ramp_tests import create_ramp_test
 from tasks.dto import local_today
@@ -19,24 +28,34 @@ class RampTrainingSuggestion:
         self.user = user
         self.wellness = wellness
         if sports is None:
-            sports = ["Run"]
-        # ("Ride", "Run")
+            sports = ["Run", "Ride"]
         self.sports = sports
         self.suggested_sport = None
         self.days_since = None
 
     @property
+    def _has_data(self) -> bool:
+        return bool(self.wellness and self.wellness.ctl is not None and self.wellness.atl is not None)
+
+    @property
     def tsb(self) -> float:
-        if not self.wellness:
-            return 0
-        if self.wellness.ctl is None or self.wellness.atl is None:
+        if not self._has_data:
             return 0
         return self.wellness.ctl - self.wellness.atl
 
     @property
     def is_test_needed(self) -> bool:
-        if self.tsb == 0:
-            return False  # no data, don't suggest
+        # Need wellness with valid CTL/ATL — without it tsb is meaningless.
+        if not self._has_data:
+            return False
+        # Deep fatigue distorts DFA a1 — HRVT2 detection becomes unreliable.
+        if self.tsb <= -10:
+            return False
+        # Ramp test stresses the system; low recovery noises the HRV signal
+        # and the linear fit collapses (R² drops). Need a clean baseline.
+        recovery = self.wellness.recovery_score
+        if recovery is None or recovery < 70:
+            return False
 
         upcoming = AiWorkout.get_upcoming(user_id=self.user.id, days_ahead=14)
         if any("Ramp Test" in (w.name or "") for w in upcoming):
@@ -46,12 +65,11 @@ class RampTrainingSuggestion:
             data: ThresholdFreshnessDTO = User.get_threshold_freshness(user_id=self.user.id, sport=sport)
             if data.status == "no_data":
                 self.suggested_sport = sport  # never tested → suggest
-                return True  # never tested → suggest
+                return True
             if data.days_since and data.days_since > 30:
                 self.suggested_sport = sport  # stale → suggest
                 self.days_since = data.days_since
-
-                return True  # stale → suggest
+                return True
         return False
 
     def plan_ramp(self, sport: str | None = None, dt: date | None = None) -> str:
@@ -72,7 +90,13 @@ class RampTrainingSuggestion:
             return f"Ramp Test ({sport}) уже запланирован"
 
         freshness: ThresholdFreshnessDTO = User.get_threshold_freshness(user_id=self.user.id, sport=sport)
-        workout: PlannedWorkoutDTO = create_ramp_test(sport, dt, freshness.days_since)
+
+        threshold_pace: float | None = None
+        if sport == "Run":
+            run_settings = AthleteSettings.get(self.user.id, sport)
+            threshold_pace = run_settings.threshold_pace if run_settings else None
+
+        workout: PlannedWorkoutDTO = create_ramp_test(sport, dt, freshness.days_since, threshold_pace=threshold_pace)
 
         actor_push_workout.send(
             user=self.user,

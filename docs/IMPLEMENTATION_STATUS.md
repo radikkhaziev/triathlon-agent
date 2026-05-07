@@ -77,6 +77,24 @@ Migration `b3d4e5f6a7b8`, see `docs/WEBHOOK_DATA_CAPTURE_SPEC.md`. Three new per
 
 ---
 
+## HRV — single-algorithm collapse (issue #307)
+
+Retired the AIEndurance HRV baseline. Code path collapses to a single algorithm — Flatt & Esco.
+
+- `data/metrics.py:rmssd_ai_endurance` deleted.
+- `config.HRV_ALGORITHM` env var + `.env.example` line removed (no longer choosing).
+- `_actor_calculate_hrv` returns a single `RmssdStatusDTO` (was `dict[Literal["flatt_esco","ai_endurance"], ...]`); `_actor_update_hrv_analysis` writes only the `flatt_esco` row.
+- `GET /api/wellness-day` response shape: `hrv` is now the HRV block directly (was `{primary_algorithm, flatt_esco, ai_endurance}`). `HRVData` interface in `webapp/src/api/types.ts` deleted; `WellnessResponse.hrv` now typed as `HRVBlock`.
+- `mcp_server/tools/hrv.py:get_hrv_analysis` simplified — drops `algorithm` parameter, returns the Flatt/Esco block at the top level.
+- Webapp `Wellness.tsx`: HRV `TabSwitcher` removed; renders `HRVBlockView` directly. `useState`/`TabSwitcher` import dropped.
+- `mcp_server/resources/athlete_profile.py`: AIEndurance line removed from prompt-resource text.
+
+**Schema preserved.** `hrv_analysis.algorithm` stays in the composite PK; historical `algorithm='ai_endurance'` rows are not deleted, just never read. Lets us bring the algorithm back as a per-user opt-in later without a migration if the chronic-fatigue use case re-emerges.
+
+**Tests:** `TestRmssdAiEndurance` class deleted from `tests/metrics/test_metrics.py` (3 tests). `TestActorCalculateHrv` and `TestActorUpdateHrvAnalysis` rewritten to single-algo shape (drops 4 dual-algo tests). 99 tests still green in metrics + actors.
+
+---
+
 ## Webhook data capture — Phase 2
 
 Migration `c4d5e6f7a8b9`, see `docs/WEBHOOK_DATA_CAPTURE_SPEC.md` Phase 2. Three nullable columns on `activity_details` populated from ACTIVITY_UPLOADED inline:

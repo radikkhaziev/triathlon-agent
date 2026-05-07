@@ -138,7 +138,6 @@ async def _build_wellness_response(row, target_date: date, user_id: int, languag
     recommendation_text = get_recommendation_text(row.recovery_recommendation or "", language)
 
     hrv_flatt = await HrvAnalysis.get(user_id=user_id, dt=target_str, algorithm="flatt_esco")
-    hrv_aie = await HrvAnalysis.get(user_id=user_id, dt=target_str, algorithm="ai_endurance")
     hrv_today = float(row.hrv) if row.hrv else None
 
     rhr_row = await RhrAnalysis.get(user_id=user_id, dt=target_str)
@@ -158,11 +157,7 @@ async def _build_wellness_response(row, target_date: date, user_id: int, languag
             "readiness_score": row.readiness_score,
             "readiness_level": row.readiness_level,
         },
-        "hrv": {
-            "primary_algorithm": settings.HRV_ALGORITHM,
-            "flatt_esco": _hrv_block(hrv_flatt, hrv_today, language),
-            "ai_endurance": _hrv_block(hrv_aie, hrv_today, language),
-        },
+        "hrv": _hrv_block(hrv_flatt, hrv_today, language),
         "rhr": _rhr_block(rhr_row, language),
         "sleep": {
             "score": row.sleep_score,

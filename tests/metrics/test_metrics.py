@@ -10,7 +10,6 @@ from data.metrics import (
     calculate_ess,
     calculate_trend,
     combined_recovery_score,
-    rmssd_ai_endurance,
     rmssd_flatt_esco,
 )
 
@@ -123,31 +122,6 @@ class TestRmssdFlattEsco:
         history = [50.0] * 14 + [65.0]  # big jump
         result = rmssd_flatt_esco(history)
         assert result.status == "green"
-
-
-class TestRmssdAiEndurance:
-    def _history(self, n=20, base=50.0):
-        import random
-
-        random.seed(42)
-        return [base + random.gauss(0, 3) for _ in range(n)]
-
-    def test_returns_rmssd_status(self):
-        result = rmssd_ai_endurance(self._history())
-        assert isinstance(result, RmssdStatusDTO)
-        assert result.status in ("green", "yellow", "red")
-
-    def test_symmetric_bounds(self):
-        result = rmssd_ai_endurance(self._history(70))
-        mean = result.rmssd_60d
-        lower_gap = mean - result.lower_bound
-        upper_gap = result.upper_bound - mean
-        assert abs(lower_gap - upper_gap) < 0.15  # symmetric ±0.5 SD (rounding tolerance)
-
-    def test_always_has_60d_fields(self):
-        result = rmssd_ai_endurance(self._history(20))
-        # ai_endurance uses all available data, so always has 60d fields
-        assert result.rmssd_60d is not None
 
 
 # ---------------------------------------------------------------------------

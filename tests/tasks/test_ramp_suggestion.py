@@ -29,13 +29,19 @@ def _user(*, id: int = 1) -> UserDTO:
     )
 
 
-def _wellness(*, ctl: float | None = 60.0, atl: float | None = 55.0) -> WellnessPostDTO:
+def _wellness(
+    *,
+    ctl: float | None = 60.0,
+    atl: float | None = 55.0,
+    recovery_score: float | None = 80.0,
+) -> WellnessPostDTO:
     return WellnessPostDTO(
         id=1,
         user_id=1,
         date="2026-04-05",
         ctl=ctl,
         atl=atl,
+        recovery_score=recovery_score,
     )
 
 
@@ -135,6 +141,51 @@ class TestIsTestNeeded:
             ramp = RampTrainingSuggestion(user=_user(), wellness=w)
             assert ramp.is_test_needed is False
 
+    def test_returns_false_when_recovery_low(self):
+        """Recovery < 70 → False (low recovery noises DFA, fit collapses)."""
+        from tasks.utils import RampTrainingSuggestion
+
+        w = _wellness(ctl=60.0, atl=55.0, recovery_score=55.0)
+        ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+        assert ramp.is_test_needed is False
+
+    def test_returns_false_when_recovery_missing(self):
+        """recovery_score=None → False (don't push ramp without a clean baseline)."""
+        from tasks.utils import RampTrainingSuggestion
+
+        w = _wellness(ctl=60.0, atl=55.0, recovery_score=None)
+        ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+        assert ramp.is_test_needed is False
+
+    def test_returns_false_when_tsb_deep_fatigue(self):
+        """TSB <= -10 → False (deep fatigue distorts DFA a1)."""
+        from tasks.utils import RampTrainingSuggestion
+
+        # ctl=50, atl=70 → tsb=-20
+        w = _wellness(ctl=50.0, atl=70.0, recovery_score=80.0)
+        ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+        assert ramp.is_test_needed is False
+
+    def test_suggests_ride_when_run_fresh(self):
+        """sports=['Run','Ride']: if Run is fresh and Ride stale → suggest Ride."""
+        from tasks.utils import RampTrainingSuggestion
+
+        w = _wellness(ctl=60.0, atl=55.0)
+
+        def _by_sport(*, user_id, sport):
+            if sport == "Run":
+                return _freshness(status="fresh", sport="Run", days_since=10)
+            return _freshness(status="stale", sport="Ride", days_since=40)
+
+        with (
+            patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
+            patch("tasks.utils.User.get_threshold_freshness", side_effect=_by_sport),
+        ):
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+            assert ramp.is_test_needed is True
+            assert ramp.suggested_sport == "Ride"
+            assert ramp.days_since == 40
+
 
 # ---------------------------------------------------------------------------
 # plan_ramp
@@ -165,12 +216,18 @@ class TestPlanRamp:
         w = _wellness()
         fresh = _freshness(status="stale", sport="Run", days_since=30)
         mock_workout = MagicMock()
+        run_settings = MagicMock()
+        run_settings.threshold_pace = 295.0
 
         with (
             patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
             patch(
                 "tasks.utils.User.get_threshold_freshness",
                 return_value=fresh,
+            ),
+            patch(
+                "tasks.utils.AthleteSettings.get",
+                return_value=run_settings,
             ),
             patch(
                 "tasks.utils.create_ramp_test",
@@ -181,7 +238,7 @@ class TestPlanRamp:
             ramp = RampTrainingSuggestion(user=_user(), wellness=w)
             result = ramp.plan_ramp(sport="Run", dt=_DT)
 
-        mock_create.assert_called_once_with("Run", _DT, 30)
+        mock_create.assert_called_once_with("Run", _DT, 30, threshold_pace=295.0)
         mock_actor.send.assert_called_once()
         assert "поставлен в очередь" in result
         assert "05.04" in result

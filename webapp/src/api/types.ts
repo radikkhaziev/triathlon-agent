@@ -72,12 +72,6 @@ export interface HRVBlock {
   trend: HRVTrend | null
 }
 
-export interface HRVData {
-  primary_algorithm: string
-  flatt_esco: HRVBlock
-  ai_endurance: HRVBlock
-}
-
 // RHR
 export interface RHRBlock {
   status: string
@@ -142,7 +136,7 @@ export interface WellnessResponse {
   has_next?: boolean
   role?: 'owner' | 'viewer' | 'anonymous'
   recovery: RecoveryData
-  hrv: HRVData
+  hrv: HRVBlock
   rhr: RHRBlock
   sleep: SleepData
   training_load: TrainingLoadData

@@ -21,7 +21,9 @@ class HrvAnalysis(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), primary_key=True)
     date: Mapped[str] = mapped_column(String, primary_key=True)
-    algorithm: Mapped[str] = mapped_column(String, primary_key=True)  # "flatt_esco" | "ai_endurance"
+    algorithm: Mapped[str] = mapped_column(
+        String, primary_key=True
+    )  # always "flatt_esco" since #307 — historical "ai_endurance" rows preserved but never read
 
     status: Mapped[str] = mapped_column(String)  # green | yellow | red | insufficient_data
     rmssd_7d: Mapped[float | None] = mapped_column(Float, nullable=True)

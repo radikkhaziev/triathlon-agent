@@ -46,18 +46,13 @@ MORNING_TOOLS = [
     {
         "name": "get_hrv_analysis",
         "description": (
-            "Get HRV analysis with dual-algorithm baselines. "
-            "Returns status (green/yellow/red), 7d/60d means, bounds, CV, SWC, trend. "
-            "Algorithm: 'flatt_esco' or 'ai_endurance'. Empty = both."
+            "Get HRV analysis (Flatt/Esco baseline). "
+            "Returns status (green/yellow/red), 7d/60d means, bounds, CV, SWC, trend."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
-                "algorithm": {
-                    "type": "string",
-                    "description": "Algorithm: 'flatt_esco', 'ai_endurance', or empty for both",
-                },
             },
             "required": ["date"],
         },
@@ -253,7 +248,73 @@ MORNING_TOOLS = [
             },
         },
     },
+    {
+        "name": "get_polarization_index",
+        "description": (
+            "Get time-in-zone distribution (Low/Mid/High) over 7d/14d/28d/56d windows. "
+            "Returns coaching signals: threshold_warning, too_hard, too_easy, gray_zone_drift, deload_week. "
+            "Empty signals = polarization is fine, do not mention in report."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sport": {"type": "string", "description": "run, bike, or swim. Default: run"},
+            },
+        },
+    },
+    {
+        "name": "get_personal_patterns",
+        "description": (
+            "Compute personal recovery and compliance patterns from training log. "
+            "Requires 30+ complete entries — returns insufficient_data otherwise. "
+            "Surfaces individualized timings (e.g. 'recovery hours after threshold runs') "
+            "and compliance trends to inform today's load decision."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_back": {"type": "integer", "description": "Lookback window for pattern mining. Default: 90"},
+            },
+        },
+    },
+    {
+        "name": "predict_ctl",
+        "description": (
+            "Predict ETA to reach a target CTL based on recent ramp rate. "
+            "Useful for goal-progress section: turns abstract CTL gap into a concrete date. "
+            "Returns current_ctl, ramp_per_week, and either eta_date or a message if ramp is non-positive."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_ctl": {"type": "number", "description": "Target CTL value"},
+                "sport": {"type": "string", "description": "Filter: 'Run', 'Ride', 'Swim'. Empty = overall"},
+            },
+            "required": ["target_ctl"],
+        },
+    },
+    {
+        "name": "get_weight_trend",
+        "description": (
+            "Get weight trend: current, average, slope (kg/week), direction (losing/gaining/stable), "
+            "and estimated date to reach target_kg. Pulls from Wellness + Garmin bio_metrics. "
+            "Useful when recovery is low or HRV is suppressed — weight loss often correlates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_back": {"type": "integer", "description": "Lookback days. Default: 30"},
+                "target_kg": {"type": "number", "description": "Optional target weight for ETA. Default: 0 (off)"},
+            },
+        },
+    },
 ]
+
+# Names of tools whitelisted for the morning report — derived from MORNING_TOOLS,
+# so the list is the single source of truth. Used by the drift test in
+# tests/tasks/test_morning_tool_names.py to assert SYSTEM_PROMPT_V2 doesn't
+# instruct Claude to call tools that aren't sent to the API.
+MORNING_TOOL_NAMES = {t["name"] for t in MORNING_TOOLS}
 
 # ---------------------------------------------------------------------------
 # Chat-only tool definitions

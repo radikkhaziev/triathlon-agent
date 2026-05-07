@@ -1,6 +1,11 @@
+import asyncio
+import logging
+
 from data.db import AthleteGoal, AthleteSettings
 from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
 from tasks.dto import local_today
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # V2 — Tool-use system prompt (MCP Phase 2)
@@ -27,37 +32,42 @@ Important context on training load data:
 
 Используй доступные tools чтобы собрать данные о состоянии атлета.
 Рекомендуемая последовательность:
-1. get_recovery — текущий recovery score и категория
-2. get_hrv_analysis — HRV статус (оба алгоритма)
-3. get_rhr_analysis — пульс покоя
-4. get_training_load — CTL/ATL/TSB/ramp_rate + per-sport CTL
-5. get_scheduled_workouts — что запланировано на сегодня
-6. get_goal_progress — прогресс к цели
-7. get_garmin_readiness — Garmin Training Readiness (score + factors). Сравни с нашим Recovery Score
-8. get_garmin_sleep(days_back=1) — детальный сон: deep/light/REM фазы, 7 суб-скоров, стресс во сне
-9. get_garmin_daily_metrics(days_back=1) — Body Battery, stress breakdown, ACWR
+1. get_recovery(date='{today}') — текущий recovery score и категория
+2. get_hrv_analysis(date='{today}') — HRV статус (оба алгоритма)
+3. get_rhr_analysis(date='{today}') — пульс покоя
+4. get_training_load(date='{today}') — CTL/ATL/TSB/ramp_rate + per-sport CTL
+5. get_scheduled_workouts(target_date='{today}') — что запланировано на сегодня
+6. get_goal_progress() — прогресс к цели
+7. get_personal_patterns(days_back=90) — персональные паттерны восстановления и compliance.
+   Если status = insufficient_data → пропусти, не упоминай. Иначе используй для секции
+   "наблюдение о тренде" — даёт индивидуальные сигналы (например, типичное время восстановления
+   после threshold-сессий), которых нет в общих метриках.
+8. get_polarization_index(sport='run') — распределение времени по зонам (Low/Mid/High).
+   Возвращает 4 окна (7d/14d/28d/56d) + coaching signals.
+   Если signals содержит:
+   - threshold_warning → "⚠ Слишком много Z3 за 2 недели. Замедли лёгкие или замени tempo на Z4+ интервалы."
+   - too_hard → "⚠ Риск перетренировки — слишком много интенсивных сессий."
+   - too_easy → "ℹ Не хватает стимула — добавь 1-2 интервальных сессии."
+   - gray_zone_drift → "⚠ Серая зона растёт — easy-тренировки недостаточно лёгкие."
+   - deload_week → информационно, не предупреждение.
+   Если signals пуст → не упоминай поляризацию (всё ок).
 
 Если какие-то данные вызывают подозрение (TSB < -20, HRV red, recovery low),
 можешь запросить дополнительные данные: get_wellness_range за неделю,
 get_activities за 3 дня, get_training_log для паттернов,
 get_mood_checkins для эмоционального контекста,
 get_iqos_sticks для корреляции с recovery,
-get_garmin_abnormal_hr_events — если были аномальные HR события.
+get_weight_trend(days_back=30) — если HRV/recovery низкие, потеря веса часто коррелирует.
 
 Для анализа аэробной базы можешь вызвать get_efficiency_trend с strict_filter=true —
 это вернёт cardiac drift (decoupling) trend с last-5 медианой и traffic light статусом.
 Если days_since > 14 — данные устарели, не акцентируй. Грейдинг: green (<5%), yellow (5-10%), red (>10%).
 Устойчивый красный дрейф (2 из 3) = рекомендация Base Building Protocol.
 
-10. get_polarization_index(sport='run') — распределение времени по зонам (Low/Mid/High).
-    Возвращает 4 окна (7d/14d/28d/56d) + coaching signals.
-    Если signals содержит:
-    - threshold_warning → "⚠ Слишком много Z3 за 2 недели. Замедли лёгкие или замени tempo на Z4+ интервалы."
-    - too_hard → "⚠ Риск перетренировки — слишком много интенсивных сессий."
-    - too_easy → "ℹ Не хватает стимула — добавь 1-2 интервальных сессии."
-    - gray_zone_drift → "⚠ Серая зона растёт — easy-тренировки недостаточно лёгкие."
-    - deload_week → информационно, не предупреждение.
-    Если signals пуст → не упоминай поляризацию (всё ок).
+В секции "прогресс к цели" вместо общих фраз используй predict_ctl(target_ctl=...) —
+он считает ETA до целевого CTL по текущему ramp rate и возвращает конкретную дату
+("при текущем темпе достигнешь 75 CTL к 12 июня"). Цель и текущий CTL уже видны
+из get_goal_progress + get_training_load.
 
 ## Формат ответа
 
@@ -87,17 +97,6 @@ get_garmin_abnormal_hr_events — если были аномальные HR со
 - If HRV is more than 15% below baseline → recommend reducing intensity
 - If TSB < −25 → recommend a rest or recovery day
 - If ramp rate > 7 TSS/week → flag overreaching risk
-- Garmin Training Readiness vs our Recovery Score: mention both if available, note agreement/divergence
-- Garmin sleep: highlight REM decline (overtraining marker), deep sleep ratio, awake count
-- Body Battery: low morning BB (<30) = under-recovered, high drain = stressful day
-- If Garmin data is missing for today — don't mention it, just use Intervals.icu data
-
-## Garmin Data Usage Rules
-- Garmin data has a delay of 7+ days (GDPR export). NEVER present it as current state.
-- For current readiness/HRV/sleep — use Intervals.icu tools (get_wellness, get_recovery).
-- Use Garmin tools for: trend analysis, pattern detection, historical correlations.
-- Check `data_freshness` in every Garmin tool response. Always mention data coverage: "По данным Garmin до 3 апреля..."
-- If days_stale > 14 — warn: "⚠️ Garmin данные устарели. Запроси новый экспорт."
 - Respond in {response_language}
 """
 
@@ -272,7 +271,7 @@ Athlete profile:
 
 ## Zones
 {zones_block}
-{facts_block}
+{facts_block}{personal_patterns_block}
 Respond in {response_language}."""
 
 
@@ -442,6 +441,96 @@ def _facts_block(facts: list, language: str) -> str:
     return "\n".join(lines)
 
 
+async def _safe_compute_personal_patterns(user_id: int) -> dict:
+    """Patterns are nice-to-have — never let an aggregation error break the prompt.
+
+    A transient DB hiccup or aggregation bug should drop the patterns block,
+    not blow up the whole `render_athlete_block` call (which also serves
+    facts, zones, and the goal — all required).
+    """
+    from data.personal_patterns import compute_personal_patterns
+
+    try:
+        return await compute_personal_patterns(user_id=user_id)
+    except Exception:
+        logger.exception("compute_personal_patterns failed for user %d", user_id)
+        return {"entries_total": 0, "entries_complete": 0}
+
+
+def _render_personal_patterns(patterns: dict, language: str) -> str:
+    """Format the compute_personal_patterns dict into a compact prompt block.
+
+    Returns ``""`` below ``MIN_COMPLETE_ENTRIES`` so callers can stack the
+    result unconditionally without a separate threshold check. Sections
+    render only when the underlying bucket has data — a quiet sport (no
+    Run rows in the matrix) doesn't surface empty slots.
+    """
+    from data.personal_patterns import MIN_COMPLETE_ENTRIES
+
+    n = patterns.get("entries_complete", 0)
+    if n < MIN_COMPLETE_ENTRIES:
+        return ""
+
+    en = language == "en"
+    total = patterns["entries_total"]
+    heading = (
+        f"## Personal patterns (training_log, {n}/{total} complete entries)"
+        if en
+        else f"## Персональные паттерны (training_log, {n}/{total} записей)"
+    )
+    lines = [heading]
+
+    by_cat = patterns.get("recovery_response_by_category") or {}
+    if by_cat:
+        lines.append(
+            "Recovery response by pre-category (avg recovery_delta):"
+            if en
+            else "Восстановление по pre-категории (avg recovery_delta):"
+        )
+        for cat in ("excellent", "good", "moderate", "low"):
+            row = by_cat.get(cat)
+            if row:
+                avg = row["avg_delta"]
+                lo, hi = row["min_delta"], row["max_delta"]
+                lines.append(f"- {cat} (n={row['count']}): {avg:+.1f} [{lo:+.1f}..{hi:+.1f}]")
+
+    hrv = patterns.get("hrv_sensitivity") or {}
+    if hrv:
+        lines.append("HRV sensitivity (avg recovery_delta):" if en else "Чувствительность HRV (avg recovery_delta):")
+        for status in ("green", "yellow", "red", "unknown"):
+            row = hrv.get(status)
+            if row:
+                lines.append(f"- {status} (n={row['count']}): {row['avg_delta']:+.1f}")
+
+    matrix = patterns.get("recovery_intensity_matrix") or {}
+    if matrix:
+        lines.append(
+            "Recovery × max-zone (avg recovery_delta):" if en else "Восстановление × макс-зона (avg recovery_delta):"
+        )
+        for cat in ("excellent", "good", "moderate", "low"):
+            zones = matrix.get(cat) or {}
+            if not zones:
+                continue
+            cells = ", ".join(f"{zone} {row['avg_delta']:+.1f} (n={row['count']})" for zone, row in zones.items())
+            lines.append(f"- {cat}: {cells}")
+
+    compliance = patterns.get("compliance_rates") or {}
+    if compliance:
+        lines.append("Compliance distribution:" if en else "Распределение compliance:")
+        for kind, row in sorted(compliance.items(), key=lambda kv: -kv[1]["pct"]):
+            lines.append(f"- {kind}: {row['pct']}% (n={row['count']})")
+
+    skipped = patterns.get("skipped_avg_delta")
+    trained = patterns.get("trained_avg_delta")
+    if skipped is not None and trained is not None:
+        if en:
+            lines.append(f"Rest vs training: skipped avg {skipped:+.1f}, trained avg {trained:+.1f}")
+        else:
+            lines.append(f"Отдых vs тренировка: skipped avg {skipped:+.1f}, trained avg {trained:+.1f}")
+
+    return "\n".join(lines)
+
+
 async def render_athlete_block(
     user_id: int,
     language: str = "ru",
@@ -457,18 +546,30 @@ async def render_athlete_block(
     """
     from data.db import UserFact  # local import — avoids circular on boot
 
-    t: AthleteThresholdsDTO = await AthleteSettings.get_thresholds(user_id)
-    g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
-    all_settings = await AthleteSettings.get_all(user_id)
-    settings_by_sport = {s.sport: s for s in all_settings}
+    # Fan out the per-user fetches in parallel so the chat hot path doesn't
+    # serialize 4-5 round trips. They're independent reads.
+    coros = [
+        AthleteSettings.get_thresholds(user_id),
+        AthleteGoal.get_goal_dto(user_id),
+        AthleteSettings.get_all(user_id),
+        _safe_compute_personal_patterns(user_id),
+    ]
+    if include_facts:
+        coros.append(UserFact.list_active(user_id=user_id))
+    fetched = await asyncio.gather(*coros)
+    t, g, all_settings, patterns = fetched[:4]
+    facts = fetched[4] if include_facts else []
 
+    settings_by_sport = {s.sport: s for s in all_settings}
     today = local_today().isoformat()
 
     facts_section = ""
     if include_facts:
-        facts = await UserFact.list_active(user_id=user_id)
         block = _facts_block(facts, language)
         facts_section = f"\n{block}\n" if block else ""
+
+    patterns_block = _render_personal_patterns(patterns, language)
+    patterns_section = f"\n{patterns_block}\n" if patterns_block else ""
 
     return _ATHLETE_BLOCK_TEMPLATE.format(
         today=today,
@@ -481,6 +582,7 @@ async def render_athlete_block(
         css=t.css or "—",
         zones_block=_zones_block(settings_by_sport, t),
         facts_block=facts_section,
+        personal_patterns_block=patterns_section,
         response_language=_lang_name(language),
     )
 

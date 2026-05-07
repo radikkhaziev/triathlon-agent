@@ -391,6 +391,27 @@ class PlannedWorkoutDTO(BaseModel):
 
         return _has_dist(self.steps)
 
+    @property
+    def has_pace_steps(self) -> bool:
+        """Check if any terminal step targets pace.
+
+        Used to set ``event.target = "PACE"`` so Garmin renders pace targets
+        on Run/Swim workouts. Without an explicit top-level ``target`` Garmin
+        defaults to ``AUTO`` → ``HR`` for Run, and silently drops pace-target
+        cells from the workout step view (verified live, ramp-test pre-flight
+        2026-05-07).
+        """
+
+        def _has_pace(steps: list[WorkoutStepDTO]) -> bool:
+            for s in steps:
+                if s.pace is not None and not s.steps:
+                    return True
+                if s.steps and _has_pace(s.steps):
+                    return True
+            return False
+
+        return _has_pace(self.steps)
+
     def to_intervals_event(self) -> "EventExDTO":
         """Convert to Intervals.icu POST /events DTO.
 
@@ -405,7 +426,12 @@ class PlannedWorkoutDTO(BaseModel):
         ~2026-04-30). Routing through workout_doc preserves steps for every
         sport and keeps a single code path.
         """
-        target = "PACE" if self.has_distance_steps and self.sport in ("Swim", "Run") else None
+        # Top-level event target. Default `None` → Intervals.icu maps to `AUTO`
+        # which Garmin then resolves to HR for Run / power for Ride. We must
+        # set `PACE` explicitly when the workout uses pace targets (distance
+        # steps or `pace` keys on terminal steps) — otherwise Garmin renders
+        # only HR on Run pace-driven workouts (e.g. ramp tests).
+        target = "PACE" if self.sport in ("Swim", "Run") and (self.has_distance_steps or self.has_pace_steps) else None
 
         # Strip duplicate "AI: " prefix if Claude already added it
         clean_name = self.name[4:] if self.name.startswith("AI: ") else self.name

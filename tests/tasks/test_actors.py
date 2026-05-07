@@ -378,52 +378,39 @@ class TestActorCalculateHrv:
             return _actor_calculate_hrv(user.model_dump(), dt)
 
     def test_insufficient_when_fewer_than_14_days(self):
-        """Fewer than 14 data points → both algorithms return insufficient_data."""
+        """Fewer than 14 data points → insufficient_data."""
         result = self._call([65.0] * 10)
-        assert result["flatt_esco"].status == "insufficient_data"
-        assert result["ai_endurance"].status == "insufficient_data"
-        assert result["flatt_esco"].days_available == 10
-        assert result["flatt_esco"].days_needed == 4  # 14 - 10
+        assert result.status == "insufficient_data"
+        assert result.days_available == 10
+        assert result.days_needed == 4  # 14 - 10
 
     def test_insufficient_with_empty_history(self):
-        """Empty history → both algorithms are insufficient_data."""
+        """Empty history → insufficient_data."""
         result = self._call([])
-        assert result["flatt_esco"].status == "insufficient_data"
-        assert result["ai_endurance"].status == "insufficient_data"
+        assert result.status == "insufficient_data"
 
     def test_insufficient_with_exactly_13_days(self):
         """Exactly 13 days is still insufficient (boundary)."""
         result = self._call([65.0] * 13)
-        assert result["flatt_esco"].status == "insufficient_data"
-        assert result["flatt_esco"].days_needed == 1
+        assert result.status == "insufficient_data"
+        assert result.days_needed == 1
 
-    def test_delegates_to_algorithms_when_enough_data(self):
-        """With 14+ rows, both rmssd_flatt_esco and rmssd_ai_endurance are called."""
+    def test_delegates_to_flatt_esco_when_enough_data(self):
+        """With 14+ rows, rmssd_flatt_esco is called and result returned."""
         hrv_rows = [65.0 + (i % 5) for i in range(20)]
 
         fe_result = _rmssd_status(status="green")
-        aie_result = _rmssd_status(status="yellow")
 
         with (
             patch("tasks.actors.wellness.Wellness.get_hrv_history", return_value=hrv_rows),
             patch("tasks.actors.wellness.rmssd_flatt_esco", return_value=fe_result) as mock_fe,
-            patch("tasks.actors.wellness.rmssd_ai_endurance", return_value=aie_result) as mock_aie,
         ):
             from tasks.actors.wellness import _actor_calculate_hrv
 
             result = _actor_calculate_hrv(_user().model_dump(), _DT)
 
         mock_fe.assert_called_once_with(hrv_rows)
-        mock_aie.assert_called_once_with(hrv_rows)
-        assert result["flatt_esco"] is fe_result
-        assert result["ai_endurance"] is aie_result
-
-    def test_returns_dict_with_both_keys(self):
-        """Return value always has both algorithm keys."""
-        hrv_rows = [60.0 + (i % 8) for i in range(20)]
-        result = self._call(hrv_rows)
-        assert "flatt_esco" in result
-        assert "ai_endurance" in result
+        assert result is fe_result
 
 
 # ---------------------------------------------------------------------------
@@ -529,36 +516,24 @@ class TestActorUpdateRhrAnalysis:
 
 
 class TestActorUpdateHrvAnalysis:
-    """_actor_update_hrv_analysis persists HRV analysis for both algorithms."""
+    """_actor_update_hrv_analysis persists Flatt/Esco HRV analysis."""
 
-    def _make_prev(self, fe_status: str = "green", aie_status: str = "green") -> dict:
-        return {
-            "flatt_esco": _rmssd_status(status=fe_status),
-            "ai_endurance": _rmssd_status(status=aie_status),
-        }
-
-    def test_skips_both_when_insufficient(self):
-        """Both algorithms insufficient → no DB sessions opened."""
+    def test_skips_when_insufficient(self):
+        """insufficient_data → no DB session opened."""
         from tasks.actors.wellness import _actor_update_hrv_analysis
 
-        prev = {
-            "flatt_esco": RmssdStatusDTO(status="insufficient_data", days_available=5, days_needed=9),
-            "ai_endurance": RmssdStatusDTO(status="insufficient_data", days_available=5, days_needed=9),
-        }
-        serialised = {"flatt_esco": prev["flatt_esco"].model_dump(), "ai_endurance": prev["ai_endurance"].model_dump()}
+        prev = RmssdStatusDTO(status="insufficient_data", days_available=5, days_needed=9)
 
         with patch("tasks.actors.wellness.get_sync_session") as mock_session:
-            _actor_update_hrv_analysis(serialised, user=_user().model_dump(), dt=_DT)
+            _actor_update_hrv_analysis(prev.model_dump(), user=_user().model_dump(), dt=_DT)
 
         mock_session.assert_not_called()
 
     def test_writes_flatt_esco_row(self):
-        """Valid flatt_esco → DB row created/updated for that algorithm."""
+        """Valid status → DB row created/updated for flatt_esco algorithm."""
         from tasks.actors.wellness import _actor_update_hrv_analysis
 
         fe = _rmssd_status(status="yellow")
-        aie = RmssdStatusDTO(status="insufficient_data", days_available=5, days_needed=9)
-        prev = {"flatt_esco": fe.model_dump(), "ai_endurance": aie.model_dump()}
 
         mock_row = MagicMock()
         mock_session = MagicMock()
@@ -567,7 +542,7 @@ class TestActorUpdateHrvAnalysis:
         mock_session.get.return_value = mock_row  # existing row
 
         with patch("tasks.actors.wellness.get_sync_session", return_value=mock_session):
-            _actor_update_hrv_analysis(prev, user=_user().model_dump(), dt=_DT)
+            _actor_update_hrv_analysis(fe.model_dump(), user=_user().model_dump(), dt=_DT)
 
         # session.get called with composite key (user_id, date, algorithm)
         mock_session.get.assert_called_once()
@@ -575,41 +550,11 @@ class TestActorUpdateHrvAnalysis:
         assert get_args[1] == (1, _DT_STR, "flatt_esco")
         assert mock_row.status == "yellow"
 
-    def test_writes_both_algorithms_when_valid(self):
-        """Both algorithms valid → two DB sessions opened."""
-        from tasks.actors.wellness import _actor_update_hrv_analysis
-
-        prev = {
-            "flatt_esco": _rmssd_status(status="green").model_dump(),
-            "ai_endurance": _rmssd_status(status="yellow").model_dump(),
-        }
-
-        mock_row = MagicMock()
-        sessions_created = []
-
-        def session_factory():
-            s = MagicMock()
-            s.__enter__ = MagicMock(return_value=s)
-            s.__exit__ = MagicMock(return_value=False)
-            s.get.return_value = mock_row
-            sessions_created.append(s)
-            return s
-
-        with patch("tasks.actors.wellness.get_sync_session", side_effect=session_factory):
-            _actor_update_hrv_analysis(prev, user=_user().model_dump(), dt=_DT)
-
-        # One session per algorithm (2 algorithms with valid data)
-        assert len(sessions_created) == 2
-
     def test_returns_flatt_esco_result(self):
-        """Return value is the flatt_esco RmssdStatusDTO."""
+        """Return value is the input RmssdStatusDTO."""
         from tasks.actors.wellness import _actor_update_hrv_analysis
 
         fe = _rmssd_status(status="green")
-        prev = {
-            "flatt_esco": fe.model_dump(),
-            "ai_endurance": RmssdStatusDTO(status="insufficient_data", days_available=5, days_needed=9).model_dump(),
-        }
 
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)
@@ -617,7 +562,7 @@ class TestActorUpdateHrvAnalysis:
         mock_session.get.return_value = MagicMock()
 
         with patch("tasks.actors.wellness.get_sync_session", return_value=mock_session):
-            result = _actor_update_hrv_analysis(prev, user=_user().model_dump(), dt=_DT)
+            result = _actor_update_hrv_analysis(fe.model_dump(), user=_user().model_dump(), dt=_DT)
 
         assert result.status == "green"
 
@@ -626,10 +571,6 @@ class TestActorUpdateHrvAnalysis:
         from tasks.actors.wellness import _actor_update_hrv_analysis
 
         fe = _rmssd_status(status="red")
-        prev = {
-            "flatt_esco": fe.model_dump(),
-            "ai_endurance": RmssdStatusDTO(status="insufficient_data", days_available=0, days_needed=14).model_dump(),
-        }
 
         mock_new_row = MagicMock()
         mock_session = MagicMock()
@@ -641,7 +582,7 @@ class TestActorUpdateHrvAnalysis:
             patch("tasks.actors.wellness.get_sync_session", return_value=mock_session),
             patch("tasks.actors.wellness.HrvAnalysis", return_value=mock_new_row) as mock_hrv_cls,
         ):
-            _actor_update_hrv_analysis(prev, user=_user().model_dump(), dt=_DT)
+            _actor_update_hrv_analysis(fe.model_dump(), user=_user().model_dump(), dt=_DT)
 
         mock_hrv_cls.assert_called_once_with(user_id=1, date=_DT_STR, algorithm="flatt_esco")
         mock_session.add.assert_called_once_with(mock_new_row)

@@ -146,47 +146,6 @@ def rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatusDTO:
     )
 
 
-def rmssd_ai_endurance(hrv_history: list[float]) -> RmssdStatusDTO:
-    """AIEndurance / Kiviniemi — 7d mean vs 60d baseline, symmetric bounds.
-
-    Slower response — takes ~3-4 days of low HRV to trigger "red".
-    Better for chronic fatigue detection.
-    """
-    n = len(hrv_history)
-    last_7 = hrv_history[-7:]
-    last_60 = hrv_history[-60:] if n >= 60 else hrv_history
-
-    mean_7 = statistics.mean(last_7)
-    mean_60 = statistics.mean(last_60)
-    sd_60 = statistics.stdev(last_60) if len(last_60) >= 2 else 1.0
-
-    lower_bound = mean_60 - 0.5 * sd_60
-    upper_bound = mean_60 + 0.5 * sd_60
-
-    # Classify the weekly mean (not today's single value)
-    status = _classify_recovery(mean_7, mean_60, lower_bound, upper_bound)
-
-    swc = 0.5 * sd_60
-    std_7 = statistics.stdev(last_7) if len(last_7) >= 2 else 1.0
-    cv_7d = (std_7 / mean_7 * 100) if mean_7 > 0 else None
-    trend = calculate_trend(last_7, window=7, **TREND_THRESHOLDS["hrv"])
-
-    return RmssdStatusDTO(
-        status=status,
-        days_available=n,
-        days_needed=0,
-        rmssd_7d=round(mean_7, 1),
-        rmssd_sd_7d=round(std_7, 2),
-        rmssd_60d=round(mean_60, 1),
-        rmssd_sd_60d=round(sd_60, 2),
-        lower_bound=round(lower_bound, 1),
-        upper_bound=round(upper_bound, 1),
-        cv_7d=round(cv_7d, 1) if cv_7d else None,
-        swc=round(swc, 2),
-        trend=trend,
-    )
-
-
 # ---------------------------------------------------------------------------
 # ESS (External Stress Score) — Banister TRIMP
 # ---------------------------------------------------------------------------

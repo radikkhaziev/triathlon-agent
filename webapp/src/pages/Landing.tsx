@@ -53,7 +53,7 @@ export default function Landing() {
         <h2 className="text-center text-[28px] font-bold mb-12">Features</h2>
         <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-5">
           {[
-            { icon: '🟢', title: 'Morning Report', desc: 'Recovery score, dual-algorithm HRV analysis (Flatt & Esco + AIEndurance), sleep quality and RHR. AI-powered workout recommendation.' },
+            { icon: '🟢', title: 'Morning Report', desc: 'Recovery score, HRV analysis (Flatt & Esco), sleep quality and RHR. AI-powered workout recommendation.' },
             { icon: '📈', title: 'Training Load', desc: 'CTL / ATL / TSB from Intervals.icu. Per-sport CTL for swim, bike and run. Ramp rate monitoring.' },
             { icon: '❤️‍🔥', title: 'DFA Alpha 1', desc: 'Post-activity HRV analysis: HRVT1/HRVT2 thresholds, Readiness (Ra), Durability (Da). Automatically processed from FIT files.' },
             { icon: '🏁', title: 'Race Progress', desc: 'Per-sport CTL tracking against target values. Countdown to race day with goal completion percentage.' },
