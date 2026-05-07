@@ -219,9 +219,9 @@ class TestBuildRampTestMessage:
         _, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153, hrvt1_sample_count=5)
         assert show_button is False
 
-    def test_single_sample_suppresses_button(self):
-        """With only 1 HRVT1 sample total, drift detection can't fire — button hidden."""
-        hrv = _make_hrv(hrvt1_hr=165.0, hrvt1_power=None)
+    def test_single_sample_below_bootstrap_drift_suppresses_button(self):
+        """1 sample, modest drift (~8%) below bootstrap 10% gate — button hidden."""
+        hrv = _make_hrv(hrvt1_hr=165.0, hrvt1_power=None, threshold_r_squared=0.92)
         msg, show_button = build_ramp_test_message(
             _make_activity(type="Run"), hrv, config_lthr=153, hrvt1_sample_count=1
         )
@@ -229,7 +229,23 @@ class TestBuildRampTestMessage:
         # Still informs the user drift was seen, just asks for another test
         assert "ramp test" in msg.lower()
 
-    def test_detection_failed_shows_reason(self):
+    def test_single_sample_bootstrap_high_quality_shows_button(self):
+        """1 sample, R²>0.85, drift>10% — bootstrap path lights up the button."""
+        # 173 vs 153 = +13% drift, R²=0.92 — clears both thresholds
+        hrv = _make_hrv(hrvt1_hr=173.0, hrvt1_power=None, threshold_r_squared=0.92)
+        msg, show_button = build_ramp_test_message(
+            _make_activity(type="Run"), hrv, config_lthr=153, hrvt1_sample_count=1
+        )
+        assert show_button is True
+        assert "Bootstrap" in msg
+
+    def test_single_sample_bootstrap_blocked_by_low_r_squared(self):
+        """1 sample, R²=0.50 (noisy fit) — bootstrap blocked even with big drift."""
+        hrv = _make_hrv(hrvt1_hr=173.0, hrvt1_power=None, threshold_r_squared=0.50)
+        _, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153, hrvt1_sample_count=1)
+        assert show_button is False
+
+    def test_detection_failed_shows_reason_and_advice(self):
         hrv = _make_hrv(
             hrvt1_hr=None,
             hrvt1_power=None,
@@ -244,11 +260,174 @@ class TestBuildRampTestMessage:
         )
         assert show_button is False
         assert "0.33" in msg
+        # Actionable advice surfaces the recommendation, not just the diagnostic code
+        assert "тредмилл" in msg.lower() or "treadmill" in msg.lower()
+
+    def test_detection_failed_advice_per_code(self):
+        """Each known failure code emits its own actionable advice line."""
+        hrv = _make_hrv(hrvt1_hr=None, hrvt1_power=None, hrvt1_pace=None)
+        # too_few_points → нужна work-фаза 30+ минут
+        msg, _ = build_ramp_test_message(
+            _make_activity(type="Run"),
+            hrv,
+            config_lthr=153,
+            failure_reason={"code": "too_few_points", "count": 8},
+        )
+        assert "30+" in msg
+        # a1_range_low → бери выше темп на последних шагах
+        msg, _ = build_ramp_test_message(
+            _make_activity(type="Run"),
+            hrv,
+            config_lthr=153,
+            failure_reason={"code": "a1_range_low", "min_a1": 0.85},
+        )
+        assert "темп" in msg.lower()
+        # positive_slope → проверь chest strap
+        msg, _ = build_ramp_test_message(
+            _make_activity(type="Run"),
+            hrv,
+            config_lthr=153,
+            failure_reason={"code": "positive_slope", "slope": 0.05},
+        )
+        assert "chest strap" in msg.lower() or "strap" in msg.lower()
 
     def test_detection_failed_no_reason(self):
         hrv = _make_hrv(hrvt1_hr=None, hrvt1_power=None, hrvt1_pace=None)
         msg, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
         assert show_button is False
+
+    def test_pace_drift_lights_button_when_lthr_clean(self):
+        """LTHR matches config but pace shows >10% bootstrap drift → button shown."""
+        hrv = _make_hrv(
+            hrvt1_hr=153.0,  # exact match → no LTHR drift
+            hrvt1_power=None,
+            hrvt1_pace="4:20",
+            threshold_r_squared=0.92,
+        )
+        msg, show_button = build_ramp_test_message(
+            _make_activity(type="Run"),
+            hrv,
+            config_lthr=153,
+            config_threshold_pace=295.0,
+            hrvt1_pace_sec=260,
+            hrvt1_sample_count=1,
+        )
+        assert show_button is True
+        assert "threshold pace" in msg.lower()
+        assert "295" in msg
+
+    def test_both_drifts_button_shown_once(self):
+        """LTHR and pace both drift — button surfaces, no duplicate hint chain."""
+        hrv = _make_hrv(
+            hrvt1_hr=170.0,  # +11% vs 153
+            hrvt1_power=None,
+            hrvt1_pace="4:20",
+            threshold_r_squared=0.92,
+        )
+        msg, show_button = build_ramp_test_message(
+            _make_activity(type="Run"),
+            hrv,
+            config_lthr=153,
+            config_threshold_pace=295.0,
+            hrvt1_pace_sec=260,
+            hrvt1_sample_count=1,
+        )
+        assert show_button is True
+        # Soft "need another test" hint must NOT appear when button is on
+        assert "нужен ещё один" not in msg
+
+    def test_pace_within_tolerance_no_button(self):
+        """Both metrics within tolerance — no button, no hints."""
+        hrv = _make_hrv(hrvt1_hr=155.0, hrvt1_power=None, hrvt1_pace="4:55")
+        _, show_button = build_ramp_test_message(
+            _make_activity(type="Run"),
+            hrv,
+            config_lthr=153,
+            config_threshold_pace=295.0,
+            hrvt1_pace_sec=295,
+            hrvt1_sample_count=5,
+        )
+        assert show_button is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: _drift_button_status (UI gating that mirrors User.detect_threshold_drift)
+# ---------------------------------------------------------------------------
+
+
+class TestDriftButtonStatus:
+    """Pure helper. Each branch tested directly so the UI/backend gates can't drift apart.
+
+    Pairs with `tests/db/test_threshold_drift.py` which covers the backend gate.
+    If those thresholds change, both test files need updates simultaneously.
+    """
+
+    def test_two_samples_above_5pct_shows_button(self):
+        from tasks.formatter import _drift_button_status
+
+        # 165 vs 153 = +7.8% drift, 3 samples → standard path
+        visible, hint = _drift_button_status(measured=165, config=153, sample_count=3, r2=0.7)
+        assert visible is True
+        assert hint is not None
+        assert "обновить" in hint.lower()
+
+    def test_two_samples_within_5pct_no_button_no_hint(self):
+        from tasks.formatter import _drift_button_status
+
+        # 156 vs 153 = +2% — well within tolerance
+        visible, hint = _drift_button_status(measured=156, config=153, sample_count=3, r2=0.7)
+        assert visible is False
+        assert hint is None
+
+    def test_single_sample_bootstrap_high_r2_shows_button(self):
+        from tasks.formatter import _drift_button_status
+
+        # 175 vs 153 = +14.4% drift, R²=0.92 — bootstrap fires
+        visible, hint = _drift_button_status(measured=175, config=153, sample_count=1, r2=0.92)
+        assert visible is True
+        assert "Bootstrap" in hint or "bootstrap" in hint
+
+    def test_single_sample_low_r2_blocks_bootstrap(self):
+        from tasks.formatter import _drift_button_status
+
+        # Same drift but R²=0.50 — bootstrap blocked, soft hint asking for more samples
+        visible, hint = _drift_button_status(measured=175, config=153, sample_count=1, r2=0.50)
+        assert visible is False
+        assert hint is not None
+        assert "ramp test" in hint.lower() or "ещё один" in hint
+
+    def test_single_sample_small_drift_no_hint(self):
+        from tasks.formatter import _drift_button_status
+
+        # 156 vs 153 = +2% — under 5%, no soft hint either
+        visible, hint = _drift_button_status(measured=156, config=153, sample_count=1, r2=0.92)
+        assert visible is False
+        assert hint is None
+
+    def test_single_sample_drift_between_5_and_10_pct_soft_hint_only(self):
+        from tasks.formatter import _drift_button_status
+
+        # 165 vs 153 = +7.8% drift, R²=0.92, 1 sample — bootstrap requires >10%
+        # → no button, but show «нужен ещё один» soft hint
+        visible, hint = _drift_button_status(measured=165, config=153, sample_count=1, r2=0.92)
+        assert visible is False
+        assert hint is not None
+        assert "ramp test" in hint.lower() or "ещё один" in hint
+
+    def test_single_sample_no_r2_blocks_bootstrap(self):
+        """R² absent (None) → bootstrap path can't fire even with big drift."""
+        from tasks.formatter import _drift_button_status
+
+        visible, _hint = _drift_button_status(measured=175, config=153, sample_count=1, r2=None)
+        assert visible is False
+
+    def test_zero_samples_falls_through(self):
+        from tasks.formatter import _drift_button_status
+
+        visible, hint = _drift_button_status(measured=175, config=153, sample_count=0, r2=0.92)
+        assert visible is False
+        # 0 samples + drift>5% → soft hint still appears (encourages more tests)
+        assert hint is not None
 
 
 # ---------------------------------------------------------------------------

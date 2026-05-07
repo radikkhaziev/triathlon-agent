@@ -3,6 +3,7 @@ import logging
 
 from data.db import AthleteGoal, AthleteSettings
 from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
+from data.personal_patterns import MIN_COMPLETE_ENTRIES, compute_personal_patterns
 from tasks.dto import local_today
 
 logger = logging.getLogger(__name__)
@@ -33,15 +34,16 @@ Important context on training load data:
 Используй доступные tools чтобы собрать данные о состоянии атлета.
 Рекомендуемая последовательность:
 1. get_recovery(date='{today}') — текущий recovery score и категория
-2. get_hrv_analysis(date='{today}') — HRV статус (оба алгоритма)
+2. get_hrv_analysis(date='{today}') — HRV статус (Flatt & Esco baseline)
 3. get_rhr_analysis(date='{today}') — пульс покоя
 4. get_training_load(date='{today}') — CTL/ATL/TSB/ramp_rate + per-sport CTL
 5. get_scheduled_workouts(target_date='{today}') — что запланировано на сегодня
 6. get_goal_progress() — прогресс к цели
 7. get_personal_patterns(days_back=90) — персональные паттерны восстановления и compliance.
    Если status = insufficient_data → пропусти, не упоминай. Иначе используй для секции
-   "наблюдение о тренде" — даёт индивидуальные сигналы (например, типичное время восстановления
-   после threshold-сессий), которых нет в общих метриках.
+   "наблюдение о тренде" — возвращает средний recovery_delta по pre-категории / max-зоне /
+   HRV-статусу, распределение compliance и сравнение skipped vs trained. Это индивидуальные
+   реакции, которых нет в общих метриках. Не выдумывай поля типа "recovery hours" — их там нет.
 8. get_polarization_index(sport='run') — распределение времени по зонам (Low/Mid/High).
    Возвращает 4 окна (7d/14d/28d/56d) + coaching signals.
    Если signals содержит:
@@ -448,8 +450,6 @@ async def _safe_compute_personal_patterns(user_id: int) -> dict:
     not blow up the whole `render_athlete_block` call (which also serves
     facts, zones, and the goal — all required).
     """
-    from data.personal_patterns import compute_personal_patterns
-
     try:
         return await compute_personal_patterns(user_id=user_id)
     except Exception:
@@ -465,8 +465,6 @@ def _render_personal_patterns(patterns: dict, language: str) -> str:
     render only when the underlying bucket has data — a quiet sport (no
     Run rows in the matrix) doesn't surface empty slots.
     """
-    from data.personal_patterns import MIN_COMPLETE_ENTRIES
-
     n = patterns.get("entries_complete", 0)
     if n < MIN_COMPLETE_ENTRIES:
         return ""
@@ -548,6 +546,10 @@ async def render_athlete_block(
 
     # Fan out the per-user fetches in parallel so the chat hot path doesn't
     # serialize 4-5 round trips. They're independent reads.
+    #
+    # `return_exceptions=True` so a transient DB hiccup on any one fetch
+    # degrades that block (renders empty) rather than killing the whole
+    # chat reply (and cancelling the other in-flight queries).
     coros = [
         AthleteSettings.get_thresholds(user_id),
         AthleteGoal.get_goal_dto(user_id),
@@ -556,9 +558,19 @@ async def render_athlete_block(
     ]
     if include_facts:
         coros.append(UserFact.list_active(user_id=user_id))
-    fetched = await asyncio.gather(*coros)
-    t, g, all_settings, patterns = fetched[:4]
-    facts = fetched[4] if include_facts else []
+    fetched = await asyncio.gather(*coros, return_exceptions=True)
+
+    def _fallback(value, default, label):
+        if isinstance(value, BaseException):
+            logger.exception("render_athlete_block: %s fetch failed", label, exc_info=value)
+            return default
+        return value
+
+    t = _fallback(fetched[0], AthleteThresholdsDTO(), "thresholds")
+    g = _fallback(fetched[1], None, "goal")
+    all_settings = _fallback(fetched[2], [], "settings_by_sport")
+    patterns = _fallback(fetched[3], {"entries_total": 0, "entries_complete": 0}, "patterns")
+    facts = _fallback(fetched[4], [], "facts") if include_facts else []
 
     settings_by_sport = {s.sport: s for s in all_settings}
     today = local_today().isoformat()

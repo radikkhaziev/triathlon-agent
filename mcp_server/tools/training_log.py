@@ -113,7 +113,17 @@ async def get_training_log(target_date: str = "", days_back: int = 14) -> dict:
 
 @mcp.tool()
 async def get_personal_patterns(days_back: int = 90) -> dict:
-    """Compute personal recovery and compliance patterns. Requires 30+ training log entries."""
+    """Compute personal recovery and compliance patterns.
+
+    Requires MIN_COMPLETE_ENTRIES (30) *complete* training-log entries within
+    ``days_back`` — rows missing required fields (e.g. recovery_delta) don't
+    count. Returns ``status='insufficient_data'`` with the current
+    ``entries_complete`` count when the threshold isn't met.
+
+    Above the threshold, returns avg recovery_delta bucketed by pre-recovery
+    category, by max-zone, by HRV status, plus compliance distribution and
+    skipped vs trained averages.
+    """
     user_id = get_current_user_id()
     patterns = await compute_personal_patterns(user_id=user_id, days_back=days_back)
 

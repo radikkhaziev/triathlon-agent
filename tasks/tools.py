@@ -267,8 +267,9 @@ MORNING_TOOLS = [
         "description": (
             "Compute personal recovery and compliance patterns from training log. "
             "Requires 30+ complete entries — returns insufficient_data otherwise. "
-            "Surfaces individualized timings (e.g. 'recovery hours after threshold runs') "
-            "and compliance trends to inform today's load decision."
+            "Returns avg recovery_delta bucketed by pre-recovery category, by max-zone, "
+            "by HRV status, plus compliance distribution and skipped vs trained averages — "
+            "surfaces individual response patterns absent from generic metrics."
         ),
         "input_schema": {
             "type": "object",

@@ -66,17 +66,22 @@ def create_ramp_test(
         sport: "Ride" or "Run"
         target_date: Date for the ramp test
         days_since: Days since last valid threshold (for rationale)
-        threshold_pace: Athlete's Run threshold pace in s/km. Required for Run
-            (falls back to default with a calibration warning); ignored for Ride.
+        threshold_pace: Athlete's Run threshold pace in s/km. Optional — does not
+            affect step structure (Intervals.icu does the %pace → absolute pace
+            conversion). Treated as "not set" when ``None`` or non-positive
+            (≤0); the rationale gains a calibration warning prompting the
+            athlete to set their Run threshold in Intervals.icu. Ignored for Ride.
     """
     if sport == "Ride":
         steps = list(RAMP_STEPS_RIDE)
         rationale_extra = ""
     elif sport == "Run":
         steps = build_ramp_steps_run(threshold_pace)
+        # Treat 0 / None / negative as "not set" — pushing %pace targets to
+        # Intervals.icu without a positive baseline produces nonsense on the watch.
         rationale_extra = (
             ""
-            if threshold_pace
+            if (threshold_pace is not None and threshold_pace > 0)
             else (
                 " Threshold pace not set in Intervals.icu — %pace targets won't render on the "
                 "watch correctly; calibrate by setting your Run threshold there first."

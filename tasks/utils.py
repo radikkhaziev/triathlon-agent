@@ -48,29 +48,46 @@ class RampTrainingSuggestion:
         # Need wellness with valid CTL/ATL — without it tsb is meaningless.
         if not self._has_data:
             return False
-        # Deep fatigue distorts DFA a1 — HRVT2 detection becomes unreliable.
+        # Deep fatigue distorts DFA a1 — HRVT2 detection becomes unreliable
+        # regardless of whether this is a first test or a re-test.
         if self.tsb <= -10:
-            return False
-        # Ramp test stresses the system; low recovery noises the HRV signal
-        # and the linear fit collapses (R² drops). Need a clean baseline.
-        recovery = self.wellness.recovery_score
-        if recovery is None or recovery < 70:
             return False
 
         upcoming = AiWorkout.get_upcoming(user_id=self.user.id, days_ahead=14)
         if any("Ramp Test" in (w.name or "") for w in upcoming):
             return False  # already planned
 
+        # Find candidate sport. `no_data` (never tested) takes a bootstrap
+        # path that relaxes the recovery gate — a newcomer needs a baseline,
+        # and there's no prior fit to "protect" yet. `stale` (>30d) keeps the
+        # full gate so we don't pollute the existing baseline with a noisy fit.
+        candidate_sport: str | None = None
+        candidate_days_since: int | None = None
+        is_bootstrap = False
         for sport in self.sports:
             data: ThresholdFreshnessDTO = User.get_threshold_freshness(user_id=self.user.id, sport=sport)
             if data.status == "no_data":
-                self.suggested_sport = sport  # never tested → suggest
-                return True
+                candidate_sport = sport
+                is_bootstrap = True
+                break
             if data.days_since and data.days_since > 30:
-                self.suggested_sport = sport  # stale → suggest
-                self.days_since = data.days_since
-                return True
-        return False
+                candidate_sport = sport
+                candidate_days_since = data.days_since
+                break
+
+        if not candidate_sport:
+            return False
+
+        if not is_bootstrap:
+            # Ramp test stresses the system; low recovery noises the HRV signal
+            # and the linear fit collapses (R² drops). Need a clean baseline.
+            recovery = self.wellness.recovery_score
+            if recovery is None or recovery < 70:
+                return False
+
+        self.suggested_sport = candidate_sport
+        self.days_since = candidate_days_since
+        return True
 
     def plan_ramp(self, sport: str | None = None, dt: date | None = None) -> str:
         """Create and push a ramp test workout. Returns status message.
