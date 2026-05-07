@@ -7,7 +7,7 @@
 
 ## Headline
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`).
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). ATP Phase 3 prompt enrichment complete (no cron deviation, see below). Ramp-test Run protocol switched to pace-driven (`%pace` units + `event.target=PACE` auto via `has_pace_steps`); pipeline gained AiWorkout fallback, single-sample bootstrap drift, actionable failure advice, and `THRESHOLD_PACE` push.
 
 ---
 
@@ -121,9 +121,40 @@ Sentry scrubbing extended with `bot\d+:[A-Za-z0-9_-]{30,}` regex so leaked Teleg
 
 ---
 
+## ATP Phase 3 — personal-patterns prompt enrichment (2026-05-07)
+
+Closing the long-pending Phase 3 finishing work, see `docs/ADAPTIVE_TRAINING_PLAN.md` §3.
+
+- `data/personal_patterns.py` (new) — `compute_personal_patterns(user_id, days_back=90) → dict` aggregator over `training_log`. Always returns `entries_total`/`entries_complete`; aggregate fields populated only at `entries_complete >= MIN_COMPLETE_ENTRIES` (30). Single SQL query, no persistence.
+- `mcp_server/tools/training_log.py:get_personal_patterns` — refactored to thin wrapper. Eliminated previous double-query insufficient-data path.
+- `bot/prompts.py` — added `_render_personal_patterns` + `{personal_patterns_block}` slot in `_ATHLETE_BLOCK_TEMPLATE`. `render_athlete_block` now fans out `AthleteSettings.get_thresholds`/`AthleteGoal.get_goal_dto`/`AthleteSettings.get_all`/`compute_personal_patterns`/`UserFact.list_active` via `asyncio.gather` (parallel). `_safe_compute_personal_patterns` wraps the patterns coro in try/except — a transient DB error drops the patterns block, never breaks the chat prompt.
+- Weekly report already had `get_personal_patterns` in the whitelist; now Claude actually has data to call it on.
+- **Deviation from spec:** no cron, no persistence (originally proposed Sunday 18:00 weekly cron + `personal_patterns` table). Compute is sub-millisecond, parallel-fetched with the rest of the athlete block. Doc'd inline in spec §«Периодический анализ» with the rationale.
+
+---
+
+## Ramp test Run — pace-driven protocol + pipeline fixes (2026-05-07)
+
+Run ramp test rebuilt around pace as control variable (HR/DFA observed). See `docs/ADAPTIVE_TRAINING_PLAN.md` §«Фаза 4».
+
+**Triggers** (`tasks/utils.py:RampTrainingSuggestion`): added `tsb > -10` and `recovery_score >= 70` gates; default `sports = ["Run", "Ride"]` (was Run only). Detector skips deep-fatigue / low-recovery days that produce noisy DFA fits.
+
+**Run protocol** (`data/ramp_tests.py:build_ramp_steps_run`): 10 work steps × 3 min, `pace.units = "%pace"`, ladder 85→130% of athlete's threshold. Replaced fixed-LTHR ladder. Intervals.icu converts `%pace` to absolute pace using athlete's `threshold_pace`; Garmin renders the resulting target on the watch.
+
+**Critical fix:** `data/intervals/dto.py:to_intervals_event` now sets `event.target = "PACE"` automatically when Run/Swim has pace-targeted terminal steps (new `has_pace_steps` property). Without this Intervals.icu defaults to `AUTO` → HR for Run, and Garmin **silently drops** pace cells from the workout step view. Verified live with the owner's account on 2026-05-07.
+
+**Pipeline fixes:**
+- **Fix A** — `_is_ramp_test_activity` (`tasks/actors/activities.py`) gains AiWorkout fallback. Defense-in-depth against missed `CALENDAR_UPDATED` webhook; `AiWorkout` is our local record written at `actor_push_workout` time.
+- **Fix B** — `_ramp_failure_advice` (`tasks/formatter.py`) emits actionable next-step guidance per `diagnose_hrv_thresholds` code (`too_few_points` → "30+ min work phase", `noisy_fit` → "treadmill", `positive_slope` → "check chest strap", etc.). Surfaces as `💡 {advice}` line under the failure reason.
+- **Fix C** — `User.detect_threshold_drift` bootstrap path: single sample with `R²>0.85` and `|drift|>10%` triggers alert. Avoids waiting for sample #2 on stale config (the first ramp test after setup would otherwise be wasted). Mirrored in `build_ramp_test_message` button condition.
+- **Fix F** — `actor_update_zones` extended to push Run `THRESHOLD_PACE` alongside `LTHR`. Drift detection runs over `ActivityHrv.hrvt1_pace` (string `"M:SS"`/km, parsed via `parse_pace_to_sec`). Same gating as LTHR (≥2 sample standard / 1 sample bootstrap). Push converts our DB `sec/km` → Intervals.icu API `m/s` via `1000 / sec_per_km`. The "Update zones" button now lights up when either metric drifts.
+
+**OAuth scope impact:** unchanged — `SETTINGS:WRITE` already required for LTHR push, threshold_pace rides on the same scope.
+
+---
+
 ## Pending
 
-- Personal patterns cron (ATP Phase 3): `compute_personal_patterns()` weekly cron + prompt enrichment. Waits for 30+ records in training_log.
 - MT Phase 2 (JWT upgrade): tenant_id, role, scope claims, bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`.
 - Retire legacy `INTERVALS_API_KEY` env vars (OAuth Phase 5).
 - User-memory Phase 2 extractor — gated on `tool_facts_per_100_msgs_30d < 3` with `chat_msgs ≥ 100`.

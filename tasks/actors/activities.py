@@ -23,6 +23,7 @@ from data.db import (
     Activity,
     ActivityDetail,
     ActivityHrv,
+    AiWorkout,
     AthleteSettings,
     PaBaseline,
     Race,
@@ -31,6 +32,7 @@ from data.db import (
     Wellness,
     get_sync_session,
 )
+from data.db.user import parse_pace_to_sec
 from data.hrv_activity import (
     calculate_dfa_timeseries,
     calculate_durability_da,
@@ -483,11 +485,16 @@ def _actor_send_activity_notification(
         sport = activity_row.type or "Run"
         settings = AthleteSettings.get(user.id, sport)
         config_lthr = settings.lthr if settings else None
+        config_threshold_pace = settings.threshold_pace if settings else None
         hrvt1_sample_count = ActivityHrv.count_hrvt1_samples(user.id, sport)
+        # Parse hrvt1_pace ("M:SS") → s/km int for the formatter's drift comparison.
+        hrvt1_pace_sec = parse_pace_to_sec(hrv_row.hrvt1_pace)
         summary, show_update_zones = build_ramp_test_message(
             activity_row,
             hrv_row,
             config_lthr=config_lthr,
+            config_threshold_pace=config_threshold_pace,
+            hrvt1_pace_sec=hrvt1_pace_sec,
             failure_reason=failure_reason,
             hrvt1_sample_count=hrvt1_sample_count,
         )
@@ -519,11 +526,18 @@ def _actor_send_activity_notification(
 
 
 def _is_ramp_test_activity(user_id: int, activity: Activity) -> bool:
-    """True when a Ramp Test scheduled workout exists for the activity's date+sport.
+    """True when a Ramp Test was planned for the activity's date+sport.
 
-    Only catches pre-planned ramp tests (created via /workout or create_ramp_test_tool).
-    Ad-hoc ramp-style workouts without a matching ScheduledWorkout do not trigger
-    the ramp-specific notification — by design, to avoid false positives on
+    Two sources, in order:
+      1. ``ScheduledWorkout`` — populated via ``CALENDAR_UPDATED`` webhook +
+         hourly cron backstop. Catches both our pushes and tests created
+         manually in Intervals.icu.
+      2. ``AiWorkout`` — our local record, written at the moment
+         ``actor_push_workout`` runs. Defense-in-depth against missed
+         ``CALENDAR_UPDATED`` webhooks or cron backstop lag (up to 60 min).
+
+    Ad-hoc ramp-style workouts in neither source do not trigger the
+    ramp-specific notification — by design, to avoid false positives on
     interval sessions that happen to look like ramps.
     """
     sport = activity.type
@@ -531,7 +545,10 @@ def _is_ramp_test_activity(user_id: int, activity: Activity) -> bool:
         return False
     dt = date.fromisoformat(activity.start_date_local)
     scheduled = ScheduledWorkout.get_for_date(user_id, dt)
-    return any(w.type == sport and w.name and "ramp test" in w.name.lower() for w in scheduled)
+    if any(w.type == sport and w.name and "ramp test" in w.name.lower() for w in scheduled):
+        return True
+    ai_workouts = AiWorkout.get_for_date(user_id, dt)
+    return any(w.sport == sport and w.name and "ramp test" in w.name.lower() for w in ai_workouts)
 
 
 def _load_work_segments(activity_id: str) -> list[tuple[int, int]]:

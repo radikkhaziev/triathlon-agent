@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from bot.i18n import _, get_language
 from tasks.dto import local_today
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from data.db import Activity, ActivityHrv, Race, Wellness
@@ -209,18 +212,94 @@ def _ramp_failure_text(reason: dict) -> str:
     return _("неизвестная причина")
 
 
+def _ramp_failure_advice(reason: dict) -> str:
+    """Actionable next-step guidance for a diagnose_hrv_thresholds code.
+
+    The diagnostic code tells *what went wrong*; this tells *what to do about it*.
+    Empty string for unknown codes (no false confidence).
+    """
+    code = reason.get("code")
+    if code == "too_few_points":
+        return _(
+            "Тренировка короткая — нужна work-фаза 30+ минут. " "Проверь, что ramp-protocol сгенерирован полностью."
+        )
+    if code == "a1_range_high":
+        return _(
+            "На вершине HR не поднялся достаточно. Добавь финальный шаг с "
+            "более жёстким темпом или беги последний шаг до отказа."
+        )
+    if code == "a1_range_low":
+        return _("Финальный шаг слишком лёгкий — DFA a1 не дошёл до порога. " "Бери выше темп на последних 2-3 шагах.")
+    if code == "positive_slope":
+        return _(
+            "HR-данные подозрительные (DFA растёт вместе с HR). "
+            "Проверь chest strap — оптический датчик не подходит для DFA."
+        )
+    if code == "noisy_fit":
+        return _(
+            "Слишком много шума в данных. Возможные причины: outdoor против "
+            "ветра/холмов, нестабильный темп. Попробуй на тредмилле."
+        )
+    if code == "out_of_range":
+        return _(
+            "Threshold в Intervals.icu сильно расходится с реальностью. "
+            "Обнови LTHR или threshold pace вручную, потом перетестируй."
+        )
+    # Unknown code — surfaces no advice line (caller skips on empty string),
+    # but log so a new diagnose code added in `data/hrv_activity.py` doesn't
+    # silently ship a UX regression. Caught in monitoring before users complain.
+    logger.warning("ramp failure advice: unknown diagnose code %r — add to _ramp_failure_advice", code)
+    return ""
+
+
+def _drift_button_status(
+    measured: float, config: float, sample_count: int, r2: float | None
+) -> tuple[bool, str | None]:
+    """Decide whether to surface the «Update zones» button + which hint to render.
+
+    Returns ``(button_visible, hint_text)``. Hint is the recommendation line
+    («рекомендуем обновить» / «bootstrap» / «нужен ещё один ramp»); ``None``
+    when there's nothing useful to say (drift below threshold).
+
+    **DUPLICATION WARNING:** the gating thresholds here MUST stay in sync with
+    ``data/db/user.py:_drift_alert_lthr`` and ``_drift_alert_pace``. The button
+    fires `actor_update_zones`, which re-reads `User.detect_threshold_drift` —
+    if this UI gate is more permissive than the backend gate, the button shows
+    but the actor finds nothing to push (no-op + confused user). If less
+    permissive, real drift goes uncommunicated. Keep the thresholds in lockstep
+    or extract a shared helper. Direct unit tests below cover all branches.
+    """
+    pct = (measured - config) / config * 100
+    if sample_count >= 2 and abs(pct) > 5:
+        return True, _("Рекомендуем обновить зоны")
+    if sample_count == 1 and r2 is not None and r2 > 0.85 and abs(pct) > 10:
+        return True, _("Bootstrap-обновление: высокое R² и >10% drift")
+    if abs(pct) > 5:
+        return False, _("для обновления зон нужен ещё один ramp test")
+    return False, None
+
+
 def build_ramp_test_message(
     activity: Activity,
     hrv: ActivityHrv,
     config_lthr: int | None,
     failure_reason: dict | None = None,
     hrvt1_sample_count: int = 0,
+    *,
+    config_threshold_pace: float | None = None,
+    hrvt1_pace_sec: int | None = None,
 ) -> tuple[str, bool]:
     """Build ramp-test-specific notification. Returns (message, show_update_zones_button).
 
-    Button surfaces when a new HRVT1 was detected, differs from `config_lthr` by
-    more than 5%, and there are enough samples (≥2) for drift detection to act
-    when the user taps it. The 2-sample threshold matches `User.detect_threshold_drift`.
+    Button surfaces when a new HRVT1 was detected and either:
+      - ≥2 samples agree on >5% drift (standard path), or
+      - bootstrap: single sample with R² > 0.85 and >10% drift — covers the
+        first ramp test after config setup, where waiting for sample #2 means
+        another month on stale settings. Mirrors `User.detect_threshold_drift`.
+
+    Both LTHR (HR) and Run threshold pace are evaluated independently — drift
+    on either dimension lights up the button so `actor_update_zones` can push
+    whichever moved.
     """
     sport = activity.type or "?"
     lines: list[str] = [f"⚡ {_('Ramp Test')} ({sport}) — {_('результат')}"]
@@ -244,19 +323,44 @@ def build_ramp_test_message(
         if meta_bits:
             lines.append(f"({', '.join(meta_bits)})")
 
+        r2 = hrv.threshold_r_squared
+        soft_hints: list[str] = []  # «нужен ещё один» — collected if no drift fires
+
         if config_lthr:
-            pct = (hrv.hrvt1_hr - config_lthr) / config_lthr * 100
-            lines.append(f"{_('текущий LTHR')}: {config_lthr} bpm ({pct:+.1f}%)")
-            if abs(pct) > 5:
-                if hrvt1_sample_count >= 2:
-                    show_button = True
-                    lines.append(f"💡 {_('Рекомендуем обновить зоны')}")
-                else:
-                    lines.append(f"ℹ️ {_('для обновления зон нужен ещё один ramp test')}")
+            lthr_pct = (hrv.hrvt1_hr - config_lthr) / config_lthr * 100
+            lines.append(f"{_('текущий LTHR')}: {config_lthr} bpm ({lthr_pct:+.1f}%)")
+            visible, hint = _drift_button_status(hrv.hrvt1_hr, config_lthr, hrvt1_sample_count, r2)
+            if visible:
+                show_button = True
+                lines.append(f"💡 {hint}")
+            elif hint:
+                soft_hints.append(hint)
+
+        if config_threshold_pace and hrvt1_pace_sec:
+            cfg_pace = int(round(config_threshold_pace))
+            pace_pct = (hrvt1_pace_sec - cfg_pace) / cfg_pace * 100
+            lines.append(f"{_('текущий threshold pace')}: {cfg_pace} s/km ({pace_pct:+.1f}%)")
+            visible, hint = _drift_button_status(hrvt1_pace_sec, cfg_pace, hrvt1_sample_count, r2)
+            if visible and not show_button:
+                show_button = True
+                lines.append(f"💡 {hint}")
+            elif visible:
+                # Button already on for LTHR — just note pace drift too
+                lines.append(f"💡 {hint} ({_('threshold pace')})")
+            elif hint:
+                soft_hints.append(hint)
+
+        # Show one soft hint only when no drift fired anywhere — avoids
+        # «recommend update» + «need another test» showing together.
+        if not show_button and soft_hints:
+            lines.append(f"ℹ️ {soft_hints[0]}")
     else:
         lines.append(f"⚠️ {_('детекция HRVT не удалась')}")
         if failure_reason:
             lines.append(f"{_('причина')}: {_ramp_failure_text(failure_reason)}")
+            advice = _ramp_failure_advice(failure_reason)
+            if advice:
+                lines.append(f"💡 {advice}")
 
     return "\n".join(lines), show_button
 

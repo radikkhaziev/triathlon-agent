@@ -141,19 +141,59 @@ class TestIsTestNeeded:
             ramp = RampTrainingSuggestion(user=_user(), wellness=w)
             assert ramp.is_test_needed is False
 
-    def test_returns_false_when_recovery_low(self):
-        """Recovery < 70 → False (low recovery noises DFA, fit collapses)."""
+    def test_returns_false_when_recovery_low_and_stale(self):
+        """Recovery < 70 + stale threshold → False (low recovery noises DFA, fit collapses)."""
         from tasks.utils import RampTrainingSuggestion
 
         w = _wellness(ctl=60.0, atl=55.0, recovery_score=55.0)
-        ramp = RampTrainingSuggestion(user=_user(), wellness=w)
-        assert ramp.is_test_needed is False
+        stale = _freshness(status="stale", days_since=35)
 
-    def test_returns_false_when_recovery_missing(self):
-        """recovery_score=None → False (don't push ramp without a clean baseline)."""
+        with (
+            patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
+            patch("tasks.utils.User.get_threshold_freshness", return_value=stale),
+        ):
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+            assert ramp.is_test_needed is False
+
+    def test_returns_false_when_recovery_missing_and_stale(self):
+        """recovery_score=None + stale → False (don't push ramp without a clean baseline)."""
         from tasks.utils import RampTrainingSuggestion
 
         w = _wellness(ctl=60.0, atl=55.0, recovery_score=None)
+        stale = _freshness(status="stale", days_since=35)
+
+        with (
+            patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
+            patch("tasks.utils.User.get_threshold_freshness", return_value=stale),
+        ):
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+            assert ramp.is_test_needed is False
+
+    def test_bootstrap_skips_recovery_gate_when_no_data(self):
+        """First-ever test (no_data) → True even when recovery_score is None.
+
+        Newcomers have no DFA baseline to "protect"; gate exists only to
+        prevent polluting an existing baseline with a noisy re-fit.
+        """
+        from tasks.utils import RampTrainingSuggestion
+
+        w = _wellness(ctl=60.0, atl=55.0, recovery_score=None)
+        no_data = _freshness(status="no_data", days_since=None)
+
+        with (
+            patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
+            patch("tasks.utils.User.get_threshold_freshness", return_value=no_data),
+        ):
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+            assert ramp.is_test_needed is True
+            assert ramp.suggested_sport == "Run"
+
+    def test_bootstrap_still_blocks_on_deep_fatigue(self):
+        """Bootstrap path still respects TSB gate (DFA distortion is universal)."""
+        from tasks.utils import RampTrainingSuggestion
+
+        # tsb = 50 - 70 = -20
+        w = _wellness(ctl=50.0, atl=70.0, recovery_score=None)
         ramp = RampTrainingSuggestion(user=_user(), wellness=w)
         assert ramp.is_test_needed is False
 

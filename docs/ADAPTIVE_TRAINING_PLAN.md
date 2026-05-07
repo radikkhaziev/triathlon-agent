@@ -857,22 +857,28 @@ ramp_test:{sport} callback (bot/main.py)
 1. Обрабатывает FIT → RR интервалы
 2. Рассчитывает DFA a1 по окнам
 3. Детектирует HRVT1 (a1=0.75) и HRVT2 (a1=0.50) — **только по WORK-сегментам** из `activity_details.intervals` (исключая WU/CD/recovery), чтобы шум от лёгких участков не портил линейный фит (R² падал с 0.7+ до 0.3 на реальных данных)
-4. Сохраняет в `activity_hrv`
-5. Если `ScheduledWorkout` с `"Ramp Test"` в имени совпадает по дате/спорту — сразу шлёт в Telegram ramp-test-специфичное уведомление (`tasks/formatter.py:build_ramp_test_message`) с HRVT1/HRVT2, R², confidence и — если дрифт >5% И есть ≥2 валидных HRVT1 в истории — inline-кнопкой `Обновить зоны` (callback `update_zones` → `actor_update_zones`). Если детекция не удалась, `diagnose_hrv_thresholds` возвращает структурированную причину (`too_few_points` / `a1_range_low` / `a1_range_high` / `positive_slope` / `noisy_fit` / `out_of_range` / `unknown`), и formatter показывает её атлету.
+4. Для Run — параллельно строит `hrvt1_pace` (pace at HRVT1, формат `"M:SS"`/km) через линрегрессию `speed ↔ HR` по тем же WORK-сегментам
+5. Сохраняет в `activity_hrv`
+6. Если `_is_ramp_test_activity` распознал тренировку (по `ScheduledWorkout` или `AiWorkout` fallback) — шлёт в Telegram ramp-test-специфичное уведомление (`tasks/formatter.py:build_ramp_test_message`) с HRVT1/HRVT2, R², confidence, drift по LTHR + threshold pace и — если дрифт триггернулся — inline-кнопкой `Обновить зоны` (callback `update_zones` → `actor_update_zones`). Если детекция не удалась, `diagnose_hrv_thresholds` возвращает структурированную причину (`too_few_points` / `a1_range_low` / `a1_range_high` / `positive_slope` / `noisy_fit` / `out_of_range` / `unknown`), formatter показывает её + actionable advice (`_ramp_failure_advice`: что делать дальше — «беги дольше», «треймилл», «проверь chest strap», и т.д.).
 
-Если новые пороги отличаются от текущих (>5%), утренний отчёт следующего дня дополнительно включает threshold drift блок (см. ниже).
+Если новые пороги отличаются от текущих, утренний отчёт следующего дня дополнительно включает threshold drift блок.
 
 ### Threshold drift detection
 
-Сравниваем HRVT1/HRVT2 из последних 2-3 ramp-тестов с текущими config-значениями (`ATHLETE_LTHR_RUN`, `ATHLETE_FTP`). Если устойчивый сдвиг — уведомляем атлета.
+`User.detect_threshold_drift` сравнивает свежие HRVT1-измерения с текущими `AthleteSettings`. Две метрики, обе с одинаковыми гейтами:
 
-Логика:
+- **`LTHR`** (Ride + Run) — `ActivityHrv.hrvt1_hr` vs `AthleteSettings.lthr`
+- **`THRESHOLD_PACE`** (Run only) — pace at HRVT1 (sec/km) vs `AthleteSettings.threshold_pace`
 
-- Берём последние 2-3 валидных HRVT1 из `activity_hrv` (только ramp-тесты или progressive activities)
-- Сравниваем среднее с config LTHR/FTP
-- Если расхождение >5% и стабильно (2+ теста в одном направлении) → threshold drift alert
+Каждая метрика триггерит alert когда:
+- **Standard path:** ≥2 свежих сэмпла, среднее отклонение от config >5% → alert
+- **Bootstrap path:** 1 сэмпл, R² фита >0.85, drift >10% → alert. Покрывает случай первого ramp-теста после установки config — нет смысла ждать второй тест ещё месяц на устаревшем пороге.
 
-Config **не обновляется автоматически** — атлет решает сам. Агент только подсвечивает расхождение.
+При тапе кнопки `actor_update_zones` (`tasks/actors/athlets.py`) проходится по всем алертам:
+- `LTHR` — `AthleteSettings.upsert(lthr=…)` + `client.update_sport_settings(sport, {"lthr": bpm})`
+- `THRESHOLD_PACE` — конвертирует sec/km → m/s (Intervals.icu API хранит velocity, не pace), `AthleteSettings.upsert(threshold_pace=…)` + `client.update_sport_settings("Run", {"threshold_pace": m_per_s})`
+
+Config **не обновляется автоматически** — атлет тапает кнопку.
 
 ### Утреннее Telegram-сообщение (обновлённый формат)
 

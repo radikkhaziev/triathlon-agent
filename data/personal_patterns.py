@@ -67,9 +67,14 @@ async def compute_personal_patterns(user_id: int, days_back: int = 90) -> dict:
         k: {"count": v, "pct": round(v / total_compliance * 100, 1)} for k, v in compliance_counts.items()
     }
 
+    # `insufficient_data` rows have no sensitivity signal (HRV baseline
+    # wasn't built yet) — exclude them rather than relying on the renderer
+    # to skip the bucket downstream.
     hrv_groups: dict[str, list[float]] = {}
     for r in complete:
         status = r.pre_hrv_status or "unknown"
+        if status == "insufficient_data":
+            continue
         hrv_groups.setdefault(status, []).append(r.recovery_delta or 0)
 
     hrv_sensitivity: dict[str, dict] = {}
@@ -78,6 +83,21 @@ async def compute_personal_patterns(user_id: int, days_back: int = 90) -> dict:
             hrv_sensitivity[status] = {
                 "count": len(deltas),
                 "avg_delta": round(sum(deltas) / len(deltas), 1),
+            }
+
+    zone_groups: dict[str, list[float]] = {}
+    for r in complete:
+        zone = r.actual_max_zone_time or "unknown"
+        zone_groups.setdefault(zone, []).append(r.recovery_delta or 0)
+
+    recovery_by_zone: dict[str, dict] = {}
+    for zone, deltas in sorted(zone_groups.items()):
+        if deltas:
+            recovery_by_zone[zone] = {
+                "count": len(deltas),
+                "avg_delta": round(sum(deltas) / len(deltas), 1),
+                "min_delta": round(min(deltas), 1),
+                "max_delta": round(max(deltas), 1),
             }
 
     matrix: dict[str, dict[str, list[float]]] = {}
@@ -102,6 +122,7 @@ async def compute_personal_patterns(user_id: int, days_back: int = 90) -> dict:
     return {
         **counts,
         "recovery_response_by_category": recovery_response,
+        "recovery_response_by_zone": recovery_by_zone,
         "recovery_intensity_matrix": recovery_intensity_matrix,
         "compliance_rates": compliance_rates,
         "hrv_sensitivity": hrv_sensitivity,

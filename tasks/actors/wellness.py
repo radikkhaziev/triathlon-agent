@@ -98,7 +98,13 @@ def _actor_calculate_hrv(
     user: UserDTO,
     dt: DateDTO,
 ) -> RmssdStatusDTO:
-    """Loads HRV history from DB, runs Flatt/Esco baseline."""
+    """Loads HRV history from DB, runs Flatt/Esco baseline.
+
+    Returns a Pydantic model — Dramatiq's PydanticEncoder (tasks/middleware.py)
+    auto-dumps it to JSON, and the next actor in the pipeline rehydrates via
+    its own ``@validate_call`` annotation. The round-trip is implicit; do not
+    swap the return type for a plain dict without checking the consumer.
+    """
 
     MIN_DAYS = 14
 

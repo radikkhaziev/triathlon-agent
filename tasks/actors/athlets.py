@@ -147,7 +147,13 @@ def actor_sync_athlete_goals(user: UserDTO):
 @dramatiq.actor(queue_name="default")
 @validate_call
 def actor_update_zones(user: UserDTO):
-    """Read threshold drift, update athlete_settings + Intervals.icu, notify user."""
+    """Read threshold drift, update athlete_settings + Intervals.icu, notify user.
+
+    Handles two metrics:
+      - LTHR (HR threshold) — Ride + Run, push as ``{"lthr": bpm}``
+      - THRESHOLD_PACE (Run only) — sec/km in our DB, push to Intervals.icu as
+        m/s (the API stores velocity, not pace) via ``{"threshold_pace": m_s}``.
+    """
     drift = User.detect_threshold_drift(user_id=user.id)
     if not drift:
         logger.info("No threshold drift for user %d", user.id)
@@ -155,16 +161,45 @@ def actor_update_zones(user: UserDTO):
 
     updated: list[str] = []
 
+    # Order: push to Intervals.icu first, persist locally only on success.
+    # Reversed order would leave DB and API permanently disagreeing if a
+    # Dramatiq retry sees the *new* DB value as `config` (drift collapses
+    # to 0% → no alert → API never receives the push).
     with IntervalsSyncClient.for_user(user) as client:
         for alert in drift.alerts:
-            new_lthr = alert.measured_avg
-            old_lthr = alert.config_value
             sport = alert.sport
+            new_value = alert.measured_avg
+            old_value = alert.config_value
 
-            AthleteSettings.upsert(user_id=user.id, sport=sport, lthr=new_lthr)
-            client.update_sport_settings(sport, {"lthr": new_lthr})
+            if new_value is None or new_value <= 0:
+                logger.warning(
+                    "Skipping %s update for user %d: invalid measured_avg=%r",
+                    alert.metric,
+                    user.id,
+                    new_value,
+                )
+                continue
 
-            updated.append(f"LTHR {sport}: {old_lthr} → {new_lthr} bpm")
-            logger.info("Updated LTHR %s for user %d: %d → %d", sport, user.id, old_lthr, new_lthr)
+            if alert.metric == "LTHR":
+                client.update_sport_settings(sport, {"lthr": new_value})
+                AthleteSettings.upsert(user_id=user.id, sport=sport, lthr=new_value)
+                updated.append(f"LTHR {sport}: {old_value} → {new_value} bpm")
+                logger.info("Updated LTHR %s for user %d: %d → %d", sport, user.id, old_value, new_value)
+            elif alert.metric == "THRESHOLD_PACE":
+                # DB stores sec/km; Intervals.icu API expects m/s velocity.
+                m_per_s = round(1000 / new_value, 3)
+                client.update_sport_settings(sport, {"threshold_pace": m_per_s})
+                AthleteSettings.upsert(user_id=user.id, sport=sport, threshold_pace=float(new_value))
+                updated.append(f"Threshold pace {sport}: {old_value} → {new_value} s/km")
+                logger.info(
+                    "Updated threshold_pace %s for user %d: %d → %d s/km (%.3f m/s)",
+                    sport,
+                    user.id,
+                    old_value,
+                    new_value,
+                    m_per_s,
+                )
+            else:
+                logger.warning("Unknown drift metric %s for user %d, skipping", alert.metric, user.id)
 
     _actor_send_zones_notification.send(user, updated)

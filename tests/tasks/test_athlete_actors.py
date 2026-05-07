@@ -108,6 +108,75 @@ class TestActorUpdateZones:
         mock_settings.upsert.assert_any_call(user_id=1, sport="Run", lthr=170)
         assert mock_client.update_sport_settings.call_count == 2
 
+    def test_threshold_pace_alert_pushes_m_per_s(self):
+        """THRESHOLD_PACE alert (sec/km in DB) → m/s for the Intervals.icu API."""
+        from tasks.actors.athlets import actor_update_zones
+
+        drift = ThresholdDriftDTO(
+            alerts=[
+                DriftAlertDTO(
+                    sport="Run",
+                    metric="THRESHOLD_PACE",
+                    measured_avg=260,  # 4:20/km
+                    config_value=295,  # 4:55/km
+                    diff_pct=-11.9,
+                    tests_count=1,
+                    message="",
+                ),
+            ]
+        )
+
+        mock_client = MagicMock()
+        with (
+            patch("tasks.actors.athlets.User") as mock_user,
+            patch("tasks.actors.athlets.AthleteSettings") as mock_settings,
+            patch("tasks.actors.athlets.IntervalsSyncClient") as mock_isc,
+            patch("tasks.actors.athlets._actor_send_zones_notification") as mock_notify,
+        ):
+            mock_user.detect_threshold_drift.return_value = drift
+            mock_isc.for_user.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_isc.for_user.return_value.__exit__ = MagicMock(return_value=False)
+
+            actor_update_zones(_user())
+
+        mock_settings.upsert.assert_called_once_with(user_id=1, sport="Run", threshold_pace=260.0)
+        # 1000m / 260s = 3.846 m/s, rounded to 3 decimals
+        mock_client.update_sport_settings.assert_called_once_with("Run", {"threshold_pace": 3.846})
+        notify_payload = mock_notify.send.call_args[0][1]
+        assert "Threshold pace Run: 295 → 260 s/km" in notify_payload
+
+    def test_unknown_metric_skipped_with_warning(self):
+        """Unrecognized metric does not break the loop."""
+        from tasks.actors.athlets import actor_update_zones
+
+        drift = ThresholdDriftDTO(
+            alerts=[
+                DriftAlertDTO(
+                    sport="Run",
+                    metric="MYSTERY",
+                    measured_avg=1,
+                    config_value=2,
+                    diff_pct=0,
+                    tests_count=1,
+                    message="",
+                ),
+            ]
+        )
+        mock_client = MagicMock()
+        with (
+            patch("tasks.actors.athlets.User") as mock_user,
+            patch("tasks.actors.athlets.AthleteSettings") as mock_settings,
+            patch("tasks.actors.athlets.IntervalsSyncClient") as mock_isc,
+            patch("tasks.actors.athlets._actor_send_zones_notification"),
+        ):
+            mock_user.detect_threshold_drift.return_value = drift
+            mock_isc.for_user.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_isc.for_user.return_value.__exit__ = MagicMock(return_value=False)
+            actor_update_zones(_user())
+
+        mock_settings.upsert.assert_not_called()
+        mock_client.update_sport_settings.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # actor_sync_athlete_settings
