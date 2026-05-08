@@ -150,10 +150,13 @@ def actor_sync_athlete_goals(user: UserDTO):
 def actor_update_zones(user: UserDTO):
     """Read threshold drift, update athlete_settings + Intervals.icu, notify user.
 
-    Handles two metrics:
+    Handles three metrics — all push HRVT2-derived values (FTP/LTHR/threshold_pace
+    semantically equal LT2 = HRVT2 per Coggan/Friel; the prior HRVT1 mapping
+    misaligned every Intervals zone by ~13%):
       - LTHR (HR threshold) — Ride + Run, push as ``{"lthr": bpm}``
       - THRESHOLD_PACE (Run only) — sec/km in our DB, push to Intervals.icu as
         m/s (the API stores velocity, not pace) via ``{"threshold_pace": m_s}``.
+      - FTP (Ride only) — push as ``{"ftp": watts}`` (added 2026-05-08, issue #313).
     """
     drift = User.detect_threshold_drift(user_id=user.id)
     if not drift:
@@ -186,6 +189,11 @@ def actor_update_zones(user: UserDTO):
                 AthleteSettings.upsert(user_id=user.id, sport=sport, lthr=new_value)
                 updated.append(f"LTHR {sport}: {old_value} → {new_value} bpm")
                 logger.info("Updated LTHR %s for user %d: %d → %d", sport, user.id, old_value, new_value)
+            elif alert.metric == "FTP":
+                client.update_sport_settings(sport, {"ftp": new_value})
+                AthleteSettings.upsert(user_id=user.id, sport=sport, ftp=new_value)
+                updated.append(f"FTP {sport}: {old_value} → {new_value} W")
+                logger.info("Updated FTP %s for user %d: %d → %d", sport, user.id, old_value, new_value)
             elif alert.metric == "THRESHOLD_PACE":
                 # DB stores sec/km; Intervals.icu API expects m/s velocity.
                 m_per_s = round(1000 / new_value, 3)

@@ -103,19 +103,21 @@ python -m cli sync-training-log <user_id> [period]               # recalculate t
 python -m cli import-garmin <user_id> <source> [--types] [--period] [--force] [--dry-run]  # import Garmin GDPR export
 python -m cli backfill-races <user_id> [period]                  # create Race records for historical race activities
 python -m cli bootstrap-sync <user_id> [--period 365] [--force]  # chunk-recursive OAuth bootstrap backfill (wellness + activities)
-python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]  # back-fill hrvt2_pace on a single ramp test (used after migration v2c3d4e5f6a7)
+python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]  # back-fill hrvt2_pace (Run) / hrvt2_power (Ride) on one ramp test (post v2c3d4e5f6a7 / w3d4e5f6a7b8)
 ```
 
 ### `reprocess-ramp-test`
 
-Re-runs `detect_hrv_thresholds` on a stored ramp test's `dfa_timeseries` to populate `activity_hrv.hrvt2_pace` (the column was added by migration `v2c3d4e5f6a7`, 2026-05-08; pre-migration ramp tests have it as NULL). Patches **only** the `hrvt2_pace` field — other threshold fields stay untouched, since re-running the detector can produce slightly different float-rounded values that we don't want to perturb.
+Re-runs `detect_hrv_thresholds` on a stored ramp test's `dfa_timeseries` to populate the HRVT2-derived columns: `activity_hrv.hrvt2_pace` (Run, added by migration `v2c3d4e5f6a7`, 2026-05-08) and `activity_hrv.hrvt2_power` (Ride, added by `w3d4e5f6a7b8`, 2026-05-08; both NULL on pre-migration rows). Patches **only** the HRVT2-derived fields — other threshold fields (HRVT1/2 HR, R², confidence) stay untouched, since re-running the detector can produce slightly different float-rounded values that we don't want to perturb.
 
-With `--push`, also dispatches `actor_update_zones` after patching so the drift detector picks up the freshly-populated `hrvt2_pace` and pushes the corrected `lthr`+`threshold_pace` to Intervals.icu in one shot. The user gets a Telegram «✅ Зоны обновлены» notification.
+With `--push`, also dispatches `actor_update_zones` after patching so the drift detector picks up the freshly-populated HRVT2 fields and pushes the corrected `lthr` + `threshold_pace` (Run) or `ftp` (Ride) to Intervals.icu in one shot. The user gets a Telegram «✅ Зоны обновлены» notification.
 
-Idempotent — repeated runs overwrite `hrvt2_pace` with the same recomputed value.
+Refuses `--push` if the activity is **not** the latest valid ramp for its sport — drift detector reads `LIMIT 1 ORDER BY date DESC`, so pushing a back-filled older activity has no effect on the next dispatch and would mislead the user.
+
+Idempotent — repeated runs overwrite the same recomputed values.
 
 ```bash
-# Dry-run: just back-fill hrvt2_pace
+# Dry-run: just back-fill hrvt2_pace / hrvt2_power
 docker compose exec api python -m cli reprocess-ramp-test 1 i146377549
 
 # Full path: patch + push to Intervals.icu + notify the user

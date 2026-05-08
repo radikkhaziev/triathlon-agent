@@ -400,6 +400,7 @@ class ActivityHrv(Base):
     hrvt1_pace: Mapped[str | None] = mapped_column(String, nullable=True)  # Pace at a1=0.75 (run)
     hrvt2_hr: Mapped[float | None] = mapped_column(Float, nullable=True)  # HR at a1=0.50
     hrvt2_pace: Mapped[str | None] = mapped_column(String, nullable=True)  # Pace at a1=0.50 (run)
+    hrvt2_power: Mapped[float | None] = mapped_column(Float, nullable=True)  # Power at a1=0.50 (bike)
     threshold_r_squared: Mapped[float | None] = mapped_column(Float, nullable=True)
     threshold_confidence: Mapped[str | None] = mapped_column(String, nullable=True)  # high | moderate | low
 

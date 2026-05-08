@@ -60,9 +60,10 @@ class ThresholdsDTO(BaseModel):
     hrvt2_hr: float | None = None
     r_squared: float
     confidence: str  # high | moderate | low
-    hrvt1_power: int | None = None  # watts (bike)
+    hrvt1_power: int | None = None  # watts (bike) — pow at HRVT1 (aerobic threshold)
     hrvt1_pace: str | None = None  # "M:SS" (run)
     hrvt2_pace: str | None = None  # "M:SS" (run) — pace at HRVT2 (anaerobic threshold)
+    hrvt2_power: int | None = None  # watts (bike) — pow at HRVT2 (anaerobic threshold ≈ FTP)
 
 
 class ReadinessDTO(BaseModel):

@@ -282,15 +282,16 @@ def build_ramp_test_message(
     *,
     config_threshold_pace: float | None = None,
     hrvt2_pace_sec: int | None = None,
+    config_ftp: int | None = None,
 ) -> tuple[str, bool]:
     """Build ramp-test-specific notification. Returns (message, show_update_zones_button).
 
     Button surfaces when the latest ramp test shows ``|drift| > 5%`` and
-    ``R² ≥ 0.7`` on either LTHR (HRVT2 HR) or Run threshold pace (pace at
-    HRVT2). Mirrors ``User.detect_threshold_drift``. The values pushed
-    (HRVT2 HR, pace at HRVT2) align with Intervals.icu's `lthr` /
-    `threshold_pace` fields, which conceptually correspond to the
-    anaerobic threshold.
+    ``R² ≥ 0.7`` on any of: LTHR (HRVT2 HR), Run threshold pace (pace at
+    HRVT2), or Ride FTP (pow at HRVT2). Mirrors ``User.detect_threshold_drift``.
+    The values pushed (HRVT2 HR, pace at HRVT2, pow at HRVT2) align with
+    Intervals.icu's `lthr` / `threshold_pace` / `ftp` fields, which
+    conceptually correspond to the anaerobic threshold.
     """
     sport = activity.type or "?"
     lines: list[str] = [f"⚡ {_('Ramp Test')} ({sport}) — {_('результат')}"]
@@ -305,6 +306,8 @@ def build_ramp_test_message(
         lines.append(hrvt1)
         if hrv.hrvt2_hr:
             hrvt2 = f"HRVT2: {hrv.hrvt2_hr:.0f} bpm"
+            if hrv.hrvt2_power:
+                hrvt2 += f" / {hrv.hrvt2_power:.0f}W"
             if hrv.hrvt2_pace:
                 hrvt2 += f" / {hrv.hrvt2_pace}"
             lines.append(hrvt2)
@@ -340,8 +343,21 @@ def build_ramp_test_message(
                 show_button = True
                 lines.append(f"💡 {hint}")
             elif visible:
-                # Button already on for LTHR — just note pace drift too
+                # Button already on for LTHR/FTP — just note pace drift too
                 lines.append(f"💡 {hint} ({_('threshold pace')})")
+            elif hint:
+                soft_hints.append(hint)
+
+        if config_ftp and hrv.hrvt2_power is not None:
+            ftp_pct = (hrv.hrvt2_power - config_ftp) / config_ftp * 100
+            lines.append(f"{_('текущий FTP')}: {config_ftp} W ({ftp_pct:+.1f}%)")
+            visible, hint = _drift_button_status(hrv.hrvt2_power, config_ftp, r2)
+            if visible and not show_button:
+                show_button = True
+                lines.append(f"💡 {hint}")
+            elif visible:
+                # Button already on for LTHR/pace — note FTP drift too
+                lines.append(f"💡 {hint} ({_('FTP')})")
             elif hint:
                 soft_hints.append(hint)
 

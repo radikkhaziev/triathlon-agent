@@ -132,6 +132,44 @@ class TestDriftAlertHelpers:
         assert alert.config_value == 295
         assert alert.diff_pct < -5
 
+    # ----- FTP -----
+
+    def test_ftp_returns_none_on_missing_power(self):
+        from data.db.user import _drift_alert_ftp
+
+        assert _drift_alert_ftp("Ride", hrvt2_power=None, r_squared=0.9, config_ftp=208) is None
+
+    def test_ftp_returns_none_below_r_squared_gate(self):
+        from data.db.user import _drift_alert_ftp
+
+        assert _drift_alert_ftp("Ride", hrvt2_power=240.0, r_squared=0.5, config_ftp=208) is None
+
+    def test_ftp_returns_none_below_drift_gate(self):
+        from data.db.user import _drift_alert_ftp
+
+        # 212 vs 208 = +1.9% — under 5%
+        assert _drift_alert_ftp("Ride", hrvt2_power=212.0, r_squared=0.9, config_ftp=208) is None
+
+    def test_ftp_fires_with_proper_drift(self):
+        from data.db.user import _drift_alert_ftp
+
+        # 240 vs 208 = +15.4%
+        alert = _drift_alert_ftp("Ride", hrvt2_power=240.0, r_squared=0.85, config_ftp=208)
+        assert alert is not None
+        assert alert.metric == "FTP"
+        assert alert.measured == 240
+        assert alert.config_value == 208
+        assert alert.diff_pct > 5
+
+    def test_ftp_negative_drift_fires(self):
+        """Drift < -5% (FTP set too high) also fires."""
+        from data.db.user import _drift_alert_ftp
+
+        alert = _drift_alert_ftp("Ride", hrvt2_power=180.0, r_squared=0.85, config_ftp=210)
+        assert alert is not None
+        assert alert.diff_pct < -5
+        assert alert.measured == 180
+
 
 async def _seed_drift_setup(*, user_id: int, sport: str, lthr: int) -> None:
     """Make sure athlete_settings has an LTHR baseline for the sport."""
@@ -148,6 +186,7 @@ async def _add_hrv_sample(
     r_squared: float | None = 0.90,
     quality: str = "good",
     hrvt2_pace: str | None = None,
+    hrvt2_power: float | None = None,
 ) -> None:
     """Insert a processed Activity + ActivityHrv pair for drift detection to read."""
     from data.db.common import _AsyncSessionLocal
@@ -173,6 +212,7 @@ async def _add_hrv_sample(
                 hrvt1_hr=hrvt2_hr - 15,
                 hrvt2_hr=hrvt2_hr,
                 hrvt2_pace=hrvt2_pace,
+                hrvt2_power=hrvt2_power,
                 threshold_r_squared=r_squared,
             )
         )
@@ -344,3 +384,92 @@ class TestThresholdPaceDrift:
         )
         result = await User.detect_threshold_drift(user_id=1)
         assert result is None
+
+
+class TestFtpDrift:
+    """FTP drift fires only on Ride, gated identically to LTHR/pace."""
+
+    async def _seed_ride(self, *, lthr: int = 165, ftp: int = 208) -> None:
+        await AthleteSettings.upsert(user_id=1, sport="Ride", lthr=lthr, ftp=ftp)
+
+    async def test_ftp_drift_fires(self, _test_db):
+        """Pow at HRVT2 differs from config_ftp by >5% → FTP alert."""
+        await self._seed_ride(lthr=165, ftp=208)
+        await _add_hrv_sample(
+            user_id=1,
+            sport="Ride",
+            activity_id="i1",
+            dt=str(date.today()),
+            hrvt2_hr=166.0,  # +0.6%, no LTHR alert
+            hrvt2_power=240.0,  # +15.4% vs 208
+            r_squared=0.92,
+        )
+        result = await User.detect_threshold_drift(user_id=1)
+        assert result is not None
+        metrics = {a.metric for a in result.alerts}
+        assert "FTP" in metrics
+        assert "LTHR" not in metrics
+        ftp_alert = next(a for a in result.alerts if a.metric == "FTP")
+        assert ftp_alert.measured == 240
+        assert ftp_alert.config_value == 208
+
+    async def test_ftp_blocked_by_low_r_squared(self, _test_db):
+        await self._seed_ride(lthr=165, ftp=208)
+        await _add_hrv_sample(
+            user_id=1,
+            sport="Ride",
+            activity_id="i1",
+            dt=str(date.today()),
+            hrvt2_hr=166.0,
+            hrvt2_power=240.0,
+            r_squared=0.5,
+        )
+        result = await User.detect_threshold_drift(user_id=1)
+        assert result is None
+
+    async def test_ftp_under_5pct_silent(self, _test_db):
+        await self._seed_ride(lthr=165, ftp=208)
+        await _add_hrv_sample(
+            user_id=1,
+            sport="Ride",
+            activity_id="i1",
+            dt=str(date.today()),
+            hrvt2_hr=166.0,
+            hrvt2_power=215.0,  # +3.4% vs 208
+            r_squared=0.85,
+        )
+        result = await User.detect_threshold_drift(user_id=1)
+        assert result is None
+
+    async def test_lthr_and_ftp_both_alert(self, _test_db):
+        """Both metrics drift independently on the same Ride row → two alerts."""
+        await self._seed_ride(lthr=160, ftp=208)
+        await _add_hrv_sample(
+            user_id=1,
+            sport="Ride",
+            activity_id="i1",
+            dt=str(date.today()),
+            hrvt2_hr=180.0,  # +12.5% vs 160
+            hrvt2_power=240.0,  # +15.4% vs 208
+            r_squared=0.92,
+        )
+        result = await User.detect_threshold_drift(user_id=1)
+        assert result is not None
+        metrics = {a.metric for a in result.alerts}
+        assert metrics == {"LTHR", "FTP"}
+
+    async def test_ftp_alert_only_for_ride(self, _test_db):
+        """Run: no FTP push path even when hrvt2_power synthetically present."""
+        await AthleteSettings.upsert(user_id=1, sport="Run", lthr=172, ftp=366)
+        await _add_hrv_sample(
+            user_id=1,
+            sport="Run",
+            activity_id="i1",
+            dt=str(date.today()),
+            hrvt2_hr=172.0,  # no LTHR drift
+            hrvt2_power=420.0,  # would be +14.7% drift if Run had FTP-drift path
+            r_squared=0.92,
+        )
+        result = await User.detect_threshold_drift(user_id=1)
+        # No FTP alert: detector restricts FTP path to Ride only.
+        assert result is None or all(a.metric != "FTP" for a in result.alerts)
