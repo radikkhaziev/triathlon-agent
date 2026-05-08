@@ -34,6 +34,10 @@ class UserDTO(BaseModel):
     # picks up the real DB value, and the only ad-hoc constructions left
     # (tests, manual fan-outs) are over already-onboarded athletes.
     bot_chat_initialized: bool = True
+    # Subset of {"swim","ride","run"}; None = athlete hasn't passed through
+    # SportsPicker gate yet. Read by the morning-report actor to scope ramp
+    # suggestions to disciplines the athlete actually trains.
+    sports: list[str] | None = None
 
 
 class ThresholdTestDTO(BaseModel):
@@ -85,7 +89,13 @@ class AthleteThresholdsDTO(BaseModel):
     """Flat view of athlete thresholds across all sports."""
 
     age: int | None = None
-    primary_sport: str | None = None
+    sports: list[str] | None = None  # subset of {"swim","ride","run"}; None = not yet picked
+    # Discovered from AthleteSettings rows (lowercase enum, sorted). Used by
+    # the SportsPicker to prefill checkboxes — the user's already-synced
+    # Intervals.icu sport-rows are a strong default. Computed in
+    # AthleteSettings.get_thresholds so we don't issue a second SELECT in
+    # auth_me for the same data.
+    available_sports: list[str] = []
     lthr_run: int | None = None
     lthr_bike: int | None = None
     max_hr: int | None = None

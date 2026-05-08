@@ -4,7 +4,7 @@ import secrets
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, Text, select, update
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Integer, String, Text, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -188,7 +188,11 @@ class User(Base):
     preferred_model: Mapped[str | None] = mapped_column(String(30))
 
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    primary_sport: Mapped[str | None] = mapped_column(String(20), nullable=True)  # triathlon/run/ride/swim/fitness
+    # Multi-select list of sports the athlete actually does, drawn from
+    # {"swim", "ride", "run"}. NULL = not yet picked → webapp shows
+    # SportsPicker gate; never `[]` (API enforces min_length=1). See
+    # docs/USER_SPORTS_SPEC.md.
+    sports: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     is_silent: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -330,6 +334,19 @@ class User(Base):
     def set_active_by_chat_id(cls, chat_id: int | str, active: bool, *, session: Session) -> None:
         """Toggle `is_active` by chat_id. Called from `my_chat_member` handler and 403 fallbacks."""
         session.execute(update(cls).where(cls.chat_id == str(chat_id)).values(is_active=active))
+        session.commit()
+
+    @classmethod
+    @dual
+    def update_sports(cls, user_id: int, sports: list[str], *, session: Session) -> None:
+        """Persist the athlete's sport selection (`swim`/`ride`/`run`).
+
+        API-layer DTO already enforces enum membership, ≥1 entry, ≤3 entries,
+        no duplicates, and canonical sort — this method trusts that contract
+        and writes verbatim. Releases the SportsPicker gate on next webapp
+        load (see USER_SPORTS_SPEC §6 gate flow).
+        """
+        session.execute(update(cls).where(cls.id == user_id).values(sports=sports))
         session.commit()
 
     @classmethod

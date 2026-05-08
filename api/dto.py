@@ -63,6 +63,22 @@ class SetLanguageRequest(BaseModel):
     language: Literal["ru", "en"]
 
 
+class SportsUpdateRequest(BaseModel):
+    """Body for `PUT /api/auth/sports` — multi-select sport profile.
+
+    Empty list and the four-element case are both rejected: the SportsPicker
+    requires ≥1 selection, and there are only three valid sports. Duplicates
+    are dropped silently and the response is canonicalised to alphabetical
+    order so a `["run","ride"]` POST round-trips as `["ride","run"]` and
+    keeps the on-disk JSON stable for downstream comparisons.
+    """
+
+    sports: list[Literal["swim", "ride", "run"]] = Field(..., min_length=1, max_length=3)
+
+    def canonical(self) -> list[str]:
+        return sorted(set(self.sports))
+
+
 class PerSportTargetsPayload(BaseModel):
     """Optional per-sport CTL split inside :class:`AthleteGoalPatchRequest`.
 

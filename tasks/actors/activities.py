@@ -511,9 +511,10 @@ def _actor_send_activity_notification(
         tg.send_message(text=summary, reply_markup=reply_markup)
         # High-confidence drift (R² ≥ 0.85): dispatch the zone update without
         # requiring the user to tap the button. Message text already announces
-        # «✅ Зоны обновлены автоматически» — actor sends a follow-up notification
-        # with the actual «old → new» diff once the push completes. INFO log so
-        # support can audit «zones changed without user interaction» reports.
+        # «Запущено авто-обновление зон» (in-flight, not «completed») — the
+        # actor sends a follow-up «✅ Зоны обновлены» notification with the
+        # actual «old → new» diff once the push completes. INFO log so support
+        # can audit «zones changed without user interaction» reports.
         if auto_update_fired:
             logger.info(
                 "Auto-update zones dispatched for user_id=%d activity=%s (high-confidence ramp, R²=%.2f)",

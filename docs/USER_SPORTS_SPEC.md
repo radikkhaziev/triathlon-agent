@@ -290,11 +290,12 @@ def _user_ramp_sports(user_sports: list[str] | None) -> list[str]:
     Returns the Intervals.icu-cased subset of ``["Run", "Ride"]`` (the only
     sports `create_ramp_test` currently supports — Swim is on the roadmap,
     see RAMP_TEST_SWIM_SPEC.md). Empty list → caller should skip suggestion.
-    Legacy users with ``user_sports is None`` get the historical
-    ``["Run", "Ride"]`` until they pass through the gate.
+    Users with ``user_sports is None`` (gate not yet passed) get ``["Run"]``
+    only — Run is the most common discipline and the safer conservative
+    default than the historical ``["Run","Ride"]``.
     """
     if user_sports is None:
-        return ["Run", "Ride"]
+        return ["Run"]
     supported = {"Run", "Ride"}  # add "Swim" when create_ramp_test supports it
     return [_RAMP_SPORT_MAP[s] for s in user_sports if s in _RAMP_SPORT_MAP and _RAMP_SPORT_MAP[s] in supported]
 ```
@@ -303,7 +304,7 @@ def _user_ramp_sports(user_sports: list[str] | None) -> list[str]:
 
 | `user.sports` | Что предлагается |
 |---|---|
-| `None` (gate ещё не пройден) | `["Run", "Ride"]` — legacy default, не ломаем существующий UX |
+| `None` (gate ещё не пройден) | `["Run"]` — консервативный дефолт, не спамит бегунам Ride-suggest |
 | `["run"]` | Только Run-ramp |
 | `["ride"]` | Только Ride-ramp |
 | `["swim"]` | Ничего (swim-ramp пока не поддерживается в `create_ramp_test`) |
@@ -454,7 +455,7 @@ swim-ramp в `data/ramp_tests.create_ramp_test`.
 | 2026-05-08 | Auto-prefill из `AthleteSettings` | Пустой picker всегда | Уменьшает клики для триатлета, который уже подключил Intervals. Юзер всё равно подтверждает галкой «Сохранить». |
 | 2026-05-08 | Прокидывание в промпт — отдельный PR | Делать всё в одном PR | Меняет поведение Claude → нужна отдельная regression-проверка на morning report. Инфраструктура без изменения промпта безопасна для приземления. |
 | 2026-05-08 | Фильтр ramp-suggestions включить в Phase 1 | Отложить в Phase 2 вместе с промптом | Зависит только от `User.sports` (без промпта), 5 строк кода + маппер. Безопасно делать сразу. |
-| 2026-05-08 | `user.sports = None` → legacy `["Run","Ride"]` | Suppress всё до прохождения gate | Morning report — фоновая cron-задача, юзер мог не открыть webapp до 7am первой ночью. Не хотим silent regression. После gate (один заход в webapp) фильтр включается. |
+| 2026-05-08 | `user.sports = None` → `["Run"]` only | (a) Suppress всё; (b) Legacy `["Run","Ride"]` | Morning report — фоновая cron-задача, юзер мог не открыть webapp до 7am первой ночью. Suppress всё = silent regression. Legacy `["Run","Ride"]` спамит Ride-suggest бегунам, которые ещё не зашли. Конкретно `["Run"]`: Run — самая частая дисциплина, минимум ложного шума, и после прохождения gate реальная подборка вступает в силу. |
 | 2026-05-08 | Swim из ramp-фильтра пока выкидывать | Доверять `user.sports = ["swim"]` буквально и предлагать swim-ramp | `create_ramp_test` пока не поддерживает swim. RAMP_TEST_SWIM_SPEC.md существует — после его приземления убрать `Swim`-исключение из `_user_ramp_sports`. |
 
 ---

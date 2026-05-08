@@ -4,7 +4,13 @@ import Layout from '../components/Layout'
 import BackfillSection from '../components/BackfillSection'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../api/client'
-import type { AuthMeResponse, IntervalsStatus } from '../api/types'
+import type { AuthMeResponse, IntervalsStatus, SportTag } from '../api/types'
+
+const SPORT_OPTIONS: { tag: SportTag; emoji: string }[] = [
+  { tag: 'swim', emoji: '🏊' },
+  { tag: 'ride', emoji: '🚴' },
+  { tag: 'run', emoji: '🏃' },
+]
 
 type McpConfig = { url: string; token: string }
 
@@ -72,6 +78,8 @@ export default function Settings() {
     per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
   } | null>(null)
   const [goalSaveError, setGoalSaveError] = useState<string | null>(null)
+  const [sports, setSports] = useState<SportTag[] | null>(null)
+  const [sportsSaveError, setSportsSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!isAuthenticated) return
@@ -96,6 +104,10 @@ export default function Settings() {
         setBotUsername(data.bot_username ?? null)
         if (data.profile) setProfile(data.profile)
         if (data.goal) setGoal(data.goal)
+        // Defensive: only accept an actual array. Anything else (null,
+        // undefined, "", number) collapses to null so the gate stays
+        // closed — same hardening as App.tsx.
+        setSports(Array.isArray(data.sports) ? data.sports : null)
       })
       .catch(() => {
         setIntervals({ method: 'none', athlete_id: null, scope: null })
@@ -123,6 +135,11 @@ export default function Settings() {
   // recent one we've issued.
   const patchSeq = useRef(0)
   const lastSuccessfulSeq = useRef(0)
+  // Same monotonic-seq pattern for the sports endpoint — rapid checkbox
+  // toggles can have PUT₁ failing late while PUT₂ already succeeded; without
+  // this guard the late rollback would clobber the successful newer state.
+  const sportsPutSeq = useRef(0)
+  const lastSuccessfulSportsSeq = useRef(0)
 
   // Push a local-only goal edit (ctl_target / per_sport_targets) to the backend.
   // Applies optimistic update first; on failure rolls back and sets an inline
@@ -164,6 +181,52 @@ export default function Settings() {
         setGoal(prev)
         const msg = e instanceof Error ? e.message : String(e)
         setGoalSaveError(msg || t('settings.goal.save_failed'))
+      }
+    }
+  }
+
+  // Toggle one sport in the user's selection. Optimistic + monotonic-seq
+  // rollback (mirrors patchGoal) — without the seq guard a late PUT₁ failure
+  // could clobber a successful PUT₂ on rapid double-clicks. Empty selection
+  // is blocked locally (server enforces ≥1 too, but doing it here avoids a
+  // wasted round-trip + flicker).
+  const toggleSport = async (tag: SportTag) => {
+    if (isDemo) return
+    const current = sports ?? []
+    const next = current.includes(tag) ? current.filter(s => s !== tag) : [...current, tag]
+    if (next.length === 0) {
+      setSportsSaveError(t('settings.sports.empty_warning'))
+      return
+    }
+    const seq = ++sportsPutSeq.current
+    const prev = sports
+    setSports(next)
+    setSportsSaveError(null)
+    try {
+      const result = await apiFetch<{ sports: SportTag[] }>('/api/auth/sports', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sports: next }),
+      })
+      lastSuccessfulSportsSeq.current = Math.max(lastSuccessfulSportsSeq.current, seq)
+      // Only commit the server-canonicalised list if no newer PUT has
+      // landed in between — otherwise we'd overwrite PUT₂'s payload with
+      // PUT₁'s response.
+      if (seq === sportsPutSeq.current) {
+        setSports(result.sports)
+        // Broadcast so App-level `sports` state (used by the gate + any
+        // future feature-flag reads) doesn't go stale. App.tsx listens
+        // for this event and mirrors the value. CustomEvent keeps
+        // Settings ↔ App decoupled without lifting state into a context.
+        window.dispatchEvent(new CustomEvent('sports-updated', { detail: result.sports }))
+      }
+    } catch (e) {
+      // Same staleness check as patchGoal: only roll back if our request is
+      // the latest one and no newer PUT has succeeded since.
+      if (seq === sportsPutSeq.current && seq > lastSuccessfulSportsSeq.current) {
+        setSports(prev)
+        const msg = e instanceof Error ? e.message : String(e)
+        setSportsSaveError(msg || t('settings.sports.save_failed'))
       }
     }
   }
@@ -246,6 +309,46 @@ export default function Settings() {
           </button>
         </div>
       </Section>
+
+      {/* Sports — only visible after the user has been through the picker
+          (sports != null). For demo we render the row read-only as visual
+          confirmation that the gate is wired.
+
+          Use ``sports !== null`` rather than truthiness so an accidental empty
+          array (server enforces ≥1, but defense-in-depth: partial deploy or
+          buggy response could slip through) still renders the section. With
+          the looser ``sports &&`` gate the user could be locked into an
+          unrecoverable empty state — the SportsPicker only shows when sports
+          is null at the App level, not when it's []. */}
+      {sports !== null && (
+        <Section title={t('settings.sports.title')} icon="🏊">
+          <div className="flex flex-col gap-2">
+            {SPORT_OPTIONS.map(({ tag, emoji }) => {
+              const active = sports.includes(tag)
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => toggleSport(tag)}
+                  disabled={isDemo}
+                  aria-pressed={active}
+                  className={`w-full py-2.5 rounded-xl text-sm font-semibold border cursor-pointer transition-colors font-sans disabled:cursor-not-allowed ${
+                    active
+                      ? 'bg-accent text-white border-accent'
+                      : 'bg-surface border-border text-text hover:bg-surface-2'
+                  }`}
+                >
+                  <span className="mr-2">{emoji}</span>
+                  {t(`settings.sports.${tag}`)}
+                </button>
+              )
+            })}
+          </div>
+          {sportsSaveError && (
+            <p className="text-[12px] text-red mt-2">{sportsSaveError}</p>
+          )}
+        </Section>
+      )}
 
       {/* Intervals.icu Connection */}
       {isAuthenticated && !isDemo && (

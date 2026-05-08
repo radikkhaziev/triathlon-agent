@@ -207,7 +207,11 @@ class TestIsTestNeeded:
         assert ramp.is_test_needed is False
 
     def test_suggests_ride_when_run_fresh(self):
-        """sports=['Run','Ride']: if Run is fresh and Ride stale → suggest Ride."""
+        """sports=['Run','Ride']: if Run is fresh and Ride stale → suggest Ride.
+
+        Pass `sports` explicitly — the constructor default is ``['Run']`` only
+        (USER_SPORTS_SPEC §7), this test asserts multi-sport routing logic.
+        """
         from tasks.utils import RampTrainingSuggestion
 
         w = _wellness(ctl=60.0, atl=55.0)
@@ -221,7 +225,7 @@ class TestIsTestNeeded:
             patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
             patch("tasks.utils.User.get_threshold_freshness", side_effect=_by_sport),
         ):
-            ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w, sports=["Run", "Ride"])
             assert ramp.is_test_needed is True
             assert ramp.suggested_sport == "Ride"
             assert ramp.days_since == 40
@@ -245,7 +249,7 @@ class TestIsTestNeeded:
             patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
             patch("tasks.utils.User.get_threshold_freshness", side_effect=_by_sport),
         ):
-            ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w, sports=["Run", "Ride"])
             assert ramp.is_test_needed is True
             assert ramp.suggested_sport == "Ride"
             assert ramp.days_since == 90
@@ -287,7 +291,7 @@ class TestIsTestNeeded:
             patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
             patch("tasks.utils.User.get_threshold_freshness", side_effect=_by_sport),
         ):
-            ramp = RampTrainingSuggestion(user=_user(), wellness=w)
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w, sports=["Run", "Ride"])
             # recovery=None would normally block stale path; bootstrap path
             # ignores the gate, so this asserts both routing AND gate-bypass.
             assert ramp.is_test_needed is True
@@ -527,3 +531,141 @@ class TestPlanRamp:
         mock_actor.send.assert_called_once()
         assert "поставлен в очередь" in result
         assert "05.04" in result
+
+
+# ---------------------------------------------------------------------------
+# user_ramp_sports — filter + Intervals.icu casing mapper used by the morning
+# report actor to honour User.sports.
+# ---------------------------------------------------------------------------
+
+
+class TestUserRampSports:
+    """Behaviour table for the User.sports → ramp suggestion subset mapper."""
+
+    def test_none_falls_back_to_run_only(self):
+        """Gate not yet passed → conservative ``['Run']`` (Run = most common
+        discipline; legacy ``['Run','Ride']`` would spam Ride to runners-only)."""
+        from tasks.utils import user_ramp_sports
+
+        assert user_ramp_sports(None) == ["Run"]
+
+    def test_run_only_athlete(self):
+        from tasks.utils import user_ramp_sports
+
+        assert user_ramp_sports(["run"]) == ["Run"]
+
+    def test_ride_only_athlete(self):
+        from tasks.utils import user_ramp_sports
+
+        assert user_ramp_sports(["ride"]) == ["Ride"]
+
+    def test_swim_only_athlete_returns_empty(self):
+        """`create_ramp_test` doesn't support swim yet (RAMP_TEST_SWIM_SPEC.md
+        on roadmap). Empty list lets the morning-report path skip the entire
+        ramp section because is_test_needed iterates an empty self.sports."""
+        from tasks.utils import user_ramp_sports
+
+        assert user_ramp_sports(["swim"]) == []
+
+    def test_triathlete_returns_run_and_ride_in_priority_order(self):
+        """Swim is filtered out (unsupported), Run and Ride survive.
+
+        Output is ordered by ``RAMP_PRIORITY`` (Run first), NOT by user_sports
+        list order — that decoupling is the whole point of the fixed-priority
+        projection. The API canonicalises the picker output alphabetically
+        so ``["run","ride"]`` lands as ``["ride","run"]`` in DB; without the
+        projection the ramp tie-break would silently favour Ride."""
+        from tasks.utils import user_ramp_sports
+
+        # Input alphabetic (DB shape after canonical sort) → output Run-first
+        assert user_ramp_sports(["ride", "run", "swim"]) == ["Run", "Ride"]
+        # Same answer regardless of input order — projection is order-independent
+        assert user_ramp_sports(["swim", "ride", "run"]) == ["Run", "Ride"]
+        assert user_ramp_sports(["run", "ride"]) == ["Run", "Ride"]
+
+    def test_dedupes_silently(self):
+        """Duplicate entries in user.sports (manual DB edit, regression)
+        collapse to a single sport — no redundant freshness lookups."""
+        from tasks.utils import user_ramp_sports
+
+        assert user_ramp_sports(["run", "run", "run"]) == ["Run"]
+        assert user_ramp_sports(["run", "ride", "run"]) == ["Run", "Ride"]
+
+    def test_run_swim_drops_swim(self):
+        from tasks.utils import user_ramp_sports
+
+        assert user_ramp_sports(["run", "swim"]) == ["Run"]
+
+    def test_unknown_sport_silently_dropped(self):
+        """Defensive: future enum additions / typos in DB shouldn't crash the
+        morning report. Unknown values are filtered, valid ones survive."""
+        from tasks.utils import user_ramp_sports
+
+        assert user_ramp_sports(["run", "fitness"]) == ["Run"]
+
+
+class TestIsTestNeededRespectsSports:
+    """`sports=[]` from user_ramp_sports must suppress the entire suggestion —
+    morning-report calls RampTrainingSuggestion with the filtered list."""
+
+    def test_empty_sports_list_suppresses(self):
+        """Athlete with sports=['swim'] only → user_ramp_sports returns [] →
+        is_test_needed must be False without touching freshness lookups."""
+        from tasks.utils import RampTrainingSuggestion
+
+        w = _wellness(ctl=60.0, atl=55.0, recovery_score=80.0)
+        # Patch get_upcoming so the early-return on existing ramp doesn't
+        # short-circuit before the empty-sports branch.
+        with (
+            patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
+            patch("tasks.utils.User.get_threshold_freshness") as freshness_mock,
+        ):
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w, sports=[])
+            assert ramp.is_test_needed is False
+            # Empty list iterates zero times — freshness lookup never fires.
+            freshness_mock.assert_not_called()
+
+    def test_run_only_skips_ride_freshness_lookup(self):
+        """sports=['Run'] → only Run freshness queried, never Ride."""
+        from tasks.utils import RampTrainingSuggestion
+
+        w = _wellness(ctl=60.0, atl=55.0)
+        run_stale = _freshness(status="stale", sport="Run", days_since=35)
+
+        with (
+            patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
+            patch("tasks.utils.User.get_threshold_freshness", return_value=run_stale) as freshness_mock,
+        ):
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w, sports=["Run"])
+            assert ramp.is_test_needed is True
+            assert ramp.suggested_sport == "Run"
+            # One call total — Run only, no Ride probe.
+            assert freshness_mock.call_count == 1
+            assert freshness_mock.call_args.kwargs["sport"] == "Run"
+
+    def test_plan_ramp_with_empty_sports_doesnt_crash(self):
+        """TC4: plan_ramp on a suggestion with sports=[] should fall back to
+        an explicit `sport=...` arg (caller knows what they want — usually a
+        button callback). Empty self.sports must not blow up the path that
+        defaults to `self.suggested_sport or 'Run'`."""
+        from tasks.utils import RampTrainingSuggestion
+
+        w = _wellness(ctl=60.0, atl=55.0)
+        fresh = _freshness(status="stale", sport="Run", days_since=30)
+        mock_workout = MagicMock()
+        run_settings = MagicMock()
+        run_settings.threshold_pace = 295.0
+
+        with (
+            patch("tasks.utils.AiWorkout.get_upcoming", return_value=[]),
+            patch("tasks.utils.User.get_threshold_freshness", return_value=fresh),
+            patch("tasks.utils.AthleteSettings.get", return_value=run_settings),
+            patch("tasks.utils.create_ramp_test", return_value=mock_workout),
+            patch("tasks.utils.actor_push_workout"),
+        ):
+            ramp = RampTrainingSuggestion(user=_user(), wellness=w, sports=[])
+            # `sport` arg passed explicitly — empty self.sports list shouldn't
+            # short-circuit the call. plan_ramp uses `sport or self.suggested_sport
+            # or "Run"`, all branches must survive an empty selection list.
+            result = ramp.plan_ramp(sport="Run", dt=_DT)
+            assert "Run" in result

@@ -247,8 +247,8 @@ msgstr "low R² — repeat the ramp test before updating zones"
 msgid "Рекомендуем обновить зоны"
 msgstr "Consider updating zones"
 
-msgid "Зоны обновлены автоматически (high confidence)"
-msgstr "Zones auto-updated (high confidence)"
+msgid "Запущено авто-обновление зон (high confidence)"
+msgstr "Zone auto-update dispatched (high confidence)"
 
 msgid "Зоны обновлены"
 msgstr "Zones updated"

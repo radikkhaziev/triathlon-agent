@@ -282,13 +282,24 @@ def _drift_button_status(metric: str, measured: float, config: float, r2: float 
     creating «zones updated but no button shown» UX bugs.
     """
     delta = round(measured) - config
-    gate = _DRIFT_GATE_BY_METRIC.get(metric, DRIFT_LTHR_BPM)
+    if metric not in _DRIFT_GATE_BY_METRIC:
+        # Caller bug: typo or new metric added to backend without the UI mirror.
+        # Silently using the LTHR gate would apply the wrong unit semantics
+        # (3 bpm vs 5 W vs 5 s/km) and silently mis-render the message — log
+        # loud, show nothing.
+        logger.warning("_drift_button_status: unknown metric %r — UI suppressed", metric)
+        return False, None, "none"
+    gate = _DRIFT_GATE_BY_METRIC[metric]
     if abs(delta) < gate:
         return False, None, "none"
     if r2 is None or r2 < DRIFT_R2_MEDIUM:
         return False, _("низкое R² — повтори ramp test для обновления зон"), "low"
     if r2 >= DRIFT_R2_HIGH:
-        return False, _("Зоны обновлены автоматически (high confidence)"), "high"
+        # Phrased as «in-flight», not «completed» — the actor dispatch
+        # happens AFTER this message is sent (see tasks/actors/activities.py),
+        # so a delayed/failed actor leaves the user with an inaccurate hint
+        # if we claim the action is done.
+        return False, _("Запущено авто-обновление зон (high confidence)"), "high"
     return True, _("Рекомендуем обновить зоны"), "medium"
 
 

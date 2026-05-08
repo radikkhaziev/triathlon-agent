@@ -63,9 +63,14 @@ def build_ramp_steps_run(
     if threshold_pace_sec_per_km is None or threshold_pace_sec_per_km <= 0:
         threshold_pace_sec_per_km = DEFAULT_THRESHOLD_PACE_SEC_PER_KM
         warnings.append(
-            f"⚠️ Run threshold pace not configured. Default {int(DEFAULT_THRESHOLD_PACE_SEC_PER_KM)}s/km "
-            "(4:55/km — average amateur) used for protocol scaling. Update "
-            "Intervals.icu sport-settings before the test if your real threshold differs."
+            f"⚠️ Run threshold pace not configured in Intervals.icu. The protocol "
+            f"emits {{units: '%pace'}} steps; without a configured Run threshold, "
+            f"Intervals.icu cannot resolve them to absolute pace and Garmin will "
+            f"render no pace target on the watch. Default "
+            f"{int(DEFAULT_THRESHOLD_PACE_SEC_PER_KM)}s/km (4:55/km — average "
+            f"amateur) is used here only for the local treadmill-cap warning "
+            f"below; the actual on-watch behavior depends on configuring "
+            f"Intervals.icu Run sport-settings before the test."
         )
 
     steps: list[WorkoutStepDTO] = [
@@ -111,8 +116,13 @@ def build_ramp_steps_ride(
     if bike_ftp_watts is None or bike_ftp_watts <= 0:
         bike_ftp_watts = DEFAULT_BIKE_FTP_WATTS
         warnings.append(
-            f"⚠️ Bike FTP not configured. Default {int(DEFAULT_BIKE_FTP_WATTS)}W used for protocol "
-            "scaling. Update Intervals.icu sport-settings before the test if your real FTP differs."
+            f"⚠️ Bike FTP not configured in Intervals.icu. The protocol emits "
+            f"{{units: '%ftp'}} steps; without a configured FTP, Intervals.icu "
+            f"cannot resolve them to absolute watts and the trainer's ERG mode "
+            f"will fall back to whatever Intervals shows. Default "
+            f"{int(DEFAULT_BIKE_FTP_WATTS)}W is referenced here only for the "
+            f"informational warning; configure Intervals.icu Ride sport-settings "
+            f"before the test for accurate targets."
         )
 
     steps: list[WorkoutStepDTO] = [

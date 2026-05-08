@@ -168,15 +168,23 @@ class AthleteSettings(Base):
     @classmethod
     @dual
     def get_thresholds(cls, user_id: int, *, session: Session) -> AthleteThresholdsDTO:
+        from data.sport_map import INTERVALS_TO_LOWER
+
         from .user import User
 
         user = session.get(User, user_id)
         result = session.execute(select(cls).where(cls.user_id == user_id))
         all_settings = list(result.scalars().all())
 
+        # Derive available_sports from the same rows we're already iterating —
+        # avoids a duplicate SELECT in auth_me. Unmapped Intervals.icu sport
+        # types (Yoga, Workout, ...) are silently filtered out via dict-lookup.
+        available = sorted({INTERVALS_TO_LOWER[s.sport] for s in all_settings if s.sport in INTERVALS_TO_LOWER})
+
         dto = AthleteThresholdsDTO(
             age=user.age if user else None,
-            primary_sport=user.primary_sport if user else None,
+            sports=user.sports if user else None,
+            available_sports=available,
         )
 
         for s in all_settings:
