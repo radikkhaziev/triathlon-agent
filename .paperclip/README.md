@@ -65,10 +65,15 @@ npx paperclipai company import ./.paperclip \
 
 Auth: `paperclipai company *` commands require board access. If the server is headless and `xdg-open` fails, either tunnel `:3100` (`ssh -L 3100:localhost:3100 paperclip@server`) and approve the CLI auth URL in your local browser, or pass `--api-key <board-token>` directly with a token created in the Paperclip UI.
 
-After import:
+## Prerequisites on the Paperclip host
 
-1. **Set secrets in Paperclip UI** (Agent → Inputs → Env): `GH_TOKEN` for both `ceo` and `tech-lead` (both required — see `Heartbeat cadence` and `Skills` notes below for why).
-2. **Set heartbeat cadence** (see next section).
+- **`gh` CLI installed and authenticated** on the host where paperclip runs. Both agents call `gh` directly from their orchestration sessions (not just inside worktrees) — CEO uses `gh issue list / gh pr list / gh pr comment` for intake and human-review chasing, Tech Lead uses `gh pr create / gh pr edit --add-reviewer / gh pr view --json` for PR lifecycle. If `gh` is missing on the host, both agents silently break on first heartbeat.
+- **Node.js 20+, paperclip configured**, `claude` CLI in `$PATH` (used by `claude_local` adapter).
+
+## Setup after import
+
+1. **Set secrets in Paperclip UI** (Agent → Inputs → Env): `GH_TOKEN` for both `ceo` and `tech-lead`. Both required: CEO continuously calls `gh issue list / pr list / pr comment` for intake and queue chasing; Tech Lead calls `gh pr create / pr edit --add-reviewer copilot-pull-request-reviewer / pr view --json` for the PR lifecycle.
+2. **Set heartbeat cadence** in the UI (see "Heartbeat cadence" section below — values not in `.paperclip.yaml`, lost on re-import).
 3. **Enable agents.**
 
 ## Heartbeat cadence (UI-only, document any changes here)

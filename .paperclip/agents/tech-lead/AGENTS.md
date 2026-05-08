@@ -38,13 +38,39 @@ You do **not** invoke reviewer agents yourself. They are Claude Code subagents (
 
 ### Phase 3 — Monitor and orchestrate timing
 
-Your role here is timing and visibility, not execution:
+Your role here is timing and visibility, not execution.
 
-1. Poll PR state through `gh pr view <N> --json state,reviewDecision,statusCheckRollup,reviews,comments`. Don't block waiting — return on heartbeat.
-2. When the worktree session reports it has handled all our reviewer findings and posted the "ready for Copilot" signal in PR description (or no signal but reviewer threads are resolved and CI is green), confirm by reading the PR yourself.
-3. Add Copilot reviewer once: `gh pr edit <N> --add-reviewer copilot-pull-request-reviewer`. Do this from your session — it is a CLI call, no Agent tool needed.
-4. Watch for Copilot review activity via `gh pr view`. When it arrives, hand it back to the worktree session ("Copilot left N comments on PR #N — handle per `pr-review-chain` step 7"). The worktree session does the actual triage and responses.
-5. When both reviewer contours are clean and the worktree session signals done: post `@-mention` to Radik with one-line summary using `gh pr comment`. STOP. Never merge.
+**Signal contract with the worktree session** (formally owned by `.claude/skills/pr-review-chain/SKILL.md` once that skill lands in Phase 0 — until then this AGENTS.md is the source of truth).
+
+GitHub API has no optimistic concurrency on PR body edits, so we eliminate races through **strict marker ownership** — each marker is written by exactly one author. No marker is replaced by the other party. Status flips are `worktree`-only; timing markers are `tech-lead`-only.
+
+| Marker in PR body | Owner / writer | Semantics |
+|---|---|---|
+| `<!-- pr-review-chain-status: ready-for-copilot -->` | **Worktree session** | Our internal reviewer chain done, Copilot can be added |
+| `<!-- pr-review-chain-status: ready-for-human -->` | **Worktree session** (overwrites its own previous status) | Copilot threads resolved, ready for Radik |
+| `<!-- pr-review-chain-copilot-requested-at: <ISO-8601 UTC> -->` | **You (Tech Lead)** | Set immediately after the `gh pr edit --add-reviewer` call. Append-only — never modified after |
+| `<!-- pr-review-chain-copilot-timeout-at: <ISO-8601 UTC> -->` | **You (Tech Lead)** | Set when 4h elapsed without Copilot activity. Append-only |
+
+Tech Lead never writes `pr-review-chain-status: *`. Worktree never writes `copilot-requested-at` or `copilot-timeout-at`. Even if both parties write to the body in overlapping windows, the residual race is benign because of the priority-ordered branching below (status flip wins over timeout flag).
+
+**Loop on each heartbeat — priority-ordered branching, first match wins:**
+
+1. `gh pr view <N> --json state,statusCheckRollup,body,reviews,comments` — read once.
+2. **`status=ready-for-human`** in body → worktree finished review chain (with or without Copilot). `gh pr comment <N> --body "@radikkhaziev ready for human review: <one-line summary>"`. STOP. Never merge.
+3. **`status=ready-for-copilot` AND both `copilot-requested-at` AND `copilot-timeout-at` markers present** → timeout already fired previously, escalate now. `gh pr comment <N> --body "@radikkhaziev Copilot didn't respond in 4h — please review without Copilot or re-request manually"`. STOP for this PR. (Worktree may still later flip status to `ready-for-human` if Copilot eventually responds and worktree handles it; that becomes a no-op rebound but doesn't break anything because branch 2 has higher priority.)
+4. **`status=ready-for-copilot` AND `copilot-requested-at: <ts>` AND no `copilot-timeout-at`**:
+   - **Copilot responded** — `reviews` array contains entry where `author.login == "copilot-pull-request-reviewer"` (top-level review submission, not just inline comments — Copilot always submits a review object): hand back to worktree session — "Copilot reviewed PR #N — handle per `pr-review-chain` skill, then update `status` to `ready-for-human`". Wait next heartbeat.
+   - **Copilot silent, elapsed ≤ 4h** since `<ts>`: wait next heartbeat.
+   - **Copilot silent, elapsed > 4h** since `<ts>`: append `<!-- pr-review-chain-copilot-timeout-at: $(date -u +%FT%TZ) -->` to PR body via `gh pr edit <N> --body "<existing-body>\n<new-marker>"`. Wait next heartbeat — branch 3 will fire and tag Radik.
+5. **`status=ready-for-copilot` AND no `copilot-requested-at` AND CI is green** (`statusCheckRollup` all SUCCESS) → add Copilot reviewer:
+   - `gh pr edit <N> --add-reviewer copilot-pull-request-reviewer`
+   - Append `<!-- pr-review-chain-copilot-requested-at: $(date -u +%FT%TZ) -->` to PR body.
+   - Wait next heartbeat.
+6. **`status=ready-for-copilot` AND no `copilot-requested-at` AND CI not green** → wait. Worktree probably pushed a fixup; let CI rerun. We don't request Copilot review on a yellow/red PR.
+
+The 4h timeout is hardcoded. If Copilot regularly takes 5-6h, tune the constant in this file and in `.claude/skills/pr-review-chain/SKILL.md` once the skill exists.
+
+You do not parse Copilot threads, you do not write code, you do not invoke any reviewer subagent. Your output is `gh` CLI calls and one final @-mention.
 
 ### Phase 4 — Cleanup
 
