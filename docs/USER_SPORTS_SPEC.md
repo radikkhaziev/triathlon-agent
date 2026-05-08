@@ -457,6 +457,9 @@ swim-ramp в `data/ramp_tests.create_ramp_test`.
 | 2026-05-08 | Фильтр ramp-suggestions включить в Phase 1 | Отложить в Phase 2 вместе с промптом | Зависит только от `User.sports` (без промпта), 5 строк кода + маппер. Безопасно делать сразу. |
 | 2026-05-08 | `user.sports = None` → `["Run"]` only | (a) Suppress всё; (b) Legacy `["Run","Ride"]` | Morning report — фоновая cron-задача, юзер мог не открыть webapp до 7am первой ночью. Suppress всё = silent regression. Legacy `["Run","Ride"]` спамит Ride-suggest бегунам, которые ещё не зашли. Конкретно `["Run"]`: Run — самая частая дисциплина, минимум ложного шума, и после прохождения gate реальная подборка вступает в силу. |
 | 2026-05-08 | Swim из ramp-фильтра пока выкидывать | Доверять `user.sports = ["swim"]` буквально и предлагать swim-ramp | `create_ramp_test` пока не поддерживает swim. RAMP_TEST_SWIM_SPEC.md существует — после его приземления убрать `Swim`-исключение из `_user_ramp_sports`. |
+| 2026-05-08 | §11.2 tool-list filter — SKIPPED | Добавить sport-аргумент-aware фильтр в `bot/tool_filter.py:TOOL_GROUPS` | В `TOOL_GROUPS` нет sport-specific tool-имён (нет `*_run`/`*_ride`/`*_swim`). Sport-routing идёт через `sport=` arg в general-purpose tools (`get_polarization_index`, `get_progression_analysis`, …). Эта спецификация в §11.2 предполагала, что фильтрация существует на уровне tool-list — реальность: ограничение задаётся через prompt-context (Phase 2 `Sports:` line + `_zones_block` filter + Phase 3 `{primary_sport}` подстановка). Tool-list trim не нужен. |
+| 2026-05-08 | Phase 3 morning prompt: hardcoded `sport='run'` → `{primary_sport}` placeholder | Оставить hardcode и доверять Claude инферить из `Sports:` line | Hardcode `sport='run'` для cyclist-only юзера активно вредит — Claude послушно вызовет `get_polarization_index(sport='run')` и получит пусто. Параметризация: 3 строки в шаблоне + helper. Триатлет: legacy ≡ new (Run priority). |
+| 2026-05-08 | Weekly Ride-блоки conditional через `{progression_step}` / `{ride_ml_insights}` | Single `{format_sections}` placeholder с динамическим numbering | Numbering 1,2,3,4,6,7 для не-Ride юзера выглядит странновато но функционально безразличен Claude'у — структурный refactor с динамическим numbering не оправдывает churn. Проще оставить gap при отсутствии секции 5. |
 
 ---
 
@@ -464,5 +467,5 @@ swim-ramp в `data/ramp_tests.create_ramp_test`.
 
 - [x] Phase 1 — Schema + API + Frontend gate + Settings + ramp-suggestion filter (приземлено 2026-05-08)
 - [x] Phase 2 — Прокидывание в промпт (`_ATHLETE_BLOCK_TEMPLATE`, conditional `_zones_block`) — приземлено 2026-05-08
-- [ ] Phase 3 — Tool filter + report adaptation
+- [x] Phase 3 — Параметризация `sport=...` в morning/weekly + conditional Ride-блоки — приземлено 2026-05-08. **§11.2 tool filter SKIPPED** — нет sport-specific tool-имён в `bot/tool_filter.py:TOOL_GROUPS`, всё routing через `sport=` arg → закрывается через prompt-context (Phase 2 + 3).
 - [ ] Phase 4 — Swim ramp-test support + detection routing

@@ -18,6 +18,8 @@ from bot.prompts import (
     _format_sports,
     _pct_ranges,
     _pct_ranges_from_hr,
+    _primary_sport,
+    _show_ride_progression,
     _zones_block,
     get_system_prompt_v2,
     get_system_prompt_weekly,
@@ -253,6 +255,24 @@ class TestZonesBlockSportsFilter:
         assert "**Ride**" in all_via_empty
         assert "**Swim**" in all_via_empty
 
+    def test_unknown_values_filtered(self):
+        """Forward-compat: if the User.sports enum is ever widened
+        (e.g. ``"fitness"``), unknown values are filtered out before
+        the membership check. A list with one known + one unknown
+        renders just the known section; a list of only-unknowns falls
+        back to render-all (same safety as the empty-list path).
+        Mirrors ``_format_sports``'s passthrough so the two helpers
+        stay in lockstep when the enum grows."""
+        thr = self._thresholds(lthr_run=170, ftp=240, css=110.0)
+        mixed = _zones_block({}, thr, sports=["run", "fitness"])
+        assert "**Run**" in mixed
+        assert "**Ride**" not in mixed
+        assert "**Swim**" not in mixed
+
+        only_unknown = _zones_block({}, thr, sports=["fitness"])
+        all_via_none = _zones_block({}, thr, sports=None)
+        assert only_unknown == all_via_none
+
 
 class TestFormatSports:
     """Phase 2: ``_format_sports`` renders the profile-line value."""
@@ -392,3 +412,198 @@ class TestPromptBuilderSportsInjection:
         assert "**Run**" in out
         assert "**Ride**" in out
         assert "**Swim**" in out
+
+
+class TestPrimarySport:
+    """Phase 3: ``_primary_sport`` picks the lowercase enum that fills
+    hardcoded ``sport=...`` slots in morning/weekly prompt examples.
+
+    Resolution order is ``RAMP_PRIORITY = ("Run","Ride","Swim")`` so a
+    triathlete's primary stays Run (legacy expectation) while a single-
+    sport athlete gets their own discipline. NULL/empty → ``"run"``.
+    """
+
+    def test_none_falls_back_to_run(self):
+        assert _primary_sport(None) == "run"
+
+    def test_empty_falls_back_to_run(self):
+        assert _primary_sport([]) == "run"
+
+    def test_triathlete_primary_is_run(self):
+        """Run wins by RAMP_PRIORITY ordering — keeps legacy behaviour."""
+        assert _primary_sport(["swim", "ride", "run"]) == "run"
+
+    def test_runner_only_returns_run(self):
+        assert _primary_sport(["run"]) == "run"
+
+    def test_cyclist_only_returns_ride(self):
+        assert _primary_sport(["ride"]) == "ride"
+
+    def test_swimmer_only_returns_swim(self):
+        assert _primary_sport(["swim"]) == "swim"
+
+    def test_swim_ride_combo_picks_ride(self):
+        """Run > Ride > Swim priority — without Run, Ride wins."""
+        assert _primary_sport(["swim", "ride"]) == "ride"
+
+    def test_run_swim_combo_picks_run(self):
+        assert _primary_sport(["swim", "run"]) == "run"
+
+
+class TestShowRideProgression:
+    """Phase 3: weekly prompt's Ride-only blocks (progression call,
+    ML insights section) gate on this helper."""
+
+    def test_none_shows_for_legacy_compat(self):
+        assert _show_ride_progression(None) is True
+
+    def test_triathlete_shows(self):
+        assert _show_ride_progression(["swim", "ride", "run"]) is True
+
+    def test_cyclist_only_shows(self):
+        assert _show_ride_progression(["ride"]) is True
+
+    def test_runner_only_hides(self):
+        assert _show_ride_progression(["run"]) is False
+
+    def test_swimmer_only_hides(self):
+        assert _show_ride_progression(["swim"]) is False
+
+    def test_run_swim_hides(self):
+        assert _show_ride_progression(["run", "swim"]) is False
+
+    def test_empty_list_treated_as_none_for_legacy_compat(self):
+        """USER_SPORTS_SPEC code-review H1 (Phase 3 round): empty-list and
+        NULL must agree. Diverging once produced "Sports: all" + zero zones
+        in the chat tail (Phase 2 H1) — same drift here would render the
+        weekly profile-line as "Sports: all" but drop the Ride-progression
+        instruction. Both branches must collapse to legacy "render all"."""
+        assert _show_ride_progression([]) is True
+
+
+class TestPhase3PromptIntegration:
+    """End-to-end: morning + weekly templates honour user.sports.
+
+    Catches the most likely regression (typo in `.format(sports=...)`,
+    missed placeholder) and the new conditional-rendering paths."""
+
+    def _thr(self, sports):
+        return AthleteThresholdsDTO(
+            age=30,
+            sports=sports,
+            lthr_run=170,
+            lthr_bike=150,
+            ftp=240,
+            css=110.0,
+        )
+
+    def test_morning_runner_uses_run_in_polarization(self):
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_v2(user_id=1, language="ru")
+        assert "get_polarization_index(sport='run')" in out
+
+    def test_morning_cyclist_uses_ride_in_polarization(self):
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_v2(user_id=1, language="ru")
+        assert "get_polarization_index(sport='ride')" in out
+        # Negative: ensure we didn't accidentally leave the legacy hardcode.
+        assert "get_polarization_index(sport='run')" not in out
+
+    def test_morning_triathlete_unchanged_regression(self):
+        """Triathlete primary is Run by RAMP_PRIORITY — output identical
+        to the pre-Phase-3 hardcoded baseline."""
+        with (
+            patch(
+                "bot.prompts.AthleteSettings.get_thresholds",
+                return_value=self._thr(["swim", "ride", "run"]),
+            ),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_v2(user_id=1, language="ru")
+        assert "get_polarization_index(sport='run')" in out
+
+    def test_morning_null_sports_falls_back_to_run(self):
+        """Backward compat for users still in the gate rollout window."""
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(None)),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_v2(user_id=1, language="ru")
+        assert "get_polarization_index(sport='run')" in out
+
+    def test_weekly_runner_only_drops_ride_progression_step(self):
+        """No Ride in user.sports → no `get_progression_analysis(sport='Ride')`
+        instruction (the call would query nothing useful) and no ML insights
+        section (would just say 'no data').
+
+        Tightened to assert the Ride-tagged step specifically — a future
+        Phase 4 could add `get_progression_analysis(sport='Run')` for runners
+        and we don't want this test to silently rebroaden."""
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_weekly(user_id=1, language="ru")
+        assert "get_polarization_index(sport='run')" in out
+        assert "get_progression_analysis(sport='Ride')" not in out
+        assert "**ML insights** (Ride)" not in out
+
+    def test_weekly_runner_only_has_consecutive_numbering(self):
+        """USER_SPORTS_SPEC code-review H2 (Phase 3): without the
+        rebuild-by-branch trick, non-Ride users saw `1,2,3,4,6,7` (gap
+        at 5) in the format-section list. Claude tends to renumber the
+        rendered output and a "section 5 missing" jump confuses users
+        in Telegram. Assert non-Ride athletes get 1-6 sequential."""
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_weekly(user_id=1, language="ru")
+        # Six-section run: ML insights branch is dropped, Наблюдение
+        # promotes to 5, План на неделю to 6.
+        assert "5. 🔍 **Наблюдение**" in out
+        assert "6. 📅 **План на неделю**" in out
+        # No gap and no leftover 7-section numbering.
+        assert "7. 📅" not in out
+        assert "6. 🔍" not in out
+
+    def test_weekly_cyclist_keeps_ride_progression_step(self):
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_weekly(user_id=1, language="ru")
+        assert "get_polarization_index(sport='ride')" in out
+        assert "get_progression_analysis(sport='Ride')" in out
+        assert "ML insights" in out
+
+    def test_weekly_triathlete_unchanged_regression(self):
+        """Triathlete keeps both Ride-progression call and ML insights —
+        legacy hardcoded shape preserved."""
+        with (
+            patch(
+                "bot.prompts.AthleteSettings.get_thresholds",
+                return_value=self._thr(["swim", "ride", "run"]),
+            ),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_weekly(user_id=1, language="ru")
+        assert "get_polarization_index(sport='run')" in out
+        assert "get_progression_analysis(sport='Ride')" in out
+        assert "ML insights" in out
+
+    def test_weekly_by_sport_breakdown_lists_user_sports(self):
+        """Section 1 hint includes the athlete's actual sports list so
+        Claude doesn't bother breaking down sports the athlete doesn't train."""
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride", "run"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_weekly(user_id=1, language="ru")
+        assert "by-sport breakdown (Ride, Run)" in out
