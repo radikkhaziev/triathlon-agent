@@ -44,6 +44,7 @@ from data.hrv_activity import (
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
 from data.utils import HRV_ELIGIBLE_TYPES
+from tasks.actors.athlets import actor_update_zones
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO, local_today
 from tasks.formatter import build_post_activity_message, build_ramp_test_message, build_rpe_keyboard
 from tasks.tools import TelegramTool
@@ -428,6 +429,8 @@ def _actor_update_analityc_tables(
             hrv_row.hrvt2_power = thresholds.hrvt2_power
             hrv_row.threshold_r_squared = thresholds.r_squared
             hrv_row.threshold_confidence = thresholds.confidence
+            hrv_row.hrvt1_confidence = thresholds.hrvt1_confidence
+            hrv_row.hrvt2_confidence = thresholds.hrvt2_confidence
 
         if ra_result := resultDTO.ra_result:
             hrv_row.ra_pct = ra_result.ra_pct
@@ -491,7 +494,7 @@ def _actor_send_activity_notification(
         config_ftp = settings.ftp if settings else None
         # Parse hrvt2_pace ("M:SS") → s/km int for the formatter's drift comparison.
         hrvt2_pace_sec = parse_pace_to_sec(hrv_row.hrvt2_pace)
-        summary, show_update_zones = build_ramp_test_message(
+        summary, show_update_zones, auto_update_fired = build_ramp_test_message(
             activity_row,
             hrv_row,
             config_lthr=config_lthr,
@@ -506,6 +509,19 @@ def _actor_send_activity_notification(
             else None
         )
         tg.send_message(text=summary, reply_markup=reply_markup)
+        # High-confidence drift (R² ≥ 0.85): dispatch the zone update without
+        # requiring the user to tap the button. Message text already announces
+        # «✅ Зоны обновлены автоматически» — actor sends a follow-up notification
+        # with the actual «old → new» diff once the push completes. INFO log so
+        # support can audit «zones changed without user interaction» reports.
+        if auto_update_fired:
+            logger.info(
+                "Auto-update zones dispatched for user_id=%d activity=%s (high-confidence ramp, R²=%.2f)",
+                user.id,
+                activity_id,
+                hrv_row.threshold_r_squared or 0.0,
+            )
+            actor_update_zones.send(user=user)
         return
 
     race_row = Race.get_by_activity(user.id, activity_id) if activity_row.is_race else None

@@ -53,8 +53,19 @@ class ThresholdFreshnessDTO(BaseModel):
     recent_tests: list[ThresholdTestDTO] = []
 
 
-DRIFT_PCT_THRESHOLD = 5.0
-DRIFT_R2_THRESHOLD = 0.7
+# Drift thresholds — absolute units per RAMP_TEST_BIKE_SPEC §8.
+# Replaces a uniform 5% gate that ignored metric scale (e.g. 5% × LTHR=160
+# = 8 bpm — much looser than the 3 bpm clinically-relevant delta).
+DRIFT_LTHR_BPM = 3
+DRIFT_PACE_SEC_PER_KM = 5
+DRIFT_FTP_WATTS = 5
+
+# R² tiers for confidence-based update behavior (§8):
+#   ≥ 0.85 = high   → auto-update zones, no button
+#   ≥ 0.70 = medium → suggest with button (current default path)
+#   <  0.70 = low   → no update, recommend retest
+DRIFT_R2_HIGH = 0.85
+DRIFT_R2_MEDIUM = 0.70
 
 
 class DriftAlertDTO(BaseModel):

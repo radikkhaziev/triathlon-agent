@@ -64,6 +64,8 @@ class ThresholdsDTO(BaseModel):
     hrvt1_pace: str | None = None  # "M:SS" (run)
     hrvt2_pace: str | None = None  # "M:SS" (run) — pace at HRVT2 (anaerobic threshold)
     hrvt2_power: int | None = None  # watts (bike) — pow at HRVT2 (anaerobic threshold ≈ FTP)
+    hrvt1_confidence: str | None = None  # high | medium | low — local fit reliability
+    hrvt2_confidence: str | None = None  # high | medium | low — local fit reliability
 
 
 class ReadinessDTO(BaseModel):

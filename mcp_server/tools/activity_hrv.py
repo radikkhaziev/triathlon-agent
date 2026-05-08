@@ -56,6 +56,8 @@ async def get_activity_hrv(activity_id: str) -> dict:
             "hrvt2_power": row.hrvt2_power,
             "r_squared": row.threshold_r_squared,
             "confidence": row.threshold_confidence,
+            "hrvt1_confidence": row.hrvt1_confidence,
+            "hrvt2_confidence": row.hrvt2_confidence,
         }
 
     if row.ra_pct is not None:

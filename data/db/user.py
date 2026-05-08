@@ -13,8 +13,10 @@ from data.crypto import decrypt_field, encrypt_field
 
 # Backward-compatible re-exports (moved to data.db.dto)
 from data.db.dto import (  # noqa: F401, E402
-    DRIFT_PCT_THRESHOLD,
-    DRIFT_R2_THRESHOLD,
+    DRIFT_FTP_WATTS,
+    DRIFT_LTHR_BPM,
+    DRIFT_PACE_SEC_PER_KM,
+    DRIFT_R2_MEDIUM,
     DriftAlertDTO,
     ThresholdDriftDTO,
     ThresholdFreshnessDTO,
@@ -62,12 +64,17 @@ def _drift_alert_lthr(
 
     Intervals.icu's `lthr` field is conceptually the lactate threshold = HRVT2.
     Pushing HRVT1 there (older behavior) shifted all zones down ~10-15%.
+
+    Gate (RAMP_TEST_BIKE_SPEC §8): R² ≥ 0.7 (medium-confidence floor) and
+    absolute |Δ bpm| ≥ 3. Older 5% relative gate accepted ~8 bpm delta on
+    typical LTHR=160 — clinically too loose.
     """
-    if hrvt2_hr is None or r_squared is None or r_squared < DRIFT_R2_THRESHOLD:
+    if hrvt2_hr is None or r_squared is None or r_squared < DRIFT_R2_MEDIUM:
         return None
-    pct = (hrvt2_hr - config_lthr) / config_lthr * 100
-    if abs(pct) <= DRIFT_PCT_THRESHOLD:
+    delta = round(hrvt2_hr) - config_lthr
+    if abs(delta) < DRIFT_LTHR_BPM:
         return None
+    pct = delta / config_lthr * 100
     return DriftAlertDTO(
         sport=sport,
         metric="LTHR",
@@ -76,7 +83,7 @@ def _drift_alert_lthr(
         diff_pct=round(pct, 1),
         message=(
             f"HRVT2 = {round(hrvt2_hr)} bpm (R²={r_squared:.2f}). "
-            f"Current LTHR {sport}: {config_lthr} bpm ({pct:+.1f}%). "
+            f"Current LTHR {sport}: {config_lthr} bpm (Δ {delta:+d} bpm). "
             "Consider updating LTHR."
         ),
     )
@@ -90,18 +97,19 @@ def _drift_alert_pace(
 ) -> DriftAlertDTO | None:
     """Run threshold-pace drift (sec/km). Latest ramp-test only, HRVT2 pace.
 
-    Lower s/km = faster — diff_pct sign flips relative to LTHR semantically,
-    but the >5% magnitude check is direction-agnostic.
+    Lower s/km = faster — sign of delta flips vs LTHR but the |Δ| ≥ 5 sec/km
+    gate is direction-agnostic.
     """
-    if r_squared is None or r_squared < DRIFT_R2_THRESHOLD:
+    if r_squared is None or r_squared < DRIFT_R2_MEDIUM:
         return None
     sec = parse_pace_to_sec(hrvt2_pace)
     if sec is None or sec <= 0:
         return None
     config = int(round(config_pace_sec))
-    pct = (sec - config) / config * 100
-    if abs(pct) <= DRIFT_PCT_THRESHOLD:
+    delta = sec - config
+    if abs(delta) < DRIFT_PACE_SEC_PER_KM:
         return None
+    pct = delta / config * 100
     return DriftAlertDTO(
         sport=sport,
         metric="THRESHOLD_PACE",
@@ -110,7 +118,7 @@ def _drift_alert_pace(
         diff_pct=round(pct, 1),
         message=(
             f"HRVT2 pace = {sec} s/km (R²={r_squared:.2f}). "
-            f"Current threshold {sport}: {config} s/km ({pct:+.1f}%). "
+            f"Current threshold {sport}: {config} s/km (Δ {delta:+d} s/km). "
             "Consider updating threshold pace."
         ),
     )
@@ -128,11 +136,12 @@ def _drift_alert_ftp(
     Pushing pow-at-HRVT1 (older HRVT1→LTHR pattern) would under-shift
     cycling zones the same ~13% way the LTHR mapping bug did.
     """
-    if hrvt2_power is None or r_squared is None or r_squared < DRIFT_R2_THRESHOLD:
+    if hrvt2_power is None or r_squared is None or r_squared < DRIFT_R2_MEDIUM:
         return None
-    pct = (hrvt2_power - config_ftp) / config_ftp * 100
-    if abs(pct) <= DRIFT_PCT_THRESHOLD:
+    delta = round(hrvt2_power) - config_ftp
+    if abs(delta) < DRIFT_FTP_WATTS:
         return None
+    pct = delta / config_ftp * 100
     return DriftAlertDTO(
         sport=sport,
         metric="FTP",
@@ -141,7 +150,7 @@ def _drift_alert_ftp(
         diff_pct=round(pct, 1),
         message=(
             f"HRVT2 power = {round(hrvt2_power)} W (R²={r_squared:.2f}). "
-            f"Current FTP {sport}: {config_ftp} W ({pct:+.1f}%). "
+            f"Current FTP {sport}: {config_ftp} W (Δ {delta:+d} W). "
             "Consider updating FTP."
         ),
     )
@@ -357,12 +366,23 @@ class User(Base):
     ) -> ThresholdDriftDTO | None:
         """Compare the latest ramp-test HRVT2 reading with athlete_settings to detect drift.
 
-        Three metrics, gated by ``|drift| > 5%`` and ``R² ≥ 0.7`` on the most
-        recent valid ramp test (LIMIT 1):
+        Three metrics, each gated by an absolute |Δ| floor (per metric) AND
+        ``R² ≥ DRIFT_R2_MEDIUM (0.70)`` on the most recent valid ramp test
+        (LIMIT 1). Floor values live in ``data.db.dto`` and are mirrored by
+        ``tasks.formatter._drift_button_status`` so UI and backend cannot
+        diverge:
 
-          - LTHR — Ride + Run (HRVT2 HR vs ``settings.lthr``)
-          - THRESHOLD_PACE — Run only (pace at HRVT2, sec/km, vs ``settings.threshold_pace``)
-          - FTP — Ride only (pow at HRVT2, watts, vs ``settings.ftp``)
+          - LTHR (Ride + Run) — HRVT2 HR vs ``settings.lthr``,
+            gate ``DRIFT_LTHR_BPM = 3 bpm``.
+          - THRESHOLD_PACE (Run only) — pace at HRVT2 (sec/km) vs
+            ``settings.threshold_pace``, gate ``DRIFT_PACE_SEC_PER_KM = 5 s/km``.
+          - FTP (Ride only) — pow at HRVT2 (watts) vs ``settings.ftp``,
+            gate ``DRIFT_FTP_WATTS = 5 W``.
+
+        Absolute units replaced a flat 5% relative gate (2026-05-08, see
+        ``docs/RAMP_TEST_BIKE_SPEC.md §8``) — 5% of LTHR ~8 bpm was clinically
+        too loose, while 5% of FTP ~10 W was tighter than power-meter
+        repeatability.
 
         Pushing HRVT2 (anaerobic threshold = LTHR ≈ FTP) instead of HRVT1
         (aerobic threshold ≈ 75-85% of LTHR) realigns Intervals.icu's `lthr` /

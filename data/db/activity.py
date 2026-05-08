@@ -403,6 +403,11 @@ class ActivityHrv(Base):
     hrvt2_power: Mapped[float | None] = mapped_column(Float, nullable=True)  # Power at a1=0.50 (bike)
     threshold_r_squared: Mapped[float | None] = mapped_column(Float, nullable=True)
     threshold_confidence: Mapped[str | None] = mapped_column(String, nullable=True)  # high | moderate | low
+    # Per-threshold confidence — combines R² with local point density (n_points
+    # in α1 ∈ ±0.15 of crossing). Aggregate `threshold_confidence` hides cases
+    # where HRVT1 is well-resolved but HRVT2 on a sparse top-end tail.
+    hrvt1_confidence: Mapped[str | None] = mapped_column(String, nullable=True)  # high | medium | low
+    hrvt2_confidence: Mapped[str | None] = mapped_column(String, nullable=True)  # high | medium | low
 
     # Readiness (Ra)
     ra_pct: Mapped[float | None] = mapped_column(Float, nullable=True)

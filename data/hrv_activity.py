@@ -340,6 +340,35 @@ def calculate_dfa_timeseries(
 # ---------------------------------------------------------------------------
 
 
+# Local-density bands for per-threshold confidence — α1 ± 0.15 around each
+# crossing. Anchors:
+#   HRVT1 at α1 = 0.75 → [0.60, 0.90]
+#   HRVT2 at α1 = 0.50 → [0.35, 0.65]
+# When sigmoid fit lands (H1, see DFA_REGRESSION_METHODOLOGY_SPEC §3.1), these
+# bands likely re-tune since the curve's local sensitivity changes.
+_HRVT1_LOCAL_BAND = (0.60, 0.90)
+_HRVT2_LOCAL_BAND = (0.35, 0.65)
+_PER_THRESHOLD_TIER_HIGH_N = 5
+_PER_THRESHOLD_TIER_HIGH_R2 = 0.85
+_PER_THRESHOLD_TIER_MEDIUM_N = 3
+_PER_THRESHOLD_TIER_MEDIUM_R2 = 0.70
+
+
+def _per_threshold_tier(n_local: int, r_squared: float) -> str:
+    """Combine local point density + global R² into a per-threshold tier.
+
+    Bands per ``docs/DFA_REGRESSION_METHODOLOGY_SPEC.md §2.3``. ``n_local``
+    is the count of points whose α1 sits within ±0.15 of the threshold
+    crossing (i.e. directly informing the linear-fit's interpolation at that
+    point).
+    """
+    if n_local >= _PER_THRESHOLD_TIER_HIGH_N and r_squared >= _PER_THRESHOLD_TIER_HIGH_R2:
+        return "high"
+    if n_local >= _PER_THRESHOLD_TIER_MEDIUM_N and r_squared >= _PER_THRESHOLD_TIER_MEDIUM_R2:
+        return "medium"
+    return "low"
+
+
 def detect_hrv_thresholds(
     dfa_timeseries: list[dict],
     activity_type: str = "Ride",
@@ -377,8 +406,20 @@ def detect_hrv_thresholds(
     coeffs = np.polyfit(hr, a1, 1)
     slope, intercept = coeffs
 
-    # a1 should decrease as HR increases (negative slope)
+    # a1 should monotonically fall as HR rises — physiology dictates it
+    # (parasympathetic withdrawal + sympathetic activation both reduce α1).
+    # Positive or zero slope = corrupt RR data, broken sensor, or windowing
+    # artifact — log and bail out so the failure surfaces in Sentry rather
+    # than silently producing nonsense thresholds.
     if slope >= 0:
+        logger.warning(
+            "Positive slope in α1 vs HR regression (slope=%.4f, intercept=%.2f, "
+            "n_points=%d) — likely corrupt RR data or sensor artifact, threshold "
+            "detection skipped.",
+            slope,
+            intercept,
+            len(points),
+        )
         return None
 
     # R² calculation
@@ -413,7 +454,9 @@ def detect_hrv_thresholds(
             r_squared,
         )
 
-    # Confidence based on R²
+    # Aggregate confidence — kept for backwards compat (drift detector still
+    # gates on r_squared until the sigmoid-fit rewrite, see
+    # docs/DFA_REGRESSION_METHODOLOGY_SPEC.md §4).
     if r_squared > 0.7:
         confidence = "high"
     elif r_squared > 0.5:
@@ -421,11 +464,22 @@ def detect_hrv_thresholds(
     else:
         confidence = "low"
 
+    # Per-threshold confidence — combines R² with local point density.
+    # n_local = points within α1 ∈ [crossing ± 0.15] gives a direct
+    # proxy for «how well does the fit pin THIS threshold specifically»,
+    # independent of the chord's overall fit quality.
+    n_near_hrvt1 = sum(1 for x in a1 if _HRVT1_LOCAL_BAND[0] <= x <= _HRVT1_LOCAL_BAND[1])
+    n_near_hrvt2 = sum(1 for x in a1 if _HRVT2_LOCAL_BAND[0] <= x <= _HRVT2_LOCAL_BAND[1])
+    hrvt1_confidence = _per_threshold_tier(n_near_hrvt1, r_squared)
+    hrvt2_confidence = _per_threshold_tier(n_near_hrvt2, r_squared)
+
     result: dict[str, Any] = {
         "hrvt1_hr": round(hrvt1_hr, 1),
         "hrvt2_hr": hrvt2_hr_safe,
         "r_squared": round(r_squared, 3),
         "confidence": confidence,
+        "hrvt1_confidence": hrvt1_confidence,
+        "hrvt2_confidence": hrvt2_confidence,
     }
 
     # Add power at HRVT1 + HRVT2 for cycling. The drift detector pushes
@@ -451,8 +505,23 @@ def detect_hrv_thresholds(
                     pow_at = np.polyval(p_coeffs, hr_target)
                     if 50 < pow_at < hi:
                         result[key] = round(pow_at)
-            except (np.linalg.LinAlgError, ValueError):
-                pass
+                    else:
+                        # Silent skip used to hide regression-extrapolation
+                        # gone wrong (Sentry blind to it). Log explicitly so
+                        # bad fits surface during incident analysis.
+                        logger.warning(
+                            "%s out of physical range: %.0fW (HR target=%.1f, "
+                            "p-slope=%.2f, p-intercept=%.0f, bounds=50..%dW). "
+                            "Field skipped.",
+                            key,
+                            pow_at,
+                            hr_target,
+                            p_coeffs[0],
+                            p_coeffs[1],
+                            hi,
+                        )
+            except (np.linalg.LinAlgError, ValueError) as e:
+                logger.warning("Power regression failed for activity: %s", e)
 
     # Add pace at HRVT1 + HRVT2 for running. The drift detector pushes
     # pace-at-HRVT2 to Intervals.icu's `threshold_pace` field, so both

@@ -247,6 +247,15 @@ msgstr "low R² — repeat the ramp test before updating zones"
 msgid "Рекомендуем обновить зоны"
 msgstr "Consider updating zones"
 
+msgid "Зоны обновлены автоматически (high confidence)"
+msgstr "Zones auto-updated (high confidence)"
+
+msgid "Зоны обновлены"
+msgstr "Zones updated"
+
+msgid "Drift не обнаружен, зоны актуальны"
+msgstr "No drift detected, zones are up to date"
+
 msgid "для обновления зон нужен ещё один ramp test"
 msgstr "one more ramp test needed before updating zones"
 

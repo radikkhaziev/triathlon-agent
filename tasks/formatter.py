@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from bot.i18n import _, get_language
-from data.db.dto import DRIFT_PCT_THRESHOLD, DRIFT_R2_THRESHOLD
+from data.db.dto import DRIFT_FTP_WATTS, DRIFT_LTHR_BPM, DRIFT_PACE_SEC_PER_KM, DRIFT_R2_HIGH, DRIFT_R2_MEDIUM
 from tasks.dto import local_today
 
 logger = logging.getLogger(__name__)
@@ -254,24 +254,42 @@ def _ramp_failure_advice(reason: dict) -> str:
     return ""
 
 
-def _drift_button_status(measured: float, config: float, r2: float | None) -> tuple[bool, str | None]:
-    """Decide whether to surface the «Update zones» button + which hint to render.
+_DRIFT_GATE_BY_METRIC = {
+    "LTHR": DRIFT_LTHR_BPM,
+    "PACE": DRIFT_PACE_SEC_PER_KM,
+    "FTP": DRIFT_FTP_WATTS,
+}
 
-    Returns ``(button_visible, hint_text)``. Hint is the recommendation line
-    («рекомендуем обновить» / «низкое R²»); ``None`` when there's nothing
-    useful to say (drift below threshold).
 
-    Gates pull from ``data.db.dto`` so the UI and backend can never disagree —
-    the button fires `actor_update_zones`, which re-reads
-    `User.detect_threshold_drift`, so any divergence becomes a "button shows
-    but the actor finds nothing to push" UX bug.
+def _drift_button_status(metric: str, measured: float, config: float, r2: float | None) -> tuple[bool, str | None, str]:
+    """Decide whether to surface the «Update zones» button + which hint + R² tier.
+
+    Returns ``(button_visible, hint_text, r2_tier)`` where ``r2_tier`` is
+    one of ``"high"`` / ``"medium"`` / ``"low"`` / ``"none"``:
+
+      - ``high`` (R² ≥ 0.85): caller may auto-update without user confirmation;
+        ``button_visible`` is False (no need to show button) but ``hint_text``
+        announces the auto-update.
+      - ``medium`` (0.70 ≤ R² < 0.85): show the button (current default UX).
+      - ``low``    (R² < 0.70): no button, soft hint asks for retest.
+      - ``none``   (drift below absolute threshold): no button, no hint.
+
+    Absolute drift gate per metric (RAMP_TEST_BIKE_SPEC §8). The UI mirror MUST
+    match ``data/db/user.py`` — both pull from ``data.db.dto`` constants AND
+    apply the same ``round(measured)`` to the float HRVT2 reading. Without the
+    round, half-bpm boundary cases (e.g. hrvt2_hr=152.6, config=150) would
+    flip backend (round → 153 → Δ=3 fires) but not UI (raw 2.6 → silent),
+    creating «zones updated but no button shown» UX bugs.
     """
-    pct = (measured - config) / config * 100
-    if abs(pct) <= DRIFT_PCT_THRESHOLD:
-        return False, None
-    if r2 is None or r2 < DRIFT_R2_THRESHOLD:
-        return False, _("низкое R² — повтори ramp test для обновления зон")
-    return True, _("Рекомендуем обновить зоны")
+    delta = round(measured) - config
+    gate = _DRIFT_GATE_BY_METRIC.get(metric, DRIFT_LTHR_BPM)
+    if abs(delta) < gate:
+        return False, None, "none"
+    if r2 is None or r2 < DRIFT_R2_MEDIUM:
+        return False, _("низкое R² — повтори ramp test для обновления зон"), "low"
+    if r2 >= DRIFT_R2_HIGH:
+        return False, _("Зоны обновлены автоматически (high confidence)"), "high"
+    return True, _("Рекомендуем обновить зоны"), "medium"
 
 
 def build_ramp_test_message(
@@ -283,19 +301,28 @@ def build_ramp_test_message(
     config_threshold_pace: float | None = None,
     hrvt2_pace_sec: int | None = None,
     config_ftp: int | None = None,
-) -> tuple[str, bool]:
-    """Build ramp-test-specific notification. Returns (message, show_update_zones_button).
+) -> tuple[str, bool, bool]:
+    """Build ramp-test-specific notification.
 
-    Button surfaces when the latest ramp test shows ``|drift| > 5%`` and
-    ``R² ≥ 0.7`` on any of: LTHR (HRVT2 HR), Run threshold pace (pace at
-    HRVT2), or Ride FTP (pow at HRVT2). Mirrors ``User.detect_threshold_drift``.
-    The values pushed (HRVT2 HR, pace at HRVT2, pow at HRVT2) align with
-    Intervals.icu's `lthr` / `threshold_pace` / `ftp` fields, which
-    conceptually correspond to the anaerobic threshold.
+    Returns ``(message, show_update_zones_button, auto_update_fired)``:
+
+    - ``show_update_zones_button``: the inline «Обновить зоны» button surfaces
+      on **medium** R² confidence (0.70 ≤ R² < 0.85) with absolute drift past
+      the per-metric gate (3 bpm / 5 s/km / 5 W).
+    - ``auto_update_fired``: any metric crossed both the drift gate AND the
+      **high** R² floor (R² ≥ 0.85). Caller is expected to dispatch
+      ``actor_update_zones`` automatically; the message text already announces
+      the auto-update inline.
+
+    Mirrors ``User.detect_threshold_drift``. The values pushed (HRVT2 HR,
+    pace at HRVT2, pow at HRVT2) align with Intervals.icu's `lthr` /
+    `threshold_pace` / `ftp` fields, which conceptually correspond to the
+    anaerobic threshold.
     """
     sport = activity.type or "?"
     lines: list[str] = [f"⚡ {_('Ramp Test')} ({sport}) — {_('результат')}"]
     show_button = False
+    auto_update_fired = False
 
     if hrv.hrvt1_hr is not None:
         hrvt1 = f"HRVT1: {hrv.hrvt1_hr:.0f} bpm"
@@ -324,10 +351,13 @@ def build_ramp_test_message(
         soft_hints: list[str] = []  # «низкое R²» — collected if no drift fires
 
         if config_lthr and hrv.hrvt2_hr is not None:
-            lthr_pct = (hrv.hrvt2_hr - config_lthr) / config_lthr * 100
-            lines.append(f"{_('текущий LTHR')}: {config_lthr} bpm ({lthr_pct:+.1f}%)")
-            visible, hint = _drift_button_status(hrv.hrvt2_hr, config_lthr, r2)
-            if visible:
+            lthr_delta = round(hrv.hrvt2_hr) - config_lthr
+            lines.append(f"{_('текущий LTHR')}: {config_lthr} bpm (Δ {lthr_delta:+d} bpm)")
+            visible, hint, tier = _drift_button_status("LTHR", hrv.hrvt2_hr, config_lthr, r2)
+            if tier == "high":
+                auto_update_fired = True
+                lines.append(f"✅ {hint}")
+            elif visible:
                 show_button = True
                 lines.append(f"💡 {hint}")
             elif hint:
@@ -335,35 +365,42 @@ def build_ramp_test_message(
 
         if config_threshold_pace and hrvt2_pace_sec:
             cfg_pace = int(round(config_threshold_pace))
-            pace_pct = (hrvt2_pace_sec - cfg_pace) / cfg_pace * 100
+            pace_delta = hrvt2_pace_sec - cfg_pace
             cfg_pace_fmt = format_pace(cfg_pace) or f"{cfg_pace} s/km"
-            lines.append(f"{_('текущий threshold pace')}: {cfg_pace_fmt} ({pace_pct:+.1f}%)")
-            visible, hint = _drift_button_status(hrvt2_pace_sec, cfg_pace, r2)
-            if visible and not show_button:
+            lines.append(f"{_('текущий threshold pace')}: {cfg_pace_fmt} (Δ {pace_delta:+d} s/km)")
+            visible, hint, tier = _drift_button_status("PACE", hrvt2_pace_sec, cfg_pace, r2)
+            if tier == "high":
+                auto_update_fired = True
+                # Announce only once even if multiple metrics are high — the
+                # LTHR branch already added the headline auto-update line, so
+                # subsequent high tiers note the metric inline.
+                lines.append(f"✅ {hint} ({_('threshold pace')})")
+            elif visible and not show_button:
                 show_button = True
                 lines.append(f"💡 {hint}")
             elif visible:
-                # Button already on for LTHR/FTP — just note pace drift too
                 lines.append(f"💡 {hint} ({_('threshold pace')})")
             elif hint:
                 soft_hints.append(hint)
 
         if config_ftp and hrv.hrvt2_power is not None:
-            ftp_pct = (hrv.hrvt2_power - config_ftp) / config_ftp * 100
-            lines.append(f"{_('текущий FTP')}: {config_ftp} W ({ftp_pct:+.1f}%)")
-            visible, hint = _drift_button_status(hrv.hrvt2_power, config_ftp, r2)
-            if visible and not show_button:
+            ftp_delta = round(hrv.hrvt2_power) - config_ftp
+            lines.append(f"{_('текущий FTP')}: {config_ftp} W (Δ {ftp_delta:+d} W)")
+            visible, hint, tier = _drift_button_status("FTP", hrv.hrvt2_power, config_ftp, r2)
+            if tier == "high":
+                auto_update_fired = True
+                lines.append(f"✅ {hint} ({_('FTP')})")
+            elif visible and not show_button:
                 show_button = True
                 lines.append(f"💡 {hint}")
             elif visible:
-                # Button already on for LTHR/pace — note FTP drift too
                 lines.append(f"💡 {hint} ({_('FTP')})")
             elif hint:
                 soft_hints.append(hint)
 
         # Show one soft hint only when no drift fired anywhere — avoids
         # «recommend update» + «low R²» showing together.
-        if not show_button and soft_hints:
+        if not show_button and not auto_update_fired and soft_hints:
             lines.append(f"ℹ️ {soft_hints[0]}")
     else:
         lines.append(f"⚠️ {_('детекция HRVT не удалась')}")
@@ -373,7 +410,7 @@ def build_ramp_test_message(
             if advice:
                 lines.append(f"💡 {advice}")
 
-    return "\n".join(lines), show_button
+    return "\n".join(lines), show_button, auto_update_fired
 
 
 # ---------------------------------------------------------------------------
