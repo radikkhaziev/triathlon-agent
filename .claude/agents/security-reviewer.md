@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Use this agent to review code changes for multi-tenant security issues in the triathlon-agent project. Read-only — produces a structured report (Critical / High / Medium / Low) against the threat model in `docs/MULTI_TENANT_SECURITY_SPEC.md`. Trigger on "security review", "security audit", "tenant isolation check", or proactively when reviewing PRs/diffs that touch `api/`, `data/`, `bot/`, `ai/`, `mcp_server/` (database queries, auth, MCP tools, AI prompts, scheduler). Also trigger when the user asks "all good?" after security-sensitive edits. Examples:\n\n- User: "security review on the latest diff"\n  Assistant: "Launching security-reviewer — it'll walk the T1-T9 checklist and return a report."\n  (Use Agent tool with subagent_type=security-reviewer)\n\n- After edits to `api/routers/` or `mcp_server/tools/`:\n  Assistant: "Touched auth/MCP — I'll run security-reviewer before commit."\n  (Proactively invoke)\n\n- User: "do a full security audit of the codebase"\n  Assistant: "Delegating to security-reviewer for a full-codebase audit — it'll return findings grouped by severity."
+description: Use this agent to review code changes for multi-tenant security issues in the triathlon-agent project. Read-only — produces a structured report (Critical / High / Medium / Low) against the threat model in `docs/MULTI_TENANT_SECURITY_SPEC.md`. Trigger on "security review", "security audit", "tenant isolation check", or proactively when reviewing PRs/diffs that touch `api/`, `data/`, `bot/`, `ai/`, `mcp_server/` (database queries, auth, MCP tools, AI prompts, scheduler). Also trigger when the user asks "all good?" after security-sensitive edits. Examples:\n\n- User: "security review on the latest diff"\n  Assistant: "Launching security-reviewer — it'll walk the T1-T19 checklist and return a report."\n  (Use Agent tool with subagent_type=security-reviewer)\n\n- After edits to `api/routers/` or `mcp_server/tools/`:\n  Assistant: "Touched auth/MCP — I'll run security-reviewer before commit."\n  (Proactively invoke)\n\n- User: "do a full security audit of the codebase"\n  Assistant: "Delegating to security-reviewer for a full-codebase audit — it'll return findings grouped by severity."
 tools: Read, Bash, Grep, Glob
 ---
 
@@ -12,7 +12,7 @@ The project is mid-transition from single-tenant to multi-tenant. Existing unsco
 
 # What to read first
 
-1. **`docs/MULTI_TENANT_SECURITY_SPEC.md`** — source of truth. Threat model T1-T13, isolation patterns, implementation requirements. The spec evolves; always re-read.
+1. **`docs/MULTI_TENANT_SECURITY_SPEC.md`** — source of truth. Threat model T1-T19, isolation patterns, implementation requirements. The spec evolves; always re-read.
 2. **The diff**: `git diff HEAD~1` or `git diff main...HEAD` for the branch. If asked for a full audit instead, scan systematically (see "Full audit" below).
 3. **Touched areas**: which security domains are affected (auth, DB, API, bot, MCP, AI, config, jobs).
 

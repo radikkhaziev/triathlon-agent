@@ -1,0 +1,37 @@
+schema: paperclip/v1
+
+# Paperclip vendor extension for the Triathlon Agent company.
+# Base markdown package (COMPANY.md, agents/*/AGENTS.md) stays portable —
+# this file holds adapter wiring and env inputs.
+#
+# No routines / no cron: dev → main release is fully manual, owned by the board user (Radik).
+# When he chooses, he opens `gh pr create --base main --head dev` himself and merges; the existing
+# `.github/workflows/deploy.yml` fires on push to main without any paperclip involvement.
+
+agents:
+  ceo:
+    adapter:
+      type: claude_local
+      config:
+        # Update model alias if Anthropic ships a newer Opus and you want to pin it here.
+        # Otherwise leave to runtime default.
+        model: claude-opus-4-6
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+          # CEO uses gh CLI continuously — issue triage (`gh issue list`),
+          # PR queue chasing (`gh pr list`), comments (`gh pr comment`).
+
+  tech-lead:
+    adapter:
+      type: claude_local
+      config:
+        model: claude-opus-4-6
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+          # Tech Lead opens worktree branches, creates feat-PRs, requests Copilot reviews.

@@ -52,6 +52,28 @@ R(t) is clamped to [0, 100] to prevent physically nonsensical values.
 
 ---
 
+## CTL / ATL / TSB — Long-term Banister Variant
+
+Beyond the per-day recovery state R(t) above, Banister's impulse-response model is also applied with longer τ to track training adaptation:
+
+| Metric | τ | Meaning | Source |
+|---|---|---|---|
+| **CTL** (Chronic Training Load) | 42 days | Long-term «fitness» — accumulated stimulus | Intervals.icu API |
+| **ATL** (Acute Training Load) | 7 days | Short-term fatigue — last week's impulse | Intervals.icu API |
+| **TSB** (Training Stress Balance) | — | `CTL − ATL` — «form»; positive = fresh, negative = loaded | Intervals.icu (derived) |
+
+**TSB zones** (calibrated for Intervals.icu, not TrainingPeaks — normalisation differs):
+- `> +10` — under-training / detraining
+- `−10..+10` — optimal
+- `−10..−25` — productive overreach
+- `< −25` — overtraining risk
+
+**Two τ in one file:** the recovery R(t) above uses τ=2 days (recovery kinetics — how fast R drifts back to 100 on rest days, daily granularity). CTL/ATL use τ=42d / 7d (adaptation kinetics — how training stimulus transforms into chronic fitness vs. acute fatigue). Different physiological time-scales, same Banister-EMA math.
+
+**Per-sport CTL:** Intervals.icu exposes only global CTL. Local recalculation per-sport via `calculate_sport_ctl(activities, tau=42)` — `data/metrics.py:313`. Useful for multi-sport athletes shifting volume between disciplines.
+
+---
+
 ## Role in the Combined Recovery Score
 
 Banister recovery R(t) is one of four inputs to the composite Recovery Score (0–100):

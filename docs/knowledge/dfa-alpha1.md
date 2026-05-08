@@ -91,10 +91,33 @@ Detection requires a **ramp segment** — a period of progressively increasing H
 Steps:
 1. Find a candidate ramp segment (sufficient duration + α1 range covering the thresholds).
 2. Fit a linear regression: `DFA_α1 = f(HR)`.
-3. Interpolate the HR values where α1 crosses 0.75 (HRVT1) and 0.50 (HRVT2).
-4. Validate: **reject when R² < 0.5** (low-confidence fit). R² ≥ 0.7 marks a high-confidence tier; 0.5–0.7 is moderate. The α1 range must include values above 1.0 and below the crossings.
+3. **Slope-sign sanity:** physiology dictates α1 falls monotonically as HR rises (parasympathetic withdrawal + sympathetic activation both reduce α1). A non-negative regression slope is treated as broken-sensor evidence (corrupt RR, BLE fragmentation, windowing artifact) — short-circuit with a Sentry warning, no thresholds returned.
+4. Interpolate the HR values where α1 crosses 0.75 (HRVT1) and 0.50 (HRVT2).
+5. Validate: **reject when R² < 0.5** (low-confidence fit). The α1 range must include values above 1.0 and below the crossings.
 
-Confidence levels: **high** (R² ≥ 0.7) / **moderate** (0.5 ≤ R² < 0.7) / **low** (R² < 0.5, rejected). Reported alongside each threshold estimate.
+### Confidence Levels
+
+Two parallel scales are produced — they answer different questions:
+
+**Aggregate confidence** (whole-curve fit quality):
+- **high**: R² ≥ 0.7
+- **moderate**: 0.5 ≤ R² < 0.7
+- **low**: R² < 0.5 (rejected)
+
+Used by the drift detector to gate auto-update of zones.
+
+**Per-threshold confidence** (`n_local × R²`) — answers «how well does this fit pin THIS specific threshold»:
+
+For each threshold (HRVT1 at α1=0.75, HRVT2 at α1=0.50), count `n_local` = points whose α1 sits within ±0.15 of the crossing:
+- HRVT1 band: α1 ∈ [0.60, 0.90]
+- HRVT2 band: α1 ∈ [0.35, 0.65]
+
+Tier:
+- **high**: `n_local ≥ 5` AND R² ≥ 0.85
+- **medium**: `n_local ≥ 3` AND R² ≥ 0.70
+- **low**: otherwise
+
+A high overall R² with sparse local density at the HRVT2 band (e.g. ramp ending before α1 dropped below 0.65) yields high aggregate but low per-threshold confidence at HRVT2 — this is the more honest signal for drift gating, and is what the linear-fit successor (sigmoid, see `docs/DFA_REGRESSION_METHODOLOGY_SPEC.md` §3) will tighten further with non-uniform local sensitivity.
 
 Indoor (trainer) sessions are more reliable than outdoor rides due to absence of wind, gradient, and pacing variability.
 
