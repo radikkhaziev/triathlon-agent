@@ -62,6 +62,7 @@ class ThresholdsDTO(BaseModel):
     confidence: str  # high | moderate | low
     hrvt1_power: int | None = None  # watts (bike)
     hrvt1_pace: str | None = None  # "M:SS" (run)
+    hrvt2_pace: str | None = None  # "M:SS" (run) — pace at HRVT2 (anaerobic threshold)
 
 
 class ReadinessDTO(BaseModel):

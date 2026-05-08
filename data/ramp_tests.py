@@ -19,10 +19,12 @@ RAMP_STEPS_RIDE = [
 ]
 
 
-# Run ramp ladder: 10 steps × 3 min, 5% threshold-pace increments, 85% → 130%.
-# Pace-driven (input), HR/DFA observed. Final step ≈ 130% threshold pace —
-# clearly above LT2, drives DFA a1 below 0.5 (HRVT2) for trained athletes.
-_RUN_RAMP_PCT = [85, 90, 95, 100, 105, 110, 115, 120, 125, 130]
+# Run ramp ladder: 8 steps × 3 min, 5% threshold-pace increments, 80% → 115%.
+# Pace-driven (input), HR/DFA observed. Calibrated for `threshold_pace = pace at
+# HRVT2` (Intervals.icu's `lthr`-aligned semantic, see drift detector in
+# data/db/user.py). Step 100% sits exactly at HRVT2 by definition; 110-115%
+# pushes α1 below 0.5 cleanly without forcing bail-out at unrealistic 130% paces.
+_RUN_RAMP_PCT = [80, 85, 90, 95, 100, 105, 110, 115]
 
 
 def build_ramp_steps_run(threshold_pace_sec_per_km: float | None = None) -> list[WorkoutStepDTO]:
@@ -49,7 +51,7 @@ def build_ramp_steps_run(threshold_pace_sec_per_km: float | None = None) -> list
             )
         )
     steps.append(
-        WorkoutStepDTO(text="Cool-down", duration=600, hr={"units": "%lthr", "value": 70}),
+        WorkoutStepDTO(text="Cool-down", duration=420, hr={"units": "%lthr", "value": 70}),
     )
     return steps
 
@@ -101,8 +103,8 @@ def create_ramp_test(
         rationale += (
             " Treadmill or perfectly flat course required — protocol is pace-driven, "
             "outdoor terrain/wind makes pace targets unreliable. "
-            "Final step is near-max effort; if you can't hold pace, the test ends — "
-            "DFA fit takes the points up to the bail-out."
+            "Top step (115% threshold pace) sits clearly above LT2 — if you can't hold pace, "
+            "the test ends and the DFA fit takes the points up to the bail-out."
         )
     rationale += rationale_extra
 

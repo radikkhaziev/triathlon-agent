@@ -35,10 +35,9 @@ class TestActorUpdateZones:
                 DriftAlertDTO(
                     sport="Ride",
                     metric="LTHR",
-                    measured_avg=155,
+                    measured=155,
                     config_value=148,
                     diff_pct=4.7,
-                    tests_count=3,
                     message="HRVT1 stable at 155 bpm",
                 ),
             ]
@@ -72,19 +71,17 @@ class TestActorUpdateZones:
                 DriftAlertDTO(
                     sport="Ride",
                     metric="LTHR",
-                    measured_avg=155,
+                    measured=155,
                     config_value=148,
                     diff_pct=4.7,
-                    tests_count=3,
                     message="",
                 ),
                 DriftAlertDTO(
                     sport="Run",
                     metric="LTHR",
-                    measured_avg=170,
+                    measured=170,
                     config_value=162,
                     diff_pct=4.9,
-                    tests_count=2,
                     message="",
                 ),
             ]
@@ -117,10 +114,9 @@ class TestActorUpdateZones:
                 DriftAlertDTO(
                     sport="Run",
                     metric="THRESHOLD_PACE",
-                    measured_avg=260,  # 4:20/km
+                    measured=260,  # 4:20/km
                     config_value=295,  # 4:55/km
                     diff_pct=-11.9,
-                    tests_count=1,
                     message="",
                 ),
             ]
@@ -143,7 +139,7 @@ class TestActorUpdateZones:
         # 1000m / 260s = 3.846 m/s, rounded to 3 decimals
         mock_client.update_sport_settings.assert_called_once_with("Run", {"threshold_pace": 3.846})
         notify_payload = mock_notify.send.call_args[0][1]
-        assert "Threshold pace Run: 295 → 260 s/km" in notify_payload
+        assert "Threshold pace Run: 4:55/km → 4:20/km" in notify_payload
 
     def test_unknown_metric_skipped_with_warning(self):
         """Unrecognized metric does not break the loop."""
@@ -154,10 +150,9 @@ class TestActorUpdateZones:
                 DriftAlertDTO(
                     sport="Run",
                     metric="MYSTERY",
-                    measured_avg=1,
+                    measured=1,
                     config_value=2,
                     diff_pct=0,
-                    tests_count=1,
                     message="",
                 ),
             ]

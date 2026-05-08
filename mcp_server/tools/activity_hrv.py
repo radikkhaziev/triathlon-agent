@@ -52,6 +52,7 @@ async def get_activity_hrv(activity_id: str) -> dict:
             "hrvt1_power": row.hrvt1_power,
             "hrvt1_pace": row.hrvt1_pace,
             "hrvt2_hr": row.hrvt2_hr,
+            "hrvt2_pace": row.hrvt2_pace,
             "r_squared": row.threshold_r_squared,
             "confidence": row.threshold_confidence,
         }
@@ -120,6 +121,8 @@ async def get_thresholds_history(sport: str = "", days_back: int = 90) -> dict:
             entry["hrvt1_power"] = r.hrvt1_power
         if r.hrvt1_pace:
             entry["hrvt1_pace"] = r.hrvt1_pace
+        if r.hrvt2_pace:
+            entry["hrvt2_pace"] = r.hrvt2_pace
         thresholds.append(entry)
 
     return {

@@ -30,10 +30,10 @@ class TestRampProtocolRide:
 
 
 class TestBuildRampStepsRun:
-    def test_returns_12_steps(self):
-        """WU + 10 work + CD = 12 total."""
+    def test_returns_10_steps(self):
+        """WU + 8 work + CD = 10 total."""
         steps = build_ramp_steps_run(threshold_pace_sec_per_km=295.0)
-        assert len(steps) == 12
+        assert len(steps) == 10
         assert steps[0].text == "Warm-up"
         assert steps[-1].text == "Cool-down"
 
@@ -42,7 +42,8 @@ class TestBuildRampStepsRun:
         for s in (steps[0], steps[-1]):
             assert s.hr == {"units": "%lthr", "value": 70}
             assert s.pace is None
-            assert s.duration == 600
+        assert steps[0].duration == 600  # WU 10 min
+        assert steps[-1].duration == 420  # CD 7 min
 
     def test_work_steps_use_pct_pace(self):
         steps = build_ramp_steps_run(295.0)
@@ -53,23 +54,23 @@ class TestBuildRampStepsRun:
             assert s.duration == 180  # 3 min
 
     def test_work_steps_pct_progressive(self):
-        """%pace ascends from 85% to 130% across 10 work steps."""
+        """%pace ascends from 80% to 115% across 8 work steps in 5% increments."""
         steps = build_ramp_steps_run(295.0)
         pcts = [s.pace["value"] for s in steps[1:-1]]
-        assert pcts == [85, 90, 95, 100, 105, 110, 115, 120, 125, 130]
+        assert pcts == [80, 85, 90, 95, 100, 105, 110, 115]
 
     def test_step_labels_include_threshold_pct(self):
         steps = build_ramp_steps_run(295.0)
         labels = [s.text for s in steps[1:-1]]
-        assert "85% threshold" in labels[0]
-        assert "130% threshold" in labels[-1]
+        assert "80% threshold" in labels[0]
+        assert "115% threshold" in labels[-1]
 
     def test_threshold_param_currently_unused(self):
         """Steps don't depend on threshold_pace — Intervals.icu does the conversion.
 
         Parameter is kept on the signature for future fallback to s/km if %pace
         ever proves unreliable, but right now any value (or None) yields the
-        same 85→130% ladder.
+        same 80→115% ladder.
         """
         a = build_ramp_steps_run(threshold_pace_sec_per_km=240.0)
         b = build_ramp_steps_run(threshold_pace_sec_per_km=360.0)
@@ -90,17 +91,17 @@ class TestCreateRampTest:
         assert "Treadmill" not in workout.rationale  # ride doesn't need it
 
     def test_creates_run_workout_with_threshold(self):
-        """10+10*3+10 = 50 min total when threshold provided."""
+        """10 + 8*3 + 7 = 41 min total when threshold provided."""
         workout = create_ramp_test("Run", date(2026, 4, 1), threshold_pace=295.0)
         assert workout.sport == "Run"
-        assert len(workout.steps) == 12
-        assert workout.duration_minutes == 50
+        assert len(workout.steps) == 10
+        assert workout.duration_minutes == 41
         assert "Treadmill" in workout.rationale
         assert "Threshold pace not set" not in workout.rationale
 
     def test_run_workout_warns_when_threshold_missing(self):
         workout = create_ramp_test("Run", date(2026, 4, 1), threshold_pace=None)
-        assert len(workout.steps) == 12
+        assert len(workout.steps) == 10
         assert "Threshold pace not set" in workout.rationale
         assert "calibrate" in workout.rationale.lower()
 
@@ -124,7 +125,7 @@ class TestCreateRampTest:
         workout = create_ramp_test("Run", date(2026, 4, 1), threshold_pace=295.0)
         event = workout.to_intervals_event()
         assert event.type == "Run"
-        assert len(event.workout_doc["steps"]) == 12
+        assert len(event.workout_doc["steps"]) == 10
         # Work steps carry %pace targets
         work = event.workout_doc["steps"][1:-1]
         for s in work:
@@ -186,37 +187,8 @@ class TestMorningMessage:
         msg = build_morning_message(row)
         assert "overtraining" in msg.lower()
 
-    def test_threshold_drift_alert(self):
-        from types import SimpleNamespace
-
-        from bot.formatter import build_morning_message
-
-        row = SimpleNamespace(
-            recovery_score=80.0,
-            recovery_category="good",
-            readiness_level="green",
-            ctl=50.0,
-            atl=45.0,
-            sleep_score=85,
-            sleep_secs=28800,
-        )
-        drift = {
-            "alerts": [
-                {
-                    "sport": "Run",
-                    "measured_avg": 158,
-                    "config_value": 153,
-                    "diff_pct": 3.3,
-                    "tests_count": 3,
-                }
-            ]
-        }
-        msg = build_morning_message(row, threshold_drift=drift)
-        assert "ПОРОГИ" in msg
-        assert "158" in msg
-        assert "153" in msg
-
     def test_no_drift_no_block(self):
+        """build_morning_message no longer renders drift inline (moved to actor)."""
         from types import SimpleNamespace
 
         from bot.formatter import build_morning_message
@@ -230,5 +202,5 @@ class TestMorningMessage:
             sleep_score=85,
             sleep_secs=28800,
         )
-        msg = build_morning_message(row, threshold_drift=None)
+        msg = build_morning_message(row)
         assert "ПОРОГИ" not in msg

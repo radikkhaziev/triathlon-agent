@@ -53,13 +53,16 @@ class ThresholdFreshnessDTO(BaseModel):
     recent_tests: list[ThresholdTestDTO] = []
 
 
+DRIFT_PCT_THRESHOLD = 5.0
+DRIFT_R2_THRESHOLD = 0.7
+
+
 class DriftAlertDTO(BaseModel):
     sport: str
     metric: str
-    measured_avg: int
+    measured: int  # latest ramp-test reading (HRVT2 HR or pace at HRVT2 in s/km)
     config_value: int
     diff_pct: float
-    tests_count: int
     message: str
 
 

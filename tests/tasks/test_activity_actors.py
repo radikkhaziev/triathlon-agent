@@ -596,6 +596,85 @@ class TestActorSendUserMorningReport:
         buttons = [btn for row in keyboard["inline_keyboard"] for btn in row]
         assert any("web_app" in btn for btn in buttons)
 
+    def test_threshold_pace_drift_renders_pace_units_not_bpm(self):
+        """Regression: pre-2026-05-08 the morning-report drift line was hardcoded
+        ``LTHR {sport}: ... bpm`` for every alert. THRESHOLD_PACE alerts (s/km
+        in measured/config) got mislabelled as LTHR-with-bpm.
+        """
+        from data.db.dto import DriftAlertDTO, ThresholdDriftDTO
+        from tasks.actors.reports import _actor_send_user_morning_report
+
+        user = _user(id=1)
+        wellness = self._make_wellness()
+        drift = ThresholdDriftDTO(
+            alerts=[
+                DriftAlertDTO(
+                    sport="Run",
+                    metric="THRESHOLD_PACE",
+                    measured=346,  # 5:46/km
+                    config_value=295,  # 4:55/km
+                    diff_pct=17.2,
+                    message="",
+                ),
+            ]
+        )
+
+        mock_tg = MagicMock()
+        with (
+            patch("tasks.actors.reports.TelegramTool", return_value=mock_tg),
+            patch("tasks.actors.reports.build_morning_message", return_value="Header"),
+            patch("tasks.utils.RampTrainingSuggestion", return_value=_no_ramp()),
+            patch("tasks.actors.reports.User") as mock_user_orm,
+        ):
+            mock_user_orm.detect_threshold_drift.return_value = drift
+            _actor_send_user_morning_report(user.model_dump(), wellness.model_dump())
+
+        text = mock_tg.send_message.call_args[1]["text"]
+        # Pace-formatted, not raw seconds
+        assert "4:55/km" in text
+        assert "5:46/km" in text
+        # Drift alert is THRESHOLD_PACE only — LTHR header must not surface, and
+        # the pace-line must explicitly appear so we catch a regression where
+        # the alert silently drops to nothing.
+        assert "Threshold pace Run" in text
+        assert "LTHR Run" not in text
+        assert "295 bpm" not in text and "346 bpm" not in text
+
+    def test_lthr_drift_still_renders_bpm(self):
+        """LTHR alert path still says «LTHR ... bpm» (untouched by the fix)."""
+        from data.db.dto import DriftAlertDTO, ThresholdDriftDTO
+        from tasks.actors.reports import _actor_send_user_morning_report
+
+        user = _user(id=1)
+        wellness = self._make_wellness()
+        drift = ThresholdDriftDTO(
+            alerts=[
+                DriftAlertDTO(
+                    sport="Run",
+                    metric="LTHR",
+                    measured=152,
+                    config_value=165,
+                    diff_pct=-8.1,
+                    message="",
+                ),
+            ]
+        )
+
+        mock_tg = MagicMock()
+        with (
+            patch("tasks.actors.reports.TelegramTool", return_value=mock_tg),
+            patch("tasks.actors.reports.build_morning_message", return_value="Header"),
+            patch("tasks.utils.RampTrainingSuggestion", return_value=_no_ramp()),
+            patch("tasks.actors.reports.User") as mock_user_orm,
+        ):
+            mock_user_orm.detect_threshold_drift.return_value = drift
+            _actor_send_user_morning_report(user.model_dump(), wellness.model_dump())
+
+        text = mock_tg.send_message.call_args[1]["text"]
+        assert "LTHR Run" in text
+        assert "165 bpm" in text
+        assert "152 bpm" in text
+
 
 # ---------------------------------------------------------------------------
 # actor_compose_user_morning_report

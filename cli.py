@@ -86,6 +86,20 @@ def main() -> None:
     p_bs.add_argument("--period", type=int, default=365, help="How many days of history to load (default: 365)")
     p_bs.add_argument("--force", action="store_true", help="Overwrite existing state even if recently completed")
 
+    p_rrt = sub.add_parser(
+        "reprocess-ramp-test",
+        help="Re-run HRV threshold detector on a single activity to back-fill `hrvt2_pace`. "
+        "Used after the v2c3d4e5f6a7 migration so existing ramp tests get pace at HRVT2 populated, "
+        "letting `actor_update_zones` push the correct threshold_pace to Intervals.icu.",
+    )
+    p_rrt.add_argument("user_id", type=int)
+    p_rrt.add_argument("activity_id", type=str, help="Intervals.icu activity id, e.g. i146377549")
+    p_rrt.add_argument(
+        "--push",
+        action="store_true",
+        help="After patching hrvt2_pace, dispatch actor_update_zones to push HRVT2 + pace to Intervals.icu",
+    )
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -106,6 +120,8 @@ def main() -> None:
         _broadcast_migration(dry_run=args.dry_run)
     elif args.command == "bootstrap-sync":
         _bootstrap_sync(args.user_id, period_days=args.period, force=args.force)
+    elif args.command == "reprocess-ramp-test":
+        _reprocess_ramp_test(args.user_id, args.activity_id, push=args.push)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -538,6 +554,113 @@ def _bootstrap_sync(user_id: int, period_days: int, force: bool) -> None:
     )
     now_iso = datetime.now(timezone.utc).isoformat()
     print(f"bootstrap-sync: queued at {now_iso} (user={user_id}, period={period_days}d)")
+
+
+def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
+    """Re-run HRV threshold detection on one activity, patch ``hrvt2_pace`` only.
+
+    The ``v2c3d4e5f6a7`` migration adds a ``hrvt2_pace`` column that older ramp
+    tests don't have populated. The drift detector now pushes pace at HRVT2 to
+    Intervals.icu's ``threshold_pace`` field, so we need to back-fill it before
+    ``actor_update_zones`` can do its job.
+
+    Only ``hrvt2_pace`` is patched — other threshold fields (HRVT1/2 HR,
+    R², confidence) stay as the original processing wrote them, since
+    re-running the detector can produce slightly different rounding and we
+    don't want to perturb fields that are already consistent with the user's
+    current zones.
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from data.db import Activity, ActivityDetail, ActivityHrv
+    from data.hrv_activity import detect_hrv_thresholds
+
+    user = _resolve_user(user_id)
+
+    async def _run() -> tuple[str, str | None, str, bool]:
+        """Load → detect → patch in a single event loop (asyncpg binds connections to one loop).
+
+        Returns ``(new_pace, old_pace, sport, is_latest)``. ``is_latest`` flags
+        whether this activity is the newest valid ramp for its sport — drift
+        detector reads ``LIMIT 1 ORDER BY date DESC``, so patching anything
+        else has no effect on the next ``actor_update_zones`` dispatch.
+        """
+        async with get_session() as session:
+            activity = await session.get(Activity, activity_id)
+            hrv = await session.get(ActivityHrv, activity_id)
+            detail = await session.get(ActivityDetail, activity_id)
+
+            if not activity:
+                raise SystemExit(f"Activity {activity_id} not found")
+            if activity.user_id != user_id:
+                raise SystemExit(f"Activity {activity_id} belongs to user {activity.user_id}, not {user_id}")
+            if not hrv or not hrv.dfa_timeseries:
+                raise SystemExit(f"No HRV timeseries on {activity_id} (run activity processing first)")
+
+            icu_intervals = ((detail.intervals or {}).get("icu_intervals") or []) if detail else []
+            work_segs = [
+                (int(iv["start_time"]), int(iv["end_time"]))
+                for iv in icu_intervals
+                if iv.get("type") == "WORK" and iv.get("start_time") is not None and iv.get("end_time") is not None
+            ]
+
+            print(
+                f"Re-running detector on {activity_id} ({activity.type}, "
+                f"{len(hrv.dfa_timeseries)} pts, {len(work_segs)} WORK segs)"
+            )
+            result = detect_hrv_thresholds(hrv.dfa_timeseries, activity.type or "", work_segments=work_segs)
+            if not result:
+                raise SystemExit("Detection returned None — see data/hrv_activity.py for rejection criteria")
+
+            new_pace = result.get("hrvt2_pace")
+            print(
+                f"Detector → hrvt2_hr={result.get('hrvt2_hr')}, hrvt2_pace={new_pace}, " f"R²={result.get('r_squared')}"
+            )
+            if not new_pace:
+                raise SystemExit("Detector did not produce hrvt2_pace (no speed data, or HRVT2 out of range)")
+
+            old_pace = hrv.hrvt2_pace
+            hrv.hrvt2_pace = new_pace
+            await session.commit()
+
+            latest_id = (
+                await session.execute(
+                    select(Activity.id)
+                    .join(ActivityHrv, ActivityHrv.activity_id == Activity.id)
+                    .where(
+                        Activity.user_id == user_id,
+                        Activity.type == activity.type,
+                        ActivityHrv.processing_status == "processed",
+                        ActivityHrv.hrvt2_hr.isnot(None),
+                        ActivityHrv.hrv_quality.in_(["good", "moderate"]),
+                    )
+                    .order_by(Activity.start_date_local.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return new_pace, old_pace, activity.type, latest_id == activity_id
+
+    new_pace, old_pace, sport, is_latest = asyncio.run(_run())
+    print(f"✓ Patched activity_hrv.hrvt2_pace for {activity_id}: {old_pace!r} → {new_pace!r}")
+
+    if push:
+        if not is_latest:
+            raise SystemExit(
+                f"Refusing --push: {activity_id} is not the latest valid {sport} ramp test. "
+                "Drift detector reads only the newest row, so this push would act on a different "
+                "activity. Re-run reprocess-ramp-test against the latest one, or drop --push."
+            )
+        from tasks.actors.athlets import actor_update_zones
+
+        actor_update_zones.send(user=user)
+        print(
+            f"✓ Queued actor_update_zones for user {user_id} — "
+            "drift detector will see the new hrvt2_pace and push to Intervals.icu"
+        )
+    else:
+        print("(dry-run — pass --push to dispatch actor_update_zones)")
 
 
 def _shell() -> None:

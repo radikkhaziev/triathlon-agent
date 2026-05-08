@@ -399,6 +399,7 @@ class ActivityHrv(Base):
     hrvt1_power: Mapped[float | None] = mapped_column(Float, nullable=True)  # Power at a1=0.75 (bike)
     hrvt1_pace: Mapped[str | None] = mapped_column(String, nullable=True)  # Pace at a1=0.75 (run)
     hrvt2_hr: Mapped[float | None] = mapped_column(Float, nullable=True)  # HR at a1=0.50
+    hrvt2_pace: Mapped[str | None] = mapped_column(String, nullable=True)  # Pace at a1=0.50 (run)
     threshold_r_squared: Mapped[float | None] = mapped_column(Float, nullable=True)
     threshold_confidence: Mapped[str | None] = mapped_column(String, nullable=True)  # high | moderate | low
 
@@ -452,29 +453,6 @@ class ActivityHrv(Base):
             .order_by(cls.activity_id)
         )
         return list(result.scalars().all())
-
-    @classmethod
-    @dual
-    def count_hrvt1_samples(
-        cls,
-        user_id: int,
-        sport: str,
-        *,
-        session: Session,
-    ) -> int:
-        """Count processed HRVT1 measurements for (user, sport) — same filter as drift detection."""
-        result = session.execute(
-            select(func.count(cls.activity_id))
-            .join(Activity, Activity.id == cls.activity_id)
-            .where(
-                Activity.user_id == user_id,
-                Activity.type == sport,
-                cls.processing_status == "processed",
-                cls.hrvt1_hr.isnot(None),
-                cls.hrv_quality.in_(["good", "moderate"]),
-            )
-        )
-        return int(result.scalar_one() or 0)
 
 
 class ActivityDetail(Base):
