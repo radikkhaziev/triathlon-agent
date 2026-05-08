@@ -20,6 +20,7 @@ Today's date: {today}
 
 Athlete profile:
 - Age {athlete_age}
+- Sports: {sports}
 - Goal: {goal_event} ({goal_date})
 - LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
 - Data source: Intervals.icu (Garmin wearable sync)
@@ -110,6 +111,7 @@ Today's date: {today}
 
 Athlete profile:
 - Age {athlete_age}
+- Sports: {sports}
 - Goal: {goal_event} ({goal_date})
 - LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
 
@@ -156,6 +158,30 @@ def _lang_name(code: str) -> str:
     return "English" if code == "en" else "Russian"
 
 
+# Map lowercase enum to capitalized prompt-display name. Sourced separately
+# from data.sport_map.LOWER_TO_INTERVALS because that one targets the
+# Intervals.icu API casing (which happens to match) — keeping the prompt
+# rendering decoupled lets us drift display copy (e.g. "Bike" instead of
+# "Ride") without rippling into the API mapping.
+_SPORT_DISPLAY = {"swim": "Swim", "ride": "Ride", "run": "Run"}
+
+
+def _format_sports(sports: list[str] | None) -> str:
+    """Render ``user.sports`` for the prompt's profile block.
+
+    NULL (athlete hasn't passed through SportsPicker) → ``"all"`` so the
+    rendered line stays grammatical without leaking the gate's null-state
+    into Claude's context. Empty list is treated identically — the server
+    enforces ≥1 so it shouldn't happen, but ``[]`` and ``None`` MUST agree
+    with ``_zones_block`` (which also collapses both to "render all
+    sections"). Diverging defensive paths once produced "Sports: all" + zero
+    zone sections, see USER_SPORTS_SPEC code-review H1 (2026-05-08).
+    """
+    if not sports:
+        return "all"
+    return ", ".join(_SPORT_DISPLAY.get(s, s) for s in sports)
+
+
 def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
     g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
@@ -164,6 +190,7 @@ def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
     return SYSTEM_PROMPT_WEEKLY.format(
         today=today,
         athlete_age=t.age or 0,
+        sports=_format_sports(t.sports),
         goal_event=g.event_name if g else "не задана",
         goal_date=g.event_date if g else "—",
         lthr_run=t.lthr_run or "—",
@@ -181,6 +208,7 @@ def get_system_prompt_v2(user_id: int, language: str = "ru") -> str:
     return SYSTEM_PROMPT_V2.format(
         today=today,
         athlete_age=t.age or 0,
+        sports=_format_sports(t.sports),
         goal_event=g.event_name if g else "не задана",
         goal_date=g.event_date if g else "—",
         lthr_run=t.lthr_run or "—",
@@ -267,6 +295,7 @@ Today's date: {today}
 
 Athlete profile:
 - Age {athlete_age}
+- Sports: {sports}
 - Goal: {goal_event} ({goal_date})
 - LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
 - Data source: Intervals.icu (Garmin wearable sync)
@@ -340,77 +369,101 @@ def _format_range_list(ranges: list[tuple[int, int]]) -> str:
     return ", ".join(f"Z{i + 1} {lo}-{hi}%" for i, (lo, hi) in enumerate(ranges))
 
 
-def _zones_block(settings_by_sport: dict[str, AthleteSettings], t: AthleteThresholdsDTO) -> str:
+def _zones_block(
+    settings_by_sport: dict[str, AthleteSettings],
+    t: AthleteThresholdsDTO,
+    sports: list[str] | None = None,
+) -> str:
     """Render the Run/Ride/Swim zone block for SYSTEM_PROMPT_CHAT.
 
     Uses real per-sport boundaries from ``athlete_settings`` (synced from
     Intervals.icu) when available; falls back to a Friel-like 5-zone model
     otherwise so new athletes still get sane defaults.
+
+    ``sports`` is the lowercase enum list from ``User.sports`` (subset of
+    ``{"swim","ride","run"}``). When provided, only those sport sections are
+    rendered — a runner-only athlete sees just the Run block, no irrelevant
+    Ride/Swim noise. Sections are emitted in fixed order **Run → Ride →
+    Swim** regardless of the input list ordering — input is membership-only.
+    ``None`` (gate not yet passed) renders all three to avoid silent
+    regression during the rollout window; the SportsPicker gate ensures
+    this branch only fires for migrating users. Empty list is normalised
+    to ``None`` so this function and ``_format_sports`` agree on the
+    "render all" semantics — diverging paths once produced "Sports: all"
+    + zero zones (USER_SPORTS_SPEC code-review H1, 2026-05-08).
     """
+    if sports is not None and not sports:
+        sports = None
     lines: list[str] = []
+    show_run = sports is None or "run" in sports
+    show_ride = sports is None or "ride" in sports
+    show_swim = sports is None or "swim" in sports
 
     # Run — %LTHR. Prefer Intervals synced zones whenever an LTHR is available
     # from either the sport-row or the thresholds DTO (historically some
     # athlete_settings rows had hr_zones populated but lthr=None — don't punish
     # them with Friel fallback when t.lthr_run is right there).
-    run = settings_by_sport.get("Run")
-    lthr_run = (run and run.lthr) or t.lthr_run
-    if run and run.hr_zones and lthr_run:
-        ranges = _pct_ranges_from_hr(run.hr_zones, lthr_run)
-        source = "from your Intervals.icu sport-settings"
-    else:
-        ranges = _FALLBACK_RUN_HR_PCT
-        source = "Friel fallback — athlete has no synced Run zones yet"
-    z2 = ranges[1] if len(ranges) >= 2 else (72, 82)
-    lines.append(
-        f"  - **Run**: use `hr` with `%lthr` units. LTHR = {lthr_run or '—'}. "
-        f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2 step: "
-        f'`{{"text": "Z2", "duration": 900, "hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}}}`.'
-    )
+    if show_run:
+        run = settings_by_sport.get("Run")
+        lthr_run = (run and run.lthr) or t.lthr_run
+        if run and run.hr_zones and lthr_run:
+            ranges = _pct_ranges_from_hr(run.hr_zones, lthr_run)
+            source = "from your Intervals.icu sport-settings"
+        else:
+            ranges = _FALLBACK_RUN_HR_PCT
+            source = "Friel fallback — athlete has no synced Run zones yet"
+        z2 = ranges[1] if len(ranges) >= 2 else (72, 82)
+        lines.append(
+            f"  - **Run**: use `hr` with `%lthr` units. LTHR = {lthr_run or '—'}. "
+            f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2 step: "
+            f'`{{"text": "Z2", "duration": 900, "hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}}}`.'
+        )
 
     # Ride — prefer %FTP (power). Intervals.icu stores power_zones already as
     # percentages of FTP (not absolute watts), so the zones themselves need no
     # FTP — it's only displayed as the watts reference in the prompt text.
-    ride = settings_by_sport.get("Ride")
-    ftp = (ride and ride.ftp) or t.ftp
-    if ride and ride.power_zones:
-        ranges = _pct_ranges(list(ride.power_zones))
-        z2 = ranges[1] if len(ranges) >= 2 else (55, 75)
-        source = "from your Intervals.icu sport-settings"
-        ftp_str = f"{ftp}W" if ftp else "—"
-        lines.append(
-            f"  - **Ride**: use `power` with `%ftp` units. FTP = {ftp_str}. "
-            f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2: "
-            f'`"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
-        )
-    elif t.ftp:
-        z2 = _FALLBACK_RIDE_POWER_PCT[1]
-        lines.append(
-            f"  - **Ride**: use `power` with `%ftp` units. FTP = {t.ftp}W. "
-            f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_RIDE_POWER_PCT)}. "
-            f'Example Z2: `"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
-        )
-    else:
-        lthr_bike = (ride and ride.lthr) or t.lthr_bike
-        z2 = _FALLBACK_BIKE_HR_PCT[1]
-        lines.append(
-            f"  - **Ride**: use `hr` with `%lthr` units. LTHR bike = {lthr_bike or '—'}. "
-            f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_BIKE_HR_PCT)}. "
-            f'Example Z2: `"hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}`.'
-        )
+    if show_ride:
+        ride = settings_by_sport.get("Ride")
+        ftp = (ride and ride.ftp) or t.ftp
+        if ride and ride.power_zones:
+            ranges = _pct_ranges(list(ride.power_zones))
+            z2 = ranges[1] if len(ranges) >= 2 else (55, 75)
+            source = "from your Intervals.icu sport-settings"
+            ftp_str = f"{ftp}W" if ftp else "—"
+            lines.append(
+                f"  - **Ride**: use `power` with `%ftp` units. FTP = {ftp_str}. "
+                f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2: "
+                f'`"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
+            )
+        elif t.ftp:
+            z2 = _FALLBACK_RIDE_POWER_PCT[1]
+            lines.append(
+                f"  - **Ride**: use `power` with `%ftp` units. FTP = {t.ftp}W. "
+                f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_RIDE_POWER_PCT)}. "
+                f'Example Z2: `"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
+            )
+        else:
+            lthr_bike = (ride and ride.lthr) or t.lthr_bike
+            z2 = _FALLBACK_BIKE_HR_PCT[1]
+            lines.append(
+                f"  - **Ride**: use `hr` with `%lthr` units. LTHR bike = {lthr_bike or '—'}. "
+                f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_BIKE_HR_PCT)}. "
+                f'Example Z2: `"hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}`.'
+            )
 
     # Swim — CSS corridor (no real zones in Intervals.icu sport-settings for swim).
-    css = t.css
-    if css:
-        mm = int(css // 60)
-        ss = int(css % 60)
-        css_str = f"{mm}:{ss:02d}/100m"
-    else:
-        css_str = "—"
-    lines.append(
-        f"  - **Swim**: use `pace` with `%pace` units. CSS = {css_str}. "
-        'Z2 corridor 95-105%. Example: `"pace": {"units": "%pace", "value": 95, "end": 105}`.'
-    )
+    if show_swim:
+        css = t.css
+        if css:
+            mm = int(css // 60)
+            ss = int(css % 60)
+            css_str = f"{mm}:{ss:02d}/100m"
+        else:
+            css_str = "—"
+        lines.append(
+            f"  - **Swim**: use `pace` with `%pace` units. CSS = {css_str}. "
+            'Z2 corridor 95-105%. Example: `"pace": {"units": "%pace", "value": 95, "end": 105}`.'
+        )
 
     return "\n".join(lines)
 
@@ -586,13 +639,14 @@ async def render_athlete_block(
     return _ATHLETE_BLOCK_TEMPLATE.format(
         today=today,
         athlete_age=t.age or 0,
+        sports=_format_sports(t.sports),
         goal_event=g.event_name if g else "не задана",
         goal_date=g.event_date if g else "—",
         lthr_run=t.lthr_run or "—",
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",
         css=t.css or "—",
-        zones_block=_zones_block(settings_by_sport, t),
+        zones_block=_zones_block(settings_by_sport, t, sports=t.sports),
         facts_block=facts_section,
         personal_patterns_block=patterns_section,
         response_language=_lang_name(language),

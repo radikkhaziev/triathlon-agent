@@ -263,6 +263,17 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         result["bot_chat_initialized"] = True
         # Pin sports for demo so the gate never blocks the read-only tour.
         # PUT /sports rejects demo separately so no actual write reaches DB.
+        #
+        # CAVEAT: this pin only affects the API response shape (drives the
+        # SportsPicker gate). The morning-report / chat prompt path reads
+        # ``User.sports`` directly via ``AthleteSettings.get_thresholds`` →
+        # ``render_athlete_block`` and is NOT pinned. If the demo row's DB
+        # value is NULL the prompt falls back to "render all sections"
+        # (legacy behaviour) and stays consistent with this response. But
+        # if anyone ever sets demo ``User.sports`` to a non-NULL subset
+        # (e.g. ``["run"]``), the API will still return all-three here
+        # while the prompt narrows — silent drift. Keep demo's DB row
+        # NULL or document the override before enabling the demo path.
         result["sports"] = ["ride", "run", "swim"]
     return result
 

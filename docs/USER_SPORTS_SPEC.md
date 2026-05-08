@@ -462,7 +462,7 @@ swim-ramp в `data/ramp_tests.create_ramp_test`.
 
 ## 13. Status
 
-- [ ] Phase 1 — Schema + API + Frontend gate + Settings + ramp-suggestion filter (эта спека)
-- [ ] Phase 2 — Прокидывание в промпт (`_ATHLETE_BLOCK_TEMPLATE`, conditional `_zones_block`)
+- [x] Phase 1 — Schema + API + Frontend gate + Settings + ramp-suggestion filter (приземлено 2026-05-08)
+- [x] Phase 2 — Прокидывание в промпт (`_ATHLETE_BLOCK_TEMPLATE`, conditional `_zones_block`) — приземлено 2026-05-08
 - [ ] Phase 3 — Tool filter + report adaptation
 - [ ] Phase 4 — Swim ramp-test support + detection routing
