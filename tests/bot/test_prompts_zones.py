@@ -5,11 +5,24 @@ Covers:
 - _pct_ranges_from_hr: bpm → %LTHR conversion.
 - _zones_block: Intervals.icu sport-settings are preferred, Friel fallback
   kicks in when a sport has no synced boundaries.
+- _format_sports: rendered profile-line for User.sports.
+- Phase-2 wiring: full prompt builders inject the Sports: line correctly.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
-from bot.prompts import _pct_ranges, _pct_ranges_from_hr, _zones_block
+import pytest
+
+from bot.prompts import (
+    _format_sports,
+    _pct_ranges,
+    _pct_ranges_from_hr,
+    _zones_block,
+    get_system_prompt_v2,
+    get_system_prompt_weekly,
+    render_athlete_block,
+)
 from data.db.dto import AthleteThresholdsDTO
 
 
@@ -146,3 +159,236 @@ class TestZonesBlock:
     def test_swim_css_missing(self):
         out = _zones_block({}, self._thresholds())
         assert "CSS = —" in out
+
+
+class TestZonesBlockSportsFilter:
+    """Phase 2 of USER_SPORTS_SPEC: ``sports`` arg restricts rendered sections.
+
+    NULL/missing keeps the legacy all-three rendering for backward compat
+    during the gate rollout. Non-empty list filters by lowercase enum.
+    """
+
+    def _thresholds(self, **kw):
+        return AthleteThresholdsDTO(
+            age=kw.get("age", 30),
+            lthr_run=kw.get("lthr_run"),
+            lthr_bike=kw.get("lthr_bike"),
+            ftp=kw.get("ftp"),
+            css=kw.get("css"),
+        )
+
+    def test_runner_only_renders_run_only(self):
+        out = _zones_block(
+            {},
+            self._thresholds(lthr_run=170, ftp=240, css=110.0),
+            sports=["run"],
+        )
+        assert "**Run**" in out
+        assert "**Ride**" not in out
+        assert "**Swim**" not in out
+
+    def test_swim_run_drops_ride(self):
+        """Swim+Run athlete gets Run + Swim sections, no Ride."""
+        out = _zones_block(
+            {},
+            self._thresholds(lthr_run=170, ftp=240, css=110.0),
+            sports=["swim", "run"],
+        )
+        assert "**Run**" in out
+        assert "**Swim**" in out
+        assert "**Ride**" not in out
+
+    def test_ride_only_drops_run_and_swim(self):
+        out = _zones_block(
+            {},
+            self._thresholds(lthr_run=170, ftp=240, css=110.0),
+            sports=["ride"],
+        )
+        assert "**Ride**" in out
+        assert "**Run**" not in out
+        assert "**Swim**" not in out
+
+    def test_null_renders_all_three_for_backward_compat(self):
+        """Athletes who haven't passed through the picker (NULL sports)
+        keep seeing all three sections — legacy behaviour. The gate
+        ensures only migrating users hit this branch."""
+        out = _zones_block(
+            {},
+            self._thresholds(lthr_run=170, ftp=240, css=110.0),
+            sports=None,
+        )
+        assert "**Run**" in out
+        assert "**Ride**" in out
+        assert "**Swim**" in out
+
+    def test_triathlete_unchanged_regression_guard(self):
+        """`sports=["swim","ride","run"]` must produce identical output to
+        the no-sports default (legacy triathlete path). If a future tweak
+        accidentally changes the all-three render path, this catches it.
+
+        Byte-for-byte comparison depends on the stable Run→Ride→Swim
+        section ordering inside ``_zones_block`` — input `sports` order
+        is membership-only. If someone refactors the function to a
+        dict-driven dispatch with non-deterministic iteration, this
+        assertion will start flaking. Read the docstring on _zones_block
+        for the order contract."""
+        thr = self._thresholds(lthr_run=170, ftp=240, css=110.0)
+        legacy = _zones_block({}, thr)
+        triathlete = _zones_block({}, thr, sports=["swim", "ride", "run"])
+        assert legacy == triathlete
+
+    def test_empty_list_normalises_to_none(self):
+        """USER_SPORTS_SPEC code-review H1 (2026-05-08): defensive paths
+        must agree on the [] case. ``_zones_block([])`` and
+        ``_zones_block(None)`` produce identical output (render all),
+        matching ``_format_sports([]) == _format_sports(None) == "all"``.
+        Without this normalisation, a stray empty list would render
+        "Sports: all" + zero zone sections — a contradictory prompt."""
+        thr = self._thresholds(lthr_run=170, ftp=240, css=110.0)
+        all_via_none = _zones_block({}, thr, sports=None)
+        all_via_empty = _zones_block({}, thr, sports=[])
+        assert all_via_none == all_via_empty
+        # Sanity: all three sport sections present.
+        assert "**Run**" in all_via_empty
+        assert "**Ride**" in all_via_empty
+        assert "**Swim**" in all_via_empty
+
+
+class TestFormatSports:
+    """Phase 2: ``_format_sports`` renders the profile-line value."""
+
+    def test_none_renders_all(self):
+        assert _format_sports(None) == "all"
+
+    def test_empty_list_renders_all(self):
+        """Defensive parity with ``_zones_block`` — see H1 normalisation."""
+        assert _format_sports([]) == "all"
+
+    def test_single_sport(self):
+        assert _format_sports(["run"]) == "Run"
+
+    def test_canonical_three_preserves_input_order(self):
+        """No re-sorting in the formatter — caller decides ordering. The
+        API canonicalises alphabetically, so the typical input is
+        ``["ride","run","swim"]`` and renders as 'Ride, Run, Swim'."""
+        assert _format_sports(["ride", "run", "swim"]) == "Ride, Run, Swim"
+
+    def test_unknown_enum_passes_through_silently(self):
+        """Unknown values fall through ``.get(s, s)`` to the raw lowercase.
+        Server-side ``Literal`` validation should prevent this from ever
+        reaching us, but a future enum extension would flow through here
+        without crashing — captured as documented behaviour."""
+        assert _format_sports(["run", "fitness"]) == "Run, fitness"
+
+
+class TestPromptBuilderSportsInjection:
+    """Phase 2 smoke: the three callers actually pass ``sports`` to
+    ``.format()``. A typo in any of them would surface as a runtime
+    KeyError on the morning-report cron — these tests catch it pre-deploy."""
+
+    def _thr(self, sports):
+        """Minimal thresholds DTO with sports set; other fields default to
+        None and the prompt still builds (renders '—' for missing values)."""
+        return AthleteThresholdsDTO(
+            age=30,
+            sports=sports,
+            lthr_run=170,
+            lthr_bike=150,
+            ftp=240,
+            css=110.0,
+        )
+
+    def test_get_system_prompt_v2_renders_sports_line(self):
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_v2(user_id=1, language="ru")
+        assert "Sports: Run" in out
+        assert "Age 30" in out
+
+    def test_get_system_prompt_weekly_renders_sports_line(self):
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride", "run"])),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_weekly(user_id=1, language="ru")
+        assert "Sports: Ride, Run" in out
+
+    def test_get_system_prompt_v2_renders_all_for_null_sports(self):
+        """Backward compat for users still in the gate rollout window."""
+        with (
+            patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(None)),
+            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+        ):
+            out = get_system_prompt_v2(user_id=1, language="ru")
+        assert "Sports: all" in out
+
+    @pytest.mark.asyncio
+    async def test_render_athlete_block_renders_sports_and_zones(self):
+        """End-to-end: chat tail must show both ``Sports: Run`` (profile
+        line) and only the Run zone section (no Ride/Swim) for a runner."""
+        with (
+            patch(
+                "bot.prompts.AthleteSettings.get_thresholds",
+                new=AsyncMock(return_value=self._thr(["run"])),
+            ),
+            patch(
+                "bot.prompts.AthleteGoal.get_goal_dto",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "bot.prompts.AthleteSettings.get_all",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "bot.prompts._safe_compute_personal_patterns",
+                new=AsyncMock(return_value={"entries_total": 0, "entries_complete": 0}),
+            ),
+            patch(
+                "data.db.UserFact.list_active",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            out = await render_athlete_block(user_id=1, language="ru")
+
+        # Profile line
+        assert "Sports: Run" in out
+        # Zones section narrowed to Run only
+        assert "**Run**" in out
+        assert "**Ride**" not in out
+        assert "**Swim**" not in out
+
+    @pytest.mark.asyncio
+    async def test_render_athlete_block_triathlete_keeps_all_three(self):
+        """Regression guard at the integration level: a triathlete sees
+        all three zone sections AND ``Sports: Ride, Run, Swim`` profile
+        line. Catches drift between the two prompt segments."""
+        with (
+            patch(
+                "bot.prompts.AthleteSettings.get_thresholds",
+                new=AsyncMock(return_value=self._thr(["ride", "run", "swim"])),
+            ),
+            patch(
+                "bot.prompts.AthleteGoal.get_goal_dto",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "bot.prompts.AthleteSettings.get_all",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "bot.prompts._safe_compute_personal_patterns",
+                new=AsyncMock(return_value={"entries_total": 0, "entries_complete": 0}),
+            ),
+            patch(
+                "data.db.UserFact.list_active",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            out = await render_athlete_block(user_id=1, language="ru")
+
+        assert "Sports: Ride, Run, Swim" in out
+        assert "**Run**" in out
+        assert "**Ride**" in out
+        assert "**Swim**" in out
