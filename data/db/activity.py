@@ -213,7 +213,7 @@ class Activity(Base):
         Without this guard, an attacker with a leaked webhook secret could
         write achievement rows referencing another user's activity_id and
         surface them under their own ``user_id`` in tenant-scoped reads.
-        See ``docs/MULTI_TENANT_SECURITY.md`` T19.
+        See ``docs/MULTI_TENANT_SECURITY_SPEC.md`` T19.
         """
         result = await session.execute(select(cls.id).where(cls.user_id == user_id, cls.id == activity_id).limit(1))
         return result.scalar_one_or_none() is not None

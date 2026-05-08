@@ -460,7 +460,7 @@ class AthleteGoal(Base):
         Returns the updated goal or ``None`` if not found or not owned by
         ``user_id``. Callers should 404 in the latter case (not 403) to avoid
         leaking existence of other users' goals — see
-        ``docs/MULTI_TENANT_SECURITY.md`` T1.
+        ``docs/MULTI_TENANT_SECURITY_SPEC.md`` T1.
         """
         goal = session.execute(select(cls).where(cls.id == goal_id, cls.user_id == user_id)).scalar_one_or_none()
         if goal is None:

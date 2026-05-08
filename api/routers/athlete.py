@@ -33,7 +33,7 @@ async def patch_athlete_goal(
 
     Returns 404 (not 403) when ``goal_id`` belongs to a different user so we
     don't leak existence of other users' goals — see
-    ``docs/MULTI_TENANT_SECURITY.md`` T1.
+    ``docs/MULTI_TENANT_SECURITY_SPEC.md`` T1.
     """
     fields_set = body.model_fields_set
     if not fields_set:

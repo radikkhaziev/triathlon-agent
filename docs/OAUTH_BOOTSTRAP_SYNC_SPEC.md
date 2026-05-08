@@ -19,7 +19,7 @@
 | `tasks/actors/athlete.py:actor_sync_athlete_settings` | Разовый sync — переиспользуем в fast-path |
 | `tasks/actors/workouts.py:actor_user_scheduled_workouts` | Планы на 14 дней вперёд |
 | `bot/scheduler.py:70-73` | Daily sync cron — проверить что не конфликтует |
-| `docs/MULTI_TENANT_SECURITY.md` T2 | Per-user credentials, OAuth-scoped |
+| `docs/MULTI_TENANT_SECURITY_SPEC.md` T2 | Per-user credentials, OAuth-scoped |
 | `docs/WEBHOOK_DATA_CAPTURE_SPEC.md` | Новые поля (weather/MMP/trimp) бэкфилим в той же pipeline |
 
 ---

@@ -15,7 +15,7 @@
 | `bot/prompts.py:get_static_system_prompt` + `render_athlete_block` | Промпт-кэш паттерн (две `cache_control` секции) |
 | `docs/USER_CONTEXT_SPEC.md` | Long-term facts в системном промпте |
 | `docs/RACE_PLAN_SPEC.md` | Прецедент: structured AI-генерация с persist в БД |
-| `docs/MULTI_TENANT_SECURITY.md` T1 | `user_id`-scoped reads — все tools берут user_id из contextvars |
+| `docs/MULTI_TENANT_SECURITY_SPEC.md` T1 | `user_id`-scoped reads — все tools берут user_id из contextvars |
 
 ---
 

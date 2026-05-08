@@ -15,7 +15,7 @@ Five invocation modes. Pick based on what the caller asks for in natural languag
 
 # Mode 1 — Corpus sweep (no spec path; "обзор спек", "что прибрать")
 
-Glob `docs/*_SPEC.md` plus the three non-`_SPEC.md` design docs (`ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECURITY.md`, `INTERVALS_WEBHOOKS_RESEARCH.md`). For each:
+Glob `docs/*_SPEC.md` plus the one non-`_SPEC.md` design doc (`INTERVALS_WEBHOOKS_RESEARCH.md`). For each:
 
 1. Count `[x]` vs `[ ]` checkboxes in `## Status` / `## Phasing` / similar.
 2. Measure file length (`wc -l`).

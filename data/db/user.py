@@ -568,7 +568,7 @@ class User(Base):
         # tried to `create()` a fresh row. Reactivation is NOT done here: it
         # belongs to explicit re-engagement paths (`/start` handler and
         # `my_chat_member` MEMBER transition), not to webapp/Login Widget auth.
-        # See `docs/MULTI_TENANT_SECURITY.md` §T14 for rationale.
+        # See `docs/MULTI_TENANT_SECURITY_SPEC.md` §T14 for rationale.
         user = await cls.get_by_chat_id(chat_id, include_inactive=True)
         if user:
             return user

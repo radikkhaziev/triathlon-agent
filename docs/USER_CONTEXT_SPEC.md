@@ -8,8 +8,8 @@
 
 | Issue / Spec | Связь |
 |---|---|
-| `docs/MULTI_TENANT_SECURITY.md` | T1 (tenant data leak) — факты per-user, FK на `users.id` |
-| `docs/ADAPTIVE_TRAINING_PLAN.md` | Personal patterns (Phase 3) — отдельный слой, не пересекается |
+| `docs/MULTI_TENANT_SECURITY_SPEC.md` | T1 (tenant data leak) — факты per-user, FK на `users.id` |
+| `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` | Personal patterns (Phase 3) — отдельный слой, не пересекается |
 | `bot/prompts.py` | `get_system_prompt_chat` — точка инъекции фактов/цели |
 | `bot/agent.py:76` | `cache_control: ephemeral` — уже есть на system prompt |
 
@@ -383,7 +383,7 @@ cached_system = [
 - Все ORM-методы через `@dual` + `@with_session`, user_id — первый аргумент после `cls`.
 - MCP tools используют `get_current_user_id()` из `mcp_server.context` — атлет **не может** передать чужой `user_id` через параметр tool'а.
 - `list_facts` возвращает только факты текущего `user_id` (WHERE clause).
-- Как и всё в проекте, threat T1 из `MULTI_TENANT_SECURITY.md` покрывается row-level tenant filtering.
+- Как и всё в проекте, threat T1 из `MULTI_TENANT_SECURITY_SPEC.md` покрывается row-level tenant filtering.
 
 **Аудит:** `save_fact` и `deactivate_fact` работают через обычный Sentry wrapper (`@sentry_tool`). Отдельный audit-log пока не заводим (см. MT-spec T7 — будет в Phase 4).
 
@@ -477,7 +477,7 @@ MCP tool `get_fact_metrics()` — **per-user**, как все остальные
 3. **Phase 2 trigger.** Минимум данных для надёжного ratio: `total_chat_msgs_30d >= 100`. Если выполнено **И** `tool_facts_per_100_msgs < 3` — включаем extractor для этого юзера. При `msgs < 100` не триггерим вообще: ratio на малой выборке шумный (у тихого юзера 0/10 даст нулевой ratio, но проблемы нет — просто мало данных).
 4. **Morning report inject.** Решено: Phase 1 не инжектим (`render_athlete_block(user, include_facts=False)`). Revisit после ≥2 недель данных.
 5. **Sensitive topics injection.** Факты `topic=health`/`family` могут быть чувствительными. Инжектим их наравне с остальными (иначе теряется смысл памяти), но не логируем тело факта в Sentry breadcrumbs — только `topic` + `fact_id`. См. §12.
-6. **Anthropic retention.** Factы из блока «Что я помню о тебе» уходят как часть system prompt'а в Anthropic API. Они **retain'ятся** согласно zero-retention policy (по умолчанию 30 дней на abuse monitoring, zero-retention для Tier 3 / enterprise agreements). Для `health`/`family` это означает: чувствительный текст на стороне провайдера до 30 дней. Trade-off осознанный — self-hosted LLM сравнимого качества стоит 10×+ и недоступен в проектом бюджете. Документируем в `docs/MULTI_TENANT_SECURITY.md` при первой multi-tenant enrollment (issue T6).
+6. **Anthropic retention.** Factы из блока «Что я помню о тебе» уходят как часть system prompt'а в Anthropic API. Они **retain'ятся** согласно zero-retention policy (по умолчанию 30 дней на abuse monitoring, zero-retention для Tier 3 / enterprise agreements). Для `health`/`family` это означает: чувствительный текст на стороне провайдера до 30 дней. Trade-off осознанный — self-hosted LLM сравнимого качества стоит 10×+ и недоступен в проектом бюджете. Документируем в `docs/MULTI_TENANT_SECURITY_SPEC.md` при первой multi-tenant enrollment (issue T6).
 
 ---
 
@@ -490,4 +490,4 @@ MCP tool `get_fact_metrics()` — **per-user**, как все остальные
 - `bot/prompts.py:render_athlete_block` — факты текущего пользователя подтягиваются по его `user_id`, не кэшируются between-users; единая точка reader'а (§5), chance на кросс-tenant leak сосредоточен в одной функции.
 - Sentry data scrubbing: `fact` body не попадает в breadcrumbs / event extra (см. §11.5), только `topic` и `fact_id`.
 - Unit-тест: пользователь A не видит факты пользователя B через MCP (`list_facts`, `reactivate_fact`).
-- Anthropic retention (§11.6) — убедиться что `health` / `family` факты документированы в `MULTI_TENANT_SECURITY.md` как acknowledged 30-day vendor retention (не surprise для аудита).
+- Anthropic retention (§11.6) — убедиться что `health` / `family` факты документированы в `MULTI_TENANT_SECURITY_SPEC.md` как acknowledged 30-day vendor retention (не surprise для аудита).

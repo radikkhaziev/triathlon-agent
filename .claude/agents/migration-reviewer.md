@@ -64,7 +64,7 @@ The conftest's `command.upgrade(alembic_cfg, "head")` is idempotent but resolves
 If migration adds a `user_id` column or any tenant-scoped FK:
 - Must include an index on `user_id` (or compound key starting with `user_id`).
 - Migration data MUST NOT assume single-tenant — backfilling from another table needs a join through `users` or matches `user_id` directly.
-- See `docs/MULTI_TENANT_SECURITY.md` T1.
+- See `docs/MULTI_TENANT_SECURITY_SPEC.md` T1.
 
 # Output format
 

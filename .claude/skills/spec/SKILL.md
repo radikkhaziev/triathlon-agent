@@ -18,7 +18,7 @@ You are running the project's spec-driven workflow. The user invoked `/spec` bec
 
 User typed just `/spec`. They want a status sweep of the spec corpus.
 
-1. Glob `docs/*_SPEC.md` plus the few non-`*_SPEC.md` design docs (`ADAPTIVE_TRAINING_PLAN.md`, `MULTI_TENANT_SECURITY.md`, `INTERVALS_WEBHOOKS_RESEARCH.md`). Do NOT include `BUSINESS_RULES.md`, `DATABASE_SCHEMA.md`, `IMPLEMENTATION_STATUS.md`, `OPERATIONS.md`, `intervals_icu_openapi.json` (reference docs, not specs).
+1. Glob `docs/*_SPEC.md` plus the one non-`*_SPEC.md` design doc (`INTERVALS_WEBHOOKS_RESEARCH.md`). Do NOT include `BUSINESS_RULES.md`, `DATABASE_SCHEMA.md`, `IMPLEMENTATION_STATUS.md`, `OPERATIONS.md`, `intervals_icu_openapi.json` (reference docs, not specs).
 2. For each spec: extract Phase headings, count `[x]` vs `[ ]` checkboxes, find any "Pending" / "Deferred" / "TODO" markers.
 3. Cross-reference `CLAUDE.md` "Implementation Status" paragraph (line ~69) — it's the canonical "what's done" summary.
 4. Output a compact table:
@@ -29,7 +29,7 @@ User typed just `/spec`. They want a status sweep of the spec corpus.
    WEBHOOK_DATA_CAPTURE_SPEC.md      | 1     | done           | backfill CLI, ML cross-spec cleanup
    WEBHOOK_DATA_CAPTURE_SPEC.md      | 2     | not started    | warmup/cooldown/polarization cols
    RACE_PLAN_SPEC.md                 | 1     | branched       | merge feat/END-100 + private-beta gate
-   ADAPTIVE_TRAINING_PLAN.md         | 3     | partial        | compute_personal_patterns cron + prompt enrichment
+   ADAPTIVE_TRAINING_PLAN_SPEC.md    | 3     | partial        | compute_personal_patterns cron + prompt enrichment
    ...
    ```
 

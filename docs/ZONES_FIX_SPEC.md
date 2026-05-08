@@ -379,7 +379,7 @@ fires. Help text updated to mention FTP.
   Note FTP drift via HRVT2 power, parallel to LTHR/threshold_pace pattern.
 - `docs/IMPLEMENTATION_STATUS.md` — entry under «Zones tool fix +
   FTP drift (2026-05-XX)».
-- `docs/ADAPTIVE_TRAINING_PLAN.md` — add FTP to the threshold drift
+- `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` — add FTP to the threshold drift
   section's metric table; mention `hrvt2_power` in the detector flow.
 - Close issue #313 with «What was done / How to verify» comment.
 

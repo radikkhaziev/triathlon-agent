@@ -175,7 +175,7 @@ async def _dispatch_achievements(user: UserDTO, event: IntervalsWebhookEvent) ->
         # else's PR to this user. Also a clean skip for the legitimate race:
         # ACTIVITY_ACHIEVEMENTS arriving before ACTIVITY_UPLOADED persisted
         # the parent row (Strava-source activity, ordering glitch, etc.).
-        # See ``docs/MULTI_TENANT_SECURITY.md`` T19.
+        # See ``docs/MULTI_TENANT_SECURITY_SPEC.md`` T19.
         if not await Activity.exists_for_user(user_id=user.id, activity_id=str(activity_id)):
             logger.info(
                 "Achievement webhook for unknown/foreign activity_id=%s user_id=%d — skip persist",
