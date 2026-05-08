@@ -81,7 +81,7 @@ def _actor_send_user_morning_report(
     wellness: WellnessPostDTO,
 ):
     """Sends morning report to user via Telegram."""
-    from tasks.utils import RampTrainingSuggestion
+    from tasks.utils import RampTrainingSuggestion, user_ramp_sports
 
     set_language(user.language or "ru")
     summary = build_morning_message(wellness)
@@ -97,7 +97,14 @@ def _actor_send_user_morning_report(
         ]
     }
 
-    ramp = RampTrainingSuggestion(user=user, wellness=wellness)
+    # Honour the athlete's sport selection — runners-only get no Ride
+    # suggestions, riders-only get no Run, etc. NULL `user.sports` (gate
+    # not yet passed) falls back to ``["Run"]`` only — conservative default
+    # that doesn't spam Ride-tests to runners-only. Empty list (athlete
+    # picked only sports we don't support yet, e.g. swim) suppresses the
+    # entire ramp section: RampTrainingSuggestion.is_test_needed returns
+    # False because the freshness loop iterates an empty list.
+    ramp = RampTrainingSuggestion(user=user, wellness=wellness, sports=user_ramp_sports(user.sports))
     if ramp.is_test_needed:
         sport = ramp.suggested_sport or "Run"
         if ramp.days_since:

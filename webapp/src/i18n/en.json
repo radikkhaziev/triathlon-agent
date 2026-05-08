@@ -135,6 +135,14 @@
     "russian": "Русский",
     "english": "English",
     "logout": "Log out",
+    "sports": {
+      "title": "Sports",
+      "swim": "Swim",
+      "ride": "Bike",
+      "run": "Run",
+      "save_failed": "Failed to save",
+      "empty_warning": "Pick at least one sport"
+    },
     "intervals": {
       "title": "Intervals.icu",
       "loading": "Loading...",
@@ -212,5 +220,11 @@
   "bot_chat_banner": {
     "message": "No active Telegram chat with you yet — press /start in the bot to get morning reports and notifications.",
     "cta": "💬 Open the bot"
+  },
+  "sports_picker": {
+    "title": "Which sports do you train?",
+    "description": "Pick all that apply. This shapes workout suggestions and test prompts.",
+    "cta": "Save",
+    "saving": "Saving..."
   }
 }

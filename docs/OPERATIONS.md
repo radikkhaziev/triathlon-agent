@@ -198,7 +198,7 @@ with get_sync_session() as s:
     user.set_api_key("your-api-key")  # encrypted in DB via Fernet
     user.mcp_token = "generated-token"
     user.age = 30
-    user.primary_sport = "triathlon"   # triathlon / run / ride / swim / fitness
+    user.sports = ["swim", "ride", "run"]   # subset of {"swim","ride","run"}; null=picker on next webapp open
     s.commit()
 ```
 

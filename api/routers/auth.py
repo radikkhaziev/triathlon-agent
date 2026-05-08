@@ -13,6 +13,7 @@ from api.dto import (
     BackfillStatusResponse,
     DemoAuthRequest,
     SetLanguageRequest,
+    SportsUpdateRequest,
     TelegramWidgetAuthRequest,
     VerifyCodeRequest,
 )
@@ -232,6 +233,8 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
             "athlete_id": user.athlete_id,
             "scope": user.intervals_oauth_scope,
         },
+        "sports": user.sports,
+        "available_sports_from_settings": t.available_sports,
         "profile": {
             "age": t.age,
             "lthr_run": t.lthr_run,
@@ -258,6 +261,9 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         # Demo browses owner data read-only and never triggers Telegram I/O.
         # Pin to True so the frontend doesn't show a meaningless /start CTA.
         result["bot_chat_initialized"] = True
+        # Pin sports for demo so the gate never blocks the read-only tour.
+        # PUT /sports rejects demo separately so no actual write reaches DB.
+        result["sports"] = ["ride", "run", "swim"]
     return result
 
 
@@ -275,6 +281,25 @@ async def set_language(body: SetLanguageRequest, user: User | None = Depends(get
         await session.commit()
 
     return {"language": body.language}
+
+
+@router.put("/api/auth/sports")
+async def set_sports(body: SportsUpdateRequest, user: User | None = Depends(get_current_user)) -> dict:
+    """Persist the athlete's sport selection (`swim`/`ride`/`run`).
+
+    Releases the SportsPicker gate on next webapp load. Pydantic enforces
+    enum membership / 1≤len≤3; we additionally canonicalise (dedupe + sort)
+    so the on-disk JSON stays stable and downstream comparisons can use
+    plain `==`.
+    """
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if user.role == "demo":
+        raise HTTPException(status_code=403, detail="Read-only demo mode")
+
+    canonical = body.canonical()
+    await User.update_sports(user.id, canonical)
+    return {"sports": canonical}
 
 
 @router.get("/api/auth/mcp-config")

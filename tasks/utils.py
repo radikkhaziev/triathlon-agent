@@ -13,6 +13,7 @@ from data.db import (
 )
 from data.intervals.dto import PlannedWorkoutDTO
 from data.ramp_tests import create_ramp_test
+from data.sport_map import LOWER_TO_INTERVALS, RAMP_PRIORITY, RAMP_SUPPORTED_INTERVALS
 from tasks.dto import local_today
 
 from .actors.workout import actor_push_workout
@@ -32,6 +33,33 @@ BUILD_PHASE_CADENCE_DAYS = 42
 DEFAULT_CADENCE_DAYS = 30
 
 
+def user_ramp_sports(user_sports: list[str] | None) -> list[str]:
+    """Filter the supported ramp sports by the athlete's selection.
+
+    Returns sports in :data:`RAMP_PRIORITY` order — *not* the order they
+    appear in ``user.sports``. The API canonicalises the picker output
+    alphabetically (so ``["run","ride"]`` lands as ``["ride","run"]``), and
+    ``RampTrainingSuggestion`` uses ``self.sports`` index as a tie-break
+    when multiple sports are equally stale. Without this projection,
+    alphabetical canonicalisation would silently bias tie-breaks toward
+    Ride for triathletes — a Run-first preference is the legacy expectation
+    and is the most common case in practice.
+
+    Iterating the priority tuple also gives us implicit dedupe: if
+    ``user.sports`` ever contains duplicates (manual DB edit, future
+    schema regression), the set membership check folds them into a single
+    entry — no redundant freshness lookups.
+
+    NULL ``user.sports`` (athlete has not passed through the gate yet)
+    falls back to ``["Run"]`` only — conservative default that doesn't
+    spam Ride-suggestions to runners-only.
+    """
+    if user_sports is None:
+        return ["Run"]
+    selected_intervals = {LOWER_TO_INTERVALS[s] for s in user_sports if s in LOWER_TO_INTERVALS}
+    return [s for s in RAMP_PRIORITY if s in selected_intervals and s in RAMP_SUPPORTED_INTERVALS]
+
+
 class RampTrainingSuggestion:
 
     def __init__(
@@ -42,9 +70,13 @@ class RampTrainingSuggestion:
     ):
         self.user = user
         self.wellness = wellness
-        if sports is None:
-            sports = ["Run", "Ride"]
-        self.sports = sports
+        # Single source of truth for the NULL-fallback policy lives in
+        # `user_ramp_sports` (USER_SPORTS_SPEC §7). Routing through it here
+        # prevents drift if a future caller forgets to pass the filtered list
+        # explicitly — the legacy in-place ``["Run","Ride"]`` default used to
+        # be a separate decision point and that caused the spec table to lie
+        # for any constructor that didn't go through the morning-report path.
+        self.sports = user_ramp_sports(None) if sports is None else sports
         self.suggested_sport = None
         self.days_since = None
 

@@ -19,6 +19,8 @@ export interface AuthMeGoal {
   per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
 }
 
+export type SportTag = 'swim' | 'ride' | 'run'
+
 export interface AuthMeResponse {
   role: 'owner' | 'viewer' | 'demo' | 'anonymous'
   authenticated: boolean
@@ -33,6 +35,15 @@ export interface AuthMeResponse {
   // Goal block: null when athlete has no active race. Dashboard hides the
   // Goal tab entirely in that case (END-12 scoping).
   goal?: AuthMeGoal | null
+  // Sport selection. null = athlete hasn't passed through SportsPicker yet
+  // → App-level gate shows the picker. Otherwise a non-empty subset of
+  // {swim, ride, run} (server enforces ≥1 entry).
+  sports?: SportTag[] | null
+  // Prefill source for the SportsPicker checkboxes — derived from
+  // AthleteSettings rows the user already has synced from Intervals.icu.
+  // Empty list = new athlete with no synced settings yet, picker opens
+  // unchecked.
+  available_sports_from_settings?: SportTag[]
 }
 
 // Recovery

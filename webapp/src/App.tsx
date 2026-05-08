@@ -4,10 +4,11 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { apiFetch } from './api/client'
 import { getTelegramWebApp } from './auth/telegram'
 import { useAuth } from './auth/useAuth'
-import type { AuthMeResponse } from './api/types'
+import type { AuthMeResponse, SportTag } from './api/types'
 import LoadingSpinner from './components/LoadingSpinner'
 import Layout from './components/Layout'
 import OnboardingPrompt from './components/OnboardingPrompt'
+import SportsPicker from './components/SportsPicker'
 import BotChatBanner from './components/BotChatBanner'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
@@ -32,6 +33,11 @@ export default function App() {
   const { i18n } = useTranslation()
   // 'checking' = fetch in flight, 'yes' = has athlete, 'no' = needs onboarding
   const [athleteState, setAthleteState] = useState<'checking' | 'yes' | 'no'>('checking')
+  // Sports gate (USER_SPORTS_SPEC §6): null = athlete hasn't picked yet →
+  // show <SportsPicker/> after they finish Intervals OAuth. Empty array
+  // never reaches the frontend (server enforces ≥1 entry).
+  const [sports, setSports] = useState<SportTag[] | null | 'checking'>('checking')
+  const [availableSports, setAvailableSports] = useState<SportTag[]>([])
   // Issue #266: a Login Widget signup never opened a bot chat, so notifications
   // would 400. Banner stays visible across every page until /start unsticks it.
   const [botChatInitialized, setBotChatInitialized] = useState<boolean | null>(null)
@@ -50,6 +56,7 @@ export default function App() {
   useEffect(() => {
     if (!isAuthenticated) {
       setAthleteState('checking')
+      setSports('checking')
       return
     }
     apiFetch<AuthMeResponse>('/api/auth/me')
@@ -58,6 +65,21 @@ export default function App() {
           i18n.changeLanguage(data.language)
         }
         setAthleteState(data.intervals?.athlete_id ? 'yes' : 'no')
+        // Field-presence guard: `sports` may be missing on old API
+        // responses (partial deploy). When the key is absent, assume
+        // already-set so we don't lock existing users out. When present,
+        // require an actual array — defends against a buggy/malicious
+        // server returning ``sports: ""`` or ``sports: 0``, which would
+        // both be `=== null`-comparable but not `Array.isArray`-true,
+        // and silently bypass the gate.
+        setSports(
+          'sports' in data
+            ? Array.isArray(data.sports) ? data.sports : null
+            : (['swim', 'ride', 'run'] as SportTag[]),
+        )
+        setAvailableSports(
+          Array.isArray(data.available_sports_from_settings) ? data.available_sports_from_settings : [],
+        )
         // Default to true so an old server (no field) doesn't show a bogus
         // banner; only an explicit ``false`` from a fresh API triggers it.
         setBotChatInitialized(data.bot_chat_initialized ?? true)
@@ -68,14 +90,31 @@ export default function App() {
         // User can reload; if it persists, the data endpoints will also
         // fail and show their own error states.
         setAthleteState('checking')
+        setSports('checking')
         setBotChatInitialized(true)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated])
 
+  // Listen for Settings-page sports updates so the App-level state mirrors
+  // the latest selection without a full /api/auth/me refetch. Settings
+  // dispatches `sports-updated` after a successful PUT.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (Array.isArray(detail)) setSports(detail as SportTag[])
+    }
+    window.addEventListener('sports-updated', handler)
+    return () => window.removeEventListener('sports-updated', handler)
+  }, [])
+
   // Decide what to show for data routes based on athlete state.
-  const showLoading = isAuthenticated && athleteState === 'checking'
+  // Order: still loading → spinner; no Intervals → OnboardingPrompt;
+  // no sports picked → SportsPicker; everything ready → page.
+  const showLoading =
+    isAuthenticated && (athleteState === 'checking' || sports === 'checking')
   const gated = isAuthenticated && athleteState === 'no'
+  const needsSports = isAuthenticated && athleteState === 'yes' && sports === null
 
   const LoadingPage = () => <Layout maxWidth="480px"><LoadingSpinner /></Layout>
 
@@ -83,6 +122,7 @@ export default function App() {
   const dataRoute = (Page: React.ComponentType) =>
     showLoading ? <LoadingPage /> :
     gated ? <OnboardingPrompt /> :
+    needsSports ? <SportsPicker prefill={availableSports} onSaved={setSports} /> :
     <Page />
 
   const showBotChatBanner = isAuthenticated && botChatInitialized === false

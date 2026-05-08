@@ -244,7 +244,7 @@ class TestBuildRampTestMessage:
         msg, show_button, auto = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
         assert show_button is False
         assert auto is True
-        assert "автоматически" in msg.lower()
+        assert "авто-обновление" in msg.lower()
 
     def test_within_tolerance_no_button(self):
         # HRVT2=155 vs 153 = Δ+2 bpm — under 3 bpm gate.
@@ -465,7 +465,7 @@ class TestDriftButtonStatus:
         visible, hint, tier = _drift_button_status("LTHR", measured=165, config=153, r2=0.92)
         assert visible is False
         assert tier == "high"
-        assert "автоматически" in hint.lower()
+        assert "авто-обновление" in hint.lower()
 
     def test_lthr_within_gate_no_hint(self):
         from tasks.formatter import _drift_button_status
