@@ -425,6 +425,7 @@ def _actor_update_analityc_tables(
             hrv_row.hrvt1_pace = thresholds.hrvt1_pace
             hrv_row.hrvt2_hr = thresholds.hrvt2_hr
             hrv_row.hrvt2_pace = thresholds.hrvt2_pace
+            hrv_row.hrvt2_power = thresholds.hrvt2_power
             hrv_row.threshold_r_squared = thresholds.r_squared
             hrv_row.threshold_confidence = thresholds.confidence
 
@@ -487,6 +488,7 @@ def _actor_send_activity_notification(
         settings = AthleteSettings.get(user.id, sport)
         config_lthr = settings.lthr if settings else None
         config_threshold_pace = settings.threshold_pace if settings else None
+        config_ftp = settings.ftp if settings else None
         # Parse hrvt2_pace ("M:SS") → s/km int for the formatter's drift comparison.
         hrvt2_pace_sec = parse_pace_to_sec(hrv_row.hrvt2_pace)
         summary, show_update_zones = build_ramp_test_message(
@@ -495,6 +497,7 @@ def _actor_send_activity_notification(
             config_lthr=config_lthr,
             config_threshold_pace=config_threshold_pace,
             hrvt2_pace_sec=hrvt2_pace_sec,
+            config_ftp=config_ftp,
             failure_reason=failure_reason,
         )
         reply_markup = (

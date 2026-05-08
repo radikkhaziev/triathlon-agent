@@ -116,6 +116,37 @@ def _drift_alert_pace(
     )
 
 
+def _drift_alert_ftp(
+    sport: str,
+    hrvt2_power: float | None,
+    r_squared: float | None,
+    config_ftp: int,
+) -> DriftAlertDTO | None:
+    """FTP drift (Ride only): latest ramp-test pow-at-HRVT2 vs ``settings.ftp``.
+
+    Coggan's FTP definition ≈ pow at LT2 ≈ pow at HRVT2 (DFA α1 = 0.50).
+    Pushing pow-at-HRVT1 (older HRVT1→LTHR pattern) would under-shift
+    cycling zones the same ~13% way the LTHR mapping bug did.
+    """
+    if hrvt2_power is None or r_squared is None or r_squared < DRIFT_R2_THRESHOLD:
+        return None
+    pct = (hrvt2_power - config_ftp) / config_ftp * 100
+    if abs(pct) <= DRIFT_PCT_THRESHOLD:
+        return None
+    return DriftAlertDTO(
+        sport=sport,
+        metric="FTP",
+        measured=round(hrvt2_power),
+        config_value=config_ftp,
+        diff_pct=round(pct, 1),
+        message=(
+            f"HRVT2 power = {round(hrvt2_power)} W (R²={r_squared:.2f}). "
+            f"Current FTP {sport}: {config_ftp} W ({pct:+.1f}%). "
+            "Consider updating FTP."
+        ),
+    )
+
+
 class UserRole(str, Enum):
     owner = "owner"
     coach = "coach"
@@ -326,15 +357,17 @@ class User(Base):
     ) -> ThresholdDriftDTO | None:
         """Compare the latest ramp-test HRVT2 reading with athlete_settings to detect drift.
 
-        Two metrics, gated by ``|drift| > 5%`` and ``R² ≥ 0.7`` on the most
+        Three metrics, gated by ``|drift| > 5%`` and ``R² ≥ 0.7`` on the most
         recent valid ramp test (LIMIT 1):
 
           - LTHR — Ride + Run (HRVT2 HR vs ``settings.lthr``)
           - THRESHOLD_PACE — Run only (pace at HRVT2, sec/km, vs ``settings.threshold_pace``)
+          - FTP — Ride only (pow at HRVT2, watts, vs ``settings.ftp``)
 
-        Pushing HRVT2 (anaerobic threshold = LTHR) instead of HRVT1
-        (aerobic threshold ≈ 75-85% of LTHR) realigns Intervals.icu's
-        `lthr` field with its intended meaning.
+        Pushing HRVT2 (anaerobic threshold = LTHR ≈ FTP) instead of HRVT1
+        (aerobic threshold ≈ 75-85% of LTHR) realigns Intervals.icu's `lthr` /
+        `ftp` / `threshold_pace` fields with their intended physiological
+        meaning. Without this each set of zones would slide ~13% low.
         """
         from .activity import Activity, ActivityHrv
         from .athlete import AthleteSettings
@@ -355,6 +388,7 @@ class User(Base):
                 select(
                     ActivityHrv.hrvt2_hr,
                     ActivityHrv.hrvt2_pace,
+                    ActivityHrv.hrvt2_power,
                     ActivityHrv.threshold_r_squared,
                 )
                 .join(Activity, Activity.id == ActivityHrv.activity_id)
@@ -370,7 +404,7 @@ class User(Base):
             ).first()
             if not row:
                 continue
-            hrvt2_hr, hrvt2_pace, r_squared = row
+            hrvt2_hr, hrvt2_pace, hrvt2_power, r_squared = row
 
             if settings_row.lthr:
                 alert = _drift_alert_lthr(sport_label, hrvt2_hr, r_squared, settings_row.lthr)
@@ -379,6 +413,11 @@ class User(Base):
 
             if sport_label == "Run" and settings_row.threshold_pace:
                 alert = _drift_alert_pace(sport_label, hrvt2_pace, r_squared, settings_row.threshold_pace)
+                if alert:
+                    alerts.append(alert)
+
+            if sport_label == "Ride" and settings_row.ftp:
+                alert = _drift_alert_ftp(sport_label, hrvt2_power, r_squared, settings_row.ftp)
                 if alert:
                     alerts.append(alert)
 

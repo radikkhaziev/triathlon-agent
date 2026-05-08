@@ -859,36 +859,40 @@ ramp_test:{sport} callback (bot/main.py)
 1. Обрабатывает FIT → RR интервалы
 2. Рассчитывает DFA a1 по окнам
 3. Детектирует HRVT1 (a1=0.75) и HRVT2 (a1=0.50) — **только по WORK-сегментам** из `activity_details.intervals` (исключая WU/CD/recovery), чтобы шум от лёгких участков не портил линейный фит (R² падал с 0.7+ до 0.3 на реальных данных)
-4. Для Run — параллельно строит `hrvt1_pace` И `hrvt2_pace` (pace at каждом пороге, формат `"M:SS"`/km) через одну `speed ↔ HR` линрегрессию по тем же WORK-сегментам, интерполируя в обе HR-точки
-5. Сохраняет в `activity_hrv` (`hrvt1_hr`, `hrvt1_pace`, `hrvt2_hr`, `hrvt2_pace`, `threshold_r_squared`, `threshold_confidence`)
-6. Если `_is_ramp_test_activity` распознал тренировку (по `ScheduledWorkout` или `AiWorkout` fallback) — шлёт в Telegram ramp-test-специфичное уведомление (`tasks/formatter.py:build_ramp_test_message`) с HRVT1/HRVT2 (HR + pace), R², confidence, drift по LTHR (vs HRVT2) + threshold pace (vs hrvt2_pace) и — если дрифт триггернулся — inline-кнопкой `Обновить зоны` (callback `update_zones` → `actor_update_zones`). Если детекция не удалась, `diagnose_hrv_thresholds` возвращает структурированную причину (`too_few_points` / `a1_range_low` / `a1_range_high` / `positive_slope` / `noisy_fit` / `out_of_range` / `unknown`), formatter показывает её + actionable advice (`_ramp_failure_advice`: что делать дальше — «беги дольше», «треймилл», «проверь chest strap», и т.д.).
+4. Для Run — параллельно строит `hrvt1_pace` И `hrvt2_pace` (pace at каждом пороге, формат `"M:SS"`/km) через одну `speed ↔ HR` линрегрессию по тем же WORK-сегментам, интерполируя в обе HR-точки. Для Ride — то же самое для мощности: `hrvt1_power` И `hrvt2_power` через одну `power ↔ HR` линрегрессию (FTP ≈ pow at HRVT2; верхний sanity-bound для HRVT2 расширен до 800W).
+5. Сохраняет в `activity_hrv` (`hrvt1_hr`, `hrvt1_power`, `hrvt1_pace`, `hrvt2_hr`, `hrvt2_pace`, `hrvt2_power`, `threshold_r_squared`, `threshold_confidence`)
+6. Если `_is_ramp_test_activity` распознал тренировку (по `ScheduledWorkout` или `AiWorkout` fallback) — шлёт в Telegram ramp-test-специфичное уведомление (`tasks/formatter.py:build_ramp_test_message`) с HRVT1/HRVT2 (HR + pace + power для Ride), R², confidence, drift по LTHR (vs HRVT2) + threshold pace (vs hrvt2_pace) + FTP (vs hrvt2_power, Ride only) и — если дрифт триггернулся — inline-кнопкой `Обновить зоны` (callback `update_zones` → `actor_update_zones`). Если детекция не удалась, `diagnose_hrv_thresholds` возвращает структурированную причину (`too_few_points` / `a1_range_low` / `a1_range_high` / `positive_slope` / `noisy_fit` / `out_of_range` / `unknown`), formatter показывает её + actionable advice (`_ramp_failure_advice`: что делать дальше — «беги дольше», «треймилл», «проверь chest strap», и т.д.).
 
 Если новые пороги отличаются от текущих, утренний отчёт следующего дня дополнительно включает threshold drift блок.
 
 ### Threshold drift detection
 
-`User.detect_threshold_drift` сравнивает **последний валидный** ramp-замер (LIMIT 1, отсортированный по `start_date_local DESC`) с текущими `AthleteSettings`. Две метрики, общий гейт:
+`User.detect_threshold_drift` сравнивает **последний валидный** ramp-замер (LIMIT 1, отсортированный по `start_date_local DESC`) с текущими `AthleteSettings`. **Три** метрики, общий гейт:
 
-- **`LTHR`** (Ride + Run) — `ActivityHrv.hrvt2_hr` vs `AthleteSettings.lthr`
-- **`THRESHOLD_PACE`** (Run only) — `parse_pace_to_sec(ActivityHrv.hrvt2_pace)` vs `AthleteSettings.threshold_pace`
+| Metric | Sport(s) | Source | Compared to | Pushed to (Intervals API) |
+|---|---|---|---|---|
+| `LTHR` | Ride + Run | `ActivityHrv.hrvt2_hr` | `AthleteSettings.lthr` | `update_sport_settings(sport, {"lthr": bpm})` |
+| `THRESHOLD_PACE` | Run only | `parse_pace_to_sec(ActivityHrv.hrvt2_pace)` | `AthleteSettings.threshold_pace` | `update_sport_settings("Run", {"threshold_pace": m_per_s})` |
+| `FTP` | Ride only | `ActivityHrv.hrvt2_power` | `AthleteSettings.ftp` | `update_sport_settings("Ride", {"ftp": watts})` |
 
 Каждая метрика триггерит alert когда выполнены **оба** условия:
 - `|drift| > 5%` относительно config
 - `R² ≥ 0.7` на последнем фите (защита от шумных тестов)
 
-`R²` < 0.7 → drift есть, но кнопка скрыта; формат-сообщение показывает soft-hint «низкое R² — повтори ramp test для обновления зон». Под капотом: `_drift_alert_lthr` / `_drift_alert_pace` в `data/db/user.py` (helper-сигнатура: `(sport, hrvt2_value, r_squared, config) → DriftAlertDTO | None`).
+`R²` < 0.7 → drift есть, но кнопка скрыта; формат-сообщение показывает soft-hint «низкое R² — повтори ramp test для обновления зон». Под капотом: `_drift_alert_lthr` / `_drift_alert_pace` / `_drift_alert_ftp` в `data/db/user.py` (helper-сигнатура: `(sport, hrvt2_value, r_squared, config) → DriftAlertDTO | None`).
 
-**Семантика — критично.** Intervals.icu's `lthr` field **семантически = LTHR = HRVT2** (анаэробный порог), не HRVT1. До 2026-05-08 актёр пушил HRVT1 туда, что съезжало все зоны Intervals на ~13% вниз (Z4 SubThreshold = 95-99% LTHR при `lthr=HRVT1` ≈ Z2 по реальной нагрузке). Фикс: `actor_update_zones` теперь пушит HRVT2 → `lthr` и `hrvt2_pace` → `threshold_pace`. Существующие пользователи получат большой drift на первом новом ramp — это intentional (значения в Intervals у них стояли неправильные).
+**Семантика — критично.** Intervals.icu's `lthr` / `ftp` / `threshold_pace` поля все **семантически = anaerobic threshold = HRVT2** (LTHR = pow at LT2 = pace at LT2 = HRVT2-эквивалент по Coggan/Friel), не HRVT1. До 2026-05-08 актёр пушил HRVT1 туда, что съезжало все зоны Intervals на ~13% вниз (Z4 SubThreshold = 95-99% LTHR при `lthr=HRVT1` ≈ Z2 по реальной нагрузке). Фикс: `actor_update_zones` теперь пушит HRVT2-варианты во все три поля. Существующие пользователи получат большой drift на первом новом ramp — это intentional (значения в Intervals у них стояли неправильные). FTP добавлен 2026-05-08 в рамках issue #313 — раньше не было автоматического pusha (был только `mcp_server/tools/update_zones.py` для ручного push'а).
 
 **Почему latest, не avg?** Тест по определению — измерение текущего состояния. 3-sample rolling avg сглаживал прогресс: после успешного теста, который улучшил пороги на 8%, средний с двумя старыми замерами всё ещё показывал «3-4%» — слишком слабо для гейта 5%. R²-гейт защищает от шумных одиночных тестов лучше, чем требование «два теста подряд».
 
 При тапе кнопки `actor_update_zones` (`tasks/actors/athlets.py`) проходится по всем алертам:
-- `LTHR` — `AthleteSettings.upsert(lthr=…)` + `client.update_sport_settings(sport, {"lthr": bpm})`
-- `THRESHOLD_PACE` — конвертирует sec/km → m/s (Intervals.icu API хранит velocity, не pace), `AthleteSettings.upsert(threshold_pace=…)` + `client.update_sport_settings("Run", {"threshold_pace": m_per_s})`
+- `LTHR` — `AthleteSettings.upsert(lthr=…)` + push в Intervals (см. таблицу выше).
+- `THRESHOLD_PACE` — конвертирует sec/km → m/s (Intervals.icu API хранит velocity, не pace).
+- `FTP` — push raw watts; persistence через `AthleteSettings.upsert(ftp=…)`.
 
-Config **не обновляется автоматически** — атлет тапает кнопку. Telegram-нотификация после успешного апдейта рендерит pace в `M:SS/km` (не сырых секундах), бэкенд хранит s/km — конвертация в `actor_update_zones` через `tasks.formatter.format_pace` (тот же helper зовётся в `tasks/actors/reports.py` для drift-блока в утреннем рапорте).
+Config **не обновляется автоматически** — атлет тапает кнопку. Telegram-нотификация после успешного апдейта рендерит pace в `M:SS/km` (не сырых секундах), бэкенд хранит s/km — конвертация в `actor_update_zones` через `tasks.formatter.format_pace` (тот же helper зовётся в `tasks/actors/reports.py` для drift-блока в утреннем рапорте). Для FTP формат строки: «FTP Ride: 208 → 240 W».
 
-**Бэкфилл `hrvt2_pace`.** Колонка `hrvt2_pace` добавлена миграцией `v2c3d4e5f6a7` (2026-05-08). Старые `activity_hrv` строки имеют `hrvt2_pace = NULL` → drift detector их не учитывает. Чтобы переподнять последний ramp-тест без полного reprocessing'а — CLI: `python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]`. Команда тянет `dfa_timeseries` + `work_segments` из БД, прогоняет `detect_hrv_thresholds`, патчит **только** `hrvt2_pace` (другие поля не трогает, чтобы не возникало случайных перерасчётов из-за float rounding). С `--push` сразу дёргает `actor_update_zones`.
+**Бэкфилл HRVT2-полей.** Колонки `hrvt2_pace` (миграция `v2c3d4e5f6a7`) и `hrvt2_power` (миграция `w3d4e5f6a7b8`, 2026-05-08) — добавлены постфактум. Старые `activity_hrv` строки имеют их `NULL` → drift detector их не учитывает. Чтобы переподнять последний ramp-тест без полного reprocessing'а — CLI: `python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]`. Команда тянет `dfa_timeseries` + `work_segments` из БД, прогоняет `detect_hrv_thresholds`, патчит **только** HRVT2-производные поля (`hrvt2_pace` для Run, `hrvt2_power` для Ride; другие поля не трогает, чтобы не возникало случайных перерасчётов из-за float rounding). С `--push` сразу дёргает `actor_update_zones`. Pushv `--push` блокируется если activity не последний валидный ramp для своего спорта (защита от пуша по устаревшему тесту).
 
 ### Утреннее Telegram-сообщение (обновлённый формат)
 
@@ -976,11 +980,12 @@ async def create_ramp_test(sport: str, target_date: str) -> str:
 - [x] Ramp протоколы (Ride 8 steps + Run 10 steps: WU/CD @ 70% LTHR + 8 work-шагов 80→115% threshold pace в 5%-инкременте) в workout_doc формате (`data/ramp_tests.py`). Калибровка вокруг pace at HRVT2.
 - [x] Проверка свежести порогов в утреннем cron (`_maybe_suggest_ramp` в scheduler)
 - [x] MCP tools: `get_threshold_freshness`, `create_ramp_test_tool` (`mcp_server/tools/ramp_tests.py`)
-- [x] Threshold drift detection: сравнение **HRVT2** (latest single ramp) с config (`AthleteSettings.lthr` / `threshold_pace`), alert при `|drift|>5%` AND `R²≥0.7`. До 2026-05-08 пушился HRVT1 в Intervals' `lthr` field — концептуальный баг, фикс в #TBD сместил mapping к HRVT2 (правильному анаэробному порогу).
+- [x] Threshold drift detection: сравнение **HRVT2** (latest single ramp) с config (`AthleteSettings.lthr` / `threshold_pace` / `ftp`), alert при `|drift|>5%` AND `R²≥0.7`. До 2026-05-08 пушился HRVT1 в Intervals' `lthr` field — концептуальный баг, фикс сместил mapping к HRVT2 (правильному анаэробному порогу) для всех трёх полей. FTP-метрика добавлена в рамках issue #313 (2026-05-08).
 - [x] Обновлённый формат утреннего Telegram-сообщения (compact summary + threshold drift блок)
 - [x] AI-рекомендация не дублируется в Telegram (доступна только в webapp)
 - [x] HRVT linear fit только по WORK-сегментам (`detect_hrv_thresholds(work_segments=...)`) — WU/CD/recovery исключаются из регрессии; на реальных данных R² поднимается с 0.33 до 0.72+
 - [x] Pace at **обоих** порогов: `hrvt1_pace` + `hrvt2_pace` через одну `speed↔HR` регрессию (миграция `v2c3d4e5f6a7`, 2026-05-08). `hrvt2_pace` пушится в Intervals' `threshold_pace`, не `hrvt1_pace`.
+- [x] Power at **обоих** порогов: `hrvt1_power` + `hrvt2_power` через одну `power↔HR` регрессию (миграция `w3d4e5f6a7b8`, 2026-05-08, issue #313). `hrvt2_power` пушится в Intervals' `ftp`, не `hrvt1_power`. Coggan FTP ≈ pow at LT2 ≈ pow at HRVT2.
 - [x] Ramp-test-специфичное пост-активити уведомление: код-путь в `_actor_send_activity_notification` с `_is_ramp_test_activity` детекцией, `build_ramp_test_message`, `diagnose_hrv_thresholds` (структурированные причины неудачи для i18n), inline-кнопка `Обновить зоны` при `|drift|>5% AND R²≥0.7`.
-- [x] CLI: `python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]` для бэкфилла `hrvt2_pace` на старых ramp-тестах после применения миграции.
+- [x] CLI: `python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]` для бэкфилла `hrvt2_pace` (Run) и `hrvt2_power` (Ride) на старых ramp-тестах после применения миграций. `--push` ругается, если activity не последний валидный ramp для своего спорта.
 - [x] Unit + integration тесты (protocols, creation, morning message format, drift detection через SQL, button gating).

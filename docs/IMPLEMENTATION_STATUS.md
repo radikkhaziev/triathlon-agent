@@ -7,7 +7,7 @@
 
 ## Headline
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). ATP Phase 3 prompt enrichment complete (no cron deviation, see below). Ramp-test Run protocol switched to pace-driven (`%pace` units + `event.target=PACE` auto via `has_pace_steps`); recalibrated to 8-step `80→115%` ladder against pace at HRVT2 (2026-05-08). Drift detection: HRVT2 → Intervals' `lthr` (was HRVT1 — concept bug), latest-ramp-only with `|drift|>5%` AND `R²≥0.7` gate (was 3-sample avg + bootstrap). New CLI: `reprocess-ramp-test` for back-filling `hrvt2_pace` after migration `v2c3d4e5f6a7`.
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). ATP Phase 3 prompt enrichment complete (no cron deviation, see below). Ramp-test Run protocol switched to pace-driven (`%pace` units + `event.target=PACE` auto via `has_pace_steps`); recalibrated to 8-step `80→115%` ladder against pace at HRVT2 (2026-05-08). Drift detection: HRVT2 → Intervals' `lthr`/`threshold_pace`/`ftp` (was HRVT1 — concept bug, FTP added 2026-05-08 per issue #313), latest-ramp-only with `|drift|>5%` AND `R²≥0.7` gate (was 3-sample avg + bootstrap). `get_zones` MCP tool reshape: sport-tagged keys, dual-unit zone objects (issue #313). New CLI: `reprocess-ramp-test` for back-filling `hrvt2_pace`/`hrvt2_power` after migrations `v2c3d4e5f6a7` and `w3d4e5f6a7b8`.
 
 ---
 
@@ -170,6 +170,28 @@ Three coupled changes that landed together. Spec context lives in `docs/ADAPTIVE
 **6. CLI: `reprocess-ramp-test`.** New command `python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]` for back-filling `hrvt2_pace` on existing ramp tests post-migration. Re-runs `detect_hrv_thresholds` against stored `dfa_timeseries` + `work_segments`, patches **only** `hrvt2_pace` (other threshold fields untouched to avoid float-rounding drift). With `--push`, dispatches `actor_update_zones` so the new HRVT2-aligned values flow to Intervals.icu in one shot.
 
 **Migration path for existing users:** apply `v2c3d4e5f6a7`, run `reprocess-ramp-test --push` per-user against their last valid Run ramp activity. The first updated zones notification will show big jumps (e.g. `LTHR 152 → 172`) — intentional, reflecting the corrected HRVT1→HRVT2 mapping.
+
+---
+
+## Zones tool reshape + FTP drift detection (2026-05-08)
+
+Issue #313 fix. Spec: `docs/ZONES_FIX_SPEC.md`. Two coupled changes shipped in one PR.
+
+**1. `get_zones` MCP tool reshape.** Original tool wrote a single untagged `power_zones` key in a per-sport loop — last sport won, athletes with both Stryd Run power (FTP=366W) and Bike power (FTP=208W) lost one side. Plus `min_w`/`max_w` were emitting raw `%FTP` boundaries from DB (per `data/db/athlete.py:33` units contract) as if they were absolute watts — internally inconsistent. Same shape bug in `pace_zones`. Fix: sport-tagged keys (`power_zones_bike` / `power_zones_run`, `pace_zones_run` / `pace_zones_swim`), dual-unit zone objects with both `min_pct/max_pct` (raw %) and `min_w/max_w` (or `min_sec_per_km`/`min_sec_per_100m`). New helpers `_dual_unit_power_zones` / `_dual_unit_pace_zones` in `mcp_server/tools/zones.py`. Sentinel `999` collapses to «no upper bound» cleanly. Untagged `power_zones`/`pace_zones` keys dropped (no in-repo consumers per Q5 audit). `bot/prompts.py:_zones_block` left alone — already correct (treats power zones as %FTP with explicit `units: %ftp` label).
+
+**2. FTP drift detection — Ride.** Mirrors the LTHR/threshold_pace pattern: pushes `pow at HRVT2` (Coggan FTP ≈ pow at LT2 ≈ pow at HRVT2) to Intervals' `ftp` field. Pushing `hrvt1_power` (older shape) would under-shift cycling zones the same ~13% way HRVT1→`lthr` did.
+
+- New schema column `activity_hrv.hrvt2_power FLOAT NULL` (migration `w3d4e5f6a7b8`, chains off `v2c3d4e5f6a7`).
+- Detector (`data/hrv_activity.py`) extends the existing power↔HR regression with a parallel `hrvt2_power` interpolation, gated on `hrvt2_hr_safe` (the bound-checked HRVT2). Upper bound for HRVT2 raised to 800W (HRVT1's 500W ceiling is too tight for strong cyclists at FTP).
+- New helper `_drift_alert_ftp(sport, hrvt2_power, r_squared, config_ftp)` in `data/db/user.py`, same `|drift|>5%` ∧ `R²≥0.7` gate. Branch added to `detect_threshold_drift` (Ride only).
+- `actor_update_zones` (`tasks/actors/athlets.py`): new elif `metric == "FTP"` → push `client.update_sport_settings(sport, {"ftp": new_value})` + persist locally + notify «FTP Ride: 208 → 240 W».
+- Formatter (`tasks/formatter.py:build_ramp_test_message`) shows HRVT2 power on the HRVT2 line and renders «текущий FTP» drift line for Ride ramps.
+- MCP tool `activity_hrv` exposes `hrvt2_power` in `get_threshold_analysis` + `get_thresholds_history` (M5 fix continuation).
+- CLI `reprocess-ramp-test` patches both `hrvt2_pace` (Run) and `hrvt2_power` (Ride). Idempotent. `--push` only when activity is the latest valid ramp for its sport.
+
+**Test coverage:** `TestDriftAlertHelpers` +5 unit cases (`_drift_alert_ftp`), `TestFtpDrift` +5 integration cases via SQL, `TestActorUpdateZones.test_ftp_alert_pushes_watts`, `TestBuildRampTestMessage` +3 Ride/FTP cases, **new file `tests/mcp/test_zones.py`** (18 tests for the reshape — closes the previously-zero coverage on `get_zones` output shape, surfaced in §2 Q7 audit), **new file `tests/mcp/test_update_zones.py`** (8 tests — closes the Q4 gap where the MCP tool that pushes raw FTP/LTHR had no test coverage).
+
+**Migration path for existing users:** apply `w3d4e5f6a7b8`, run `python -m cli reprocess-ramp-test <user_id> <activity_id> --push` against the latest valid Ride ramp activity. The notification will report «FTP Ride: <old> → <new> W» if drift fires.
 
 ---
 

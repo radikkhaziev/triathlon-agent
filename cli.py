@@ -557,14 +557,15 @@ def _bootstrap_sync(user_id: int, period_days: int, force: bool) -> None:
 
 
 def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
-    """Re-run HRV threshold detection on one activity, patch ``hrvt2_pace`` only.
+    """Re-run HRV threshold detection on one activity, patch the HRVT2-derived
+    threshold fields (``hrvt2_pace`` for Run, ``hrvt2_power`` for Ride).
 
-    The ``v2c3d4e5f6a7`` migration adds a ``hrvt2_pace`` column that older ramp
-    tests don't have populated. The drift detector now pushes pace at HRVT2 to
-    Intervals.icu's ``threshold_pace`` field, so we need to back-fill it before
-    ``actor_update_zones`` can do its job.
+    Migrations ``v2c3d4e5f6a7`` (hrvt2_pace) and ``w3d4e5f6a7b8`` (hrvt2_power)
+    add columns that older ramp tests don't have populated. The drift detector
+    pushes pace-at-HRVT2 to Intervals' ``threshold_pace`` and pow-at-HRVT2 to
+    ``ftp``, so we back-fill these before ``actor_update_zones`` runs.
 
-    Only ``hrvt2_pace`` is patched — other threshold fields (HRVT1/2 HR,
+    Only the HRVT2-derived fields are patched — other thresholds (HRVT1/2 HR,
     R², confidence) stay as the original processing wrote them, since
     re-running the detector can produce slightly different rounding and we
     don't want to perturb fields that are already consistent with the user's
@@ -579,13 +580,16 @@ def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
 
     user = _resolve_user(user_id)
 
-    async def _run() -> tuple[str, str | None, str, bool]:
-        """Load → detect → patch in a single event loop (asyncpg binds connections to one loop).
+    async def _run() -> tuple[dict, dict, str, bool]:
+        """Load → detect → patch in a single event loop (asyncpg binds
+        connections to one loop).
 
-        Returns ``(new_pace, old_pace, sport, is_latest)``. ``is_latest`` flags
-        whether this activity is the newest valid ramp for its sport — drift
-        detector reads ``LIMIT 1 ORDER BY date DESC``, so patching anything
-        else has no effect on the next ``actor_update_zones`` dispatch.
+        Returns ``(new, old, sport, is_latest)`` where ``new``/``old`` carry
+        the HRVT2-derived fields actually patched (one or both of
+        ``hrvt2_pace`` / ``hrvt2_power``). ``is_latest`` flags whether this
+        activity is the newest valid ramp for its sport — drift detector
+        reads ``LIMIT 1 ORDER BY date DESC``, so patching anything else has
+        no effect on the next ``actor_update_zones`` dispatch.
         """
         async with get_session() as session:
             activity = await session.get(Activity, activity_id)
@@ -615,14 +619,23 @@ def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
                 raise SystemExit("Detection returned None — see data/hrv_activity.py for rejection criteria")
 
             new_pace = result.get("hrvt2_pace")
+            new_power = result.get("hrvt2_power")
             print(
-                f"Detector → hrvt2_hr={result.get('hrvt2_hr')}, hrvt2_pace={new_pace}, " f"R²={result.get('r_squared')}"
+                f"Detector → hrvt2_hr={result.get('hrvt2_hr')}, "
+                f"hrvt2_pace={new_pace}, hrvt2_power={new_power}, "
+                f"R²={result.get('r_squared')}"
             )
-            if not new_pace:
-                raise SystemExit("Detector did not produce hrvt2_pace (no speed data, or HRVT2 out of range)")
+            if not new_pace and not new_power:
+                raise SystemExit(
+                    "Detector did not produce hrvt2_pace or hrvt2_power " "(no speed/power data, or HRVT2 out of range)"
+                )
 
-            old_pace = hrv.hrvt2_pace
-            hrv.hrvt2_pace = new_pace
+            old = {"hrvt2_pace": hrv.hrvt2_pace, "hrvt2_power": hrv.hrvt2_power}
+            new = {"hrvt2_pace": new_pace, "hrvt2_power": new_power}
+            if new_pace:
+                hrv.hrvt2_pace = new_pace
+            if new_power:
+                hrv.hrvt2_power = new_power
             await session.commit()
 
             latest_id = (
@@ -640,10 +653,12 @@ def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            return new_pace, old_pace, activity.type, latest_id == activity_id
+            return new, old, activity.type, latest_id == activity_id
 
-    new_pace, old_pace, sport, is_latest = asyncio.run(_run())
-    print(f"✓ Patched activity_hrv.hrvt2_pace for {activity_id}: {old_pace!r} → {new_pace!r}")
+    new, old, sport, is_latest = asyncio.run(_run())
+    for field in ("hrvt2_pace", "hrvt2_power"):
+        if new[field] is not None:
+            print(f"✓ Patched activity_hrv.{field} for {activity_id}: {old[field]!r} → {new[field]!r}")
 
     if push:
         if not is_latest:
@@ -657,7 +672,7 @@ def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
         actor_update_zones.send(user=user)
         print(
             f"✓ Queued actor_update_zones for user {user_id} — "
-            "drift detector will see the new hrvt2_pace and push to Intervals.icu"
+            "drift detector will see the new HRVT2 fields and push to Intervals.icu"
         )
     else:
         print("(dry-run — pass --push to dispatch actor_update_zones)")

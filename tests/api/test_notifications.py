@@ -42,6 +42,7 @@ def _make_hrv(**overrides):
         "hrvt1_pace": None,
         "hrvt2_hr": 165.0,
         "hrvt2_pace": None,
+        "hrvt2_power": None,
         "ra_pct": 3.2,
         "pa_today": 185.0,
         "da_pct": -2.1,
@@ -354,6 +355,64 @@ class TestBuildRampTestMessage:
             hrvt2_pace_sec=295,
         )
         assert show_button is False
+
+    def test_ride_ftp_drift_lights_button(self):
+        """Ride: hrvt2_power vs config_ftp >5% with R²≥0.7 → button shown,
+        message includes HRVT2 W + «текущий FTP» line."""
+        hrv = _make_hrv(
+            activity_type="Ride",
+            hrvt1_hr=140.0,
+            hrvt1_power=180.0,
+            hrvt1_pace=None,
+            hrvt2_hr=160.0,  # exact match → no LTHR drift
+            hrvt2_power=240.0,  # +15.4% vs 208
+            threshold_r_squared=0.85,
+        )
+        msg, show_button = build_ramp_test_message(
+            _make_activity(type="Ride"),
+            hrv,
+            config_lthr=160,
+            config_ftp=208,
+        )
+        assert show_button is True
+        assert "240W" in msg  # HRVT2 power surfaced
+        assert "208 W" in msg or "208W" in msg  # current FTP comparison
+        assert "+15.4%" in msg
+
+    def test_ride_ftp_within_tolerance_no_button(self):
+        hrv = _make_hrv(
+            activity_type="Ride",
+            hrvt1_hr=140.0,
+            hrvt1_power=180.0,
+            hrvt2_hr=160.0,
+            hrvt2_power=212.0,  # +1.9% vs 208
+        )
+        _, show_button = build_ramp_test_message(
+            _make_activity(type="Ride"),
+            hrv,
+            config_lthr=160,
+            config_ftp=208,
+        )
+        assert show_button is False
+
+    def test_ride_lthr_and_ftp_both_drift_single_button(self):
+        hrv = _make_hrv(
+            activity_type="Ride",
+            hrvt1_hr=140.0,
+            hrvt1_power=180.0,
+            hrvt2_hr=180.0,  # +12.5% vs 160
+            hrvt2_power=240.0,  # +15.4% vs 208
+            threshold_r_squared=0.85,
+        )
+        msg, show_button = build_ramp_test_message(
+            _make_activity(type="Ride"),
+            hrv,
+            config_lthr=160,
+            config_ftp=208,
+        )
+        assert show_button is True
+        # Soft "low R²" hint must NOT appear when button is on
+        assert "низкое R²" not in msg
 
 
 # ---------------------------------------------------------------------------

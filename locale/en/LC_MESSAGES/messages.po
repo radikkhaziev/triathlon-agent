@@ -229,6 +229,21 @@ msgstr "result"
 msgid "текущий LTHR"
 msgstr "current LTHR"
 
+msgid "текущий threshold pace"
+msgstr "current threshold pace"
+
+msgid "текущий FTP"
+msgstr "current FTP"
+
+msgid "threshold pace"
+msgstr "threshold pace"
+
+msgid "FTP"
+msgstr "FTP"
+
+msgid "низкое R² — повтори ramp test для обновления зон"
+msgstr "low R² — repeat the ramp test before updating zones"
+
 msgid "Рекомендуем обновить зоны"
 msgstr "Consider updating zones"
 

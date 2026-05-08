@@ -141,6 +141,41 @@ class TestActorUpdateZones:
         notify_payload = mock_notify.send.call_args[0][1]
         assert "Threshold pace Run: 4:55/km → 4:20/km" in notify_payload
 
+    def test_ftp_alert_pushes_watts(self):
+        """FTP alert (Ride) → push raw watts to Intervals + persist locally."""
+        from tasks.actors.athlets import actor_update_zones
+
+        drift = ThresholdDriftDTO(
+            alerts=[
+                DriftAlertDTO(
+                    sport="Ride",
+                    metric="FTP",
+                    measured=240,
+                    config_value=208,
+                    diff_pct=15.4,
+                    message="",
+                ),
+            ]
+        )
+
+        mock_client = MagicMock()
+        with (
+            patch("tasks.actors.athlets.User") as mock_user,
+            patch("tasks.actors.athlets.AthleteSettings") as mock_settings,
+            patch("tasks.actors.athlets.IntervalsSyncClient") as mock_isc,
+            patch("tasks.actors.athlets._actor_send_zones_notification") as mock_notify,
+        ):
+            mock_user.detect_threshold_drift.return_value = drift
+            mock_isc.for_user.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_isc.for_user.return_value.__exit__ = MagicMock(return_value=False)
+
+            actor_update_zones(_user())
+
+        mock_settings.upsert.assert_called_once_with(user_id=1, sport="Ride", ftp=240)
+        mock_client.update_sport_settings.assert_called_once_with("Ride", {"ftp": 240})
+        notify_payload = mock_notify.send.call_args[0][1]
+        assert "FTP Ride: 208 → 240 W" in notify_payload
+
     def test_unknown_metric_skipped_with_warning(self):
         """Unrecognized metric does not break the loop."""
         from tasks.actors.athlets import actor_update_zones

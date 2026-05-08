@@ -428,7 +428,11 @@ def detect_hrv_thresholds(
         "confidence": confidence,
     }
 
-    # Add power at HRVT1 if power data available
+    # Add power at HRVT1 + HRVT2 for cycling. The drift detector pushes
+    # pow-at-HRVT2 to Intervals.icu's `ftp` field, so both interpolations must
+    # come from the same power↔HR fit. hrvt2_power is gated on the
+    # bound-checked hrvt2_hr_safe — without that gate, a nullified hrvt2_hr
+    # would still leave a power interpolated from a nonphysical HR.
     if activity_type == "Ride":
         power_points = [p for p in points if p.get("power") is not None]
         if len(power_points) >= 10:
@@ -436,9 +440,17 @@ def detect_hrv_thresholds(
             p_power = np.array([p["power"] for p in power_points])
             try:
                 p_coeffs = np.polyfit(p_hr, p_power, 1)
-                hrvt1_power = np.polyval(p_coeffs, hrvt1_hr)
-                if 50 < hrvt1_power < 500:
-                    result["hrvt1_power"] = round(hrvt1_power)
+                # HRVT2 ceiling raised to 800W — strong cyclists' FTP can exceed
+                # the 500W ceiling that's reasonable for HRVT1 (aerobic).
+                for key, hr_target, hi in (
+                    ("hrvt1_power", hrvt1_hr, 500),
+                    ("hrvt2_power", hrvt2_hr_safe, 800),
+                ):
+                    if hr_target is None:
+                        continue
+                    pow_at = np.polyval(p_coeffs, hr_target)
+                    if 50 < pow_at < hi:
+                        result[key] = round(pow_at)
             except (np.linalg.LinAlgError, ValueError):
                 pass
 
