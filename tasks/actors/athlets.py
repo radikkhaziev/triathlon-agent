@@ -6,6 +6,7 @@ from datetime import timedelta
 import dramatiq
 from pydantic import validate_call
 
+from bot.i18n import _, set_language
 from data.db import AthleteGoal, AthleteSettings, User, UserDTO
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
@@ -21,11 +22,12 @@ logger = logging.getLogger(__name__)
 @validate_call
 def _actor_send_zones_notification(user: UserDTO, updated: list[str]):
     """Send Telegram notification about updated zones."""
+    set_language(user.language or "ru")
     tg = TelegramTool(user=user)
     if updated:
-        msg = "✅ Зоны обновлены:\n" + "\n".join(updated)
+        msg = f"✅ {_('Зоны обновлены')}:\n" + "\n".join(updated)
     else:
-        msg = "ℹ️ Drift не обнаружен, зоны актуальны"
+        msg = f"ℹ️ {_('Drift не обнаружен, зоны актуальны')}"
     tg.send_message(text=msg)
 
 

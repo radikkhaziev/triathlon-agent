@@ -897,3 +897,115 @@ class TestActorComposeMorningReport:
 
         # send actor dispatched
         mock_send.send.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Auto-update wiring: ramp test with R²≥0.85 dispatches actor_update_zones
+# without waiting for the user to tap the button. Regression guard against
+# refactors that drop the dispatch (per code review H1, 2026-05-08).
+# ---------------------------------------------------------------------------
+
+
+class TestRampAutoUpdateWiring:
+    """`_actor_send_activity_notification` must call `actor_update_zones.send`
+    iff `build_ramp_test_message` returns auto_update_fired=True.
+    """
+
+    def _common_patches(self):
+        """Mock everything outside the auto-update branch we want to test."""
+        from data.db import Activity, ActivityHrv
+
+        activity = MagicMock(spec=Activity)
+        activity.id = "i999"
+        activity.type = "Ride"
+        activity.start_date_local = str(date.today())
+        activity.user_id = 1
+        activity.is_race = False
+        activity.rpe = 7
+
+        hrv = MagicMock(spec=ActivityHrv)
+        hrv.threshold_r_squared = 0.92
+        hrv.hrvt2_pace = None
+
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = MagicMock(
+            return_value=MagicMock(get=lambda model, _id: activity if model is Activity else hrv)
+        )
+        session_ctx.__exit__ = MagicMock(return_value=False)
+
+        return activity, hrv, session_ctx
+
+    def test_high_tier_dispatches_actor_update_zones(self):
+        from tasks.actors.activities import _actor_send_activity_notification
+
+        activity, hrv, session_ctx = self._common_patches()
+        with (
+            patch("tasks.actors.activities.get_sync_session", return_value=session_ctx),
+            patch("tasks.actors.activities._is_ramp_test_activity", return_value=True),
+            patch(
+                "tasks.actors.activities.AthleteSettings.get",
+                return_value=MagicMock(lthr=170, ftp=208, threshold_pace=287.0),
+            ),
+            patch("tasks.actors.activities.parse_pace_to_sec", return_value=287),
+            patch("tasks.actors.activities.TelegramTool"),
+            patch(
+                "tasks.actors.activities.build_ramp_test_message",
+                return_value=("ramp message", False, True),  # show_button=False, auto_update_fired=True
+            ),
+            patch("tasks.actors.activities.actor_update_zones") as mock_actor,
+            patch("tasks.actors.activities.set_language"),
+        ):
+            _actor_send_activity_notification(None, _user(), "i999")
+
+        mock_actor.send.assert_called_once_with(user=_user())
+
+    def test_medium_tier_does_not_dispatch(self):
+        """Button-tier (auto_update_fired=False) must NOT call actor_update_zones —
+        user has to tap the button explicitly."""
+        from tasks.actors.activities import _actor_send_activity_notification
+
+        activity, hrv, session_ctx = self._common_patches()
+        with (
+            patch("tasks.actors.activities.get_sync_session", return_value=session_ctx),
+            patch("tasks.actors.activities._is_ramp_test_activity", return_value=True),
+            patch(
+                "tasks.actors.activities.AthleteSettings.get",
+                return_value=MagicMock(lthr=170, ftp=208, threshold_pace=287.0),
+            ),
+            patch("tasks.actors.activities.parse_pace_to_sec", return_value=287),
+            patch("tasks.actors.activities.TelegramTool"),
+            patch(
+                "tasks.actors.activities.build_ramp_test_message",
+                return_value=("ramp message", True, False),  # show_button=True, auto_update_fired=False
+            ),
+            patch("tasks.actors.activities.actor_update_zones") as mock_actor,
+            patch("tasks.actors.activities.set_language"),
+        ):
+            _actor_send_activity_notification(None, _user(), "i999")
+
+        mock_actor.send.assert_not_called()
+
+    def test_no_drift_does_not_dispatch(self):
+        """No drift fired (both flags False) — actor untouched."""
+        from tasks.actors.activities import _actor_send_activity_notification
+
+        activity, hrv, session_ctx = self._common_patches()
+        with (
+            patch("tasks.actors.activities.get_sync_session", return_value=session_ctx),
+            patch("tasks.actors.activities._is_ramp_test_activity", return_value=True),
+            patch(
+                "tasks.actors.activities.AthleteSettings.get",
+                return_value=MagicMock(lthr=170, ftp=208, threshold_pace=287.0),
+            ),
+            patch("tasks.actors.activities.parse_pace_to_sec", return_value=287),
+            patch("tasks.actors.activities.TelegramTool"),
+            patch(
+                "tasks.actors.activities.build_ramp_test_message",
+                return_value=("ramp message", False, False),
+            ),
+            patch("tasks.actors.activities.actor_update_zones") as mock_actor,
+            patch("tasks.actors.activities.set_language"),
+        ):
+            _actor_send_activity_notification(None, _user(), "i999")
+
+        mock_actor.send.assert_not_called()

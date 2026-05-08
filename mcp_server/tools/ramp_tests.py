@@ -47,11 +47,17 @@ async def create_ramp_test_tool(
     days_since = freshness.days_since or 0
 
     threshold_pace: float | None = None
+    bike_ftp: float | None = None
     if sport == "Run":
         run_settings = await AthleteSettings.get(user_id, sport)
         threshold_pace = run_settings.threshold_pace if run_settings else None
+    elif sport == "Ride":
+        ride_settings = await AthleteSettings.get(user_id, sport)
+        bike_ftp = float(ride_settings.ftp) if ride_settings and ride_settings.ftp else None
 
-    workout: PlannedWorkoutDTO = create_ramp_test(sport, dt, days_since, threshold_pace=threshold_pace)
+    workout: PlannedWorkoutDTO = create_ramp_test(
+        sport, dt, days_since, threshold_pace=threshold_pace, bike_ftp=bike_ftp
+    )
 
     event_data = workout.to_intervals_event()
 

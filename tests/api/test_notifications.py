@@ -205,9 +205,17 @@ class TestBuildPostActivityMessage:
 
 
 class TestBuildRampTestMessage:
-    def test_detected_with_drift_shows_button(self):
-        activity = _make_activity(type="Run")
-        # HRVT2=172 vs config 153 = +12.4% drift, R²=0.85 → button fires
+    """build_ramp_test_message returns (message, show_button, auto_update_fired).
+
+    Confidence tiers (per RAMP_TEST_BIKE_SPEC §8 / `data/db/dto.py` constants):
+      - high   (R² ≥ 0.85): auto_update_fired=True, show_button=False
+      - medium (0.70 ≤ R² < 0.85): show_button=True, auto_update_fired=False
+      - low    (R² < 0.70): both False, soft «низкое R²» hint
+    Drift gate is absolute: 3 bpm / 5 s/km / 5 W.
+    """
+
+    def test_medium_r2_with_drift_shows_button(self):
+        # HRVT2=172 vs 153 = Δ+19 bpm (>3 bpm gate). R²=0.80 → medium tier → button.
         hrv = _make_hrv(
             activity_type="Run",
             hrvt1_hr=157.0,
@@ -215,34 +223,47 @@ class TestBuildRampTestMessage:
             hrvt1_pace="5:21",
             hrvt2_hr=172.0,
             hrvt2_pace="4:50",
-            threshold_r_squared=0.85,
+            threshold_r_squared=0.80,
         )
-        msg, show_button = build_ramp_test_message(activity, hrv, config_lthr=153)
-        assert "Ramp Test" in msg
-        assert "HRVT1: 157 bpm" in msg
-        assert "5:21" in msg
-        assert "HRVT2: 172 bpm" in msg
-        assert "4:50" in msg
-        assert "153" in msg
-        assert "+12.4%" in msg
+        msg, show_button, auto = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
         assert show_button is True
+        assert auto is False
+        assert "HRVT1: 157 bpm" in msg
+        assert "HRVT2: 172 bpm" in msg
+        assert "Δ +19 bpm" in msg
 
-    def test_detected_within_tolerance_no_button(self):
-        # HRVT2=155 vs 153 = +1.3% — well under threshold
-        hrv = _make_hrv(hrvt1_hr=140.0, hrvt1_power=None, hrvt2_hr=155.0)
-        _, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
+    def test_high_r2_with_drift_auto_updates(self):
+        # Same drift but R²=0.90 → high tier → auto_update_fired, no button.
+        hrv = _make_hrv(
+            activity_type="Run",
+            hrvt1_hr=157.0,
+            hrvt1_power=None,
+            hrvt2_hr=172.0,
+            threshold_r_squared=0.90,
+        )
+        msg, show_button, auto = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
         assert show_button is False
+        assert auto is True
+        assert "автоматически" in msg.lower()
+
+    def test_within_tolerance_no_button(self):
+        # HRVT2=155 vs 153 = Δ+2 bpm — under 3 bpm gate.
+        hrv = _make_hrv(hrvt1_hr=140.0, hrvt1_power=None, hrvt2_hr=155.0)
+        _, show_button, auto = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
+        assert show_button is False
+        assert auto is False
 
     def test_low_r_squared_blocks_button(self):
-        """R² < 0.7 → button hidden even with sizable drift, soft hint shown."""
+        """R² < 0.70 → button hidden even with sizable drift, soft hint shown."""
         hrv = _make_hrv(
             hrvt1_hr=157.0,
             hrvt1_power=None,
-            hrvt2_hr=172.0,  # +12.4% drift
+            hrvt2_hr=172.0,  # Δ+19 bpm
             threshold_r_squared=0.50,
         )
-        msg, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
+        msg, show_button, auto = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
         assert show_button is False
+        assert auto is False
         assert "R²" in msg or "ramp test" in msg.lower()
 
     def test_detection_failed_shows_reason_and_advice(self):
@@ -255,35 +276,32 @@ class TestBuildRampTestMessage:
             threshold_confidence=None,
         )
         reason = {"code": "noisy_fit", "r_squared": 0.33}
-        msg, show_button = build_ramp_test_message(
+        msg, show_button, auto = build_ramp_test_message(
             _make_activity(type="Run"), hrv, config_lthr=153, failure_reason=reason
         )
         assert show_button is False
+        assert auto is False
         assert "0.33" in msg
-        # Actionable advice surfaces the recommendation, not just the diagnostic code
         assert "тредмилл" in msg.lower() or "treadmill" in msg.lower()
 
     def test_detection_failed_advice_per_code(self):
         """Each known failure code emits its own actionable advice line."""
         hrv = _make_hrv(hrvt1_hr=None, hrvt1_power=None, hrvt1_pace=None, hrvt2_hr=None)
-        # too_few_points → нужна work-фаза 30+ минут
-        msg, _ = build_ramp_test_message(
+        msg, _, _ = build_ramp_test_message(
             _make_activity(type="Run"),
             hrv,
             config_lthr=153,
             failure_reason={"code": "too_few_points", "count": 8},
         )
         assert "30+" in msg
-        # a1_range_low → бери выше темп на последних шагах
-        msg, _ = build_ramp_test_message(
+        msg, _, _ = build_ramp_test_message(
             _make_activity(type="Run"),
             hrv,
             config_lthr=153,
             failure_reason={"code": "a1_range_low", "min_a1": 0.85},
         )
         assert "темп" in msg.lower()
-        # positive_slope → проверь chest strap
-        msg, _ = build_ramp_test_message(
+        msg, _, _ = build_ramp_test_message(
             _make_activity(type="Run"),
             hrv,
             config_lthr=153,
@@ -293,91 +311,91 @@ class TestBuildRampTestMessage:
 
     def test_detection_failed_no_reason(self):
         hrv = _make_hrv(hrvt1_hr=None, hrvt1_power=None, hrvt1_pace=None, hrvt2_hr=None)
-        msg, show_button = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
+        _, show_button, auto = build_ramp_test_message(_make_activity(type="Run"), hrv, config_lthr=153)
         assert show_button is False
+        assert auto is False
 
     def test_pace_drift_lights_button_when_lthr_clean(self):
-        """LTHR matches config but pace shows >5% drift → button shown."""
+        """LTHR matches config but pace shows >5 s/km drift → button shown (medium R²)."""
         hrv = _make_hrv(
             hrvt1_hr=140.0,
             hrvt1_power=None,
             hrvt1_pace="4:55",
             hrvt2_hr=153.0,  # exact match → no LTHR drift
             hrvt2_pace="4:20",
-            threshold_r_squared=0.85,
+            threshold_r_squared=0.80,  # medium tier
         )
-        msg, show_button = build_ramp_test_message(
+        msg, show_button, auto = build_ramp_test_message(
             _make_activity(type="Run"),
             hrv,
             config_lthr=153,
             config_threshold_pace=295.0,
-            hrvt2_pace_sec=260,
+            hrvt2_pace_sec=260,  # Δ -35 s/km
         )
         assert show_button is True
+        assert auto is False
         assert "threshold pace" in msg.lower()
-        assert "4:55" in msg  # config pace formatted
+        assert "4:55" in msg
 
     def test_both_drifts_button_shown_once(self):
-        """LTHR and pace both drift — button surfaces, no duplicate hint chain."""
+        """LTHR and pace both drift, medium R² — single button surfaces."""
         hrv = _make_hrv(
             hrvt1_hr=155.0,
             hrvt1_power=None,
             hrvt1_pace="5:00",
-            hrvt2_hr=170.0,  # +11.1% vs 153
+            hrvt2_hr=170.0,  # Δ+17 bpm
             hrvt2_pace="4:20",
-            threshold_r_squared=0.85,
+            threshold_r_squared=0.80,
         )
-        msg, show_button = build_ramp_test_message(
+        msg, show_button, _ = build_ramp_test_message(
             _make_activity(type="Run"),
             hrv,
             config_lthr=153,
             config_threshold_pace=295.0,
-            hrvt2_pace_sec=260,
+            hrvt2_pace_sec=260,  # Δ-35 s/km
         )
         assert show_button is True
-        # Soft "low R²" hint must NOT appear when button is on
         assert "низкое R²" not in msg
 
     def test_pace_within_tolerance_no_button(self):
-        """Both metrics within tolerance — no button, no hints."""
+        """Both metrics within absolute gate (≤3 bpm / ≤5 s/km) — no button."""
         hrv = _make_hrv(
             hrvt1_hr=140.0,
             hrvt1_power=None,
             hrvt1_pace="5:30",
             hrvt2_hr=155.0,
-            hrvt2_pace="4:55",
+            hrvt2_pace="4:54",  # 294 s/km, vs config 295 → Δ-1 s/km < 5
         )
-        _, show_button = build_ramp_test_message(
+        _, show_button, _ = build_ramp_test_message(
             _make_activity(type="Run"),
             hrv,
-            config_lthr=153,
+            config_lthr=153,  # Δ+2 bpm < 3
             config_threshold_pace=295.0,
-            hrvt2_pace_sec=295,
+            hrvt2_pace_sec=294,
         )
         assert show_button is False
 
     def test_ride_ftp_drift_lights_button(self):
-        """Ride: hrvt2_power vs config_ftp >5% with R²≥0.7 → button shown,
-        message includes HRVT2 W + «текущий FTP» line."""
+        """Ride: hrvt2_power vs config_ftp Δ>5W with medium R² → button shown."""
         hrv = _make_hrv(
             activity_type="Ride",
             hrvt1_hr=140.0,
             hrvt1_power=180.0,
             hrvt1_pace=None,
             hrvt2_hr=160.0,  # exact match → no LTHR drift
-            hrvt2_power=240.0,  # +15.4% vs 208
-            threshold_r_squared=0.85,
+            hrvt2_power=240.0,  # Δ+32 W
+            threshold_r_squared=0.80,
         )
-        msg, show_button = build_ramp_test_message(
+        msg, show_button, _ = build_ramp_test_message(
             _make_activity(type="Ride"),
             hrv,
             config_lthr=160,
             config_ftp=208,
         )
         assert show_button is True
-        assert "240W" in msg  # HRVT2 power surfaced
-        assert "208 W" in msg or "208W" in msg  # current FTP comparison
-        assert "+15.4%" in msg
+        assert "240W" in msg
+        assert "208 W" in msg
+        assert "Δ +32 W" in msg
 
     def test_ride_ftp_within_tolerance_no_button(self):
         hrv = _make_hrv(
@@ -385,9 +403,9 @@ class TestBuildRampTestMessage:
             hrvt1_hr=140.0,
             hrvt1_power=180.0,
             hrvt2_hr=160.0,
-            hrvt2_power=212.0,  # +1.9% vs 208
+            hrvt2_power=211.0,  # Δ+3 W < 5
         )
-        _, show_button = build_ramp_test_message(
+        _, show_button, _ = build_ramp_test_message(
             _make_activity(type="Ride"),
             hrv,
             config_lthr=160,
@@ -400,18 +418,17 @@ class TestBuildRampTestMessage:
             activity_type="Ride",
             hrvt1_hr=140.0,
             hrvt1_power=180.0,
-            hrvt2_hr=180.0,  # +12.5% vs 160
-            hrvt2_power=240.0,  # +15.4% vs 208
-            threshold_r_squared=0.85,
+            hrvt2_hr=180.0,  # Δ+20 bpm
+            hrvt2_power=240.0,  # Δ+32 W
+            threshold_r_squared=0.80,
         )
-        msg, show_button = build_ramp_test_message(
+        msg, show_button, _ = build_ramp_test_message(
             _make_activity(type="Ride"),
             hrv,
             config_lthr=160,
             config_ftp=208,
         )
         assert show_button is True
-        # Soft "low R²" hint must NOT appear when button is on
         assert "низкое R²" not in msg
 
 
@@ -423,50 +440,97 @@ class TestBuildRampTestMessage:
 class TestDriftButtonStatus:
     """Pure helper. Each branch tested directly so the UI/backend gates can't drift apart.
 
-    Pairs with `tests/db/test_threshold_drift.py` which covers the backend gate.
-    If those thresholds change, both test files need updates simultaneously.
+    Returns ``(visible, hint, tier)``. Tiers:
+      - ``high``   (R² ≥ 0.85, drift ≥ gate): visible=False, auto-update path
+      - ``medium`` (0.70 ≤ R² < 0.85, drift ≥ gate): visible=True, button
+      - ``low``    (R² < 0.70, drift ≥ gate): visible=False, soft hint
+      - ``none``   (drift < gate): visible=False, no hint
+
+    Drift gates are absolute per metric: LTHR 3 bpm, PACE 5 s/km, FTP 5 W.
+    Pairs with `tests/db/test_threshold_drift.py` for the backend mirror.
     """
 
-    def test_above_5pct_with_decent_r2_shows_button(self):
+    def test_lthr_medium_r2_with_drift_shows_button(self):
         from tasks.formatter import _drift_button_status
 
-        # 165 vs 153 = +7.8% drift, R²=0.7 → standard path fires
-        visible, hint = _drift_button_status(measured=165, config=153, r2=0.7)
+        # 165 vs 153 = +12 bpm (>3), R²=0.80 → medium tier
+        visible, hint, tier = _drift_button_status("LTHR", measured=165, config=153, r2=0.80)
         assert visible is True
-        assert hint is not None
+        assert tier == "medium"
         assert "обновить" in hint.lower()
 
-    def test_within_5pct_no_button_no_hint(self):
+    def test_lthr_high_r2_auto_update_no_button(self):
         from tasks.formatter import _drift_button_status
 
-        # 156 vs 153 = +2% — well within tolerance
-        visible, hint = _drift_button_status(measured=156, config=153, r2=0.92)
+        visible, hint, tier = _drift_button_status("LTHR", measured=165, config=153, r2=0.92)
+        assert visible is False
+        assert tier == "high"
+        assert "автоматически" in hint.lower()
+
+    def test_lthr_within_gate_no_hint(self):
+        from tasks.formatter import _drift_button_status
+
+        # 155 vs 153 = +2 bpm — under 3 bpm gate
+        visible, hint, tier = _drift_button_status("LTHR", measured=155, config=153, r2=0.92)
         assert visible is False
         assert hint is None
+        assert tier == "none"
 
-    def test_high_drift_low_r2_soft_hint_only(self):
+    def test_lthr_drift_low_r2_soft_hint_only(self):
         from tasks.formatter import _drift_button_status
 
-        # +14% drift but R²=0.50 — gate blocks button, soft hint surfaces
-        visible, hint = _drift_button_status(measured=175, config=153, r2=0.50)
+        # +22 bpm drift but R²=0.50 — gate clears, R² blocks → soft hint
+        visible, hint, tier = _drift_button_status("LTHR", measured=175, config=153, r2=0.50)
         assert visible is False
-        assert hint is not None
+        assert tier == "low"
         assert "R²" in hint or "ramp test" in hint.lower()
 
-    def test_no_r2_blocks_button(self):
-        """R² absent (None) → button hidden, soft hint shown when drift is sizable."""
+    def test_lthr_no_r2_treated_as_low(self):
+        """R² absent (None) → low tier, button hidden, soft hint shown."""
         from tasks.formatter import _drift_button_status
 
-        visible, hint = _drift_button_status(measured=175, config=153, r2=None)
+        visible, hint, tier = _drift_button_status("LTHR", measured=175, config=153, r2=None)
         assert visible is False
-        assert hint is not None  # drift > 5% so still informs
+        assert tier == "low"
+        assert hint is not None
 
-    def test_high_drift_at_threshold_r2_fires(self):
-        """Boundary: R²=0.7 (exact threshold) with drift > 5% → button on."""
+    def test_lthr_at_medium_boundary_fires(self):
+        """R²=0.70 boundary → medium tier (>= gate)."""
         from tasks.formatter import _drift_button_status
 
-        visible, _ = _drift_button_status(measured=170, config=153, r2=0.70)
+        visible, _, tier = _drift_button_status("LTHR", measured=170, config=153, r2=0.70)
         assert visible is True
+        assert tier == "medium"
+
+    def test_lthr_at_high_boundary_auto(self):
+        """R²=0.85 boundary → high tier."""
+        from tasks.formatter import _drift_button_status
+
+        visible, _, tier = _drift_button_status("LTHR", measured=170, config=153, r2=0.85)
+        assert visible is False
+        assert tier == "high"
+
+    def test_pace_uses_seconds_gate(self):
+        """PACE metric uses 5 s/km absolute gate, not bpm."""
+        from tasks.formatter import _drift_button_status
+
+        # 291 vs 295 = -4 s/km, abs(delta) < 5 → no fire
+        _, _, tier = _drift_button_status("PACE", measured=291, config=295, r2=0.92)
+        assert tier == "none"
+        # 289 vs 295 = -6 s/km → fires (high R²)
+        _, _, tier = _drift_button_status("PACE", measured=289, config=295, r2=0.92)
+        assert tier == "high"
+
+    def test_ftp_uses_watts_gate(self):
+        """FTP metric uses 5 W absolute gate."""
+        from tasks.formatter import _drift_button_status
+
+        # 211 vs 208 = +3 W, abs(delta) < 5 → no fire
+        _, _, tier = _drift_button_status("FTP", measured=211, config=208, r2=0.92)
+        assert tier == "none"
+        # 215 vs 208 = +7 W → fires
+        _, _, tier = _drift_button_status("FTP", measured=215, config=208, r2=0.80)
+        assert tier == "medium"
 
 
 # ---------------------------------------------------------------------------

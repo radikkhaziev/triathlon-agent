@@ -3,6 +3,7 @@ from datetime import date
 from data.db import (
     ActivityDetail,
     AiWorkout,
+    AthleteGoal,
     AthleteSettings,
     ThresholdFreshnessDTO,
     User,
@@ -15,6 +16,20 @@ from data.ramp_tests import create_ramp_test
 from tasks.dto import local_today
 
 from .actors.workout import actor_push_workout
+
+# Test cadence by training phase (RAMP_TEST_BIKE_SPEC §9):
+#   - Peak/taper (≤14 days to A-race): NO testing — high stress + tapering
+#     volume produces unreliable α1 fits and disrupts race-week routine.
+#   - Base phase (≤56 days, 8 weeks): test every 8 weeks. Recovery/aerobic
+#     emphasis means slower threshold drift; less frequent re-calibration.
+#   - Build phase (>56 days from A-race, or no A-race): test every 6 weeks.
+#     Active progression — thresholds shift faster, tighter cadence keeps
+#     zones honest.
+#   - No active goal: 30-day default (current behavior, less informed).
+PEAK_TAPER_DAYS = 14
+BASE_PHASE_CADENCE_DAYS = 56
+BUILD_PHASE_CADENCE_DAYS = 42
+DEFAULT_CADENCE_DAYS = 30
 
 
 class RampTrainingSuggestion:
@@ -43,6 +58,31 @@ class RampTrainingSuggestion:
             return 0
         return self.wellness.ctl - self.wellness.atl
 
+    def _staleness_threshold_days(self) -> int | None:
+        """Days-since-last-ramp threshold derived from training phase.
+
+        Returns ``None`` to suppress all ramp suggestions (peak/taper week).
+        See module-level constants for the cadence schedule.
+
+        Picks the **nearest upcoming** active goal — not just RACE_A — so an
+        athlete with «RACE_A in 200d + RACE_B in 7d» correctly enters
+        peak/taper for the close-by B-race rather than build phase for the
+        far-future A. ``AthleteGoal.get_active`` returns RACE_A first by
+        category which would miss this.
+        """
+        goals = AthleteGoal.get_all(user_id=self.user.id)
+        today = local_today()
+        upcoming = [g for g in goals if g.is_active and g.event_date and g.event_date >= today]
+        if not upcoming:
+            return DEFAULT_CADENCE_DAYS
+        nearest = min(upcoming, key=lambda g: g.event_date)
+        days_to_race = (nearest.event_date - today).days
+        if days_to_race <= PEAK_TAPER_DAYS:
+            return None  # suppress
+        if days_to_race <= BASE_PHASE_CADENCE_DAYS:
+            return BASE_PHASE_CADENCE_DAYS
+        return BUILD_PHASE_CADENCE_DAYS
+
     @property
     def is_test_needed(self) -> bool:
         # Need wellness with valid CTL/ATL — without it tsb is meaningless.
@@ -57,26 +97,37 @@ class RampTrainingSuggestion:
         if any("Ramp Test" in (w.name or "") for w in upcoming):
             return False  # already planned
 
-        # Find candidate sport. `no_data` (never tested) takes a bootstrap
-        # path that relaxes the recovery gate — a newcomer needs a baseline,
-        # and there's no prior fit to "protect" yet. `stale` (>30d) keeps the
-        # full gate so we don't pollute the existing baseline with a noisy fit.
+        cadence_days = self._staleness_threshold_days()
+        if cadence_days is None:
+            return False  # peak/taper — never suggest
+
+        # Pick candidate sport. Two-pass priority:
+        #   1. Bootstrap (`no_data`) — first-time test wins. Without a baseline
+        #      drift detection is moot; the bootstrap path also relaxes the
+        #      recovery gate (newcomer has no prior fit to «protect»).
+        #   2. Stale (`days_since > cadence_days`) — among stale sports, pick
+        #      the one whose threshold is furthest out of date. Cadence varies
+        #      by training phase (build/base) — see _staleness_threshold_days.
+        # Tie-break: declared sport-list order (Run preferred when equal).
+        freshness: dict[str, ThresholdFreshnessDTO] = {
+            sport: User.get_threshold_freshness(user_id=self.user.id, sport=sport) for sport in self.sports
+        }
+
+        bootstrap_sports = [s for s in self.sports if freshness[s].status == "no_data"]
+        is_bootstrap = bool(bootstrap_sports)
+
         candidate_sport: str | None = None
         candidate_days_since: int | None = None
-        is_bootstrap = False
-        for sport in self.sports:
-            data: ThresholdFreshnessDTO = User.get_threshold_freshness(user_id=self.user.id, sport=sport)
-            if data.status == "no_data":
-                candidate_sport = sport
-                is_bootstrap = True
-                break
-            if data.days_since and data.days_since > 30:
-                candidate_sport = sport
-                candidate_days_since = data.days_since
-                break
 
-        if not candidate_sport:
-            return False
+        if is_bootstrap:
+            candidate_sport = bootstrap_sports[0]
+        else:
+            stale = [(s, freshness[s].days_since) for s in self.sports if (freshness[s].days_since or 0) > cadence_days]
+            if not stale:
+                return False
+            # max() picks largest days_since; ties broken by smaller sports-list index
+            # via negative-index secondary key (higher key wins → smaller index wins).
+            candidate_sport, candidate_days_since = max(stale, key=lambda x: (x[1], -self.sports.index(x[0])))
 
         if not is_bootstrap:
             # Ramp test stresses the system; low recovery noises the HRV signal
@@ -109,11 +160,17 @@ class RampTrainingSuggestion:
         freshness: ThresholdFreshnessDTO = User.get_threshold_freshness(user_id=self.user.id, sport=sport)
 
         threshold_pace: float | None = None
+        bike_ftp: float | None = None
         if sport == "Run":
             run_settings = AthleteSettings.get(self.user.id, sport)
             threshold_pace = run_settings.threshold_pace if run_settings else None
+        elif sport == "Ride":
+            ride_settings = AthleteSettings.get(self.user.id, sport)
+            bike_ftp = float(ride_settings.ftp) if ride_settings and ride_settings.ftp else None
 
-        workout: PlannedWorkoutDTO = create_ramp_test(sport, dt, freshness.days_since, threshold_pace=threshold_pace)
+        workout: PlannedWorkoutDTO = create_ramp_test(
+            sport, dt, freshness.days_since, threshold_pace=threshold_pace, bike_ftp=bike_ftp
+        )
 
         actor_push_workout.send(
             user=self.user,

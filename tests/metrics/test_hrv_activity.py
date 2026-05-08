@@ -224,12 +224,15 @@ class TestThresholdDetection:
         assert result is None
 
     def test_ramp_with_power(self):
-        """Ramp with power data should include hrvt1_power."""
+        """Ramp with power data populates hrvt1_power as a numeric value."""
         ts = _generate_ramp_timeseries()
         result = detect_hrv_thresholds(ts, activity_type="Ride")
-        if result is not None and result.get("hrvt1_hr"):
-            # Power data is available, should detect power threshold
-            assert "hrvt1_power" in result or result.get("hrvt1_power") is None
+        assert result is not None
+        assert result.get("hrvt1_hr") is not None
+        assert isinstance(result.get("hrvt1_power"), int)
+        # Synthetic ramp goes from 100W to ~280W; HRVT1 should sit somewhere
+        # in the middle.
+        assert 100 < result["hrvt1_power"] < 350
 
     def test_work_segments_filter_improves_fit(self):
         """Points outside WORK windows (noisy WU/CD) should be dropped from the fit."""
@@ -276,6 +279,57 @@ class TestThresholdDetection:
         assert (a is None) == (b is None)
         if a and b:
             assert a["hrvt1_hr"] == b["hrvt1_hr"]
+
+
+class TestPerThresholdTier:
+    """Per-threshold confidence combines R² + local point density (n_local).
+
+    See ``docs/DFA_REGRESSION_METHODOLOGY_SPEC.md §2.3``.
+    """
+
+    def test_high_requires_both_r2_and_density(self):
+        from data.hrv_activity import _per_threshold_tier
+
+        assert _per_threshold_tier(n_local=5, r_squared=0.85) == "high"
+        assert _per_threshold_tier(n_local=10, r_squared=0.92) == "high"
+
+    def test_high_blocked_by_low_density(self):
+        """R² great but only 4 points near crossing → demoted to medium."""
+        from data.hrv_activity import _per_threshold_tier
+
+        assert _per_threshold_tier(n_local=4, r_squared=0.92) == "medium"
+
+    def test_high_blocked_by_low_r2(self):
+        """Density fine but R²=0.84 — just under the 0.85 cut."""
+        from data.hrv_activity import _per_threshold_tier
+
+        assert _per_threshold_tier(n_local=10, r_squared=0.84) == "medium"
+
+    def test_medium_requires_both(self):
+        from data.hrv_activity import _per_threshold_tier
+
+        assert _per_threshold_tier(n_local=3, r_squared=0.70) == "medium"
+
+    def test_low_when_either_below_medium(self):
+        from data.hrv_activity import _per_threshold_tier
+
+        assert _per_threshold_tier(n_local=2, r_squared=0.92) == "low"
+        assert _per_threshold_tier(n_local=10, r_squared=0.65) == "low"
+        assert _per_threshold_tier(n_local=0, r_squared=0.0) == "low"
+
+
+class TestPerThresholdConfidenceInDetectorOutput:
+    """End-to-end: synthetic ramp timeseries → detector → result has both
+    per-threshold confidence fields."""
+
+    def test_detector_emits_per_threshold_confidence(self):
+        ts = _generate_ramp_timeseries()
+        result = detect_hrv_thresholds(ts, activity_type="Ride")
+        assert result is not None
+        assert "hrvt1_confidence" in result
+        assert "hrvt2_confidence" in result
+        assert result["hrvt1_confidence"] in ("high", "medium", "low")
+        assert result["hrvt2_confidence"] in ("high", "medium", "low")
 
 
 class TestDiagnoseThresholds:
@@ -407,3 +461,39 @@ class TestActivityHrvCRUD:
             assert loaded is not None
             assert loaded.dfa_a1_mean == 0.85
             assert loaded.processing_status == "processed"
+
+    @pytest.mark.asyncio
+    async def test_per_threshold_confidence_round_trip(self):
+        """Migration ``x4e5f6a7b8c9`` adds ``hrvt1_confidence`` /
+        ``hrvt2_confidence``. Drift detector doesn't read them yet (deferred
+        to H1 in DFA_REGRESSION_METHODOLOGY_SPEC), so a silent ORM-mapping
+        regression would only surface during the H1 rollout. This test pins
+        the columns so future schema mistakes (length/name/type) fail loudly
+        in CI rather than at H1 merge time.
+        """
+        async with get_session() as session:
+            session.add(
+                Activity(
+                    id="i_conf_rt",
+                    user_id=1,
+                    start_date_local="2026-05-08",
+                    type="Ride",
+                    moving_time=3600,
+                )
+            )
+            await session.commit()
+
+        await ActivityHrv.save(
+            ActivityHrv(
+                activity_id="i_conf_rt",
+                activity_type="Ride",
+                processing_status="processed",
+                hrvt1_confidence="high",
+                hrvt2_confidence="medium",
+            )
+        )
+
+        async with get_session() as session:
+            loaded = await session.get(ActivityHrv, "i_conf_rt")
+            assert loaded.hrvt1_confidence == "high"
+            assert loaded.hrvt2_confidence == "medium"

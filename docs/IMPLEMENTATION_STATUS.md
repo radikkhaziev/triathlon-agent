@@ -7,7 +7,7 @@
 
 ## Headline
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). ATP Phase 3 prompt enrichment complete (no cron deviation, see below). Ramp-test Run protocol switched to pace-driven (`%pace` units + `event.target=PACE` auto via `has_pace_steps`); recalibrated to 8-step `80→115%` ladder against pace at HRVT2 (2026-05-08). Drift detection: HRVT2 → Intervals' `lthr`/`threshold_pace`/`ftp` (was HRVT1 — concept bug, FTP added 2026-05-08 per issue #313), latest-ramp-only with `|drift|>5%` AND `R²≥0.7` gate (was 3-sample avg + bootstrap). `get_zones` MCP tool reshape: sport-tagged keys, dual-unit zone objects (issue #313). New CLI: `reprocess-ramp-test` for back-filling `hrvt2_pace`/`hrvt2_power` after migrations `v2c3d4e5f6a7` and `w3d4e5f6a7b8`.
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). ATP Phase 3 prompt enrichment complete (no cron deviation, see below). Ramp-test protocols rebuilt 2026-05-08 against `docs/RAMP_TEST_BIKE_SPEC.md`: Run pace-driven 8-step `80→115%`, Bike power-driven 11+1 step `60→110% + 1×120%` push-to-failure. Phase-aware test cadence (peak/taper/base/build cadence varies by nearest race). Drift detection: HRVT2 → Intervals' `lthr`/`threshold_pace`/`ftp` (was HRVT1 — concept bug, FTP added 2026-05-08 per issue #313), absolute-unit gates (3 bpm / 5 s/km / 5 W) + R² 3-tier (high → auto-fire, medium → button, low → soft hint). DFA detector: slope-sign sanity check, power-bound WARN logging, per-threshold confidence (n_local × R²) — see `docs/DFA_REGRESSION_METHODOLOGY_SPEC.md` for deferred sigmoid rewrite. `get_zones` MCP tool reshape: sport-tagged keys, dual-unit zone objects (issue #313). New CLI: `reprocess-ramp-test` for back-filling `hrvt2_pace`/`hrvt2_power` after migrations `v2c3d4e5f6a7` / `w3d4e5f6a7b8`. New schema: `x4e5f6a7b8c9` adds `hrvt1_confidence`/`hrvt2_confidence`.
 
 ---
 
@@ -195,9 +195,37 @@ Issue #313 fix. Spec: `docs/ZONES_FIX_SPEC.md`. Two coupled changes shipped in o
 
 ---
 
+## Ramp test protocol rebuild + drift detection upgrade (2026-05-08)
+
+Six coupled changes shipped under one PR. Specs: `docs/RAMP_TEST_BIKE_SPEC.md` (protocol design), `docs/DFA_REGRESSION_METHODOLOGY_SPEC.md` (analytical pipeline + deferred sigmoid rewrite).
+
+**1. Bike ramp protocol rebuilt.** Replaced static `RAMP_STEPS_RIDE` constant (6 steps, 65→103% FTP, uneven 7-8% increments — α1 didn't penetrate 0.5 cleanly, R²=0.62 typical) with `build_ramp_steps_ride()`: 2-phase WU (5min @ 50% + 5min @ 60% FTP) → 11 work steps × 3min @ 60-110% (uniform 5%) → final 1 × 4min @ 120% «push to failure» (deliberate 10% jump — calibration-trap insurance for athletes with undercalibrated FTP) → CD 10min @ 50%. Total 57 min. Three points below HRVT1 (≈75% FTP) for clean linear-fit at α1=0.75. Run protocol unchanged from previous PR (8 work steps × 3min @ 80→115%).
+
+**2. Builder signature `(steps, warnings)`.** Both `build_ramp_steps_run` and `build_ramp_steps_ride` now return a tuple — second element accumulates per-test warnings (default fallback used: Run 295 s/km, Bike 200W; Run treadmill cap exceeded). Consumers (`tasks/utils.py:plan_ramp`, `mcp_server/tools/ramp_tests.py:create_ramp_test_tool`) updated. Workout rationale baked with §6 description templates (equipment list, pacing guidance, failure signals, cadence/cooling for bike).
+
+**3. Drift detection switched from relative to absolute gates.** `data/db/dto.py` defines `DRIFT_LTHR_BPM = 3`, `DRIFT_PACE_SEC_PER_KM = 5`, `DRIFT_FTP_WATTS = 5`. The flat 5% relative gate was clinically too loose for LTHR (8 bpm at LTHR=160) and tighter than power-meter repeatability for FTP (10 W at 200W). Helpers `_drift_alert_lthr` / `_pace` / `_ftp` in `data/db/user.py` rewritten; `_drift_button_status` mirror in `tasks/formatter.py`.
+
+**4. R² 3-tier confidence + auto-update.** `DRIFT_R2_HIGH = 0.85` triggers `actor_update_zones` automatically without user button (zones change silently with audit log line «Auto-update zones dispatched ...»). `0.70 ≤ R² < 0.85` shows the «Обновить зоны» button (current default UX). `R² < 0.70` only emits a soft hint. `build_ramp_test_message` returns `(msg, show_button, auto_update_fired)`; activities actor dispatches auto-update on the third flag.
+
+**5. Phase-aware test cadence.** `RampTrainingSuggestion._staleness_threshold_days` reads `AthleteGoal.get_all`, picks the **nearest upcoming** active goal (not `get_active` which returned RACE_A first regardless of date — broke the «RACE_A in 200d + RACE_B in 7d» case). Returns: `None` (suppress) if ≤14 days to nearest race, `BASE_PHASE_CADENCE_DAYS=56` if ≤56d, `BUILD_PHASE_CADENCE_DAYS=42` else, or `DEFAULT_CADENCE_DAYS=30` if no active goal. Replaces the hardcoded 30-day staleness check.
+
+**6. DFA detector E1+E2+E3 quality gates.**
+- **E1**: `data/hrv_activity.py` slope sign sanity check now logs warning on positive slope (was silent return None) — physiologically α1 must monotonically fall with HR, positive slope = corrupt RR data.
+- **E2**: Power bound check (50 < pow < 500/800W) emits explicit warning when out of range (was silent skip). Same for `np.linalg.LinAlgError` exception path.
+- **E3**: New schema columns `hrvt1_confidence` / `hrvt2_confidence` (migration `x4e5f6a7b8c9`). Per-threshold confidence combines local point density (n_local in α1 ∈ ±0.15 of crossing) with global R² via `_per_threshold_tier(n, r²)` — `high` if `n≥5 AND r²≥0.85`, `medium` if `n≥3 AND r²≥0.70`, else `low`. Stored + exposed via `get_activity_hrv` MCP tool. **Drift gate keeps R²-based logic unchanged in this PR** — switching to per-threshold tier is part of the deferred H1 (sigmoid fit + per-step steady-state averaging) per `docs/DFA_REGRESSION_METHODOLOGY_SPEC.md` §3.
+
+**Test coverage:** `TestRampAutoUpdateWiring` (3 tests guarding the auto-update dispatch), `TestPhaseAwareCadence` (7 tests covering peak/taper/base/build/multi-goal/inactive), `TestPerThresholdTier` (5 unit cases) + `TestPerThresholdConfidenceInDetectorOutput` (1 e2e), `TestActivityHrvCRUD.test_per_threshold_confidence_round_trip` (ORM mapping pin), and various boundary rewrites for the absolute-units switch. All 269 tests in the focused suite green.
+
+**i18n updates:** new keys in `locale/en/LC_MESSAGES/messages.po` for «Зоны обновлены автоматически (high confidence)», plus pre-existing leak fix for «✅ Зоны обновлены», «ℹ️ Drift не обнаружен, зоны актуальны» in `tasks/actors/athlets.py` (pre-existing bug found during review, fixed in same PR).
+
+**Migration path:** apply `x4e5f6a7b8c9`, no manual reprocessing needed. New columns default NULL on old rows; populated on next ramp test. Pre-existing migration `w3d4e5f6a7b8` (hrvt2_power) still requires `reprocess-ramp-test --push` for back-fill if needed (separate, earlier in this branch).
+
+---
+
 ## Pending
 
 - MT Phase 2 (JWT upgrade): tenant_id, role, scope claims, bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`.
 - Retire legacy `INTERVALS_API_KEY` env vars (OAuth Phase 5).
 - User-memory Phase 2 extractor — gated on `tool_facts_per_100_msgs_30d < 3` with `chat_msgs ≥ 100`.
 - When scaling to multi-worker uvicorn, migrate `_retry_backfill_last_success` and `_mcp_config_last_access` to Redis INCR+EXPIRE.
+- **DFA H1+H2** (per `docs/DFA_REGRESSION_METHODOLOGY_SPEC.md`): sigmoidal regression replacing linear fit + per-step steady-state averaging for power-HR regression. Validation pipeline + lazy migration story documented in spec.

@@ -2,7 +2,8 @@
 
 The drift detector compares the *latest* ramp-test HRVT2 reading against
 ``athlete_settings`` (LTHR for Run/Ride, plus pace at HRVT2 for Run).
-Gate: ``|drift| > 5%`` AND ``R² ≥ 0.7`` on the most recent valid row.
+Gate: absolute |Δ| floor per metric (3 bpm / 5 s/km / 5 W from
+``data.db.dto``) AND ``R² ≥ 0.7`` on the most recent valid row.
 """
 
 from datetime import date
@@ -76,8 +77,8 @@ class TestDriftAlertHelpers:
     def test_lthr_returns_none_below_drift_gate(self):
         from data.db.user import _drift_alert_lthr
 
-        # 156 vs 153 = +1.96% — under 5%
-        assert _drift_alert_lthr("Run", hrvt2_hr=156.0, r_squared=0.9, config_lthr=153) is None
+        # 155 vs 153 = +2 bpm, abs(Δ) < 3 → silent
+        assert _drift_alert_lthr("Run", hrvt2_hr=155.0, r_squared=0.9, config_lthr=153) is None
 
     def test_lthr_at_r_squared_boundary_fires(self):
         """R²=0.7 exactly → gate passes (>=, not >)."""
@@ -91,7 +92,7 @@ class TestDriftAlertHelpers:
         assert alert.diff_pct > 5
 
     def test_lthr_negative_drift_fires(self):
-        """Drift < -5% (config too high) also fires."""
+        """Negative |Δ| ≥ 3 bpm (config too high) also fires."""
         from data.db.user import _drift_alert_lthr
 
         alert = _drift_alert_lthr("Run", hrvt2_hr=140.0, r_squared=0.85, config_lthr=160)
@@ -118,8 +119,8 @@ class TestDriftAlertHelpers:
     def test_pace_returns_none_below_drift_gate(self):
         from data.db.user import _drift_alert_pace
 
-        # 290 vs 295 = -1.7% — under 5%
-        assert _drift_alert_pace("Run", hrvt2_pace="4:50", r_squared=0.9, config_pace_sec=295) is None
+        # 4:53 = 293 s/km vs 295 = Δ-2 s/km, abs(Δ) < 5 → silent
+        assert _drift_alert_pace("Run", hrvt2_pace="4:53", r_squared=0.9, config_pace_sec=295) is None
 
     def test_pace_fires_with_proper_drift(self):
         from data.db.user import _drift_alert_pace
@@ -147,7 +148,7 @@ class TestDriftAlertHelpers:
     def test_ftp_returns_none_below_drift_gate(self):
         from data.db.user import _drift_alert_ftp
 
-        # 212 vs 208 = +1.9% — under 5%
+        # 212 vs 208 = Δ+4 W, under 5 W gate
         assert _drift_alert_ftp("Ride", hrvt2_power=212.0, r_squared=0.9, config_ftp=208) is None
 
     def test_ftp_fires_with_proper_drift(self):
@@ -162,7 +163,7 @@ class TestDriftAlertHelpers:
         assert alert.diff_pct > 5
 
     def test_ftp_negative_drift_fires(self):
-        """Drift < -5% (FTP set too high) also fires."""
+        """Negative |Δ| ≥ 5 W (FTP set too high) also fires."""
         from data.db.user import _drift_alert_ftp
 
         alert = _drift_alert_ftp("Ride", hrvt2_power=180.0, r_squared=0.85, config_ftp=210)
@@ -226,7 +227,7 @@ class TestLthrDrift:
         assert result is None
 
     async def test_below_5pct_no_alert(self, _test_db):
-        """Drift <= 5% → silent."""
+        """|Δ| < 3 bpm → silent."""
         await _seed_drift_setup(user_id=1, sport="Run", lthr=170)
         await _add_hrv_sample(
             user_id=1,
@@ -254,7 +255,7 @@ class TestLthrDrift:
         assert result is None
 
     async def test_above_5pct_with_decent_r2_fires(self, _test_db):
-        """|drift| > 5% AND R² ≥ 0.7 → LTHR alert."""
+        """|Δ| ≥ 3 bpm AND R² ≥ 0.7 → LTHR alert."""
         await _seed_drift_setup(user_id=1, sport="Run", lthr=153)
         await _add_hrv_sample(
             user_id=1,
@@ -305,7 +306,7 @@ class TestThresholdPaceDrift:
         await AthleteSettings.upsert(user_id=1, sport="Run", lthr=lthr, threshold_pace=threshold_pace)
 
     async def test_pace_drift_fires(self, _test_db):
-        """Pace at HRVT2 differs from config_threshold_pace by >5% → THRESHOLD_PACE alert."""
+        """|Δ pace| ≥ 5 s/km vs config_threshold_pace → THRESHOLD_PACE alert."""
         await self._seed_run_with_pace(lthr=170, threshold_pace=295.0)
         await _add_hrv_sample(
             user_id=1,
@@ -339,15 +340,16 @@ class TestThresholdPaceDrift:
         result = await User.detect_threshold_drift(user_id=1)
         assert result is None
 
-    async def test_pace_under_5pct_silent(self, _test_db):
+    async def test_pace_under_gate_silent(self, _test_db):
+        """Pace within absolute 5 s/km gate → no alert."""
         await self._seed_run_with_pace(lthr=170, threshold_pace=295.0)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt2_hr=172.0,
-            hrvt2_pace="4:50",  # 290 s/km, -1.7% vs 295
+            hrvt2_hr=172.0,  # within LTHR gate too (Δ+2 bpm < 3)
+            hrvt2_pace="4:53",  # 293 s/km, Δ-2 s/km < 5 gate
             r_squared=0.85,
         )
         result = await User.detect_threshold_drift(user_id=1)
@@ -393,7 +395,7 @@ class TestFtpDrift:
         await AthleteSettings.upsert(user_id=1, sport="Ride", lthr=lthr, ftp=ftp)
 
     async def test_ftp_drift_fires(self, _test_db):
-        """Pow at HRVT2 differs from config_ftp by >5% → FTP alert."""
+        """|Δ pow| ≥ 5 W vs config_ftp → FTP alert."""
         await self._seed_ride(lthr=165, ftp=208)
         await _add_hrv_sample(
             user_id=1,
@@ -427,15 +429,16 @@ class TestFtpDrift:
         result = await User.detect_threshold_drift(user_id=1)
         assert result is None
 
-    async def test_ftp_under_5pct_silent(self, _test_db):
+    async def test_ftp_under_gate_silent(self, _test_db):
+        """FTP within absolute 5 W gate → no alert."""
         await self._seed_ride(lthr=165, ftp=208)
         await _add_hrv_sample(
             user_id=1,
             sport="Ride",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt2_hr=166.0,
-            hrvt2_power=215.0,  # +3.4% vs 208
+            hrvt2_hr=166.0,  # Δ+1 bpm < 3 gate
+            hrvt2_power=211.0,  # Δ+3 W < 5 gate
             r_squared=0.85,
         )
         result = await User.detect_threshold_drift(user_id=1)
