@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from bot.i18n import _, get_language
+from data.db.dto import DRIFT_PCT_THRESHOLD, DRIFT_R2_THRESHOLD
 from tasks.dto import local_today
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,8 @@ def sport_emoji(activity_type: str | None) -> str:
     return _EMOJI.get(activity_type, "🏋️")
 
 
-def _format_pace(sec_per_km: float | None) -> str | None:
+def format_pace(sec_per_km: float | None) -> str | None:
+    """Render integer s/km value as ``M:SS/km``. Returns ``None`` on invalid input."""
     if not sec_per_km or sec_per_km <= 0:
         return None
     m, s = divmod(int(sec_per_km), 60)
@@ -252,31 +254,24 @@ def _ramp_failure_advice(reason: dict) -> str:
     return ""
 
 
-def _drift_button_status(
-    measured: float, config: float, sample_count: int, r2: float | None
-) -> tuple[bool, str | None]:
+def _drift_button_status(measured: float, config: float, r2: float | None) -> tuple[bool, str | None]:
     """Decide whether to surface the «Update zones» button + which hint to render.
 
     Returns ``(button_visible, hint_text)``. Hint is the recommendation line
-    («рекомендуем обновить» / «bootstrap» / «нужен ещё один ramp»); ``None``
-    when there's nothing useful to say (drift below threshold).
+    («рекомендуем обновить» / «низкое R²»); ``None`` when there's nothing
+    useful to say (drift below threshold).
 
-    **DUPLICATION WARNING:** the gating thresholds here MUST stay in sync with
-    ``data/db/user.py:_drift_alert_lthr`` and ``_drift_alert_pace``. The button
-    fires `actor_update_zones`, which re-reads `User.detect_threshold_drift` —
-    if this UI gate is more permissive than the backend gate, the button shows
-    but the actor finds nothing to push (no-op + confused user). If less
-    permissive, real drift goes uncommunicated. Keep the thresholds in lockstep
-    or extract a shared helper. Direct unit tests below cover all branches.
+    Gates pull from ``data.db.dto`` so the UI and backend can never disagree —
+    the button fires `actor_update_zones`, which re-reads
+    `User.detect_threshold_drift`, so any divergence becomes a "button shows
+    but the actor finds nothing to push" UX bug.
     """
     pct = (measured - config) / config * 100
-    if sample_count >= 2 and abs(pct) > 5:
-        return True, _("Рекомендуем обновить зоны")
-    if sample_count == 1 and r2 is not None and r2 > 0.85 and abs(pct) > 10:
-        return True, _("Bootstrap-обновление: высокое R² и >10% drift")
-    if abs(pct) > 5:
-        return False, _("для обновления зон нужен ещё один ramp test")
-    return False, None
+    if abs(pct) <= DRIFT_PCT_THRESHOLD:
+        return False, None
+    if r2 is None or r2 < DRIFT_R2_THRESHOLD:
+        return False, _("низкое R² — повтори ramp test для обновления зон")
+    return True, _("Рекомендуем обновить зоны")
 
 
 def build_ramp_test_message(
@@ -284,22 +279,18 @@ def build_ramp_test_message(
     hrv: ActivityHrv,
     config_lthr: int | None,
     failure_reason: dict | None = None,
-    hrvt1_sample_count: int = 0,
     *,
     config_threshold_pace: float | None = None,
-    hrvt1_pace_sec: int | None = None,
+    hrvt2_pace_sec: int | None = None,
 ) -> tuple[str, bool]:
     """Build ramp-test-specific notification. Returns (message, show_update_zones_button).
 
-    Button surfaces when a new HRVT1 was detected and either:
-      - ≥2 samples agree on >5% drift (standard path), or
-      - bootstrap: single sample with R² > 0.85 and >10% drift — covers the
-        first ramp test after config setup, where waiting for sample #2 means
-        another month on stale settings. Mirrors `User.detect_threshold_drift`.
-
-    Both LTHR (HR) and Run threshold pace are evaluated independently — drift
-    on either dimension lights up the button so `actor_update_zones` can push
-    whichever moved.
+    Button surfaces when the latest ramp test shows ``|drift| > 5%`` and
+    ``R² ≥ 0.7`` on either LTHR (HRVT2 HR) or Run threshold pace (pace at
+    HRVT2). Mirrors ``User.detect_threshold_drift``. The values pushed
+    (HRVT2 HR, pace at HRVT2) align with Intervals.icu's `lthr` /
+    `threshold_pace` fields, which conceptually correspond to the
+    anaerobic threshold.
     """
     sport = activity.type or "?"
     lines: list[str] = [f"⚡ {_('Ramp Test')} ({sport}) — {_('результат')}"]
@@ -313,7 +304,10 @@ def build_ramp_test_message(
             hrvt1 += f" / {hrv.hrvt1_pace}"
         lines.append(hrvt1)
         if hrv.hrvt2_hr:
-            lines.append(f"HRVT2: {hrv.hrvt2_hr:.0f} bpm")
+            hrvt2 = f"HRVT2: {hrv.hrvt2_hr:.0f} bpm"
+            if hrv.hrvt2_pace:
+                hrvt2 += f" / {hrv.hrvt2_pace}"
+            lines.append(hrvt2)
 
         meta_bits = []
         if hrv.threshold_r_squared is not None:
@@ -324,23 +318,24 @@ def build_ramp_test_message(
             lines.append(f"({', '.join(meta_bits)})")
 
         r2 = hrv.threshold_r_squared
-        soft_hints: list[str] = []  # «нужен ещё один» — collected if no drift fires
+        soft_hints: list[str] = []  # «низкое R²» — collected if no drift fires
 
-        if config_lthr:
-            lthr_pct = (hrv.hrvt1_hr - config_lthr) / config_lthr * 100
+        if config_lthr and hrv.hrvt2_hr is not None:
+            lthr_pct = (hrv.hrvt2_hr - config_lthr) / config_lthr * 100
             lines.append(f"{_('текущий LTHR')}: {config_lthr} bpm ({lthr_pct:+.1f}%)")
-            visible, hint = _drift_button_status(hrv.hrvt1_hr, config_lthr, hrvt1_sample_count, r2)
+            visible, hint = _drift_button_status(hrv.hrvt2_hr, config_lthr, r2)
             if visible:
                 show_button = True
                 lines.append(f"💡 {hint}")
             elif hint:
                 soft_hints.append(hint)
 
-        if config_threshold_pace and hrvt1_pace_sec:
+        if config_threshold_pace and hrvt2_pace_sec:
             cfg_pace = int(round(config_threshold_pace))
-            pace_pct = (hrvt1_pace_sec - cfg_pace) / cfg_pace * 100
-            lines.append(f"{_('текущий threshold pace')}: {cfg_pace} s/km ({pace_pct:+.1f}%)")
-            visible, hint = _drift_button_status(hrvt1_pace_sec, cfg_pace, hrvt1_sample_count, r2)
+            pace_pct = (hrvt2_pace_sec - cfg_pace) / cfg_pace * 100
+            cfg_pace_fmt = format_pace(cfg_pace) or f"{cfg_pace} s/km"
+            lines.append(f"{_('текущий threshold pace')}: {cfg_pace_fmt} ({pace_pct:+.1f}%)")
+            visible, hint = _drift_button_status(hrvt2_pace_sec, cfg_pace, r2)
             if visible and not show_button:
                 show_button = True
                 lines.append(f"💡 {hint}")
@@ -351,7 +346,7 @@ def build_ramp_test_message(
                 soft_hints.append(hint)
 
         # Show one soft hint only when no drift fired anywhere — avoids
-        # «recommend update» + «need another test» showing together.
+        # «recommend update» + «low R²» showing together.
         if not show_button and soft_hints:
             lines.append(f"ℹ️ {soft_hints[0]}")
     else:
@@ -446,7 +441,7 @@ def _build_post_race_message(activity: Activity, race: Race) -> str:
         time_parts.append(f"⏱ {finish}" + (f" ({_('цель')}: {goal})" if goal else ""))
     if dist_km is not None:
         time_parts.append(f"📏 {dist_km} km")
-    pace = _format_pace(race.avg_pace_sec_km)
+    pace = format_pace(race.avg_pace_sec_km)
     if pace:
         time_parts.append(f"⚡ {pace}")
     if time_parts:
@@ -564,11 +559,14 @@ def build_evening_message(
     return "\n".join(lines)
 
 
-def build_morning_message(
-    row: Wellness,
-    threshold_drift: dict | None = None,
-) -> str:
-    """Build compact morning Telegram message."""
+def build_morning_message(row: Wellness) -> str:
+    """Build compact morning Telegram message.
+
+    Drift-alert rendering lives in ``tasks.actors.reports`` (the morning-report
+    actor), not here — that path consumes the live ``ThresholdDriftDTO`` object
+    directly with proper formatting. The dead ``threshold_drift=`` parameter
+    that used to hang off this function was never wired up in production.
+    """
     lines = []
 
     score = row.recovery_score or 0
@@ -582,15 +580,6 @@ def build_morning_message(
         lines.append(f"TSB: {tsb:+.0f} 🔴 (overtraining risk)")
     elif tsb is not None and tsb < -10:
         lines.append(f"TSB: {tsb:+.0f} ⚠️ (productive overreach)")
-
-    if threshold_drift and threshold_drift.get("alerts"):
-        lines.append("")
-        lines.append(f"🔔 {_('ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ')}")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━")
-        for alert in threshold_drift["alerts"]:
-            lines.append(f"{_('HRVT1 стабильно')} {alert['measured_avg']} bpm ({alert['tests_count']} {_('теста')})")
-            lines.append(f"{_('Текущий LTHR')}: {alert['config_value']} bpm ({alert['diff_pct']:+.1f}%)")
-            lines.append(f"→ {_('Обнови LTHR в настройках')}")
 
     return "\n".join(lines)
 

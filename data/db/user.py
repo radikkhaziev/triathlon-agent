@@ -13,6 +13,8 @@ from data.crypto import decrypt_field, encrypt_field
 
 # Backward-compatible re-exports (moved to data.db.dto)
 from data.db.dto import (  # noqa: F401, E402
+    DRIFT_PCT_THRESHOLD,
+    DRIFT_R2_THRESHOLD,
     DriftAlertDTO,
     ThresholdDriftDTO,
     ThresholdFreshnessDTO,
@@ -50,92 +52,68 @@ def parse_pace_to_sec(pace: str | None) -> int | None:
     return m * 60 + s
 
 
-def _drift_alert_lthr(sport: str, rows: list, config_lthr: int) -> DriftAlertDTO | None:
-    """LTHR drift: standard ≥2-sample path + single-sample bootstrap."""
-    if len(rows) >= 2:
-        avg = sum(r[0] for r in rows) / len(rows)
-        pct = (avg - config_lthr) / config_lthr * 100
-        if abs(pct) > 5:
-            return DriftAlertDTO(
-                sport=sport,
-                metric="LTHR",
-                measured_avg=round(avg),
-                config_value=config_lthr,
-                diff_pct=round(pct, 1),
-                tests_count=len(rows),
-                message=(
-                    f"HRVT1 stable at {round(avg)} bpm ({len(rows)} tests). "
-                    f"Current LTHR {sport}: {config_lthr} bpm ({pct:+.1f}%). "
-                    "Consider updating LTHR."
-                ),
-            )
-    elif len(rows) == 1:
-        hrvt1, r_squared = rows[0]
-        if r_squared is not None and r_squared > 0.85:
-            pct = (hrvt1 - config_lthr) / config_lthr * 100
-            if abs(pct) > 10:
-                return DriftAlertDTO(
-                    sport=sport,
-                    metric="LTHR",
-                    measured_avg=round(hrvt1),
-                    config_value=config_lthr,
-                    diff_pct=round(pct, 1),
-                    tests_count=1,
-                    message=(
-                        f"HRVT1 = {round(hrvt1)} bpm (single test, R²={r_squared:.2f}). "
-                        f"Current LTHR {sport}: {config_lthr} bpm ({pct:+.1f}%). "
-                        "Bootstrap update: drift exceeds 10% on a high-quality fit."
-                    ),
-                )
-    return None
+def _drift_alert_lthr(
+    sport: str,
+    hrvt2_hr: float | None,
+    r_squared: float | None,
+    config_lthr: int,
+) -> DriftAlertDTO | None:
+    """LTHR drift: latest ramp-test only. Pushes HRVT2 (anaerobic threshold).
+
+    Intervals.icu's `lthr` field is conceptually the lactate threshold = HRVT2.
+    Pushing HRVT1 there (older behavior) shifted all zones down ~10-15%.
+    """
+    if hrvt2_hr is None or r_squared is None or r_squared < DRIFT_R2_THRESHOLD:
+        return None
+    pct = (hrvt2_hr - config_lthr) / config_lthr * 100
+    if abs(pct) <= DRIFT_PCT_THRESHOLD:
+        return None
+    return DriftAlertDTO(
+        sport=sport,
+        metric="LTHR",
+        measured=round(hrvt2_hr),
+        config_value=config_lthr,
+        diff_pct=round(pct, 1),
+        message=(
+            f"HRVT2 = {round(hrvt2_hr)} bpm (R²={r_squared:.2f}). "
+            f"Current LTHR {sport}: {config_lthr} bpm ({pct:+.1f}%). "
+            "Consider updating LTHR."
+        ),
+    )
 
 
-def _drift_alert_pace(sport: str, rows: list, config_pace_sec: float) -> DriftAlertDTO | None:
-    """Run threshold-pace drift, units sec/km. Same gating as LTHR.
+def _drift_alert_pace(
+    sport: str,
+    hrvt2_pace: str | None,
+    r_squared: float | None,
+    config_pace_sec: float,
+) -> DriftAlertDTO | None:
+    """Run threshold-pace drift (sec/km). Latest ramp-test only, HRVT2 pace.
 
     Lower s/km = faster — diff_pct sign flips relative to LTHR semantically,
-    but the >5% / >10% magnitude check is direction-agnostic.
+    but the >5% magnitude check is direction-agnostic.
     """
-    pace_secs = [(parse_pace_to_sec(r[0]), r[1]) for r in rows]
-    pace_secs = [(s, r2) for s, r2 in pace_secs if s is not None and s > 0]
+    if r_squared is None or r_squared < DRIFT_R2_THRESHOLD:
+        return None
+    sec = parse_pace_to_sec(hrvt2_pace)
+    if sec is None or sec <= 0:
+        return None
     config = int(round(config_pace_sec))
-
-    if len(pace_secs) >= 2:
-        avg = sum(s for s, _ in pace_secs) / len(pace_secs)
-        pct = (avg - config) / config * 100
-        if abs(pct) > 5:
-            return DriftAlertDTO(
-                sport=sport,
-                metric="THRESHOLD_PACE",
-                measured_avg=round(avg),
-                config_value=config,
-                diff_pct=round(pct, 1),
-                tests_count=len(pace_secs),
-                message=(
-                    f"Threshold pace stable at {round(avg)} s/km ({len(pace_secs)} tests). "
-                    f"Current threshold {sport}: {config} s/km ({pct:+.1f}%). "
-                    "Consider updating threshold pace."
-                ),
-            )
-    elif len(pace_secs) == 1:
-        sec, r_squared = pace_secs[0]
-        if r_squared is not None and r_squared > 0.85:
-            pct = (sec - config) / config * 100
-            if abs(pct) > 10:
-                return DriftAlertDTO(
-                    sport=sport,
-                    metric="THRESHOLD_PACE",
-                    measured_avg=sec,
-                    config_value=config,
-                    diff_pct=round(pct, 1),
-                    tests_count=1,
-                    message=(
-                        f"Threshold pace = {sec} s/km (single test, R²={r_squared:.2f}). "
-                        f"Current threshold {sport}: {config} s/km ({pct:+.1f}%). "
-                        "Bootstrap update: drift exceeds 10% on a high-quality fit."
-                    ),
-                )
-    return None
+    pct = (sec - config) / config * 100
+    if abs(pct) <= DRIFT_PCT_THRESHOLD:
+        return None
+    return DriftAlertDTO(
+        sport=sport,
+        metric="THRESHOLD_PACE",
+        measured=sec,
+        config_value=config,
+        diff_pct=round(pct, 1),
+        message=(
+            f"HRVT2 pace = {sec} s/km (R²={r_squared:.2f}). "
+            f"Current threshold {sport}: {config} s/km ({pct:+.1f}%). "
+            "Consider updating threshold pace."
+        ),
+    )
 
 
 class UserRole(str, Enum):
@@ -346,17 +324,17 @@ class User(Base):
         *,
         session: Session,
     ) -> ThresholdDriftDTO | None:
-        """Compare recent HRVT1 measurements with athlete_settings to detect drift.
+        """Compare the latest ramp-test HRVT2 reading with athlete_settings to detect drift.
 
-        Two metrics, both with the same gating logic:
-          - LTHR — Ride + Run (HRVT1 HR vs ``settings.lthr``)
-          - THRESHOLD_PACE — Run only (pace at HRVT1, sec/km, vs ``settings.threshold_pace``)
+        Two metrics, gated by ``|drift| > 5%`` and ``R² ≥ 0.7`` on the most
+        recent valid ramp test (LIMIT 1):
 
-        Each emits a drift alert when:
-          - 2+ recent samples agree on a >5% divergence from config, OR
-          - Single high-quality bootstrap sample (R² > 0.85) shows >10% drift —
-            covers the first-ramp-after-config case where waiting for a second
-            test means another month on stale settings.
+          - LTHR — Ride + Run (HRVT2 HR vs ``settings.lthr``)
+          - THRESHOLD_PACE — Run only (pace at HRVT2, sec/km, vs ``settings.threshold_pace``)
+
+        Pushing HRVT2 (anaerobic threshold = LTHR) instead of HRVT1
+        (aerobic threshold ≈ 75-85% of LTHR) realigns Intervals.icu's
+        `lthr` field with its intended meaning.
         """
         from .activity import Activity, ActivityHrv
         from .athlete import AthleteSettings
@@ -373,41 +351,34 @@ class User(Base):
             if not settings_row:
                 continue
 
-            # --- LTHR drift -------------------------------------------------
+            row = session.execute(
+                select(
+                    ActivityHrv.hrvt2_hr,
+                    ActivityHrv.hrvt2_pace,
+                    ActivityHrv.threshold_r_squared,
+                )
+                .join(Activity, Activity.id == ActivityHrv.activity_id)
+                .where(
+                    Activity.user_id == user_id,
+                    Activity.type == sport_label,
+                    ActivityHrv.processing_status == "processed",
+                    ActivityHrv.hrvt2_hr.isnot(None),
+                    ActivityHrv.hrv_quality.in_(["good", "moderate"]),
+                )
+                .order_by(Activity.start_date_local.desc())
+                .limit(1)
+            ).first()
+            if not row:
+                continue
+            hrvt2_hr, hrvt2_pace, r_squared = row
+
             if settings_row.lthr:
-                lthr_rows = session.execute(
-                    select(ActivityHrv.hrvt1_hr, ActivityHrv.threshold_r_squared)
-                    .join(Activity, Activity.id == ActivityHrv.activity_id)
-                    .where(
-                        Activity.user_id == user_id,
-                        ActivityHrv.processing_status == "processed",
-                        ActivityHrv.hrvt1_hr.isnot(None),
-                        ActivityHrv.hrv_quality.in_(["good", "moderate"]),
-                        Activity.type == sport_label,
-                    )
-                    .order_by(Activity.start_date_local.desc())
-                    .limit(3)
-                ).all()
-                alert = _drift_alert_lthr(sport_label, lthr_rows, settings_row.lthr)
+                alert = _drift_alert_lthr(sport_label, hrvt2_hr, r_squared, settings_row.lthr)
                 if alert:
                     alerts.append(alert)
 
-            # --- THRESHOLD_PACE drift (Run only) ----------------------------
             if sport_label == "Run" and settings_row.threshold_pace:
-                pace_rows = session.execute(
-                    select(ActivityHrv.hrvt1_pace, ActivityHrv.threshold_r_squared)
-                    .join(Activity, Activity.id == ActivityHrv.activity_id)
-                    .where(
-                        Activity.user_id == user_id,
-                        ActivityHrv.processing_status == "processed",
-                        ActivityHrv.hrvt1_pace.isnot(None),
-                        ActivityHrv.hrv_quality.in_(["good", "moderate"]),
-                        Activity.type == sport_label,
-                    )
-                    .order_by(Activity.start_date_local.desc())
-                    .limit(3)
-                ).all()
-                alert = _drift_alert_pace(sport_label, pace_rows, settings_row.threshold_pace)
+                alert = _drift_alert_pace(sport_label, hrvt2_pace, r_squared, settings_row.threshold_pace)
                 if alert:
                     alerts.append(alert)
 

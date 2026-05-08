@@ -10,6 +10,7 @@ from data.db import AthleteGoal, AthleteSettings, User, UserDTO
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
 from tasks.dto import DateDTO, local_today
+from tasks.formatter import format_pace
 
 from ..tools import TelegramTool
 
@@ -168,12 +169,12 @@ def actor_update_zones(user: UserDTO):
     with IntervalsSyncClient.for_user(user) as client:
         for alert in drift.alerts:
             sport = alert.sport
-            new_value = alert.measured_avg
+            new_value = alert.measured
             old_value = alert.config_value
 
             if new_value is None or new_value <= 0:
                 logger.warning(
-                    "Skipping %s update for user %d: invalid measured_avg=%r",
+                    "Skipping %s update for user %d: invalid measured=%r",
                     alert.metric,
                     user.id,
                     new_value,
@@ -190,7 +191,9 @@ def actor_update_zones(user: UserDTO):
                 m_per_s = round(1000 / new_value, 3)
                 client.update_sport_settings(sport, {"threshold_pace": m_per_s})
                 AthleteSettings.upsert(user_id=user.id, sport=sport, threshold_pace=float(new_value))
-                updated.append(f"Threshold pace {sport}: {old_value} → {new_value} s/km")
+                old_pace = format_pace(old_value) or f"{old_value} s/km"
+                new_pace = format_pace(new_value) or f"{new_value} s/km"
+                updated.append(f"Threshold pace {sport}: {old_pace} → {new_pace}")
                 logger.info(
                     "Updated threshold_pace %s for user %d: %d → %d s/km (%.3f m/s)",
                     sport,

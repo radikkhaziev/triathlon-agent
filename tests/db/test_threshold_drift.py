@@ -1,4 +1,9 @@
-"""Tests for User.detect_threshold_drift — including first-sample bootstrap path."""
+"""Tests for User.detect_threshold_drift — latest-ramp HRVT2 path.
+
+The drift detector compares the *latest* ramp-test HRVT2 reading against
+``athlete_settings`` (LTHR for Run/Ride, plus pace at HRVT2 for Run).
+Gate: ``|drift| > 5%`` AND ``R² ≥ 0.7`` on the most recent valid row.
+"""
 
 from datetime import date
 
@@ -43,6 +48,91 @@ class TestParsePaceToSec:
         assert parse_pace_to_sec(raw) is None
 
 
+class TestDriftAlertHelpers:
+    """Pure-function tests for `_drift_alert_lthr` and `_drift_alert_pace`.
+
+    Cheap (no DB), covers edge cases that the SQL-level integration tests miss
+    (None values, R²-boundary, sign of drift). The helpers must agree with the
+    backend gating constants in `data.db.dto` — same constants pulled by the
+    formatter's `_drift_button_status`, so divergence becomes a UI-vs-backend
+    desync bug.
+    """
+
+    def test_lthr_returns_none_on_missing_hrvt2(self):
+        from data.db.user import _drift_alert_lthr
+
+        assert _drift_alert_lthr("Run", hrvt2_hr=None, r_squared=0.9, config_lthr=153) is None
+
+    def test_lthr_returns_none_on_missing_r_squared(self):
+        from data.db.user import _drift_alert_lthr
+
+        assert _drift_alert_lthr("Run", hrvt2_hr=172.0, r_squared=None, config_lthr=153) is None
+
+    def test_lthr_returns_none_below_r_squared_gate(self):
+        from data.db.user import _drift_alert_lthr
+
+        assert _drift_alert_lthr("Run", hrvt2_hr=172.0, r_squared=0.69, config_lthr=153) is None
+
+    def test_lthr_returns_none_below_drift_gate(self):
+        from data.db.user import _drift_alert_lthr
+
+        # 156 vs 153 = +1.96% — under 5%
+        assert _drift_alert_lthr("Run", hrvt2_hr=156.0, r_squared=0.9, config_lthr=153) is None
+
+    def test_lthr_at_r_squared_boundary_fires(self):
+        """R²=0.7 exactly → gate passes (>=, not >)."""
+        from data.db.user import _drift_alert_lthr
+
+        alert = _drift_alert_lthr("Run", hrvt2_hr=172.0, r_squared=0.70, config_lthr=153)
+        assert alert is not None
+        assert alert.metric == "LTHR"
+        assert alert.measured == 172
+        assert alert.config_value == 153
+        assert alert.diff_pct > 5
+
+    def test_lthr_negative_drift_fires(self):
+        """Drift < -5% (config too high) also fires."""
+        from data.db.user import _drift_alert_lthr
+
+        alert = _drift_alert_lthr("Run", hrvt2_hr=140.0, r_squared=0.85, config_lthr=160)
+        assert alert is not None
+        assert alert.diff_pct < -5
+        assert alert.measured == 140
+
+    def test_pace_returns_none_on_missing_pace(self):
+        from data.db.user import _drift_alert_pace
+
+        assert _drift_alert_pace("Run", hrvt2_pace=None, r_squared=0.9, config_pace_sec=295) is None
+
+    def test_pace_returns_none_on_invalid_pace_string(self):
+        """`parse_pace_to_sec` returns None → helper bails out cleanly."""
+        from data.db.user import _drift_alert_pace
+
+        assert _drift_alert_pace("Run", hrvt2_pace="abc", r_squared=0.9, config_pace_sec=295) is None
+
+    def test_pace_returns_none_below_r_squared_gate(self):
+        from data.db.user import _drift_alert_pace
+
+        assert _drift_alert_pace("Run", hrvt2_pace="4:20", r_squared=0.5, config_pace_sec=295) is None
+
+    def test_pace_returns_none_below_drift_gate(self):
+        from data.db.user import _drift_alert_pace
+
+        # 290 vs 295 = -1.7% — under 5%
+        assert _drift_alert_pace("Run", hrvt2_pace="4:50", r_squared=0.9, config_pace_sec=295) is None
+
+    def test_pace_fires_with_proper_drift(self):
+        from data.db.user import _drift_alert_pace
+
+        # 4:20 = 260 s/km vs 295 = -11.9%
+        alert = _drift_alert_pace("Run", hrvt2_pace="4:20", r_squared=0.85, config_pace_sec=295)
+        assert alert is not None
+        assert alert.metric == "THRESHOLD_PACE"
+        assert alert.measured == 260
+        assert alert.config_value == 295
+        assert alert.diff_pct < -5
+
+
 async def _seed_drift_setup(*, user_id: int, sport: str, lthr: int) -> None:
     """Make sure athlete_settings has an LTHR baseline for the sport."""
     await AthleteSettings.upsert(user_id=user_id, sport=sport, lthr=lthr)
@@ -54,10 +144,10 @@ async def _add_hrv_sample(
     sport: str,
     activity_id: str,
     dt: str,
-    hrvt1_hr: float,
+    hrvt2_hr: float,
     r_squared: float | None = 0.90,
     quality: str = "good",
-    hrvt1_pace: str | None = None,
+    hrvt2_pace: str | None = None,
 ) -> None:
     """Insert a processed Activity + ActivityHrv pair for drift detection to read."""
     from data.db.common import _AsyncSessionLocal
@@ -78,113 +168,112 @@ async def _add_hrv_sample(
                 activity_type=sport,
                 processing_status="processed",
                 hrv_quality=quality,
-                hrvt1_hr=hrvt1_hr,
-                hrvt1_pace=hrvt1_pace,
+                # HRVT1 mirrors HRVT2 in tests — drift detector reads HRVT2 only,
+                # but the column is non-null in real data so we set both.
+                hrvt1_hr=hrvt2_hr - 15,
+                hrvt2_hr=hrvt2_hr,
+                hrvt2_pace=hrvt2_pace,
                 threshold_r_squared=r_squared,
             )
         )
         await session.commit()
 
 
-class TestThresholdDriftBootstrap:
+class TestLthrDrift:
     async def test_no_data_returns_none(self, _test_db):
         await _seed_drift_setup(user_id=1, sport="Run", lthr=153)
         result = await User.detect_threshold_drift(user_id=1)
         assert result is None
 
-    async def test_single_sample_below_drift_threshold_no_alert(self, _test_db):
-        """1 sample, drift only ~8% — bootstrap requires >10% so no alert."""
-        await _seed_drift_setup(user_id=1, sport="Run", lthr=153)
+    async def test_below_5pct_no_alert(self, _test_db):
+        """Drift <= 5% → silent."""
+        await _seed_drift_setup(user_id=1, sport="Run", lthr=170)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt1_hr=165.0,
+            hrvt2_hr=172.0,  # +1.2%
             r_squared=0.92,
         )
         result = await User.detect_threshold_drift(user_id=1)
         assert result is None
 
-    async def test_single_sample_low_r_squared_no_alert(self, _test_db):
-        """1 sample, big drift but R²=0.5 — bootstrap blocked by R² gate."""
+    async def test_low_r_squared_no_alert(self, _test_db):
+        """R² < 0.7 blocks even sizeable drift."""
         await _seed_drift_setup(user_id=1, sport="Run", lthr=153)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt1_hr=175.0,
+            hrvt2_hr=175.0,  # +14% drift
             r_squared=0.50,
         )
         result = await User.detect_threshold_drift(user_id=1)
         assert result is None
 
-    async def test_single_sample_bootstrap_fires(self, _test_db):
-        """1 sample, R²>0.85, drift>10% — bootstrap alert."""
+    async def test_above_5pct_with_decent_r2_fires(self, _test_db):
+        """|drift| > 5% AND R² ≥ 0.7 → LTHR alert."""
         await _seed_drift_setup(user_id=1, sport="Run", lthr=153)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt1_hr=175.0,
-            r_squared=0.92,
+            hrvt2_hr=172.0,  # +12.4%
+            r_squared=0.72,
         )
         result = await User.detect_threshold_drift(user_id=1)
         assert result is not None
         assert len(result.alerts) == 1
         alert = result.alerts[0]
         assert alert.sport == "Run"
-        assert alert.tests_count == 1
-        assert alert.measured_avg == 175
-        assert alert.diff_pct > 10
-        assert "Bootstrap" in alert.message or "single test" in alert.message
+        assert alert.metric == "LTHR"
+        assert alert.measured == 172
+        assert alert.config_value == 153
+        assert alert.diff_pct > 5
 
-    async def test_two_samples_use_standard_5pct_threshold(self, _test_db):
-        """2 samples: drift >5% triggers standard alert (not the bootstrap path)."""
+    async def test_uses_latest_when_multiple_samples(self, _test_db):
+        """When several ramp tests exist, drift detector uses the latest."""
         await _seed_drift_setup(user_id=1, sport="Run", lthr=153)
+        # Old test: HRVT2=160 (+4.6%, would not fire)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
-            activity_id="i1",
-            dt="2026-04-25",
-            hrvt1_hr=164.0,
-            r_squared=0.70,
+            activity_id="i_old",
+            dt="2026-04-01",
+            hrvt2_hr=160.0,
+            r_squared=0.85,
         )
+        # New test: HRVT2=172 (+12.4%, fires)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
-            activity_id="i2",
-            dt="2026-04-30",
-            hrvt1_hr=166.0,
-            r_squared=0.72,
+            activity_id="i_new",
+            dt=str(date.today()),
+            hrvt2_hr=172.0,
+            r_squared=0.75,
         )
         result = await User.detect_threshold_drift(user_id=1)
         assert result is not None
-        alert = result.alerts[0]
-        assert alert.tests_count == 2
-        assert "stable" in alert.message
+        assert result.alerts[0].measured == 172  # latest, not avg
 
 
 class TestThresholdPaceDrift:
-    """Run threshold_pace drift, mirrors LTHR gating but reads hrvt1_pace ('M:SS')."""
-
     async def _seed_run_with_pace(self, *, lthr: int = 153, threshold_pace: float = 295.0) -> None:
-        # Seed both LTHR + threshold pace so the alerts are independent.
         await AthleteSettings.upsert(user_id=1, sport="Run", lthr=lthr, threshold_pace=threshold_pace)
 
-    async def test_pace_bootstrap_fires_independently(self, _test_db):
-        """Single pace sample with R²>0.85 and >10% drift → THRESHOLD_PACE alert."""
-        await self._seed_run_with_pace()
-        # Threshold 295 s/km (4:55/km). Measured 4:20/km = 260 s/km → -11.9% drift.
+    async def test_pace_drift_fires(self, _test_db):
+        """Pace at HRVT2 differs from config_threshold_pace by >5% → THRESHOLD_PACE alert."""
+        await self._seed_run_with_pace(lthr=170, threshold_pace=295.0)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt1_hr=153.0,  # equal to config — no LTHR drift
-            hrvt1_pace="4:20",
+            hrvt2_hr=172.0,  # +1.2%, no LTHR alert
+            hrvt2_pace="4:20",  # 260 s/km, -11.9% vs 295
             r_squared=0.92,
         )
         result = await User.detect_threshold_drift(user_id=1)
@@ -193,85 +282,47 @@ class TestThresholdPaceDrift:
         assert "THRESHOLD_PACE" in metrics
         assert "LTHR" not in metrics
         pace_alert = next(a for a in result.alerts if a.metric == "THRESHOLD_PACE")
-        assert pace_alert.measured_avg == 260
+        assert pace_alert.measured == 260
         assert pace_alert.config_value == 295
-        assert pace_alert.tests_count == 1
 
-    async def test_pace_bootstrap_blocked_by_low_r_squared(self, _test_db):
-        await self._seed_run_with_pace()
+    async def test_pace_blocked_by_low_r_squared(self, _test_db):
+        await self._seed_run_with_pace(lthr=170)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt1_hr=153.0,
-            hrvt1_pace="4:20",
-            r_squared=0.50,  # noisy fit
+            hrvt2_hr=172.0,
+            hrvt2_pace="4:20",
+            r_squared=0.50,
         )
         result = await User.detect_threshold_drift(user_id=1)
         assert result is None
 
-    async def test_pace_two_samples_standard_path(self, _test_db):
-        await self._seed_run_with_pace()
-        # 280 / 282 → avg ~281 vs config 295 → -4.7% (under 5%, no alert)
-        await _add_hrv_sample(
-            user_id=1,
-            sport="Run",
-            activity_id="i1",
-            dt="2026-04-25",
-            hrvt1_hr=153.0,
-            hrvt1_pace="4:40",
-            r_squared=0.70,
-        )
-        await _add_hrv_sample(
-            user_id=1,
-            sport="Run",
-            activity_id="i2",
-            dt="2026-04-30",
-            hrvt1_hr=153.0,
-            hrvt1_pace="4:42",
-            r_squared=0.72,
-        )
-        result = await User.detect_threshold_drift(user_id=1)
-        assert result is None  # under 5% gate
-
-    async def test_pace_two_samples_above_5pct_fires(self, _test_db):
-        await self._seed_run_with_pace()
-        # 270, 268 → avg ~269 vs 295 → -8.8% (>5% gate, fires)
-        await _add_hrv_sample(
-            user_id=1,
-            sport="Run",
-            activity_id="i1",
-            dt="2026-04-25",
-            hrvt1_hr=153.0,
-            hrvt1_pace="4:30",
-            r_squared=0.70,
-        )
-        await _add_hrv_sample(
-            user_id=1,
-            sport="Run",
-            activity_id="i2",
-            dt="2026-04-30",
-            hrvt1_hr=153.0,
-            hrvt1_pace="4:28",
-            r_squared=0.72,
-        )
-        result = await User.detect_threshold_drift(user_id=1)
-        assert result is not None
-        metrics = {a.metric for a in result.alerts}
-        assert "THRESHOLD_PACE" in metrics
-
-    async def test_lthr_and_pace_drift_both_alert(self, _test_db):
-        """Both metrics drift independently → two alerts in one ThresholdDriftDTO."""
-        await self._seed_run_with_pace()
-        # LTHR: 153 → 175 = +14% bootstrap; pace: 295 → 260 = -11.9% bootstrap
+    async def test_pace_under_5pct_silent(self, _test_db):
+        await self._seed_run_with_pace(lthr=170, threshold_pace=295.0)
         await _add_hrv_sample(
             user_id=1,
             sport="Run",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt1_hr=175.0,
-            hrvt1_pace="4:20",
+            hrvt2_hr=172.0,
+            hrvt2_pace="4:50",  # 290 s/km, -1.7% vs 295
+            r_squared=0.85,
+        )
+        result = await User.detect_threshold_drift(user_id=1)
+        assert result is None
+
+    async def test_lthr_and_pace_both_alert(self, _test_db):
+        """Both metrics drift independently → two alerts in one ThresholdDriftDTO."""
+        await self._seed_run_with_pace(lthr=153, threshold_pace=295.0)
+        await _add_hrv_sample(
+            user_id=1,
+            sport="Run",
+            activity_id="i1",
+            dt=str(date.today()),
+            hrvt2_hr=172.0,  # +12.4% LTHR drift
+            hrvt2_pace="4:20",  # -11.9% pace drift
             r_squared=0.92,
         )
         result = await User.detect_threshold_drift(user_id=1)
@@ -280,17 +331,16 @@ class TestThresholdPaceDrift:
         assert metrics == {"LTHR", "THRESHOLD_PACE"}
 
     async def test_pace_alert_only_for_run(self, _test_db):
-        """Ride with no threshold_pace setting — never emits THRESHOLD_PACE."""
+        """Ride: no threshold_pace setting → never emits THRESHOLD_PACE."""
         await AthleteSettings.upsert(user_id=1, sport="Ride", lthr=148, ftp=233)
-        # Add a Ride HRV sample with pace data (would be ignored anyway — pace is Run-only)
         await _add_hrv_sample(
             user_id=1,
             sport="Ride",
             activity_id="i1",
             dt=str(date.today()),
-            hrvt1_hr=148.0,  # no LTHR drift
-            hrvt1_pace="4:20",
+            hrvt2_hr=148.0,  # no LTHR drift
+            hrvt2_pace="4:20",
             r_squared=0.92,
         )
         result = await User.detect_threshold_drift(user_id=1)
-        assert result is None  # nothing to alert about
+        assert result is None

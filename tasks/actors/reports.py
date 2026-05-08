@@ -29,7 +29,7 @@ from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
 from data.workout_adapter import compute_constraints, needs_adaptation, parse_humango_description
 from tasks.dto import local_today
-from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message
+from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message, format_pace
 from tasks.tools import MCPTool, TelegramTool
 
 logger = logging.getLogger(__name__)
@@ -157,14 +157,30 @@ def _actor_send_user_morning_report(
                 ]
             )
 
-    # Threshold drift detection
-    drift: ThresholdDriftDTO = User.detect_threshold_drift(user_id=user.id)
+    # Threshold drift detection — line shape depends on the alert metric.
+    # LTHR alerts carry HR (bpm); THRESHOLD_PACE alerts carry pace (sec/km).
+    # Pre-2026-05-08 the line was hardcoded "LTHR {sport}: ... bpm" for every
+    # alert, which mislabelled THRESHOLD_PACE as LTHR with bpm units.
+    drift: ThresholdDriftDTO | None = User.detect_threshold_drift(user_id=user.id)
     if drift:
         for alert in drift.alerts:
-            summary += (
-                f"\n⚠️ LTHR {alert.sport}: {_('текущий порог')} {alert.config_value} bpm, "
-                f"{_('по тестам')} {alert.measured_avg} bpm ({alert.diff_pct:+.1f}%). {_('Рекомендуем обновить')}"
-            )
+            if alert.metric == "LTHR":
+                summary += (
+                    f"\n⚠️ LTHR {alert.sport}: {_('текущий порог')} {alert.config_value} bpm, "
+                    f"{_('по тестам')} {alert.measured} bpm ({alert.diff_pct:+.1f}%). "
+                    f"{_('Рекомендуем обновить')}"
+                )
+            elif alert.metric == "THRESHOLD_PACE":
+                cfg = format_pace(alert.config_value) or "—"
+                meas = format_pace(alert.measured) or "—"
+                summary += (
+                    f"\n⚠️ {_('Threshold pace')} {alert.sport}: "
+                    f"{_('текущий порог')} {cfg}, {_('по тестам')} {meas} "
+                    f"({alert.diff_pct:+.1f}%). {_('Рекомендуем обновить')}"
+                )
+            else:
+                logger.warning("Unknown drift metric %s in morning report — skipping", alert.metric)
+                continue
         keyboard["inline_keyboard"].append(
             [
                 {"text": _("Обновить зоны"), "callback_data": "update_zones"},

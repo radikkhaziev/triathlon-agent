@@ -393,11 +393,25 @@ def detect_hrv_thresholds(
     # Interpolate thresholds
     # a1 = slope * HR + intercept  =>  HR = (a1 - intercept) / slope
     hrvt1_hr = (0.75 - intercept) / slope
-    hrvt2_hr = (0.50 - intercept) / slope
+    hrvt2_hr_raw = (0.50 - intercept) / slope
 
     # Sanity checks
-    if not (80 < hrvt1_hr < 200 and hrvt1_hr < hrvt2_hr):
+    if not (80 < hrvt1_hr < 200 and hrvt1_hr < hrvt2_hr_raw):
         return None
+
+    # Bound-checked HRVT2 — same ceiling as the result field to keep the pace
+    # interpolation gated on the same physical-plausibility check.
+    hrvt2_hr_safe: float | None = round(hrvt2_hr_raw, 1) if 80 < hrvt2_hr_raw < 220 else None
+    if hrvt2_hr_safe is None:
+        # Drift detector silently skips rows where hrvt2_hr IS NULL — log so the
+        # silent-failure mode is visible in Sentry.
+        logger.warning(
+            "HRVT2 extrapolation out of physical range: hrvt2_hr=%.1f bpm (HRVT1=%.1f, R²=%.2f). "
+            "Drift detection will be suppressed for this activity.",
+            hrvt2_hr_raw,
+            hrvt1_hr,
+            r_squared,
+        )
 
     # Confidence based on R²
     if r_squared > 0.7:
@@ -409,7 +423,7 @@ def detect_hrv_thresholds(
 
     result: dict[str, Any] = {
         "hrvt1_hr": round(hrvt1_hr, 1),
-        "hrvt2_hr": round(hrvt2_hr, 1) if 80 < hrvt2_hr < 220 else None,
+        "hrvt2_hr": hrvt2_hr_safe,
         "r_squared": round(r_squared, 3),
         "confidence": confidence,
     }
@@ -428,7 +442,11 @@ def detect_hrv_thresholds(
             except (np.linalg.LinAlgError, ValueError):
                 pass
 
-    # Add pace at HRVT1 for running
+    # Add pace at HRVT1 + HRVT2 for running. The drift detector pushes
+    # pace-at-HRVT2 to Intervals.icu's `threshold_pace` field, so both
+    # interpolations must come from the same speed↔HR fit. hrvt2_pace is gated
+    # on the bound-checked hrvt2_hr_safe — without that gate, a nullified
+    # hrvt2_hr would still leave a pace interpolated from a nonphysical HR.
     if activity_type == "Run":
         speed_points = [p for p in points if p.get("speed") is not None and p["speed"] > 0]
         if len(speed_points) >= 10:
@@ -436,12 +454,15 @@ def detect_hrv_thresholds(
             s_speed = np.array([p["speed"] for p in speed_points])
             try:
                 s_coeffs = np.polyfit(s_hr, s_speed, 1)
-                hrvt1_speed = np.polyval(s_coeffs, hrvt1_hr)
-                if hrvt1_speed > 0:
-                    pace_sec_per_km = 1000.0 / hrvt1_speed
-                    mins = int(pace_sec_per_km // 60)
-                    secs = int(pace_sec_per_km % 60)
-                    result["hrvt1_pace"] = f"{mins}:{secs:02d}"
+                for key, hr_target in (("hrvt1_pace", hrvt1_hr), ("hrvt2_pace", hrvt2_hr_safe)):
+                    if hr_target is None:
+                        continue
+                    speed_at = np.polyval(s_coeffs, hr_target)
+                    if speed_at > 0:
+                        pace_sec_per_km = 1000.0 / speed_at
+                        mins = int(pace_sec_per_km // 60)
+                        secs = int(pace_sec_per_km % 60)
+                        result[key] = f"{mins}:{secs:02d}"
             except (np.linalg.LinAlgError, ValueError):
                 pass
 

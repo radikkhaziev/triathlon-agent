@@ -7,7 +7,7 @@
 
 ## Headline
 
-All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). ATP Phase 3 prompt enrichment complete (no cron deviation, see below). Ramp-test Run protocol switched to pace-driven (`%pace` units + `event.target=PACE` auto via `has_pace_steps`); pipeline gained AiWorkout fallback, single-sample bootstrap drift, actionable failure advice, and `THRESHOLD_PACE` push.
+All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, contextvars, scheduler). Intervals.icu OAuth Phase 2 complete (Bearer auth, lazy 401 handling, disconnect endpoint, viewer→athlete promotion + mcp_token + auto-sync, rate limit on `/auth/init`). ATP Phase 3 prompt enrichment complete (no cron deviation, see below). Ramp-test Run protocol switched to pace-driven (`%pace` units + `event.target=PACE` auto via `has_pace_steps`); recalibrated to 8-step `80→115%` ladder against pace at HRVT2 (2026-05-08). Drift detection: HRVT2 → Intervals' `lthr` (was HRVT1 — concept bug), latest-ramp-only with `|drift|>5%` AND `R²≥0.7` gate (was 3-sample avg + bootstrap). New CLI: `reprocess-ramp-test` for back-filling `hrvt2_pace` after migration `v2c3d4e5f6a7`.
 
 ---
 
@@ -150,6 +150,26 @@ Run ramp test rebuilt around pace as control variable (HR/DFA observed). See `do
 - **Fix F** — `actor_update_zones` extended to push Run `THRESHOLD_PACE` alongside `LTHR`. Drift detection runs over `ActivityHrv.hrvt1_pace` (string `"M:SS"`/km, parsed via `parse_pace_to_sec`). Same gating as LTHR (≥2 sample standard / 1 sample bootstrap). Push converts our DB `sec/km` → Intervals.icu API `m/s` via `1000 / sec_per_km`. The "Update zones" button now lights up when either metric drifts.
 
 **OAuth scope impact:** unchanged — `SETTINGS:WRITE` already required for LTHR push, threshold_pace rides on the same scope.
+
+---
+
+## Ramp drift — HRVT2 mapping fix + latest-only logic + recalibrated protocol (2026-05-08)
+
+Three coupled changes that landed together. Spec context lives in `docs/ADAPTIVE_TRAINING_PLAN.md` §«Threshold drift detection».
+
+**1. HRVT1→HRVT2 semantic fix.** `actor_update_zones` previously pushed `ActivityHrv.hrvt1_hr` (aerobic threshold, DFA α1=0.75) into Intervals.icu's `lthr` field — but Intervals' `lthr` field semantically equals LTHR = HRVT2 = anaerobic threshold (α1=0.50). Result: Z3-Z7 zones in Intervals were calibrated against the wrong physiological point, sliding all training zones ~13% lower than intended (Z4 SubThreshold → effectively Z2 by real load). Fix: drift detector and actor now push **HRVT2 HR** to `lthr` and **pace at HRVT2** to `threshold_pace`. Affected: `data/db/user.py:detect_threshold_drift`, `tasks/actors/athlets.py:actor_update_zones`, `tasks/formatter.py:build_ramp_test_message`.
+
+**2. Latest-only drift detection.** Replaced the `≥2 samples + avg-drift > 5%` standard path + `1 sample bootstrap (R²>0.85, drift>10%)` path with a single rule: **latest valid ramp test, gated by `|drift|>5%` AND `R²≥0.7`**. The 3-sample average was smoothing real progress away (after a successful test that shifted thresholds 8%, the rolling avg with two older samples still showed only 3-4% — under gate). `R²≥0.7` is a gentler quality gate than the bootstrap's 0.85 (R²=0.72 was common in real ramps), but tied to the latest test only — no avg dilution. `DriftAlertDTO`: `measured_avg → measured`, `tests_count` removed.
+
+**3. New schema field — `hrvt2_pace`.** Migration `v2c3d4e5f6a7` adds `activity_hrv.hrvt2_pace` (nullable string, `"M:SS"` format). The DFA detector (`data/hrv_activity.py:detect_hrv_thresholds`) now interpolates pace at both HRVT1 and HRVT2 via the same speed↔HR linear regression that previously yielded only `hrvt1_pace`. Drift detector reads `hrvt2_pace` for the THRESHOLD_PACE alert. Old rows have `hrvt2_pace = NULL` until reprocessed.
+
+**4. Run ramp protocol recalibration.** `data/ramp_tests.py:_RUN_RAMP_PCT` changed from `[85..130]` (10 steps) to `[80..115]` (8 steps), CD shortened 10→7 min. Old protocol implicitly assumed `threshold_pace ≈ HRVT1 pace` (so step 10 at 130% landed near LT2). After the HRVT2 mapping fix, `threshold_pace` IS pace at HRVT2 — step 10 at 130% would translate to ~3:41/km (raw 130% velocity above LT2), unrealistically fast. New ladder: step 5 = 100% = HRVT2 exactly; steps 6-8 (105-115%) push α1 below 0.5 cleanly without forcing a bail-out at unachievable paces. Total workout: 41 min (was 50).
+
+**5. Pace formatting in zones notification.** `tasks/actors/athlets.py:actor_update_zones` now renders `THRESHOLD_PACE` updates as `Threshold pace Run: 4:55/km → 4:47/km` instead of raw seconds. Reuses `tasks.formatter.format_pace` (also consumed by the morning-report drift line in `tasks/actors/reports.py`).
+
+**6. CLI: `reprocess-ramp-test`.** New command `python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]` for back-filling `hrvt2_pace` on existing ramp tests post-migration. Re-runs `detect_hrv_thresholds` against stored `dfa_timeseries` + `work_segments`, patches **only** `hrvt2_pace` (other threshold fields untouched to avoid float-rounding drift). With `--push`, dispatches `actor_update_zones` so the new HRVT2-aligned values flow to Intervals.icu in one shot.
+
+**Migration path for existing users:** apply `v2c3d4e5f6a7`, run `reprocess-ramp-test --push` per-user against their last valid Run ramp activity. The first updated zones notification will show big jumps (e.g. `LTHR 152 → 172`) — intentional, reflecting the corrected HRVT1→HRVT2 mapping.
 
 ---
 
