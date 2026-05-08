@@ -101,6 +101,6 @@ Spread of splits inside a main set. The tighter the splits, the better the pacin
 For a trend in EF or SWOLF to be meaningful, compare only sessions that are actually comparable:
 
 1. **Minimum duration:** bike ≥ 30 min, run ≥ 20 min, swim ≥ 15 min.
-2. **Steady-state Z2 only:** average HR inside the Z2 band from LTHR (bike 68–83%, run 72–82%; see `BUSINESS_RULES.md`).
+2. **Steady-state Z2 only:** average HR inside the Z2 band from LTHR (bike 68–83%, run 72–82%; see `docs/BUSINESS_RULES.md`).
 3. **Exclude:** interval sessions, races, brick sessions.
 4. Optional stricter filter: `variability_index < 1.05` to exclude interval sessions, `decoupling < 10 %` to exclude sessions with severe cardiac drift.

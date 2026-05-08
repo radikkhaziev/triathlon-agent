@@ -1,471 +1,93 @@
 # User Sports Spec
 
 > Каждый атлет выбирает, какими видами спорта он занимается (swim / ride / run).
-> Поле хранится как JSONB-массив, редактируется в Settings, новый онбординг
+> Поле хранится как JSON-массив, редактируется в Settings, новый онбординг
 > блокирует доступ к данным до выбора. Цель — отойти от неявного
 > «все атлеты — триатлеты» к explicit per-user sport mix.
 
-**Related:**
+**Status:** Phase 1+2+3 приземлены 2026-05-08. Phase 4 (Swim ramp + detection routing) gated на `docs/RAMP_TEST_SWIM_SPEC.md`.
 
-| Issue / Spec | Связь |
+**Anchors in code (source of truth, not the spec):**
+
+| Слой | Файл |
 |---|---|
-| `data/db/user.py:191` | Существующее `users.primary_sport` (String(20)) — заменяем |
-| `data/db/dto.py:84` | `AthleteThresholdsDTO.primary_sport` — заменяем на `sports` |
-| `data/db/athlete.py:179` | Единственное место чтения; заменяем на `user.sports` |
-| `webapp/src/components/OnboardingPrompt.tsx` | Существующий gate-паттерн (no athlete_id) |
-| `webapp/src/App.tsx:51-85` | Цепочка auth-gates, добавляем 3-й уровень |
-| `bot/prompts.py` | Будущая интеграция в `_ATHLETE_BLOCK_TEMPLATE` (вне scope этой спеки) |
-| `bot/tool_filter.py` | Будущая фильтрация MCP-tools по выбранным видам (вне scope) |
-| `tasks/utils.py:35` | `RampTrainingSuggestion(sports=...)` — точка инъекции фильтра в утренний отчёт |
-| `tasks/actors/reports.py:100` | Вызывающий код, прокидывает выбор юзера в suggestion |
+| Schema/ORM | `data/db/user.py` (`User.sports`), `data/db/dto.py` (`AthleteThresholdsDTO.sports` + `available_sports`) |
+| API | `api/dto.py:SportsUpdateRequest`, `api/routers/auth.py:auth_me` + `set_sports` |
+| Frontend gate | `webapp/src/App.tsx`, `webapp/src/components/SportsPicker.tsx`, `webapp/src/pages/Settings.tsx` |
+| Sport mapping | `data/sport_map.py` (`INTERVALS_TO_LOWER` / `LOWER_TO_INTERVALS` / `RAMP_PRIORITY` / `RAMP_SUPPORTED_INTERVALS`) |
+| Morning report ramp filter | `tasks/utils.py:user_ramp_sports`, called from `tasks/actors/reports.py` |
+| Prompt integration | `bot/prompts.py` (`_format_sports`, `_primary_sport`, `_show_ride_progression`, `_zones_block(sports=...)`) |
+| Migration | `migrations/versions/y5f6a7b8c9d0_replace_primary_sport_with_sports_jsonb.py` |
+| Tests | `tests/db/test_athlete_settings.py`, `tests/api/test_auth_me.py`, `tests/api/test_sports_endpoint.py`, `tests/tasks/test_ramp_suggestion.py`, `tests/bot/test_prompts_zones.py` |
 
 ---
 
 ## 1. Мотивация
 
-Поле `users.primary_sport` существует с миграции `k1f2a3b4c5d6` (декабрь 2025), но на 2026-05-08 его читает **ровно одно место** — `AthleteSettings.get_thresholds` копирует значение в DTO, и **никто** дальше его не использует. Промпт Claude'а, MCP tools, webapp, фильтрация — все ведут себя так, будто каждый юзер триатлет: рендерят зоны для всех трёх дисциплин, не фильтруют tools, выдают triathlon-центричные секции в утреннем отчёте.
+Поле `users.primary_sport` существовало с миграции `k1f2a3b4c5d6` (декабрь 2025), но его читало **ровно одно место** (`AthleteSettings.get_thresholds`), и никто дальше по коду не ветвился. Промпт Claude'а, MCP tools, webapp, фильтрация — все вели себя так, будто каждый юзер триатлет: рендерили зоны для всех трёх дисциплин, не фильтровали tools, выдавали triathlon-центричные секции в утреннем отчёте.
 
-Пользовательская реальность другая: сейчас в БД `id=1` = `triathlon`, `id=2` = `run`. По мере роста подписки появятся бегуны, велосипедисты, fitness-онлюди. Без явного per-user сигнала о виде спорта мы:
-
-- не можем урезать промпт (триатлон-блок ~30% токенов на bike+swim для бегуна);
-- не можем отфильтровать MCP tools (бегун получает swim/bike-only tools и иногда вызывает их случайно);
-- не можем адаптировать секции morning/weekly report (rendering swim-CTL для не-пловца — шум);
-- не можем правильно роутить ramp-test detection (только бегун = искать только Run-ramp).
-
-Эта спека закрывает **инфраструктурный** слой: storage + API + UI + gate. Использование сигнала в промптах/tool-filter/repts — отдельной итерацией (см. §10).
+Пользовательская реальность другая: появляются бегуны-only, велосипедисты-only, fitness-only. Без явного per-user сигнала о виде спорта мы не могли:
+- урезать промпт (триатлон-блок ~30% токенов на bike+swim для бегуна);
+- адаптировать секции morning/weekly report (rendering swim-CTL для не-пловца — шум);
+- роутить ramp-test suggestions (бегун получал предложения Ride-теста).
 
 ---
 
-## 2. Scope
+## 2. Scope (delivered)
 
-### В этой итерации (один PR)
+- **Phase 1**: schema (`User.sports JSON`), API (`PUT /api/auth/sports` + `auth_me` extension), frontend gate (`<SportsPicker/>`), Settings секция, ramp-test filter в утреннем отчёте.
+- **Phase 2**: `Sports: …` линия в трёх промпт-шаблонах (morning, weekly, chat tail) + conditional `_zones_block` (бегун видит только Run-зону).
+- **Phase 3**: параметризация hardcoded `sport='run'` / `sport='Ride'` в morning/weekly промтах через `_primary_sport(sports)`; conditional Ride-блоки (`_show_ride_progression`).
 
-- Schema migration: drop `users.primary_sport`, add `users.sports JSONB nullable`.
-- ORM: `User.sports: list[str] | None` + `AthleteThresholdsDTO.sports`.
-- API: расширить `GET /api/auth/me` (вернуть `sports` + `available_sports_from_settings`); новый `PUT /api/auth/sports`.
-- Frontend gate: новый `<SportsPicker/>` показывается, когда `sports === null`. Auto-prefill из `available_sports_from_settings`.
-- Settings: новая секция «Виды спорта» с вертикальными чекбоксами (паттерн как у Language).
-- **Фильтр ramp-test предложений в утреннем отчёте**: `RampTrainingSuggestion` получает `sports` из `User.sports` (с маппингом lowercase→Intervals casing). Если бегун выбрал только `["run"]` — не предлагаем Ride-ramp, и наоборот.
-- i18n: ru/en строки для Settings + Picker.
-- Тесты: миграция up/down, `auth_me` сериализация, `PUT /sports` валидация, smoke на SportsPicker, ramp-suggestion respects `user.sports`.
-
-### Вне scope этой спеки
-
-- **Прокидывание `sports` в промпт Claude** — отдельный PR, потому что меняет поведение модели и нужна regression-проверка на morning report.
-- **Условный рендер `_zones_block`** — тот же PR, что и промпт.
-- **Фильтрация MCP-tools** в `bot/tool_filter.py` — отдельная итерация.
-- **Адаптация morning/weekly report** — после прокидывания в промпт.
-- **Walk / hike / fitness** как опции — пока нет use-case'а; добавится по запросу.
-- **«Основной» vs «дополнительные»** — в данных это плоский массив, никакого primary-флага. Если понадобится в промпте «основной = первый по объёму», вычислим из `AthleteSettings` на лету.
+Цель **достигнута**: триатлет видит legacy-вывод (regression-tested), runner-only / cyclist-only — урезанный промпт без irrelevant Ride/Swim шума.
 
 ---
 
-## 3. Data model
+## 3. Open risks
 
-### Schema
-
-```sql
-ALTER TABLE users DROP COLUMN primary_sport;
-ALTER TABLE users ADD COLUMN sports JSONB;  -- nullable, no default
-```
-
-`sports` — JSON-массив строк из enum `{"swim", "ride", "run"}`. Дубли запрещены, порядок не важен (UI сортирует канонически), пустой массив = «выбрал ноль» = эквивалентно NULL.
-
-Никакого CHECK-constraint на содержимое — валидируем в Pydantic-DTO на API-границе. Защита БД-уровня была бы избыточной (одна точка входа = `PUT /api/auth/sports`, миграции под контролем), а добавит шум в тесты.
-
-### Семантика NULL vs `[]`
-
-- `NULL` — значение никогда не задавалось (gate ловит).
-- `[]` — теоретически возможно, если фронт пошлёт пустой массив. **Запрещаем на API-уровне** (`min_items=1`), чтобы не было третьего состояния.
-
-### ORM
-
-```python
-# data/db/user.py
-sports: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-```
-
-```python
-# data/db/dto.py
-class AthleteThresholdsDTO(BaseModel):
-    age: int | None = None
-    sports: list[str] | None = None  # was: primary_sport: str | None
-    lthr_run: int | None = None
-    ...
-```
-
-```python
-# data/db/athlete.py:170 (get_thresholds)
-dto = AthleteThresholdsDTO(
-    age=user.age if user else None,
-    sports=user.sports if user else None,
-    ...
-)
-```
+Все риски из исходной спеки разрулены. Единственный остаточный — **demo asymmetry**: `auth_me` пинит demo `sports=["ride","run","swim"]`, но prompt-path читает `User.sports` напрямую. Закрывается рекомендацией «keep demo's DB row NULL» (документировано в `api/routers/auth.py:266`).
 
 ---
 
-## 4. Migration
+## 4. Follow-up roadmap
 
-### Upgrade
+### 4.1 Swim ramp-test support (Phase 4 — pending)
 
-`migrations/versions/<rev>_user_sports_jsonb.py`:
+После приземления `RAMP_TEST_SWIM_SPEC.md`:
+- Добавить `"Swim"` в `RAMP_SUPPORTED_INTERVALS` (`data/sport_map.py`).
+- Расширить `data/ramp_tests.create_ramp_test` swim-протоколом (CSS).
+- Текущий filter (`user_ramp_sports`) автоматически начнёт пропускать Swim в suggestion'ы.
 
-```python
-def upgrade() -> None:
-    op.drop_column("users", "primary_sport")
-    op.add_column("users", sa.Column("sports", postgresql.JSONB, nullable=True))
-```
+### 4.2 Detection routing по выбранным видам (low priority)
 
-### Стратегия данных
-
-**Все существующие юзеры получают `sports = NULL`** (явное решение, см. диалог 2026-05-08). После деплоя `id=1` (owner = triathlon) и `id=2` (run) при следующем заходе в webapp пройдут через `<SportsPicker/>`. Это намеренная UX-проверка: убедиться, что gate работает, прежде чем масштабировать на новых юзеров. Owner (он же выступает в роли demo-юзера для смок-теста) пройдёт через picker сам — отдельной seed-логики для demo не нужно.
-
-### Downgrade
-
-```python
-def downgrade() -> None:
-    op.add_column("users", sa.Column("primary_sport", sa.String(20), nullable=True))
-    op.drop_column("users", "sports")
-```
-
-Без data-роллбэка (старые значения уже потеряны upgrade'ом, восстанавливать нечего).
+`_is_ramp_test_activity` (`tasks/actors/activities.py`) сейчас детектирует ramp-факт независимо от `user.sports`. Если найдём false-positive (юзер сделал интервалы похожие на ramp в виде, которым не занимается) — добавить guard. Пока низкий приоритет: false-positive просто зачтётся как валидный тест с обновлением зон, если математика сошлась.
 
 ---
 
-## 5. API
+## 5. Decisions log
 
-### `GET /api/auth/me` — расширение ответа
-
-Поля поверх существующих:
-
-```python
-class AuthMeResponse(BaseModel):
-    ...
-    sports: list[str] | None  # null = ещё не выбрал
-    available_sports_from_settings: list[str]  # ["run","ride"] на основе athlete_settings rows
-```
-
-`available_sports_from_settings` вычисляется как:
-
-```python
-all_settings = await AthleteSettings.get_all(user_id)
-mapping = {"Run": "run", "Ride": "ride", "Swim": "swim"}
-available = sorted({mapping[s.sport] for s in all_settings if s.sport in mapping})
-```
-
-Используется фронтом для prefill чекбоксов в SportsPicker. Если у юзера нет `AthleteSettings` (онбординг не завершён) — пустой список, picker открывается без prefill.
-
-### `PUT /api/auth/sports` — новый endpoint
-
-```python
-class SportsUpdateRequest(BaseModel):
-    sports: list[Literal["swim", "ride", "run"]] = Field(..., min_length=1, max_length=3)
-
-    @field_validator("sports")
-    def no_duplicates(cls, v):
-        if len(set(v)) != len(v):
-            raise ValueError("duplicate sports")
-        return sorted(set(v))  # canonical order
-```
-
-```python
-@router.put("/sports", dependencies=[Depends(require_viewer)])
-async def update_sports(body: SportsUpdateRequest, user_id: int = Depends(get_current_user_id)):
-    await User.update_sports(user_id, body.sports)
-    return {"sports": body.sports}
-```
-
-Валидации:
-- `min_length=1` — пустой массив запрещён.
-- `max_length=3` — больше 3-х значений не существует в текущем enum.
-- `Literal[...]` — `swim`/`ride`/`run` only; неизвестные виды → 422.
-- Дубли удаляются, порядок канонизируется.
-
-`require_viewer` (не `require_athlete`) — пользователь без `athlete_id` тоже должен иметь возможность поставить sports (хотя в реальности gate-цепочка показывает Onboarding раньше; на всякий случай).
-
----
-
-## 6. Frontend
-
-### Auth-gate цепочка (`webapp/src/App.tsx`)
-
-```
-not authenticated → <Landing/>
-authenticated, athleteState === 'checking' → spinner
-authenticated, athleteState === 'no' → <OnboardingPrompt/>           (existing)
-authenticated, athleteState === 'yes', sports === null → <SportsPicker/>  (NEW)
-authenticated, athleteState === 'yes', sports !== null → routes
-```
-
-`sports` хранится в App-state рядом с `athleteState`, обновляется одним вызовом `/api/auth/me` на mount. После успешного `PUT /sports` колбэк из SportsPicker обновляет state → re-render → user попадает на основной flow.
-
-### `<SportsPicker/>` (новый компонент)
-
-`webapp/src/components/SportsPicker.tsx` — full-screen prompt по образцу `OnboardingPrompt.tsx`:
-
-```
-┌─────────────────────────────────────┐
-│         🏊‍♂️ 🚴 🏃                    │
-│   Какими видами спорта               │
-│   ты занимаешься?                   │
-│                                     │
-│   Выбери все, что подходит.         │
-│                                     │
-│   ☐ 🏊 Плавание                     │
-│   ☐ 🚴 Велосипед                    │
-│   ☐ 🏃 Бег                          │
-│                                     │
-│   [    Сохранить    ]               │
-└─────────────────────────────────────┘
-```
-
-- Чекбоксы вертикально, full-width, стиль как у активной/неактивной кнопки в Settings.tsx (`bg-accent text-white` для checked, `bg-surface border-border` для unchecked).
-- Auto-prefill из `available_sports_from_settings` при mount (если ≥1 элемент).
-- Кнопка «Сохранить» disabled пока ничего не выбрано.
-- На submit: `PUT /api/auth/sports` → колбэк в App обновляет `sports` state.
-- Без skip-кнопки — gate жёсткий.
-
-### Settings секция
-
-`webapp/src/pages/Settings.tsx`, после Language:
-
-```tsx
-<Section title={t('settings.sports.title')} icon="🏊">
-  <div className="flex flex-col gap-2">
-    {(['swim', 'ride', 'run'] as const).map(s => (
-      <button
-        key={s}
-        onClick={() => toggleSport(s)}
-        className={`w-full py-2.5 rounded-xl ... ${
-          sports.includes(s) ? 'bg-accent text-white border-accent' : 'bg-surface ...'
-        }`}
-      >
-        {t(`settings.sports.${s}`)}
-      </button>
-    ))}
-  </div>
-</Section>
-```
-
-Optimistic update + rollback на ошибку (паттерн `patchGoal` уже в Settings.tsx). Пустой выбор → inline error («Выбери хотя бы один»), PATCH не отправляется.
-
----
-
-## 7. Morning report — ramp test filter
-
-Утренний отчёт вызывает `RampTrainingSuggestion(user, wellness)` без `sports` —
-дефолт `["Run", "Ride"]` срабатывает для всех. После этой спеки бегун, выбравший
-только `["run"]`, перестаёт получать предложение Ride-теста, и наоборот.
-
-### Точка изменения
-
-`tasks/actors/reports.py:100`:
-
-```python
-# Before:
-ramp = RampTrainingSuggestion(user=user, wellness=wellness)
-
-# After:
-ramp = RampTrainingSuggestion(
-    user=user,
-    wellness=wellness,
-    sports=_user_ramp_sports(user.sports),
-)
-```
-
-### Маппинг
-
-`User.sports` хранится в lowercase enum (`["swim","ride","run"]`), а
-`RampTrainingSuggestion` ждёт Intervals.icu casing (`["Run","Ride","Swim"]`).
-Маппер живёт рядом с актором:
-
-```python
-# tasks/utils.py
-_RAMP_SPORT_MAP = {"run": "Run", "ride": "Ride", "swim": "Swim"}
-
-def _user_ramp_sports(user_sports: list[str] | None) -> list[str]:
-    """Filter ramp-supported sports by athlete's selection.
-
-    Returns the Intervals.icu-cased subset of ``["Run", "Ride"]`` (the only
-    sports `create_ramp_test` currently supports — Swim is on the roadmap,
-    see RAMP_TEST_SWIM_SPEC.md). Empty list → caller should skip suggestion.
-    Users with ``user_sports is None`` (gate not yet passed) get ``["Run"]``
-    only — Run is the most common discipline and the safer conservative
-    default than the historical ``["Run","Ride"]``.
-    """
-    if user_sports is None:
-        return ["Run"]
-    supported = {"Run", "Ride"}  # add "Swim" when create_ramp_test supports it
-    return [_RAMP_SPORT_MAP[s] for s in user_sports if s in _RAMP_SPORT_MAP and _RAMP_SPORT_MAP[s] in supported]
-```
-
-### Поведение по сценариям
-
-| `user.sports` | Что предлагается |
-|---|---|
-| `None` (gate ещё не пройден) | `["Run"]` — консервативный дефолт, не спамит бегунам Ride-suggest |
-| `["run"]` | Только Run-ramp |
-| `["ride"]` | Только Ride-ramp |
-| `["swim"]` | Ничего (swim-ramp пока не поддерживается в `create_ramp_test`) |
-| `["swim","run"]` | Только Run |
-| `["swim","ride","run"]` (триатлет) | `["Run","Ride"]` — как сейчас |
-| `[]` | Невозможно: API запрещает (см. §5, `min_length=1`) |
-
-### Защита от пустого фильтра
-
-Когда `_user_ramp_sports(user.sports)` возвращает `[]` (например, юзер выбрал
-только `["swim"]`), `RampTrainingSuggestion.is_test_needed` должен корректно
-вернуть `False`. Текущая реализация в `tasks/utils.py:96` итерирует по
-`self.sports` — пустой список выдаст пустой `freshness` dict, `bootstrap_sports`
-будет пуст, `stale` будет пуст → `return False`. Никаких дополнительных guard'ов
-не нужно, существующая логика уже handle'ит пустоту.
-
-### Что **не** меняется
-
-- `_is_ramp_test_activity` (`tasks/actors/activities.py:546`) — это **детектор**
-  факта проведённого теста (post-activity), не предложение. Юзер может вручную
-  провести Run-ramp, даже если выбрал только `["swim"]` — детектор всё равно
-  его засчитает и обновит зоны.
-- `create_ramp_test_tool` MCP-tool — Claude может создать ramp по запросу
-  «сделай мне ramp-test», независимо от `user.sports`. Это явный intent,
-  фильтр на autonomous-suggestions, не на explicit requests.
-- Пост-активити zones-update в `build_ramp_test_message` — обрабатывает
-  фактически проведённый тест, не зависит от `user.sports`.
-
-### Тесты
-
-`tests/tasks/test_ramp_suggestion.py` — добавить cases:
-
-- `user.sports = None` → suggestion работает как раньше (`["Run","Ride"]`).
-- `user.sports = ["run"]` → если Run stale → suggest Run; если Run свежий и Ride stale → `is_test_needed == False`.
-- `user.sports = ["swim"]` → `is_test_needed == False` независимо от freshness.
-- `user.sports = ["ride"]` + только Ride stale → suggest Ride.
-
----
-
-## 8. i18n keys
-
-### `webapp/src/i18n/{ru,en}.json`
-
-```json
-{
-  "settings": {
-    "sports": {
-      "title": "Виды спорта",
-      "swim": "🏊 Плавание",
-      "ride": "🚴 Велосипед",
-      "run": "🏃 Бег",
-      "save_failed": "Не удалось сохранить",
-      "empty_warning": "Выбери хотя бы один вид"
-    }
-  },
-  "sports_picker": {
-    "title": "Какими видами спорта ты занимаешься?",
-    "description": "Выбери все, что подходит. Это влияет на рекомендации тренировок и зон.",
-    "cta": "Сохранить",
-    "saving": "Сохраняем..."
-  }
-}
-```
-
-EN-эквиваленты — параллельно. Эмодзи в строки не вшиваем (отдельные иконки в JSX) — упрощает A/B label-changes без правки эмодзи.
-
----
-
-## 9. Тесты
-
-### Backend
-
-- `tests/db/test_user_sports_migration.py` — round-trip up/down.
-- `tests/api/test_auth_me.py` — `sports` поле в ответе (null + non-null), `available_sports_from_settings` корректно отражает athlete_settings rows.
-- `tests/api/test_sports_endpoint.py`:
-  - 200 + canonical order на валидный `["run","swim"]` → возвращает `["run","swim"]` (отсортировано).
-  - 422 на пустой массив, на `["fitness"]`, на `["run","run"]` (дубли), на `["run","ride","swim","extra"]` (>3).
-  - 401 без auth.
-
-### Frontend
-
-- Smoke-тест: `<SportsPicker/>` рендерится, чекбоксы переключаются, кнопка disabled при пустом выборе.
-- Smoke-тест: App.tsx показывает `<SportsPicker/>` когда `sports === null`, скрывает когда не-null.
-
-Не пишем e2e на полный gate-flow — низкая ROI, паттерн уже покрыт OnboardingPrompt.
-
----
-
-## 10. Risks & Mitigations
-
-| Риск | Mitigation |
-|---|---|
-| Demo-юзер залочен на gate | Seed `sports = ["swim","ride","run"]` для demo-аккаунта в той же миграции |
-| Существующие юзеры (id=1, id=2) удивлены повторным онбордингом | Это намеренное решение (см. §4). Сообщить заранее в личке. |
-| Auto-prefill не сработает для юзеров без `AthleteSettings` (новые) | Picker открывается с пустым выбором — это нормальный UX для нового юзера |
-| Webapp кеширует `sports === null` после первого PUT | После успешного PUT обновляем state в App → re-render. Тестируем явно. |
-| Нагрузка на `/api/auth/me` (extra query на `AthleteSettings.get_all`) | Уже выполняется внутри `auth_me` (строка `await AthleteSettings.get_thresholds(...)`). Маппинг в `available` — in-memory, копеечная стоимость. |
-
----
-
-## 11. Follow-up roadmap
-
-После приземления этой спеки — отдельные итерации (свой PR на каждую):
-
-### 11.1 Прокидывание в промпт
-
-- `_ATHLETE_BLOCK_TEMPLATE`: строка `Sports: {sports}` после age.
-- `SYSTEM_PROMPT_V2` / `SYSTEM_PROMPT_WEEKLY`: аналогично.
-- Условный рендер `_zones_block` — печатать только секции выбранных видов.
-- Regression: morning report для триатлета не должен поменяться (всё ещё `["swim","ride","run"]`), для бегуна — короче на ~30%.
-- Кеш-сегменты: `sports` попадает в per-user tail (вместе с goal/zones/facts) — инвалидируется при PUT, что ок.
-
-### 11.2 Фильтрация MCP-tools
-
-- `bot/tool_filter.py`: для `["run"]` исключать `get_polarization_index(sport='ride'/'swim')`, swim/bike-specific tools, etc.
-- Аналогично для weekly report `get_progression_analysis` — вызывать только для выбранных видов.
-
-### 11.3 Адаптация report secций
-
-- Morning report: для не-триатлета убрать «оценка тренировки» в стиле «swim+bike+run», делать одиночный фокус.
-- Weekly: per-sport breakdown показывать только для выбранных видов.
-
-### 11.4 Swim ramp-test поддержка
-
-После приземления `RAMP_TEST_SWIM_SPEC.md`: добавить `"Swim"` в `supported`
-set'е `_user_ramp_sports`, расширить `create_ramp_test` swim-протоколом.
-Текущая спека намеренно оставляет swim out — нет рабочей реализации
-swim-ramp в `data/ramp_tests.create_ramp_test`.
-
-### 11.5 Detection routing по выбранным видам
-
-`_is_ramp_test_activity` (post-activity) сейчас детектирует ramp-факт
-независимо от `user.sports`. Если в будущем найдём false-positive (юзер
-сделал интервалы, похожие на ramp, в виде, которым не занимается) —
-добавить guard. Пока низкий приоритет: false-positive просто ничего
-не сломает (он всё равно зачтётся как валидный тест с обновлением зон,
-если математика сошлась).
-
----
-
-## 12. Decisions log
+Durable knowledge — почему мы выбрали именно эти решения. Сохраняется даже когда implementation детали устаревают.
 
 | Дата | Решение | Альтернатива | Причина |
 |---|---|---|---|
 | 2026-05-08 | Multi-select `["swim","ride","run"]`, без `triathlon`/`fitness` | Single string + отдельный enum-тег `triathlon` | Триатлон = union трёх; отдельный тег порождает дубли (`["triathlon","run"]` — что это?). Fitness — нет use-case'а пока. |
-| 2026-05-08 | `sports` в JSONB, не в отдельной таблице | `user_sports(user_id, sport)` | Массив фиксированной длины ≤3, никаких per-row атрибутов, no relational join needed. JSONB проще. |
-| 2026-05-08 | Все existing → NULL | Смигрировать `triathlon → ["swim","ride","run"]`, `run → ["run"]` | Намеренная UX-проверка: пройти через gate самим, прежде чем масштабировать. |
-| 2026-05-08 | Auto-prefill из `AthleteSettings` | Пустой picker всегда | Уменьшает клики для триатлета, который уже подключил Intervals. Юзер всё равно подтверждает галкой «Сохранить». |
-| 2026-05-08 | Прокидывание в промпт — отдельный PR | Делать всё в одном PR | Меняет поведение Claude → нужна отдельная regression-проверка на morning report. Инфраструктура без изменения промпта безопасна для приземления. |
+| 2026-05-08 | `sports` в JSON, не в отдельной таблице | `user_sports(user_id, sport)` | Массив фиксированной длины ≤3, никаких per-row атрибутов, no relational join needed. JSON проще. |
+| 2026-05-08 | Все existing юзеры → `sports=NULL` на миграции | Смигрировать `triathlon → ["swim","ride","run"]`, `run → ["run"]` | Намеренная UX-проверка: пройти через gate самим, прежде чем масштабировать. Owner в роли demo-юзера для смок-теста. |
+| 2026-05-08 | Auto-prefill из `AthleteSettings` в SportsPicker | Пустой picker всегда | Уменьшает клики для триатлета, который уже подключил Intervals. Юзер всё равно подтверждает кнопкой «Сохранить». |
+| 2026-05-08 | Прокидывание в промпт — отдельный PR (Phase 2) | Делать всё в одном PR | Меняет поведение Claude → нужна отдельная regression-проверка на morning report. Инфраструктура без изменения промпта безопасна для приземления. |
 | 2026-05-08 | Фильтр ramp-suggestions включить в Phase 1 | Отложить в Phase 2 вместе с промптом | Зависит только от `User.sports` (без промпта), 5 строк кода + маппер. Безопасно делать сразу. |
-| 2026-05-08 | `user.sports = None` → `["Run"]` only | (a) Suppress всё; (b) Legacy `["Run","Ride"]` | Morning report — фоновая cron-задача, юзер мог не открыть webapp до 7am первой ночью. Suppress всё = silent regression. Legacy `["Run","Ride"]` спамит Ride-suggest бегунам, которые ещё не зашли. Конкретно `["Run"]`: Run — самая частая дисциплина, минимум ложного шума, и после прохождения gate реальная подборка вступает в силу. |
-| 2026-05-08 | Swim из ramp-фильтра пока выкидывать | Доверять `user.sports = ["swim"]` буквально и предлагать swim-ramp | `create_ramp_test` пока не поддерживает swim. RAMP_TEST_SWIM_SPEC.md существует — после его приземления убрать `Swim`-исключение из `_user_ramp_sports`. |
-| 2026-05-08 | §11.2 tool-list filter — SKIPPED | Добавить sport-аргумент-aware фильтр в `bot/tool_filter.py:TOOL_GROUPS` | В `TOOL_GROUPS` нет sport-specific tool-имён (нет `*_run`/`*_ride`/`*_swim`). Sport-routing идёт через `sport=` arg в general-purpose tools (`get_polarization_index`, `get_progression_analysis`, …). Эта спецификация в §11.2 предполагала, что фильтрация существует на уровне tool-list — реальность: ограничение задаётся через prompt-context (Phase 2 `Sports:` line + `_zones_block` filter + Phase 3 `{primary_sport}` подстановка). Tool-list trim не нужен. |
-| 2026-05-08 | Phase 3 morning prompt: hardcoded `sport='run'` → `{primary_sport}` placeholder | Оставить hardcode и доверять Claude инферить из `Sports:` line | Hardcode `sport='run'` для cyclist-only юзера активно вредит — Claude послушно вызовет `get_polarization_index(sport='run')` и получит пусто. Параметризация: 3 строки в шаблоне + helper. Триатлет: legacy ≡ new (Run priority). |
-| 2026-05-08 | Weekly Ride-блоки conditional через `{progression_step}` / `{ride_ml_insights}` | Single `{format_sections}` placeholder с динамическим numbering | Numbering 1,2,3,4,6,7 для не-Ride юзера выглядит странновато но функционально безразличен Claude'у — структурный refactor с динамическим numbering не оправдывает churn. Проще оставить gap при отсутствии секции 5. |
+| 2026-05-08 | `user.sports = None` → `["Run"]` only в `user_ramp_sports` | (a) Suppress всё; (b) Legacy `["Run","Ride"]` | Morning report — фоновая cron-задача, юзер мог не открыть webapp до 7am первой ночью. Suppress всё = silent regression. Legacy `["Run","Ride"]` спамит Ride-suggest бегунам, которые ещё не зашли. `["Run"]` — Run самая частая дисциплина, минимум ложного шума. После прохождения gate реальная подборка вступает в силу. |
+| 2026-05-08 | Swim из ramp-фильтра выкидывать пока | Доверять `user.sports = ["swim"]` буквально и предлагать swim-ramp | `create_ramp_test` пока не поддерживает swim. RAMP_TEST_SWIM_SPEC.md существует — после его приземления убрать `Swim`-исключение из `RAMP_SUPPORTED_INTERVALS`. |
+| 2026-05-08 | §11.2 tool-list filter — SKIPPED | Добавить sport-аргумент-aware фильтр в `bot/tool_filter.py:TOOL_GROUPS` | В `TOOL_GROUPS` нет sport-specific tool-имён (нет `*_run`/`*_ride`/`*_swim`). Sport-routing идёт через `sport=` arg в general-purpose tools (`get_polarization_index`, `get_progression_analysis`). Ограничение задаётся через prompt-context (Phase 2 `Sports:` line + `_zones_block` filter + Phase 3 `{primary_sport}` подстановка). Tool-list trim не нужен. |
+| 2026-05-08 | Phase 3: hardcoded `sport='run'` → `{primary_sport}` placeholder | Оставить hardcode и доверять Claude инферить из `Sports:` line | Hardcode `sport='run'` для cyclist-only юзера активно вредит — Claude послушно вызовет `get_polarization_index(sport='run')` и получит пусто. Параметризация: 3 строки в шаблоне + helper. Триатлет: legacy ≡ new (Run priority по `RAMP_PRIORITY`). |
+| 2026-05-08 | Weekly Ride-блоки conditional через `{format_sections_tail}` (rebuild per branch) | Numbering gap 1,2,3,4,6,7 для не-Ride юзера | Claude tends to renumber visible output; "section 5 missing" jump в Telegram-отчёте смущает читателя. Rebuild tail per branch — 5/6 для не-Ride, 5/6/7 для Ride. |
+| 2026-05-08 | `RAMP_PRIORITY = ("Run","Ride","Swim")` для tie-break в ramp-suggestion | Сохранять порядок из `user.sports` | API canonicalises `user.sports` алфавитно (`["run","ride"]` → `["ride","run"]`); без priority-проекции tie-break biased к Ride для триатлета. Run-first matches legacy expectation. |
 
 ---
 
-## 13. Status
+## 6. Status
 
 - [x] Phase 1 — Schema + API + Frontend gate + Settings + ramp-suggestion filter (приземлено 2026-05-08)
-- [x] Phase 2 — Прокидывание в промпт (`_ATHLETE_BLOCK_TEMPLATE`, conditional `_zones_block`) — приземлено 2026-05-08
-- [x] Phase 3 — Параметризация `sport=...` в morning/weekly + conditional Ride-блоки — приземлено 2026-05-08. **§11.2 tool filter SKIPPED** — нет sport-specific tool-имён в `bot/tool_filter.py:TOOL_GROUPS`, всё routing через `sport=` arg → закрывается через prompt-context (Phase 2 + 3).
-- [ ] Phase 4 — Swim ramp-test support + detection routing
+- [x] Phase 2 — Прокидывание `Sports:` линии в три промпт-шаблона + conditional `_zones_block` (приземлено 2026-05-08)
+- [x] Phase 3 — `{primary_sport}` параметризация в morning/weekly + conditional Ride-блоки. **§11.2 tool-list filter SKIPPED** — обоснование в Decisions log. Приземлено 2026-05-08.
+- [ ] Phase 4 — Swim ramp-test support + detection routing (gated на `RAMP_TEST_SWIM_SPEC.md`)

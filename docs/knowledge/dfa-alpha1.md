@@ -86,15 +86,15 @@ Thresholds are detected by finding the HR values where the α1 timeseries crosse
 
 ### Detection Strategy
 
-Detection requires a **ramp segment** — a period of monotonically increasing HR (≥ 10 minutes), such as a progressive warm-up, step test, or ramp test. Steady-state workouts do not yield threshold estimates, but Ra/Da metrics are still computed.
+Detection requires a **ramp segment** — a period of progressively increasing HR (warm-up, step test, ramp test). Implementation gates on minimum sample count (~100 s of paired α1/HR points) and an α1 range that spans from above 1.0 down to below the HRVT crossings — strict monotonicity is not enforced, so progressive efforts with brief plateaus are still detectable. Steady-state workouts do not yield threshold estimates, but Ra/Da metrics are still computed.
 
 Steps:
-1. Find a ramp segment (monotonic HR increase, ≥ 10 min)
-2. Fit a linear regression: `DFA_α1 = f(HR)`
-3. Interpolate the HR values where α1 crosses 0.75 (HRVT1) and 0.50 (HRVT2)
-4. Validate: R² > 0.7, and the α1 range must span from > 1.0 down to < 0.75
+1. Find a candidate ramp segment (sufficient duration + α1 range covering the thresholds).
+2. Fit a linear regression: `DFA_α1 = f(HR)`.
+3. Interpolate the HR values where α1 crosses 0.75 (HRVT1) and 0.50 (HRVT2).
+4. Validate: **reject when R² < 0.5** (low-confidence fit). R² ≥ 0.7 marks a high-confidence tier; 0.5–0.7 is moderate. The α1 range must include values above 1.0 and below the crossings.
 
-Confidence levels: **high** / **moderate** / **low**, reported alongside each threshold estimate.
+Confidence levels: **high** (R² ≥ 0.7) / **moderate** (0.5 ≤ R² < 0.7) / **low** (R² < 0.5, rejected). Reported alongside each threshold estimate.
 
 Indoor (trainer) sessions are more reliable than outdoor rides due to absence of wind, gradient, and pacing variability.
 
@@ -160,4 +160,4 @@ Interpretation:
 - Gronwald et al. (2020) — DFA alpha1 as a non-invasive intensity biomarker
 - Rogers et al. (2021) — DFA alpha1 for aerobic threshold determination
 - Lipponen & Tarvainen (2019) — Artifact correction method for RR intervals
-- AIEndurance — Ra (Readiness) and Da (Durability) index definitions
+- AIEndurance — Ra (Readiness) and Da (Durability) index definitions. *Note: AIEndurance HRV-baseline algorithm itself was retired in #307 (collapsed to Flatt & Esco); this citation refers only to the Ra/Da formula definitions, which remain in use.*
