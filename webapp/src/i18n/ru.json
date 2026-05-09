@@ -249,5 +249,39 @@
     "description": "Выбери все, что подходит. Это влияет на рекомендации тренировок и тестов.",
     "cta": "Сохранить",
     "saving": "Сохраняем..."
+  },
+  "race_plan": {
+    "title": "План на гонку",
+    "loading": "Загружаем план…",
+    "intro": "Коридоры темпа, питание и план Б на основе тренировок последних 6 недель и прошлых гонок.",
+    "generate_cta": "Сгенерировать план",
+    "generating": "Генерируем (10-30с)…",
+    "regenerate_cta": "🔄 Пересчитать план",
+    "regenerating": "Пересчитываем…",
+    "section_warmup": "Разминка",
+    "section_legs": "Этапы",
+    "section_fueling": "Питание",
+    "section_transitions": "Транзиты",
+    "section_contingencies": "План Б",
+    "fueling_carbs": "{{value}} г углеводов/ч",
+    "fueling_fluid": " · {{value}} мл жидкости/ч",
+    "fueling_sodium": " · {{value}} мг натрия/ч",
+    "leg_hr_cap": "потолок {{value}} уд/мин",
+    "leg_transition_target": " (цель {{value}}с)",
+    "footer_generated": "Сгенерирован {{when}} · {{model}}",
+    "rate_limit_with_time": "Уже пересчитано сегодня. Следующий пересчёт после {{time}}.",
+    "rate_limit_with_hours": "Уже пересчитано сегодня. Попробуй через ~{{hours}}ч.",
+    "rate_limit_generic": "Достигнут лимит пересчётов.",
+    "demo_blocked": "Демо-режим — только чтение.",
+    "request_failed": "Ошибка запроса (HTTP {{status}}).",
+    "conditions": {
+      "title": "Условия гонки (опционально)",
+      "elevation_label": "Набор высоты (м)",
+      "temp_label": "Ожидаемая температура (°C)",
+      "inherit_label": "Подставить из прошлой гонки",
+      "inherit_placeholder": "— выбери прошлую гонку —",
+      "inherit_loading": "Загружаем прошлые гонки…",
+      "inherit_empty": "Нет прошлых гонок для подстановки."
+    }
   }
 }

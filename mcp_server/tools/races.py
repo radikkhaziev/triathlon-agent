@@ -1,4 +1,8 @@
-"""MCP tools for race tagging, analytics, and future-race creation."""
+"""MCP tools for race tagging, analytics, and future-race creation.
+
+Race-execution-plan generation lives in ``data/race_plan_service.py`` —
+this module only ships the thin MCP wrapper (``generate_race_plan``).
+"""
 
 import logging
 from datetime import date, timedelta
@@ -10,6 +14,7 @@ from sqlalchemy import select
 from data.db import Activity, AthleteGoal, Race, Wellness, get_session
 from data.intervals.client import IntervalsAsyncClient
 from data.intervals.dto import EventExDTO
+from data.race_plan_service import build_race_plan
 from data.sport_map import resolve_race_sport_type
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
@@ -567,3 +572,61 @@ async def delete_race_goal(category: Literal["RACE_A", "RACE_B", "RACE_C"]) -> s
         return f"⚠️ Deleted from Intervals.icu but local cleanup failed: {e}. " "Retry to reconcile."
 
     return f"🗑️ {category} deleted: {event_name}."
+
+
+# ---------------------------------------------------------------------------
+# Race execution plan: thin MCP wrapper around data.race_plan_service
+# ---------------------------------------------------------------------------
+#
+# All business logic — JSON schema, system prompt, validator, context-build,
+# Claude call, persistence — lives in ``data/race_plan_service.py`` so the
+# REST endpoint (``api/routers/race_plan.py``) and this MCP tool can share a
+# single code path. See PR2.1 (2026-05-09) and RACE_PLAN_SPEC §11.8.
+
+
+@mcp.tool()
+@sentry_tool
+async def generate_race_plan(
+    goal_id: int | None = None,
+    dry_run: bool = False,
+    force_regen: bool = False,
+) -> dict:
+    """Generate a structured race-execution plan for an upcoming A-race.
+
+    Reads the athlete's RACE_A goal (or a specific goal by id), the last 6
+    weeks of training, per-sport zones, the race-day-projected fitness decay,
+    personal race history and active user_facts; calls Claude with that
+    context and a forced JSON schema; persists the result as a row in
+    ``race_plans``.
+
+    The tool refuses to generate a plan when:
+      - the athlete has fewer than 6 distinct activities in the last 6 weeks
+        (no evidence to calibrate the pacing corridor), OR
+      - the race is more than 200 days away (the fitness projection has
+        decayed too far for the corridor to be defensible).
+
+    Plans are tagged with a ``confidence_tier`` enum so the surface can warn
+    the athlete how settled the corridor is: ``final`` <7d, ``late`` 7-14d,
+    ``mid`` 14-60d, ``early`` 60-200d (replaces the old binary preliminary
+    flag — see RACE_PLAN_SPEC §3).
+
+    Parameters:
+      goal_id: athlete_goals.id — usually omitted; defaults to RACE_A.
+        (The pre-race target lives in athlete_goals, not the post-race
+        ``races`` table; the issue spec called this ``race_id`` but the row
+        is genuinely a goal id.)
+      dry_run: True → return the generated payload only, do NOT persist.
+      force_regen: True → bypass the idempotent same-day return, regenerate
+        in place (preserves row id), subject to a per-day rate limit
+        (1/day). Returns ``{error: "rate limit", retry_after_sec, ...}``
+        when the limit is hit.
+    """
+    return await build_race_plan(
+        user_id=get_current_user_id(),
+        goal_id=goal_id,
+        dry_run=dry_run,
+        force_regen=force_regen,
+        # MCP tool doesn't surface race_conditions yet — Claude can prompt the
+        # athlete inside chat to use the web UI instead. Defer until/if athletes
+        # actually want to set conditions through chat. PR2.5 ships web only.
+    )

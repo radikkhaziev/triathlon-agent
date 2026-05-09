@@ -500,3 +500,98 @@ export interface ProgressResponse {
   metrics?: Record<string, ProgressMetricInfo>
   decoupling_trend?: DecouplingTrend
 }
+
+// ---------------------------------------------------------------------------
+// Race plan (PR2 surface — backed by api/routers/race_plan.py)
+// ---------------------------------------------------------------------------
+
+export type ConfidenceTier = 'final' | 'late' | 'mid' | 'early'
+
+export interface PacingCorridor {
+  low: string
+  target: string
+  cap: string
+}
+
+export interface RacePlanLeg {
+  leg: string
+  distance?: string
+  pacing: PacingCorridor
+  hr_ceiling_bpm?: number
+  notes?: string
+}
+
+export interface RacePlanFueling {
+  carbs_g_per_hour: number
+  fluid_ml_per_hour?: number
+  sodium_mg_per_hour?: number
+  notes?: string
+}
+
+export interface RacePlanContingency {
+  scenario: string
+  plan: string
+}
+
+export interface RacePlanTransition {
+  name: string
+  checklist: string[]
+  target_time_sec?: number
+}
+
+export interface RacePlanInner {
+  headline?: string
+  warmup: string
+  legs: RacePlanLeg[]
+  fueling: RacePlanFueling
+  transitions?: RacePlanTransition[]
+  contingencies: RacePlanContingency[]
+}
+
+export interface RacePlanPayload {
+  plan: RacePlanInner
+  // Inline race-block (spec §11.3 — accepted as snapshot for goal-deletion resilience).
+  race: Record<string, unknown>
+  confidence_tier: ConfidenceTier
+  generated_at: string
+  model_version: string
+  // PR2.3: tracks per-day force_regen quota (resets implicitly per UTC day).
+  regen_count_today?: number
+}
+
+// Shape returned by GET /api/race-plan and POST /api/race-plan/generate.
+// confidence_tier is surfaced to the top level so UI can render a badge
+// without digging into payload (matches _format_plan_response in the router).
+export interface RacePlanResponse {
+  id: number | null
+  goal_id?: number | null
+  model_version: string
+  generated_at?: string | null
+  confidence_tier: ConfidenceTier
+  payload: RacePlanPayload
+  // dry_run / note / regen status surface in some responses; UI treats them as optional.
+  dry_run?: boolean
+  note?: string
+}
+
+// PR2.5: optional course/weather hints. Mirrors RaceConditions Pydantic model
+// in api/routers/race_plan.py — both fields optional, frontend may submit one.
+export interface RaceConditionsInput {
+  elevation_gain_m?: number | null
+  expected_temp_c?: number | null
+}
+
+// PR2.5: shape returned by GET /api/race-plan/inheritable-conditions.
+// One row per past Race for the goal's sport_type, capped at 5. Some fields
+// may be null when the past Race wasn't tagged with that detail.
+export interface InheritableRace {
+  id: number
+  name: string
+  date: string | null
+  elevation_gain_m: number | null
+  weather: string | null
+}
+
+export interface InheritableConditionsResponse {
+  races: InheritableRace[]
+}

@@ -249,5 +249,39 @@
     "description": "Pick all that apply. This shapes workout suggestions and test prompts.",
     "cta": "Save",
     "saving": "Saving..."
+  },
+  "race_plan": {
+    "title": "Race execution plan",
+    "loading": "Loading race plan…",
+    "intro": "Pacing corridors, fueling, and contingencies grounded in your last 6 weeks of training and prior races.",
+    "generate_cta": "Generate plan",
+    "generating": "Generating (10-30s)…",
+    "regenerate_cta": "🔄 Regenerate plan",
+    "regenerating": "Regenerating…",
+    "section_warmup": "Warmup",
+    "section_legs": "Legs",
+    "section_fueling": "Fueling",
+    "section_transitions": "Transitions",
+    "section_contingencies": "Contingencies",
+    "fueling_carbs": "{{value}}g carbs/hr",
+    "fueling_fluid": " · {{value}} ml fluid/hr",
+    "fueling_sodium": " · {{value}} mg sodium/hr",
+    "leg_hr_cap": "cap {{value}} bpm",
+    "leg_transition_target": " ({{value}}s target)",
+    "footer_generated": "Generated {{when}} · {{model}}",
+    "rate_limit_with_time": "Already regenerated today. Next available at {{time}}.",
+    "rate_limit_with_hours": "Already regenerated today. Try again in ~{{hours}}h.",
+    "rate_limit_generic": "Rate limit reached.",
+    "demo_blocked": "Demo mode — read-only.",
+    "request_failed": "Request failed (HTTP {{status}}).",
+    "conditions": {
+      "title": "Race conditions (optional)",
+      "elevation_label": "Elevation gain (m)",
+      "temp_label": "Expected temp (°C)",
+      "inherit_label": "Inherit from previous race",
+      "inherit_placeholder": "— pick a past race —",
+      "inherit_loading": "Loading past races…",
+      "inherit_empty": "No past races to inherit from."
+    }
   }
 }

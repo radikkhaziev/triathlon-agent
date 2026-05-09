@@ -1,4 +1,4 @@
-"""Tests for mcp_server/tools/races.py — suggest_race.
+"""Tests for mcp_server/tools/races.py — suggest_race + generate_race_plan.
 
 Covers:
 - dry_run preview text (create vs update path)
@@ -7,15 +7,29 @@ Covers:
 - recovery fallback: local goal missing but Intervals has event → picks update
 - ctl_target pass-through + separate write path
 - no Intervals HTTP in dry-run
+- generate_race_plan: validator refusals (>120d, <6 activities) and dry-run
+  happy path with anthropic.AsyncAnthropic patched, plus the no-tool_use-block
+  fallback.
 """
 
+from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from data.db import AthleteGoal
+
 _MODULE = "mcp_server.tools.races"
+# Race-plan business logic was extracted to ``data.race_plan_service`` in PR2.1
+# (2026-05-09). MCP tool ``generate_race_plan`` is now a thin wrapper that
+# resolves user_id from contextvars then calls ``build_race_plan``. Patches
+# targeting plan-internal collaborators (AthleteGoal/RacePlan/Activity/Anthropic
+# /User/Race/UserFact/FitnessProjection/AthleteSettings/get_session/settings)
+# go to _SERVICE, not _MODULE.
+_SERVICE = "data.race_plan_service"
 
 
 # ---------------------------------------------------------------------------
@@ -454,3 +468,585 @@ class TestDeleteRaceGoal:
 
         deactivate.assert_not_called()
         assert "Error" in out
+
+
+# ---------------------------------------------------------------------------
+# generate_race_plan
+# ---------------------------------------------------------------------------
+
+
+def _race_goal(*, id: int = 7, days_to_race: int = 30, sport_type: str = "Run"):
+    """Athlete-goals row stand-in for generate_race_plan's resolver.
+
+    Uses MagicMock(spec=AthleteGoal) — accessing any attribute that does NOT
+    exist on the real model raises AttributeError. This is the backstop for
+    regressions like the dropped ``disciplines`` column (issue #_, 2026-05-09):
+    plain SimpleNamespace would silently accept the attr forever.
+    """
+    goal = MagicMock(spec=AthleteGoal)
+    goal.id = id
+    goal.user_id = 1
+    goal.category = "RACE_A"
+    goal.event_name = "Drina Trail"
+    goal.event_date = date.today() + timedelta(days=days_to_race)
+    goal.sport_type = sport_type
+    goal.ctl_target = 55
+    return goal
+
+
+def _activity(idx: int, *, minutes: int = 75, hr: float = 145.0):
+    """Minimal Activity duck-type for _summarize_activities."""
+    return SimpleNamespace(
+        type="Run",
+        moving_time=minutes * 60,
+        icu_training_load=70.0,
+        average_hr=hr,
+        start_date_local=(date.today() - timedelta(days=idx)).isoformat(),
+        is_race=False,
+    )
+
+
+def _patch_session_for_plan():
+    """get_session() patch that yields a session with no wellness row."""
+    session = MagicMock()
+    scalar_result = MagicMock()
+    scalar_result.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=scalar_result)
+    session.get = AsyncMock(return_value=None)
+    session.commit = AsyncMock()
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=ctx), session
+
+
+def _valid_plan_input() -> dict:
+    """Realistic submit_race_plan tool_input that should pass validator."""
+    return {
+        "warmup": "10 min easy + 4×30s strides.",
+        "legs": [
+            {
+                "leg": "run",
+                "distance": "21.1 km",
+                "pacing": {"low": "5:30/km", "target": "5:10/km", "cap": "4:50/km"},
+                "hr_ceiling_bpm": 175,
+                "notes": "Hold target through km 16; cap only after.",
+            }
+        ],
+        "fueling": {"carbs_g_per_hour": 70, "notes": "Gel every 25 min."},
+        "transitions": [],
+        "contingencies": [
+            {"scenario": "heat", "plan": "Slow target by 5%."},
+            {"scenario": "cramp", "plan": "Walk to feed, take salt."},
+            {"scenario": "off-pace", "plan": "Drop to low, hold to km 18."},
+        ],
+        "headline": "Steady to km 16, race the last 5k.",
+    }
+
+
+def _anthropic_response(blocks: list[Any], stop_reason: str = "tool_use"):
+    """Build a fake Anthropic Messages response with .content / .stop_reason."""
+    return SimpleNamespace(content=blocks, stop_reason=stop_reason)
+
+
+def _tool_use_block(plan_input: dict, *, name: str = "submit_race_plan"):
+    return SimpleNamespace(type="tool_use", name=name, input=plan_input)
+
+
+def _patch_anthropic(plan_input: dict | None, *, stop_reason: str = "tool_use"):
+    """Patch anthropic.AsyncAnthropic so .messages.create returns one tool_use block.
+
+    ``plan_input=None`` simulates the model bailing without calling the tool —
+    only an end_turn text block is returned.
+    """
+    blocks: list = []
+    if plan_input is not None:
+        blocks.append(_tool_use_block(plan_input))
+    else:
+        blocks.append(SimpleNamespace(type="text", text="…", name=None, input=None))
+
+    fake_client = MagicMock()
+    fake_client.messages = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=_anthropic_response(blocks, stop_reason))
+    return MagicMock(return_value=fake_client)
+
+
+class TestGenerateRacePlanRefusals:
+    @pytest.mark.asyncio
+    async def test_cross_tenant_goal_id_returns_not_found(self):
+        """C3: passing another tenant's goal_id must look like 'not found' AND
+        the WHERE clause must include user_id (not just a Python compare after
+        the row is loaded). We assert the SELECT was scoped by sniffing the
+        statement; cross-tenant goals are never returned by the resolver."""
+        from mcp_server.tools.races import generate_race_plan
+
+        # session.execute returns scalar_one_or_none() == None — i.e. the SQL
+        # SELECT with WHERE id=goal_id AND user_id=user_id matched nothing.
+        scalar_result = MagicMock()
+        scalar_result.scalar_one_or_none = MagicMock(return_value=None)
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=scalar_result)
+
+        @asynccontextmanager
+        async def fake_get_session():
+            yield session
+
+        activity_get = AsyncMock(return_value=([_activity(i) for i in range(8)], None))
+        anthropic_patch = _patch_anthropic(_valid_plan_input())
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_SERVICE}.get_session", fake_get_session),
+            patch(f"{_SERVICE}.Activity.get_range", activity_get),
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            out = await generate_race_plan(goal_id=42)
+
+        assert "not found" in out["error"]
+        # Must short-circuit at goal resolution — never query activities,
+        # never reach Claude. Otherwise we've leaked work on a foreign goal.
+        activity_get.assert_not_called()
+        anthropic_patch.assert_not_called()
+        # And the SELECT must have been issued with a user_id filter
+        # (defence-in-depth — Python-only compare lets row-level audit logs
+        # record the cross-tenant read as a successful query).
+        session.execute.assert_called_once()
+        stmt_str = str(session.execute.call_args.args[0])
+        assert "user_id" in stmt_str.lower()
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_no_active_race_a(self):
+        from mcp_server.tools.races import generate_race_plan
+
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_SERVICE}.AthleteGoal.get_by_category", AsyncMock(return_value=None)),
+        ):
+            out = await generate_race_plan()
+
+        assert "error" in out
+        assert "RACE_A" in out["error"]
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_race_more_than_200d_out(self):
+        """Validator must refuse even before the Claude call when goal is too far out.
+        Gate widened from 120d → 200d (2026-05-09) to cover real A-race planning window."""
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=250)
+        anthropic_patch = _patch_anthropic(_valid_plan_input())
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_SERVICE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_SERVICE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            out = await generate_race_plan()
+
+        assert "error" in out
+        assert ">200" in out["error"]
+        assert out["days_to_race"] == 250
+        # No Claude spend on a refused-by-window plan.
+        anthropic_patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_fewer_than_6_activities(self):
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=30)
+        anthropic_patch = _patch_anthropic(_valid_plan_input())
+        thin_log = ([_activity(i) for i in range(3)], None)
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_SERVICE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_SERVICE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch(f"{_SERVICE}.Activity.get_range", AsyncMock(return_value=thin_log)),
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            out = await generate_race_plan()
+
+        assert "error" in out
+        assert out["activity_count"] == 3
+        anthropic_patch.assert_not_called()
+
+
+class TestGenerateRacePlanDryRun:
+    @pytest.mark.asyncio
+    async def test_dry_run_happy_path_returns_payload_without_persisting(self):
+        """dry_run=True calls Claude, validates, returns payload, never saves."""
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=30)
+        anthropic_patch = _patch_anthropic(_valid_plan_input())
+        save_mock = AsyncMock()
+
+        get_session_patch, _ = _patch_session_for_plan()
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_SERVICE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_SERVICE}.Activity.get_range", AsyncMock(return_value=([_activity(i) for i in range(8)], None))),
+            patch(f"{_SERVICE}.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch(f"{_SERVICE}.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch(f"{_SERVICE}.get_session", get_session_patch),
+            patch(f"{_SERVICE}.RacePlan.save", save_mock),
+            patch(f"{_SERVICE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch(f"{_SERVICE}.settings") as fake_settings,
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await generate_race_plan(dry_run=True)
+
+        assert out["dry_run"] is True
+        assert out["id"] is None
+        # 30 days from race → "mid" tier (14-60d band — see _resolve_confidence_tier).
+        assert out["confidence_tier"] == "mid"
+        assert out["payload"]["plan"]["headline"].startswith("Steady")
+        save_mock.assert_not_called()
+        # The Claude client was actually constructed once.
+        anthropic_patch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_tool_use_block_returned_returns_error(self):
+        """If Claude returns only text and skips submit_race_plan, surface a clean error."""
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=30)
+        anthropic_patch = _patch_anthropic(plan_input=None, stop_reason="end_turn")
+        save_mock = AsyncMock()
+
+        get_session_patch, _ = _patch_session_for_plan()
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_SERVICE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_SERVICE}.Activity.get_range", AsyncMock(return_value=([_activity(i) for i in range(8)], None))),
+            patch(f"{_SERVICE}.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch(f"{_SERVICE}.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch(f"{_SERVICE}.get_session", get_session_patch),
+            patch(f"{_SERVICE}.RacePlan.save", save_mock),
+            patch(f"{_SERVICE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch(f"{_SERVICE}.settings") as fake_settings,
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await generate_race_plan(dry_run=True)
+
+        assert "error" in out
+        assert "structured plan" in out["error"]
+        save_mock.assert_not_called()
+
+
+class TestGenerateRacePlanValidator:
+    """Direct unit tests for _validate_race_plan covering schema-uncatchable cases."""
+
+    def test_accepts_valid_plan(self):
+        from data.race_plan_service import _validate_race_plan
+
+        errors = _validate_race_plan(_valid_plan_input(), athlete_max_hr=190)
+        assert errors == []
+
+    def test_rejects_inverted_pace_corridor(self):
+        """For pace, low (slow) > target > cap (fast). Inverted → error."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "4:50/km", "target": "5:10/km", "cap": "5:30/km"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("corridor" in e for e in errors)
+
+    def test_rejects_inverted_power_corridor(self):
+        """For power, low (W) < target < cap. Inverted → error."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "260W", "target": "240W", "cap": "220W"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("corridor" in e for e in errors)
+
+    def test_rejects_hr_ceiling_above_athlete_max_plus_5(self):
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["hr_ceiling_bpm"] = 210
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("hr_ceiling_bpm" in e for e in errors)
+
+    def test_skips_unparseable_pacing(self):
+        """Free-form leg notes (e.g. 'easy', 'tempo') shouldn't trigger a false reject."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "easy", "target": "tempo", "cap": "threshold"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert errors == []
+
+    def test_rejects_mixed_numeric_and_prose(self):
+        """A corridor with both numeric and free-form values is the failure mode
+        the validator exists to catch — silently passing it would let an obviously
+        wrong corridor (e.g. low="5:30/km", target="5:00/km", cap="threshold pace")
+        ship to the athlete with neither ordering nor unit checks running."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "5:30/km", "target": "5:00/km", "cap": "threshold pace"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("mixes numeric with free-form" in e for e in errors)
+
+    def test_rejects_mixed_units_in_corridor(self):
+        """Pace + power in the same corridor is structurally nonsense."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["pacing"] = {"low": "5:30/km", "target": "240W", "cap": "260W"}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert any("mixes units" in e for e in errors)
+
+    # ---------- PR1 validator wins ----------
+
+    def test_rejects_distance_sum_deviation_from_race_total(self):
+        """Sum of leg distances must approximately match race total (within 5%).
+        Catches Claude inventing a 30km bike leg for a 70.3 (113km total)."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"] = [
+            {
+                "leg": "swim",
+                "distance": "1.9 km",
+                "pacing": {"low": "2:00/100m", "target": "1:55/100m", "cap": "1:50/100m"},
+            },
+            {
+                "leg": "bike",
+                "distance": "30 km",
+                "pacing": {"low": "180W", "target": "210W", "cap": "240W"},
+            },  # WRONG, should be 90km
+            {"leg": "run", "distance": "21.1 km", "pacing": {"low": "5:30/km", "target": "5:10/km", "cap": "4:50/km"}},
+        ]
+        errors = _validate_race_plan(plan, athlete_max_hr=190, race_total_m=113_000)
+        assert any("deviates from race total" in e for e in errors)
+
+    def test_accepts_distance_sum_within_tolerance(self):
+        """Real 70.3 distances should pass with no race-total complaint."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"] = [
+            {
+                "leg": "swim",
+                "distance": "1.9 km",
+                "pacing": {"low": "2:00/100m", "target": "1:55/100m", "cap": "1:50/100m"},
+            },
+            {"leg": "bike", "distance": "90 km", "pacing": {"low": "180W", "target": "210W", "cap": "240W"}},
+            {"leg": "run", "distance": "21.1 km", "pacing": {"low": "5:30/km", "target": "5:10/km", "cap": "4:50/km"}},
+        ]
+        errors = _validate_race_plan(plan, athlete_max_hr=190, race_total_m=113_000)
+        assert not any("race total" in e for e in errors)
+
+    def test_skips_distance_sum_when_race_total_unknown(self):
+        """Ad-hoc events (no canonical race total) skip the distance check, not fail it."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        # No race_total_m kwarg → check is skipped, validator returns clean
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert not any("race total" in e for e in errors)
+
+    def test_rejects_fueling_starvation(self):
+        """30 g/hr × 8h IM = 240g — well below 100g floor, that's race-day starvation."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["fueling"] = {"carbs_g_per_hour": 30, "notes": "Minimal."}
+        # 8h goal time floor (e.g. full IM)
+        errors = _validate_race_plan(plan, athlete_max_hr=190, goal_time_floor_sec=28_800)
+        assert any("fueling × duration" in e for e in errors)
+
+    def test_rejects_fueling_overload(self):
+        """120 g/hr × 1h sprint = 120g — fine on the carbs side, but if Claude
+        misjudges and gives 120g/hr for a 14h race that's 1680g (overload)."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["fueling"] = {"carbs_g_per_hour": 120, "notes": "Aggressive."}
+        # 14h floor (e.g. unrealistic IM goal but tests overload branch)
+        errors = _validate_race_plan(plan, athlete_max_hr=190, goal_time_floor_sec=50_400)
+        assert any("fueling × duration" in e for e in errors)
+
+    def test_skips_fueling_when_goal_time_unknown(self):
+        """Without goal_time_floor_sec, the check is skipped (not failed)."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["fueling"] = {"carbs_g_per_hour": 30}
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert not any("fueling × duration" in e for e in errors)
+
+    def test_rejects_implausible_leg_distance(self):
+        """A 'swim 21 km' leg implies 5+ hours of swim alone, exceeding even an
+        IM floor (8h). Catches sport-tag confusion (Claude mislabels run as swim)."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"] = [
+            {
+                "leg": "swim",
+                "distance": "21 km",
+                "pacing": {"low": "2:00/100m", "target": "1:55/100m", "cap": "1:50/100m"},
+            },
+        ]
+        # Half-IM floor 4h — 21km swim implies ~5.25h, well over.
+        errors = _validate_race_plan(plan, athlete_max_hr=190, goal_time_floor_sec=14_400)
+        assert any("implies" in e and "exceeds race floor" in e for e in errors)
+
+    def test_accepts_plausible_leg_distances_for_ironman(self):
+        """Full IM legs (3.8km swim, 180km bike, 42.2km run) all pass leg-duration
+        plausibility against an 8h floor."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"] = [
+            {
+                "leg": "swim",
+                "distance": "3.8 km",
+                "pacing": {"low": "2:00/100m", "target": "1:55/100m", "cap": "1:50/100m"},
+            },
+            {"leg": "bike", "distance": "180 km", "pacing": {"low": "180W", "target": "210W", "cap": "240W"}},
+            {"leg": "run", "distance": "42.2 km", "pacing": {"low": "5:30/km", "target": "5:10/km", "cap": "4:50/km"}},
+        ]
+        errors = _validate_race_plan(plan, athlete_max_hr=190, goal_time_floor_sec=28_800)
+        assert not any("implies" in e for e in errors)
+
+    def test_infer_canonical_race_distance(self):
+        """Helper: infer race total + goal-time floor from event name keywords."""
+        from data.race_plan_service import _infer_race_distance_and_floor
+
+        # Half IM
+        total, floor = _infer_race_distance_and_floor("Ironman 70.3 Drina")
+        assert total == 113_000
+        assert floor == 14_400
+
+        # Full IM
+        total, floor = _infer_race_distance_and_floor("Ironman Lake Placid")
+        assert total == 226_000
+        assert floor == 28_800
+
+        # Marathon
+        total, floor = _infer_race_distance_and_floor("Berlin Marathon")
+        assert total == 42_195
+
+        # Unknown
+        total, floor = _infer_race_distance_and_floor("Some Random Race")
+        assert total is None
+        assert floor is None
+
+    def test_parse_distance_units(self):
+        """Helper: parse km/m/mi distance strings to metres."""
+        from data.race_plan_service import _parse_distance_to_m
+
+        assert _parse_distance_to_m("21.1 km") == 21_100.0
+        assert _parse_distance_to_m("800 m") == 800.0
+        assert _parse_distance_to_m("1,5 km") == 1500.0  # comma decimal
+        assert _parse_distance_to_m("13.1 mi") == pytest.approx(21_082.4, rel=0.01)
+        assert _parse_distance_to_m("easy") is None
+        assert _parse_distance_to_m(None) is None
+
+
+class TestSystemPromptHelpers:
+    """Helpers driving the system prompt template (sport role + confidence tier)."""
+
+    def test_coach_role_per_sport(self):
+        from data.race_plan_service import _resolve_coach_role
+
+        assert _resolve_coach_role("triathlon") == "triathlon and endurance coach"
+        assert _resolve_coach_role("duathlon") == "triathlon and endurance coach"
+        assert _resolve_coach_role("aquathlon") == "triathlon and endurance coach"
+        assert _resolve_coach_role("run") == "running coach"
+        assert _resolve_coach_role("ride") == "cycling coach"
+        assert _resolve_coach_role("swim") == "swim coach"
+        assert _resolve_coach_role("fitness") == "endurance coach"
+        assert _resolve_coach_role(None) == "endurance coach"
+        assert _resolve_coach_role("") == "endurance coach"
+        # Case insensitive
+        assert _resolve_coach_role("Triathlon") == "triathlon and endurance coach"
+        assert _resolve_coach_role("RUN") == "running coach"
+
+    def test_confidence_tier_cutoffs(self):
+        """Spec §3 cutoffs: final <7d / late 7-14d / mid 14-60d / early 60-200d."""
+        from data.race_plan_service import _resolve_confidence_tier
+
+        # final tier
+        assert _resolve_confidence_tier(0) == "final"
+        assert _resolve_confidence_tier(6) == "final"
+        # late tier
+        assert _resolve_confidence_tier(7) == "late"
+        assert _resolve_confidence_tier(13) == "late"
+        # mid tier
+        assert _resolve_confidence_tier(14) == "mid"
+        assert _resolve_confidence_tier(59) == "mid"
+        # early tier
+        assert _resolve_confidence_tier(60) == "early"
+        assert _resolve_confidence_tier(199) == "early"
+        # >200 is refused before tier resolution; behaviour beyond is "early".
+        assert _resolve_confidence_tier(500) == "early"
+
+    def test_system_prompt_template_renders_with_role_and_language(self):
+        """Sanity: template formats with sport_role + response_language placeholders."""
+        from data.race_plan_service import _RACE_PLAN_SYSTEM_PROMPT_TEMPLATE
+
+        rendered = _RACE_PLAN_SYSTEM_PROMPT_TEMPLATE.format(
+            sport_role="running coach",
+            response_language="ru",
+        )
+        assert "running coach" in rendered
+        assert "Respond in ru" in rendered
+        # New PR1 rules must be present.
+        assert "Bike→Run constraint" in rendered
+        assert "Negative-split run" in rendered
+        # contingencies relevance gating wording
+        assert "starting point" in rendered or "wasted attention" in rendered
+
+
+class TestUserFactsWhitelist:
+    """``_summarize_user_facts`` filters to RACE_PLAN_FACT_TOPICS — generic
+    facts (dog name, work schedule) must NOT leak into the race-plan prompt."""
+
+    def test_filters_to_whitelist(self):
+        from data.race_plan_service import _summarize_user_facts
+
+        facts = [
+            SimpleNamespace(topic="injury", fact="Right knee, last flare 2025-12", expires_at=None),
+            SimpleNamespace(topic="dog", fact="Rex, golden retriever", expires_at=None),  # IRRELEVANT
+            SimpleNamespace(topic="gi", fact="Sensitive to fructose >40g/hr", expires_at=None),
+            SimpleNamespace(topic="work_schedule", fact="Standup 9am Mon-Fri", expires_at=None),  # IRRELEVANT
+            SimpleNamespace(topic="pacing", fact="Goes out too hard in first 5k", expires_at=None),
+        ]
+        out = _summarize_user_facts(facts)
+        topics = {f["topic"] for f in out}
+        assert topics == {"injury", "gi", "pacing"}
+        # Exact field shape (used by the prompt JSON dump).
+        assert all(set(f.keys()) == {"topic", "fact", "expires_at"} for f in out)
+
+    def test_returns_empty_when_no_relevant_facts(self):
+        from data.race_plan_service import _summarize_user_facts
+
+        facts = [SimpleNamespace(topic="random", fact="anything", expires_at=None)]
+        assert _summarize_user_facts(facts) == []
+
+    def test_whitelist_includes_all_eight_canonical_topics(self):
+        """RACE_PLAN_FACT_TOPICS — locking the architect-defined whitelist
+        (injury / gi / nutrition / equipment / pacing / heat_response /
+        race_history / recovery_pattern). Adding a new topic shouldn't be
+        accidental — it requires updating both this set and the test below."""
+        from data.race_plan_service import RACE_PLAN_FACT_TOPICS
+
+        assert RACE_PLAN_FACT_TOPICS == frozenset(
+            {
+                "injury",
+                "gi",
+                "nutrition",
+                "equipment",
+                "pacing",
+                "heat_response",
+                "race_history",
+                "recovery_pattern",
+            }
+        )
