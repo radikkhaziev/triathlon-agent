@@ -39,11 +39,6 @@ export interface AuthMeResponse {
   // → App-level gate shows the picker. Otherwise a non-empty subset of
   // {swim, ride, run} (server enforces ≥1 entry).
   sports?: SportTag[] | null
-  // Prefill source for the SportsPicker checkboxes — derived from
-  // AthleteSettings rows the user already has synced from Intervals.icu.
-  // Empty list = new athlete with no synced settings yet, picker opens
-  // unchecked.
-  available_sports_from_settings?: SportTag[]
 }
 
 // Recovery

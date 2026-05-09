@@ -4,10 +4,11 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { apiFetch } from './api/client'
 import { getTelegramWebApp } from './auth/telegram'
 import { useAuth } from './auth/useAuth'
-import type { AuthMeResponse, SportTag } from './api/types'
+import type { AuthMeResponse, IntervalsStatus, SportTag } from './api/types'
 import LoadingSpinner from './components/LoadingSpinner'
 import Layout from './components/Layout'
 import OnboardingPrompt from './components/OnboardingPrompt'
+import OAuthMigrationPrompt from './components/OAuthMigrationPrompt'
 import SportsPicker from './components/SportsPicker'
 import BotChatBanner from './components/BotChatBanner'
 import Landing from './pages/Landing'
@@ -33,21 +34,27 @@ export default function App() {
   const { i18n } = useTranslation()
   // 'checking' = fetch in flight, 'yes' = has athlete, 'no' = needs onboarding
   const [athleteState, setAthleteState] = useState<'checking' | 'yes' | 'no'>('checking')
+  // Intervals auth method gate: legacy `'api_key'` users (and post-disconnect
+  // `'none'` users who still have a stale `athlete_id`) are forced through a
+  // reconnect-via-OAuth screen on data routes. Settings stays accessible so
+  // they can also migrate or disconnect from there. `null` = not yet fetched.
+  const [intervalsMethod, setIntervalsMethod] = useState<IntervalsStatus['method'] | null>(null)
   // Sports gate (USER_SPORTS_SPEC §6): null = athlete hasn't picked yet →
   // show <SportsPicker/> after they finish Intervals OAuth. Empty array
   // never reaches the frontend (server enforces ≥1 entry).
   const [sports, setSports] = useState<SportTag[] | null | 'checking'>('checking')
-  const [availableSports, setAvailableSports] = useState<SportTag[]>([])
   // Issue #266: a Login Widget signup never opened a bot chat, so notifications
   // would 400. Banner stays visible across every page until /start unsticks it.
   const [botChatInitialized, setBotChatInitialized] = useState<boolean | null>(null)
   const [botUsername, setBotUsername] = useState<string | null>(null)
 
   // Global auth gate: fetch /api/auth/me once on login → check if user has
-  // a linked Intervals.icu athlete. If not, ALL data routes are replaced by
-  // OnboardingPrompt. This prevents viewer-without-athlete from seeing
-  // anyone else's data (issue #185). Settings and Login stay accessible
-  // so the user can complete OAuth onboarding.
+  // a linked Intervals.icu athlete. If not, data routes are replaced by
+  // OnboardingPrompt. Legacy `api_key` users (and post-disconnect `none`
+  // users with a stale athlete_id) get OAuthMigrationPrompt instead. This
+  // prevents viewer-without-athlete from seeing anyone else's data (issue
+  // #185). Settings and Login stay accessible so the user can complete
+  // OAuth onboarding.
   //
   // While the check is in flight ('checking'), data routes show a loading
   // spinner — no window where unauthenticated data can flash (C1 fix).
@@ -57,6 +64,7 @@ export default function App() {
     if (!isAuthenticated) {
       setAthleteState('checking')
       setSports('checking')
+      setIntervalsMethod(null)
       return
     }
     apiFetch<AuthMeResponse>('/api/auth/me')
@@ -65,6 +73,7 @@ export default function App() {
           i18n.changeLanguage(data.language)
         }
         setAthleteState(data.intervals?.athlete_id ? 'yes' : 'no')
+        setIntervalsMethod(data.intervals?.method ?? null)
         // Field-presence guard: `sports` may be missing on old API
         // responses (partial deploy). When the key is absent, assume
         // already-set so we don't lock existing users out. When present,
@@ -77,9 +86,6 @@ export default function App() {
             ? Array.isArray(data.sports) ? data.sports : null
             : (['swim', 'ride', 'run'] as SportTag[]),
         )
-        setAvailableSports(
-          Array.isArray(data.available_sports_from_settings) ? data.available_sports_from_settings : [],
-        )
         // Default to true so an old server (no field) doesn't show a bogus
         // banner; only an explicit ``false`` from a fresh API triggers it.
         setBotChatInitialized(data.bot_chat_initialized ?? true)
@@ -91,6 +97,7 @@ export default function App() {
         // fail and show their own error states.
         setAthleteState('checking')
         setSports('checking')
+        setIntervalsMethod(null)
         setBotChatInitialized(true)
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -110,10 +117,18 @@ export default function App() {
 
   // Decide what to show for data routes based on athlete state.
   // Order: still loading → spinner; no Intervals → OnboardingPrompt;
-  // no sports picked → SportsPicker; everything ready → page.
+  // legacy api_key → OAuthMigrationPrompt; no sports picked → SportsPicker;
+  // everything ready → page.
   const showLoading =
     isAuthenticated && (athleteState === 'checking' || sports === 'checking')
   const gated = isAuthenticated && athleteState === 'no'
+  // `'none'` is the post-disconnect state: User.clear_oauth_tokens() leaves
+  // athlete_id intact, so athleteState='yes' but the IntervalsClient will
+  // fail to resolve credentials. Treat it the same as the legacy api_key
+  // case — the user must reconnect.
+  const needsOAuthMigration =
+    isAuthenticated && athleteState === 'yes' &&
+    (intervalsMethod === 'api_key' || intervalsMethod === 'none')
   const needsSports = isAuthenticated && athleteState === 'yes' && sports === null
 
   const LoadingPage = () => <Layout maxWidth="480px"><LoadingSpinner /></Layout>
@@ -122,7 +137,8 @@ export default function App() {
   const dataRoute = (Page: React.ComponentType) =>
     showLoading ? <LoadingPage /> :
     gated ? <OnboardingPrompt /> :
-    needsSports ? <SportsPicker prefill={availableSports} onSaved={setSports} /> :
+    needsOAuthMigration ? <OAuthMigrationPrompt /> :
+    needsSports ? <SportsPicker onSaved={setSports} /> :
     <Page />
 
   const showBotChatBanner = isAuthenticated && botChatInitialized === false

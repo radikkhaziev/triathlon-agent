@@ -234,7 +234,6 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
             "scope": user.intervals_oauth_scope,
         },
         "sports": user.sports,
-        "available_sports_from_settings": t.available_sports,
         "profile": {
             "age": t.age,
             "lthr_run": t.lthr_run,

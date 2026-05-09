@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Layout from './Layout'
 import { apiFetch } from '../api/client'
@@ -11,9 +11,6 @@ const ALL_SPORTS: { tag: SportTag; emoji: string }[] = [
 ]
 
 interface Props {
-  /** Sports the user already has synced AthleteSettings for — checkboxes
-   *  prefill from this so the triathlete doesn't have to retick everything. */
-  prefill: SportTag[]
   /** Called with the canonical list returned by the server after a successful
    *  PUT. Parent (App) updates its `sports` state to release the gate. */
   onSaved: (sports: SportTag[]) => void
@@ -24,26 +21,16 @@ interface Props {
  * Hides bottom tabs because the user is in pre-data state and tab navigation
  * would just bounce them back here. Mirrors OnboardingPrompt's full-screen
  * empty-state pattern.
+ *
+ * Starts with empty selection so the «pick a sport» action is visually
+ * unambiguous: all buttons inactive, Save disabled until user clicks at
+ * least one. Re-edit flow lives on the Settings page.
  */
-export default function SportsPicker({ prefill, onSaved }: Props) {
+export default function SportsPicker({ onSaved }: Props) {
   const { t } = useTranslation()
-  const [selected, setSelected] = useState<Set<SportTag>>(new Set(prefill))
+  const [selected, setSelected] = useState<Set<SportTag>>(new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  // If the parent re-mounts us with a different prefill (rare — only on
-  // refetch race), reflect it. We do NOT overwrite during user interaction
-  // because that would clobber their toggles.
-  //
-  // INVARIANT: `prefill` must be a stable array reference for the lifetime
-  // of this component. App.tsx fetches /api/auth/me once on mount and the
-  // resulting `availableSports` is set in a single setState — fine. If a
-  // future caller passes a freshly-allocated array on every render (e.g.
-  // `prefill={[...x]}`), this effect will fire on every parent re-render
-  // and reset user toggles. Add a JSON.stringify dep guard before doing so.
-  useEffect(() => {
-    setSelected(new Set(prefill))
-  }, [prefill])
 
   const toggle = (s: SportTag) => {
     setSelected(prev => {
