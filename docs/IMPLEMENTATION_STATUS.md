@@ -123,7 +123,7 @@ Sentry scrubbing extended with `bot\d+:[A-Za-z0-9_-]{30,}` regex so leaked Teleg
 
 ## ATP Phase 3 — personal-patterns prompt enrichment (2026-05-07)
 
-Closing the long-pending Phase 3 finishing work, see `docs/ADAPTIVE_TRAINING_PLAN.md` §3.
+Closing the long-pending Phase 3 finishing work, see `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` §3.
 
 - `data/personal_patterns.py` (new) — `compute_personal_patterns(user_id, days_back=90) → dict` aggregator over `training_log`. Always returns `entries_total`/`entries_complete`; aggregate fields populated only at `entries_complete >= MIN_COMPLETE_ENTRIES` (30). Single SQL query, no persistence.
 - `mcp_server/tools/training_log.py:get_personal_patterns` — refactored to thin wrapper. Eliminated previous double-query insufficient-data path.
@@ -135,7 +135,7 @@ Closing the long-pending Phase 3 finishing work, see `docs/ADAPTIVE_TRAINING_PLA
 
 ## Ramp test Run — pace-driven protocol + pipeline fixes (2026-05-07)
 
-Run ramp test rebuilt around pace as control variable (HR/DFA observed). See `docs/ADAPTIVE_TRAINING_PLAN.md` §«Фаза 4».
+Run ramp test rebuilt around pace as control variable (HR/DFA observed). See `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` §«Фаза 4».
 
 **Triggers** (`tasks/utils.py:RampTrainingSuggestion`): added `tsb > -10` and `recovery_score >= 70` gates; default `sports = ["Run", "Ride"]` (was Run only). Detector skips deep-fatigue / low-recovery days that produce noisy DFA fits.
 
@@ -155,7 +155,7 @@ Run ramp test rebuilt around pace as control variable (HR/DFA observed). See `do
 
 ## Ramp drift — HRVT2 mapping fix + latest-only logic + recalibrated protocol (2026-05-08)
 
-Three coupled changes that landed together. Spec context lives in `docs/ADAPTIVE_TRAINING_PLAN.md` §«Threshold drift detection».
+Three coupled changes that landed together. Spec context lives in `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` §«Threshold drift detection».
 
 **1. HRVT1→HRVT2 semantic fix.** `actor_update_zones` previously pushed `ActivityHrv.hrvt1_hr` (aerobic threshold, DFA α1=0.75) into Intervals.icu's `lthr` field — but Intervals' `lthr` field semantically equals LTHR = HRVT2 = anaerobic threshold (α1=0.50). Result: Z3-Z7 zones in Intervals were calibrated against the wrong physiological point, sliding all training zones ~13% lower than intended (Z4 SubThreshold → effectively Z2 by real load). Fix: drift detector and actor now push **HRVT2 HR** to `lthr` and **pace at HRVT2** to `threshold_pace`. Affected: `data/db/user.py:detect_threshold_drift`, `tasks/actors/athlets.py:actor_update_zones`, `tasks/formatter.py:build_ramp_test_message`.
 
@@ -224,7 +224,7 @@ Six coupled changes shipped under one PR. Specs: `docs/RAMP_TEST_BIKE_SPEC.md` (
 
 ## Pending
 
-- MT Phase 2 (JWT upgrade): tenant_id, role, scope claims, bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`.
+- MT Phase 2 (JWT upgrade): tenant_id, role, scope claims, bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY_SPEC.md`.
 - Retire legacy `INTERVALS_API_KEY` env vars (OAuth Phase 5).
 - User-memory Phase 2 extractor — gated on `tool_facts_per_100_msgs_30d < 3` with `chat_msgs ≥ 100`.
 - When scaling to multi-worker uvicorn, migrate `_retry_backfill_last_success` and `_mcp_config_last_access` to Redis INCR+EXPIRE.

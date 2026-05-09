@@ -10,7 +10,7 @@
 | `data/db/race_plan.py` | ORM + CRUD |
 | `mcp_server/tools/races.py:generate_race_plan` | MCP tool |
 | `migrations/versions/v2c3d4e5f6a7_add_race_plans.py` | Schema |
-| `docs/MULTI_TENANT_SECURITY.md` | T1 — `user_id`-scoped reads |
+| `docs/MULTI_TENANT_SECURITY_SPEC.md` | T1 — `user_id`-scoped reads |
 | `docs/ML_RACE_PROJECTION_SPEC.md` | `fitness_projection` — race-day CTL/ATL/TSB |
 | `docs/RACE_TAGGING.md` | `athlete_goals` (RACE_A/B/C) — источник цели |
 

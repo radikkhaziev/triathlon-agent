@@ -1,6 +1,6 @@
 """Personal recovery/compliance patterns derived from training_log.
 
-ATP Phase 3 finishing work — see `docs/ADAPTIVE_TRAINING_PLAN.md` §3.
+ATP Phase 3 finishing work — see `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` §3.
 
 Two consumers read these patterns:
   1. Weekly report — Claude calls the `get_personal_patterns` MCP tool, which

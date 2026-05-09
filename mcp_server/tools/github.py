@@ -82,7 +82,7 @@ async def create_github_issue(
     attribute the reporter by ``user_id`` only at the bottom of the body.
     Telegram username and Intervals.icu ``athlete_id`` are deliberately NOT
     written into the public repo (PII linkage avoidance, see
-    ``docs/MULTI_TENANT_SECURITY.md`` §13).
+    ``docs/MULTI_TENANT_SECURITY_SPEC.md`` §13).
 
     Owner role bypasses the rate limit and label-allow-list — they manage the
     repo and need full access to triage/priority/area metadata. Athletes are

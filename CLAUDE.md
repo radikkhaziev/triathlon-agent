@@ -78,7 +78,7 @@ All core modules done. Multi-tenant Phase 1.3 + Intervals.icu OAuth Phase 2 + OA
 
 See `.env.example` for full list. Key vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` (for Login Widget), `TELEGRAM_WEBHOOK_URL` (empty=polling), `ANTHROPIC_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `API_BASE_URL` (single URL for API + webapp + static + CORS origin), `INTERVALS_API_KEY`/`INTERVALS_ATHLETE_ID` (legacy owner, being replaced by per-user OAuth), `INTERVALS_OAUTH_CLIENT_ID`/`INTERVALS_OAUTH_CLIENT_SECRET`/`INTERVALS_OAUTH_REDIRECT_URI` (per-user OAuth), `INTERVALS_WEBHOOK_SECRET` (shared secret for webhook verification), `TIMEZONE=Europe/Belgrade`, `MCP_AUTH_TOKEN`, `FIELD_ENCRYPTION_KEY` (Fernet), `DEMO_PASSWORD` (shared password for read-only demo access, empty=disabled), `SENTRY_DSN` (empty=disabled).
 
-**Telegram Login Widget setup** (one-time, for web login): in `@BotFather` run `/setdomain` → choose your bot → enter `bot.endurai.me` (no protocol, no path). Widget will only render on that domain. Set `TELEGRAM_BOT_USERNAME` in `.env` to the bot username (without `@`). See `api/auth.py:verify_telegram_widget_auth` for the HMAC-SHA256 verification logic (`docs/MULTI_TENANT_SECURITY.md` threat T3 scope).
+**Telegram Login Widget setup** (one-time, for web login): in `@BotFather` run `/setdomain` → choose your bot → enter `bot.endurai.me` (no protocol, no path). Widget will only render on that domain. Set `TELEGRAM_BOT_USERNAME` in `.env` to the bot username (without `@`). See `api/auth.py:verify_telegram_widget_auth` for the HMAC-SHA256 verification logic (`docs/MULTI_TENANT_SECURITY_SPEC.md` threat T3 scope).
 
 ---
 
@@ -202,7 +202,7 @@ Run: `python -m mcp_server`. Production: mounted at `/mcp` (Streamable HTTP, per
 
 **Auth:** `MCPAuthMiddleware` resolves user by `User.get_by_mcp_token(token)` → sets `user_id` in `contextvars`. All tools call `get_current_user_id()` — user cannot manipulate `user_id` via tool parameters.
 
-**58 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), **long-term user memory** (`save_fact`/`list_facts`/`deactivate_fact`/`reactivate_fact`/`get_fact_metrics` — see `docs/USER_CONTEXT_SPEC.md`), GitHub issues (`create_github_issue` available to athletes, sliding-window cap 5/24h per user, attribution in body — `user_id` only, no `@username`/`athlete_id`, `title ≤ 200` / `body ≤ 8000` cap; see `docs/MULTI_TENANT_SECURITY.md` §13), API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
+**58 tools** covering: wellness, HRV/RHR analysis, activities, training load/recovery, workouts (suggest/adapt/remove), training log, exercise/workout cards, mood/IQOS tracking, Garmin data (6 tools), efficiency trends, polarization index, goal progress, zones, races (`get_races`/`tag_race`/`update_race`/`suggest_race` for future-race creation with dry-run preview/`delete_race_goal` for removal), **long-term user memory** (`save_fact`/`list_facts`/`deactivate_fact`/`reactivate_fact`/`get_fact_metrics` — see `docs/USER_CONTEXT_SPEC.md`), GitHub issues (`create_github_issue` available to athletes, sliding-window cap 5/24h per user, attribution in body — `user_id` only, no `@username`/`athlete_id`, `title ≤ 200` / `body ≤ 8000` cap; see `docs/MULTI_TENANT_SECURITY_SPEC.md` §13), API usage. **3 resources:** `athlete://profile`, `athlete://goal`, `athlete://thresholds`.
 
 **Key constraint:** CTL/ATL/TSB come from Intervals.icu, not TrainingPeaks.
 
@@ -244,7 +244,7 @@ Specs and plans in `docs/`. Key references:
 
 - **`IMPLEMENTATION_STATUS.md`** — feature-by-feature changelog, what's done / pending.
 - **`OPERATIONS.md`** — bot commands, API endpoints, webapp routes, CLI, migrations, onboarding, Docker.
-- **`ADAPTIVE_TRAINING_PLAN.md`**, **`MULTI_TENANT_SECURITY.md`**, **`INTERVALS_WEBHOOKS_RESEARCH.md`** (10 event-type payload samples), **`OAUTH_BOOTSTRAP_SYNC_SPEC.md`**, **`USER_CONTEXT_SPEC.md`**, **`WEBHOOK_DATA_CAPTURE_SPEC.md`**, **`RACE_PLAN_SPEC.md`**, **`TRAINING_PROGRESSION_SPEC.md`**, **`ML_HRV_PREDICTION_SPEC.md`**, **`ML_RACE_PROJECTION_SPEC.md`** — feature specs.
+- **`ADAPTIVE_TRAINING_PLAN_SPEC.md`**, **`MULTI_TENANT_SECURITY_SPEC.md`**, **`INTERVALS_WEBHOOKS_RESEARCH.md`** (10 event-type payload samples), **`OAUTH_BOOTSTRAP_SYNC_SPEC.md`**, **`USER_CONTEXT_SPEC.md`**, **`WEBHOOK_DATA_CAPTURE_SPEC.md`**, **`RACE_PLAN_SPEC.md`**, **`TRAINING_PROGRESSION_SPEC.md`**, **`ML_HRV_PREDICTION_SPEC.md`**, **`ML_RACE_PROJECTION_SPEC.md`** — feature specs.
 - **`intervals_icu_openapi.json`** — Intervals.icu API reference. **`knowledge/`** — training methodology.
 
 ---
@@ -253,7 +253,7 @@ Specs and plans in `docs/`. Key references:
 
 1. **Webhook dispatchers** — all done: `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓, `FITNESS_UPDATED` ✓, `APP_SCOPE_CHANGED` ✓, `ACTIVITY_ACHIEVEMENTS` ✓, `ACTIVITY_UPLOADED` ✓, `ACTIVITY_UPDATED` ✓. Skipped: `ACTIVITY_ANALYZED` (rare, re-analysis only), `ACTIVITY_DELETED`.
 2. **OAuth** — ✅ disconnect endpoint, ✅ lazy 401 handling, ✅ bootstrap Phase 1+2 (watchdog cron, retry endpoint, HRV ordering fix, progress UI, last_error allowlist). Remaining: retire legacy `INTERVALS_API_KEY` env vars (Phase 5). When scaling to multi-worker uvicorn, migrate `_retry_backfill_last_success` and `_mcp_config_last_access` to Redis INCR+EXPIRE
-3. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY.md`
+3. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY_SPEC.md`
 
 ---
 

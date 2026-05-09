@@ -331,7 +331,7 @@ async def auth_mcp_config(request: Request, user: User | None = Depends(get_curr
     - Audit log — every disclosure recorded to logs + Sentry breadcrumb with
       user_id + client IP, so operator can retrace leaks post-incident
 
-    See `docs/MULTI_TENANT_SECURITY.md` §T4 (per-tenant MCP tokens) and §T11
+    See `docs/MULTI_TENANT_SECURITY_SPEC.md` §T4 (per-tenant MCP tokens) and §T11
     (initData replay window).
     """
     if not user:

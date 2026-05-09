@@ -72,7 +72,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     # Explicit reactivation: /start is an unambiguous re-engagement signal.
     # Webapp/Login Widget auth paths intentionally do NOT reactivate — see
-    # `docs/MULTI_TENANT_SECURITY.md` §T14.
+    # `docs/MULTI_TENANT_SECURITY_SPEC.md` §T14.
     if not user.is_active:
         await User.set_active_by_chat_id(chat_id, True)
         user.is_active = True
@@ -1596,7 +1596,7 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
 
     Authoritative user lookup from `from_user.id`, NOT from payload — payload
     is untrusted metadata only useful for logs. See docs/DONATE_SPEC.md §5.2
-    and docs/MULTI_TENANT_SECURITY.md §T14.
+    and docs/MULTI_TENANT_SECURITY_SPEC.md §T14.
     """
     payment = update.message.successful_payment
     chat_id = str(update.effective_user.id)
@@ -1660,7 +1660,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     blocked users without hitting the Telegram API. Reactivation is explicit:
     this handler on `MEMBER` transitions, and `bot/main.py:start` when the
     user sends `/start`. Webapp/Login Widget auth paths deliberately do not
-    reactivate — see `docs/MULTI_TENANT_SECURITY.md` §T14.
+    reactivate — see `docs/MULTI_TENANT_SECURITY_SPEC.md` §T14.
     """
     cmu = update.my_chat_member
     if cmu is None or cmu.chat.type != "private":
@@ -1686,7 +1686,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def _post_init(application: Application) -> None:
     await init_redis()
-    # See docs/MULTI_TENANT_SECURITY.md §5.1: per-tenant credentials in multi-tenant
+    # See docs/MULTI_TENANT_SECURITY_SPEC.md §5.1: per-tenant credentials in multi-tenant
 
     scheduler = await create_scheduler()
     scheduler.start()

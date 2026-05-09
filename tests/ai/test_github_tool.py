@@ -190,7 +190,7 @@ class TestRateLimit:
 class TestLabelsAllowList:
     """Athletes can only set a small safe set of labels — repo-managed
     triage / priority / area metadata is owner-only. Owner bypasses both
-    the filter and the rate limit. See ``docs/MULTI_TENANT_SECURITY.md`` §13.
+    the filter and the rate limit. See ``docs/MULTI_TENANT_SECURITY_SPEC.md`` §13.
     """
 
     async def test_athlete_labels_filtered_to_allow_list(self):

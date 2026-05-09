@@ -1,0 +1,53 @@
+schema: paperclip/v1
+
+# Paperclip vendor extension for the Endurai company package.
+# Base markdown package (COMPANY.md, agents/*/AGENTS.md, projects/*/PROJECT.md) stays portable —
+# this file holds adapter wiring, env inputs, and project-locking flags.
+#
+# No routines / no cron at any level: dev → main release is fully manual,
+# owned by the board user (Radik). When he chooses, he opens
+# `gh pr create --base main --head dev` himself and merges; the existing
+# `.github/workflows/deploy.yml` fires on push to main without any paperclip involvement.
+
+agents:
+  cto:
+    # Company-wide CTO — no project lock (operates across all projects).
+    adapter:
+      type: claude_local
+      config:
+        # Update model alias if Anthropic ships a newer Opus and you want to pin it here.
+        # Otherwise leave to runtime default.
+        model: claude-opus-4-6
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+          # CTO uses gh CLI continuously — issue triage (`gh issue list`),
+          # PR queue chasing (`gh pr list`), comments (`gh pr comment`).
+
+  triathlon-engineer:
+    project: triathlon-agent          # project-locked
+    adapter:
+      type: claude_local
+      config:
+        model: claude-opus-4-6
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+          # Engineer opens worktree branches, creates feat-PRs, runs gh pr * commands.
+
+  triathlon-tech-lead:
+    project: triathlon-agent          # project-locked
+    adapter:
+      type: claude_local
+      config:
+        model: claude-opus-4-6
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+          # Tech Lead drives PR review chain via gh pr edit/view/comment on every heartbeat.

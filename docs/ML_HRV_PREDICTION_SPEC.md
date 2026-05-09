@@ -16,7 +16,7 @@
 | [#109](https://github.com/radikkhaziev/triathlon-agent/issues/109) | Training log cleanup — **closed 2026-04-11**, исторические данные нормализованы |
 | [#66](https://github.com/radikkhaziev/triathlon-agent/issues/66) | ML readiness prediction — **merged into #63** 2026-04-11 |
 | [#215](https://github.com/radikkhaziev/triathlon-agent/issues/215) | Data enrichment для ML — ещё open, покрывает хвостовые фичи |
-| `docs/ADAPTIVE_TRAINING_PLAN.md:691-709` | `compute_personal_patterns()` — статистический предшественник POC 1 (без XGBoost) |
+| `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md:691-709` | `compute_personal_patterns()` — статистический предшественник POC 1 (без XGBoost) |
 | `data/garmin/` | GDPR-парсер и импортер; источник sleep/stress/readiness |
 | `data/db/garmin_*` | 9 таблиц, куда ложатся парсенные Garmin-данные |
 | `data/db/wellness.py`, `activity.py`, `iqos_daily.py`, `mood_checkins.py` | Остальные data sources |

@@ -1,23 +1,33 @@
 # User Context / Memory Spec
 
-> Долговременная память о пользователе для Telegram-бота: бот запоминает факты
-> (травмы, предпочтения, рабочий график, семейные обстоятельства) и подмешивает
-> их в системный промпт Claude, чтобы советы и диалог учитывали контекст.
+> Долговременная память о пользователе для Telegram-бота: бот запоминает факты (травмы, предпочтения, рабочий график, семейные обстоятельства) и подмешивает их в системный промпт Claude, чтобы советы и диалог учитывали контекст.
+
+**Status:** Phase 1 (MVP, tool-based + undo) ✅ shipped (commit `cf624ba`). Phase 2 (async extractor) deferred — gate `tool_facts_per_100_msgs_30d < 3` ∧ `chat_msgs ≥ 100`. Phase 3 (UX polish) — optional.
+
+**Code anchors:**
+
+| Concern | File |
+|---|---|
+| Migration | `migrations/versions/b8d1c4e7f0a3_add_user_facts.py` |
+| ORM + `save_with_cap` | `data/db/user_fact.py` |
+| MCP tools | `mcp_server/tools/user_facts.py` (`save_fact` / `list_facts` / `deactivate_fact` / `reactivate_fact` / `get_fact_metrics`) |
+| Static prompt + render | `bot/prompts.py:get_static_system_prompt`, `render_athlete_block`, `_facts_block` |
+| Two-segment cache | `bot/agent.py:_run_tool_use_loop` (system: list[dict] с двумя `cache_control`) |
+| Undo registry | `bot/main.py:_UNDOABLE_TOOLS`, `_extract_pending_undoable`, `fact_undo` callback |
+| Tool filter inclusion | `bot/tool_filter.py` (tracking group, ALWAYS_INCLUDE) |
 
 **Related:**
 
 | Issue / Spec | Связь |
 |---|---|
-| `docs/MULTI_TENANT_SECURITY.md` | T1 (tenant data leak) — факты per-user, FK на `users.id` |
-| `docs/ADAPTIVE_TRAINING_PLAN.md` | Personal patterns (Phase 3) — отдельный слой, не пересекается |
-| `bot/prompts.py` | `get_system_prompt_chat` — точка инъекции фактов/цели |
-| `bot/agent.py:76` | `cache_control: ephemeral` — уже есть на system prompt |
+| `docs/MULTI_TENANT_SECURITY_SPEC.md` | T1 (tenant data leak) — факты per-user, FK на `users.id` |
+| `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` | Personal patterns (Phase 3) — отдельный слой, не пересекается |
 
 ---
 
 ## 1. Мотивация
 
-Сейчас чат stateless: Claude каждое сообщение начинает «с чистого листа» + reply-context. Если атлет пишет «опять колено болит» — бот не знает, что неделю назад обсуждали эту же жалобу, и начинает диалог заново. Цели из `athlete_goals` подгружаются через MCP resource `athlete://goal`, но остальной контекст (травмы, работа, ограничения по времени, стиль тренировок, семья) нигде не хранится.
+Сейчас чат stateless: Claude каждое сообщение начинает «с чистого листа» + reply-context. Если атлет пишет «опять колено болит» — бот не знает, что неделю назад обсуждали ту же жалобу, и начинает диалог заново. Цели из `athlete_goals` подгружаются через MCP resource `athlete://goal`, но остальной контекст (травмы, работа, ограничения по времени, стиль тренировок, семья) нигде не хранится.
 
 `data/db/mood_checkins.py` — не подходит: это структурированные 1–5 шкалы, а нужны свободно-текстовые факты с темой.
 
@@ -25,12 +35,12 @@
 
 ## 2. Scope
 
-### Phase 1 (MVP) — делаем сейчас
+### Phase 1 (MVP) — ✅ shipped
 
-- Таблица `user_facts` + ORM (append-with-cap, N=3 активных на topic — см. §3).
-- MCP tools: `save_fact`, `list_facts`, `deactivate_fact`, `get_fact_metrics` (per-user, все атлеты видят свои метрики).
-- Инъекция активных фактов + цели в системный промпт с учётом prompt caching (§5, §6).
-- Undo-кнопка «🗑 Забудь это» после `save_fact` с TTL (§4).
+- Таблица `user_facts` + ORM (append-with-cap, N=3 default / N=5 для `injury` и `health`).
+- MCP tools: `save_fact`, `list_facts`, `deactivate_fact`, `reactivate_fact`, `get_fact_metrics`.
+- Инъекция активных фактов + цели в системный промпт с двумя cache-control сегментами (§5, §6).
+- Undo-кнопка «🗑 Забудь это» / «↩️ Вернуть» после `save_fact` / `deactivate_fact` (TTL 10 мин).
 - TTL фактов через `expires_at` (опционально на факт).
 - Observability: метрики fact-writes / undo-rate / cache-hit-rate (§10).
 
@@ -52,41 +62,23 @@
 
 ## 3. Data model
 
-### Таблица `user_facts`
+Schema живёт в миграции `b8d1c4e7f0a3` + ORM `data/db/user_fact.py:UserFact`. Ключевые колонки и инварианты:
 
-```sql
-CREATE TABLE user_facts (
-    id              SERIAL PRIMARY KEY,
-    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    topic           VARCHAR(64) NOT NULL,   -- "injury", "schedule", "family", "preference", "job", ...
-    fact            VARCHAR(300) NOT NULL,  -- hard cap: один факт = одна мысль, не эссе
-    fact_language   VARCHAR(5),             -- BCP-47 tag ("ru", "en", "sr") — см. §11.1
-    source          VARCHAR(16) NOT NULL,   -- "tool" | "extractor" | "user"
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at      TIMESTAMPTZ,            -- NULL = бессрочно
-    deactivated_at  TIMESTAMPTZ,            -- NULL = активен
-    deactivated_reason VARCHAR(32)          -- "topic_cap" | "hard_cap" | "user_request" | "expired" | "contradicted"
-);
+- `topic VARCHAR(64)` — enum-like, свободный список (см. §7). НЕ слот: в одном topic может быть до **N** активных фактов.
+- `fact VARCHAR(300)` — прозаический текст до 300 символов, один факт = одна мысль. Пишем от лица атлета: «болит правое колено после забега на 10K 12 апреля», а не «у пользователя травма». Cap валидируется в MCP tool + БД-constraint (double защита).
+- `fact_language VARCHAR(5)` — BCP-47 code (`"ru"` / `"en"` / `"sr"` / …). Заполняется из `user.language` на момент save. Не используется для рендера в Phase 1 (см. §11.1), но даёт pivot-опцию для Phase 3 без ручной LLM-миграции задним числом. Nullable — старые extractor-факты без языка не ломают invariants.
+- `source VARCHAR(16)` — `tool` (Claude вызвал `save_fact`) / `extractor` (Phase 2) / `user` (Settings UI, Phase 3).
+- `expires_at` — опционально. Пример: «жена беременна, срок октябрь» → `expires_at='2026-10-31'`.
+- `deactivated_at` / `deactivated_reason` — audit trail вытеснений, физически не удаляем. `reason ∈ {topic_cap, hard_cap, user_request, expired, contradicted}`. Отдельная колонка `superseded_by` НЕ заводилась — cap-chain расследования rare, replacement в том же topic находится через `created_at DESC`.
 
-CREATE INDEX ix_user_facts_active ON user_facts(user_id, topic, created_at DESC)
-    WHERE deactivated_at IS NULL;
-```
-
-**Семантика полей:**
-
-- `topic` — enum-like, свободный список (см. §7). **НЕ** слот — в одном topic может быть до **N** активных фактов, где N зависит от topic (см. per-topic caps ниже).
-- `fact` — прозаический текст до 300 символов, один факт = одна мысль. Пишем от лица атлета: «болит правое колено после забега на 10K 12 апреля», а не «у пользователя травма». Cap валидируется в MCP tool + БД-constraint (double защита).
-- `fact_language` — BCP-47 code языка ввода (`"ru"` / `"en"` / `"sr"` / …). Заполняется из `user.language` на момент save. Не используется для рендера в Phase 1 (см. §11.1), но даёт pivot-опцию для Phase 3 (нормализация/перевод/группировка в Settings UI) без ручной LLM-миграции задним числом. Nullable — старые extractor-факты без языка не ломают invariants.
-- `source` — кто записал. `tool` — Claude вызвал `save_fact` в диалоге. `extractor` — async actor Phase 2. `user` — явное редактирование через Settings (пока не планируется).
-- `expires_at` — факт с TTL. Пример: «жена беременна, срок октябрь» → `expires_at = '2026-10-31'`.
-- `deactivated_at` / `deactivated_reason` — audit trail вытеснений, не удаляем строки физически. `reason='topic_cap'` уже даёт понять «вытеснен новым фактом в той же категории»; отдельная колонка `superseded_by` для pointer'а на заместителя в Phase 1 не нужна — cap-chain расследования rare, новую запись в том же topic всегда можно найти через `created_at DESC`. Добавим если reality покажет спрос.
+Partial index `ix_user_facts_active(user_id, topic, created_at DESC) WHERE deactivated_at IS NULL` — активных фактов десятки максимум, индекс компактный + cap-вытеснение работает index-only.
 
 ### Конфликт-резолюшен: append-with-cap (не upsert-by-topic)
 
-Изначально план был «один активный факт на topic», но это теряет контекст: «болит ахилл» стирал бы «болит колено», хотя травмы разные. Правильная семантика:
+Изначально план был «один активный факт на topic», но это теряло контекст: «болит ахилл» стирал бы «болит колено», хотя травмы разные. Правильная семантика:
 
 1. **Append** — новый факт всегда добавляется активным.
-2. **Per-topic cap** — после вставки, если у `(user_id, topic)` стало `>N` активных — самый старый по `created_at` помечается `deactivated_at = now()`, `deactivated_reason = 'topic_cap'`. `N` зависит от topic:
+2. **Per-topic cap** — после вставки, если у `(user_id, topic)` стало `>N` активных — самый старый по `created_at` помечается `deactivated_at=now()`, `deactivated_reason='topic_cap'`. `N` зависит от topic:
 
    ```python
    TOPIC_CAPS = {
@@ -99,141 +91,80 @@ CREATE INDEX ix_user_facts_active ON user_facts(user_id, topic, created_at DESC)
 
    Плоский N=3 выбивал бы валидные медицинские факты у атлетов с несколькими одновременными травмами. Dict централизует тюнинг — меняется одним местом, без миграции.
 
-3. **Global hard cap (= 200)** — safety net против model drift. Если суммарно активных `>200`, `save_fact` **автоматически** deactivates самые старые до порога с `deactivated_reason='hard_cap'`, уже **после** per-topic cap. Не полагаемся на Claude'у понимать warning-строку в tool response.
-4. **Global soft warning (> 50)** — в tool response приходит `warning` string, Claude обычно реагирует и сам зовёт `deactivate_fact` на устаревшее. Это дополнение к hard cap, не замена.
+3. **Global hard cap (= 200)** — safety net против model drift. Если суммарно активных `>200`, `save_fact` **автоматически** деактивирует самые старые до порога с `deactivated_reason='hard_cap'`, **после** per-topic cap. Не полагаемся на Claude'у понимать warning-строку в tool response.
+4. **Global soft warning (>50)** — в tool response приходит `warning` string, Claude обычно реагирует и сам зовёт `deactivate_fact` на устаревшее. Дополнение к hard cap, не замена.
 
-Для семантических дублей в рамках одного topic («болит колено» + «колено болит уже неделю») — опираемся на модель, которая при явной дублирующей фразе должна звать `deactivate_fact` на старую вместо создания новой. В Phase 2 extractor дедуп через prompt, не embedding.
+Для семантических дублей в рамках одного topic («болит колено» + «колено болит уже неделю») — опираемся на модель: при явной дублирующей фразе должна звать `deactivate_fact` на старую вместо создания новой. В Phase 2 extractor дедуп через prompt, не embedding.
 
 ### Race на append-with-cap
 
-Два параллельных `save_fact` на один `(user_id, topic)` (один юзер, несколько MCP-клиентов — бот + webapp Phase 3 + extractor) могут оба увидеть активных=N, оба вставить, оба deactivate'нуть «самого старого» — в итоге выбиваем 2 факта вместо 1.
+Два параллельных `save_fact` на один `(user_id, topic)` (один юзер, несколько MCP-клиентов — бот + webapp Phase 3 + extractor) могут оба увидеть активных=N, оба вставить, оба деактивировать «самого старого» — выбьют 2 факта вместо 1.
 
-Фикс: весь append-with-cap делается в одной транзакции с `SELECT id FROM user_facts WHERE user_id = ? AND topic = ? AND deactivated_at IS NULL FOR UPDATE` перед INSERT. Блокирует параллельных writer'ов в пределах одной ORM-транзакции. PG advisory lock тоже сработал бы, но `FOR UPDATE` идёт через существующий SQLAlchemy workflow и не требует отдельного lock-release protocol.
-
-### Партицийный индекс
-
-`WHERE deactivated_at IS NULL` — активных фактов у атлета будет десятки максимум, индекс компактный. Добавлен `created_at DESC` чтобы cap-вытеснение («найди самый старый в topic») работало index-only без сортировки.
+Фикс: весь append-with-cap делается в одной транзакции с `SELECT id FROM user_facts WHERE user_id = ? AND topic = ? AND deactivated_at IS NULL FOR UPDATE` перед INSERT. Блокирует параллельных writer'ов в пределах одной ORM-транзакции. PG advisory lock тоже сработал бы, но `FOR UPDATE` идёт через существующий SQLAlchemy workflow без отдельного lock-release protocol.
 
 ---
 
 ## 4. Writers
 
-### Phase 1 — MCP tool `save_fact` (MVP)
+### Phase 1 — MCP tool `save_fact` (✅ shipped)
 
-Claude сам решает, что сохранить, вызывая tool во время диалога:
+Claude сам решает, что сохранить, вызывая tool во время диалога. Сигнатура: `save_fact(topic: str, fact: str, expires_at: str | None = None) -> dict`. Полный docstring живёт в `mcp_server/tools/user_facts.py` — задаёт критерии «save vs save_mood_checkin», topic canon, формат `fact` (first-person, ≤300 chars), guidance вызывать `list_facts` перед save при подозрении на duplicate. Returns `{"fact_id": int, "evicted_id": int | None, "warning": str | None}`.
 
-```python
-@sentry_tool
-async def save_fact(topic: str, fact: str, expires_at: str | None = None) -> dict:
-    """Save a LASTING trait about the user to long-term memory.
-
-    Lasting trait = something still relevant in 2 weeks.
-    Transient state (mood, today's energy, "I'm tired") → use save_mood_checkin.
-
-    Save (lasting):
-    - Injuries, chronic conditions, recovery constraints
-    - Work schedule, travel plans, family events (pregnancy, newborn, ...)
-    - Training preferences (morning person, hates intervals, loves hills)
-    - Equipment or environment (new bike, treadmill-only in winter)
-
-    Do NOT save:
-    - Transient moods / one-off complaints ("feeling low today") → save_mood_checkin
-    - Data already in athlete_settings / athlete_goals (FTP, LTHR, race goals)
-    - Anything derivable from wellness / activities data
-    - More than one fact per call (split into multiple calls)
-
-    Args:
-        topic: Short slot name. Canonical: injury, schedule, family, preference,
-               job, equipment, health, travel. Pick the closest; a new topic is
-               also fine but be consistent with past ones.
-        fact:  Prose, first-person-about-user, includes date if time-bound.
-               MAX 300 chars — one fact = one thought, not an essay.
-               "right knee hurts after 10K on 2026-04-12"
-        expires_at: Optional ISO date; leave null for indefinite facts.
-
-    Before saving a fact that may duplicate an existing one, call list_facts
-    first and consider deactivate_fact on the older version instead of adding
-    a near-duplicate.
-
-    Returns: {"fact_id": int, "evicted_id": int | None, "warning": str | None}
-             warning is set when the user has >50 active facts — then you
-             should deactivate stale ones before saving more.
-    """
-```
-
-**Semantics:** append-with-cap (см. §3), всё в одной транзакции с `SELECT … FOR UPDATE` на активные факты topic'а — защита от race:
+**Семантика** — append-with-cap (см. §3), всё в одной транзакции с `SELECT … FOR UPDATE`:
 
 1. Валидация: `len(fact) <= 300`, `topic` не пустой. Иначе — tool error (Claude увидит, перепишет).
 2. Lock активных фактов `(user_id, topic)` через `SELECT … FOR UPDATE`.
 3. Insert новый факт → `source='tool'`, `fact_language=user.language`.
-4. Если после вставки у `(user_id, topic)` активных `>TOPIC_CAPS[topic]` (см. §3 dict) — deactivate'нуть самые старые по `created_at` с `reason='topic_cap'`. Вернуть их ids как `evicted_ids` (plural — теоретически может быть >1 при extractor batch write'е).
-5. Global hard cap: если total active всё ещё `>200` — deactivate'нуть глобально самые старые до 200, `reason='hard_cap'`.
+4. Если после вставки у `(user_id, topic)` активных `>TOPIC_CAPS[topic]` — деактивировать самые старые по `created_at` с `reason='topic_cap'`. Вернуть их ids как `evicted_ids` (plural — теоретически >1 при extractor batch write'е).
+5. Global hard cap: если total active всё ещё `>200` — деактивировать глобально самые старые до 200, `reason='hard_cap'`.
 6. Если total active `>50` (но ещё не hard cap) — добавить `warning` в response.
 7. Commit транзакции.
 
-### Phase 1 — MCP tools `list_facts` / `deactivate_fact`
+`save_fact` мапит `ValueError` в `{"error": ...}` чтобы Claude видел и переписал.
+
+### Phase 1 — `list_facts` / `deactivate_fact` / `reactivate_fact` (✅ shipped)
 
 ```python
 async def list_facts(include_inactive: bool = False) -> list[dict]
 async def deactivate_fact(fact_id: int, reason: str = "user_request") -> dict
+async def reactivate_fact(fact_id: int) -> dict   # not in docstrings, only via undo
 ```
 
-Нужны чтобы Claude мог ответить «что ты обо мне помнишь?» и явно забыть факт по просьбе атлета.
+Нужны чтобы Claude мог ответить «что ты обо мне помнишь?» и явно забыть факт по просьбе атлета. `deactivate_fact` — reversible через тот же undo registry; защита от галлюцинации модели, которая может деактивировать валидный факт по неверному толкованию фразы.
 
-`deactivate_fact` — reversible в пределах TTL через тот же `_UNDOABLE_TOOLS` registry (см. ниже), callback'ом возвращает `deactivated_at = NULL`, `deactivated_reason = NULL`. Защита от галлюцинации модели, которая может деактивировать валидный факт по неверному толкованию фразы.
+`reactivate_fact` — thin MCP tool, `UPDATE … SET deactivated_at=NULL, deactivated_reason=NULL WHERE id=? AND user_id=?` (tenant-guard обязателен). НЕ торчит в docstring'ах для модели — вызывается только из undo callback'а.
 
-### Phase 1 — Undo-кнопка после `save_fact` (переиспользование workout-паттерна)
+### Phase 1 — Undo-кнопка после `save_fact` / `deactivate_fact` (✅ shipped)
 
-Полный preview-confirm на каждое сохранение ломает разговорный UX (каждое сообщение превращается в анкету). Вместо этого — **save-then-undo** (симметрично для обеих мутаций `save_fact` и `deactivate_fact`):
+Полный preview-confirm на каждое сохранение ломает разговорный UX (каждое сообщение превращается в анкету). Вместо этого — **save-then-undo**, симметрично для обеих мутаций:
 
 1. Tool коммитит сразу в tool-use-loop. `save_fact` пишет `source='tool'`, `deactivate_fact` ставит `deactivated_at=now()`.
-2. Handler чата (`handle_chat_message` в `bot/main.py`) просит `agent.chat(...)` с `tool_calls_filter={"save_fact", "deactivate_fact"}` и получает `ChatResult.tool_calls`.
-3. Если среди tool_calls есть любой из них — handler читает `fact_id` из tool_result, кладёт в `context.user_data["last_mutated_fact_id"] = (fact_id, mutation)` и **добавляет к ответному сообщению** inline-кнопку:
-   - `save_fact` → «🗑 Забудь это» (undo = deactivate)
-   - `deactivate_fact` → «↩️ Вернуть» (undo = reactivate, т.е. `UPDATE user_facts SET deactivated_at = NULL, deactivated_reason = NULL WHERE id = ?`)
-4. Callback: `pop("last_mutated_fact_id")` + прямой `MCPClient.call_tool(undo_tool, undo_args)` без повторной Claude-инференции.
+2. `handle_chat_message` зовёт `agent.chat(..., tool_calls_filter={"save_fact", "deactivate_fact"})` и получает `ChatResult.tool_calls`.
+3. Если среди tool_calls есть любой из них — handler читает `fact_id` из `tool_call.result`, кладёт в `context.user_data` и **добавляет к ответному сообщению** inline-кнопку:
+   - `save_fact` → «🗑 Забудь это» (undo = `deactivate_fact`)
+   - `deactivate_fact` → «↩️ Вернуть» (undo = `reactivate_fact`)
+4. Callback `fact_undo`: pop stash из `user_data` + прямой `MCPClient.call_tool(undo_tool, undo_args)` без повторной Claude-инференции.
 
-**Почему симметричная защита для `deactivate_fact`:** если Claude галлюцинирует и деактивирует валидный факт по неверному толкованию реплики, пользователь узнает об этом дни спустя — когда бот перестанет цитировать то, что знал. Асимметрия (save защищён, deactivate нет) создаёт silent data-loss. Один и тот же registry покрывает оба случая.
+**Симметричная защита для `deactivate_fact`:** если Claude галлюцинирует и деактивирует валидный факт, пользователь узнает об этом дни спустя. Асимметрия (save защищён, deactivate нет) создаёт silent data-loss. Один registry покрывает оба случая.
 
-**Почему не полный preview-confirm:** запись/снятие факта — внутреннее состояние, soft-delete одним тапом. В отличие от `/workout`, где push в Intervals.icu — side effect в чужую систему, и prompt-injection на state-mutating шаге критичен. Здесь — низкие ставки, и UX-стоимость полного preview не оправдана.
+**Не полный preview-confirm:** запись/снятие факта — внутреннее состояние, soft-delete одним тапом. В отличие от `/workout`, где push в Intervals — side effect в чужую систему и prompt-injection критичен. Здесь низкие ставки, UX-стоимость полного preview не оправдана.
 
-**Consume-on-read:** `pop` чтобы повторный тап со старого сообщения не вызвал undo повторно на уже применённый id. Ответ MCP на второй вызов даст ошибку, но лучше не доводить.
+**Consume-on-read:** `pop` чтобы повторный тап со старого сообщения не вызвал undo повторно на уже применённый id.
 
-**TTL на кнопку.** Inline undo не должна висеть на старом сообщении вечно — через неделю юзер случайно тапнет и потеряет факт, который Claude уже вспоминал в других контекстах. Две меры:
+**TTL на кнопку.** Inline undo не должна висеть на старом сообщении вечно — через неделю юзер случайно тапнет и потеряет факт. Две меры:
 
-1. **При следующем chat-сообщении** — перед отправкой нового ответа `handle_chat_message` читает `context.user_data.pop("last_undo_message_id", None)`; если есть — `bot.edit_message_reply_markup(chat_id, message_id, reply_markup=None)` на предыдущее. Клавиатура исчезает, `last_mutated_fact_id` тоже очищается. Это основной путь.
-2. **Тайм-аут 10 минут** (fallback) — при отправке сообщения с undo-кнопкой регистрируем `context.job_queue.run_once(_expire_undo_button, when=600, data={...})`. Job делает то же `edit_message_reply_markup(None)`. Покрывает случай «юзер ушёл и не написал до утра».
+1. **При следующем chat-сообщении** — `handle_chat_message` читает `context.user_data.pop("last_undo_message_id", None)`; если есть — `bot.edit_message_reply_markup(chat_id, message_id, reply_markup=None)` на предыдущее. Клавиатура исчезает, stash тоже очищается. Основной путь.
+2. **Тайм-аут 10 минут** (fallback) — `context.job_queue.run_once(_expire_undo_button, when=600, ...)`. Job делает то же `edit_message_reply_markup(None)`. Покрывает «юзер ушёл и не написал до утра». Job проверяет `user_data[_LAST_UNDO_MSG_ID_KEY] == message_id` перед очисткой stash (защита от ротации при раннем save-then-save).
 
-В обеих мерах сама запись в БД не меняется — undo только закрывается, факт остаётся в текущем состоянии. Явная отмена через `/forget` или Settings (Phase 3) по-прежнему возможна.
+В обеих мерах сама запись в БД не меняется — undo только закрывается. Явная отмена через Settings (Phase 3) по-прежнему возможна.
 
-**Registry:** расширять `_PREVIEWABLE_TOOLS` не нужно — у этого флоу нет preview-фазы, только пост-коммит-undo. Логика отдельная: `_UNDOABLE_TOOLS: dict[str, UndoableTool]` в `bot/main.py`:
+**Registry:** `_UNDOABLE_TOOLS: dict[str, UndoableTool]` в `bot/main.py` — отдельная структура от `_PREVIEWABLE_TOOLS` (preview-фазы нет, только пост-коммит-undo). Готовая почва для расширения: если появятся другие «committed with undo» tool'ы — регистрируются сюда.
 
-```python
-_UNDOABLE_TOOLS = {
-    "save_fact": UndoableTool(
-        extract_id=lambda result: result.get("fact_id"),
-        undo_tool="deactivate_fact",
-        undo_args=lambda fid: {"fact_id": fid, "reason": "user_request"},
-        button_text="🗑 Забудь это",
-    ),
-    "deactivate_fact": UndoableTool(
-        extract_id=lambda result: result.get("fact_id"),
-        undo_tool="reactivate_fact",
-        undo_args=lambda fid: {"fact_id": fid},
-        button_text="↩️ Вернуть",
-    ),
-}
-```
-
-`reactivate_fact(fact_id)` — thin MCP tool, просто `UPDATE … SET deactivated_at=NULL, deactivated_reason=NULL WHERE id = ? AND user_id = ?` (tenant-guard обязателен). Не торчит в docstring'ах для модели — вызывается только из undo callback'а.
-
-Готовая почва для расширения: если появятся другие «committed with undo» tool'ы (например, `schedule_workout` без preview), регистрируем их сюда.
-
-**Edge case — `save_fact` внутри `/workout` flow.** Хэндлеры `workout_sport_chosen` / `workout_dialog_text` вызывают `agent.chat(..., tool_calls_filter={"suggest_workout", "compose_workout"})` — узкий filter, чтобы не хранить deep-copy чужих tool_calls. Если Claude решит внутри этого диалога вызвать `save_fact` («запомни, что тренируюсь утром»), факт **запишется в БД** (server-side MCP работает всегда), но undo-кнопка **не появится** — `save_fact` не попадёт в `ChatResult.tool_calls` из-за фильтра.
-
-**Решение для MVP: union фильтра.** Расширяем workout-handler'ы до `tool_calls_filter={"suggest_workout", "compose_workout", "save_fact", "deactivate_fact"}`. Стоимость — один лишний deep-copy `save_fact` input'а (≤300 char + topic), приемлемо. После workout preview handler отрисовывает **две** группы кнопок если обе секции заполнены: основной `[✅ Отправить в Intervals] [❌ Отмена]` + undo от fact. Код уже поддерживает множественный render — `bot/main.py` делает exactly это для `pending_workout` + `pending_race` в free-form chat (см. referenced main.py §5.5 в RACE_CREATION_SPEC).
+**Edge case — `save_fact` внутри `/workout` flow.** Workout-handler'ы (`workout_sport_chosen` / `workout_dialog_text`) расширены до `tool_calls_filter = set(_PREVIEWABLE_TOOLS) | _UNDOABLE_TOOL_NAMES` — стоимость один лишний deep-copy `save_fact` input'а (≤300 char + topic), приемлемо. Handler рисует две группы кнопок если обе секции заполнены: основной `[✅ Отправить в Intervals] [❌ Отмена]` + undo от fact (3-я строка).
 
 ### Phase 2 — async post-chat extractor с batch-approval
+
+> Не реализовано. Дизайн ниже описывает целевой флоу для триггера из §11.3.
 
 1. `ClaudeAgent.chat()` после ответа пушит в Redis stream `user_facts_stream:{user_id}` кортеж `(user_msg, assistant_msg)`.
 2. Dramatiq actor `actor_extract_user_facts` раз в N часов читает stream, запускает Claude с промптом «верни JSON массив фактов-кандидатов», но **не пишет в БД сразу** — отправляет пользователю **одно** Telegram-сообщение с превью:
@@ -249,27 +180,27 @@ _UNDOABLE_TOOLS = {
    ```
 
 3. Драфт живёт в `context.user_data["pending_facts"] = [...]` **ровно так же**, как `pending_workout` в `/workout`. Batch approval — прямой `MCPClient.call_tool("save_fact", ...)` в цикле, без повторной Claude-инференции.
-4. «⚙️ Выборочно» — вторая клавиатура с per-item чекбоксами (можно начать без этой кнопки в Phase 2a, добавить в 2b).
+4. «⚙️ Выборочно» — вторая клавиатура с per-item чекбоксами (можно начать без неё в Phase 2a, добавить в 2b).
 5. Consume-on-read: `pop("pending_facts")` при любом финальном действии.
 
-**Timing.** Cron в локальной TZ юзера (`users.timezone` или fallback `TIMEZONE=Europe/Belgrade`), окно `hour=18..19` — в это время атлет обычно free + evening report уже ушёл, можно спокойно показать предложение. Не в 3 утра. Scheduler читает per-user TZ как это делает `tasks/scheduler.py` для morning report.
+**Timing.** Cron в локальной TZ юзера (`users.timezone` или fallback `TIMEZONE=Europe/Belgrade`), окно `hour=18..19` — атлет обычно free + evening report уже ушёл. Не в 3 утра. Scheduler читает per-user TZ как `tasks/scheduler.py` для morning report.
 
-**Concurrent pending.** Если при запуске cron видим что `user_data["pending_facts"]` уже непустой (предыдущий батч без ответа) — **skip** текущий запуск, не затирая старый. Юзер отреагирует → флаг очистится → следующий cron подхватит. Объединять батчи не стоит: смешанные свежие + вчерашние кандидаты ломают UX «я подметил в недавних разговорах». Если pending висит >48h — автоматически dismiss через job_queue (см. TTL на undo в §4), чтобы не блокировать пайплайн навечно.
+**Concurrent pending.** Если cron видит, что `user_data["pending_facts"]` уже непустой (предыдущий батч без ответа) — **skip** текущий запуск. Юзер отреагирует → флаг очистится → следующий cron подхватит. Объединять батчи не стоит: смешанные свежие + вчерашние кандидаты ломают UX «я подметил в недавних разговорах». Если pending висит >48h — автоматически dismiss через job_queue (см. TTL на undo в §4), чтобы не блокировать пайплайн.
 
-**Persistence caveat.** PTB `context.user_data` — in-memory словарь, не переживает рестарт бота. `context.job_queue.run_once(...)` тоже in-memory. Значит при деплое / рестарте:
+**Persistence caveat.** PTB `context.user_data` — in-memory, не переживает рестарт бота. `context.job_queue.run_once(...)` тоже in-memory. При деплое:
 - `pending_facts` очистятся автоматически — это ок (данных в БД нет, только драфт).
-- 48h dismiss-таймер потеряется — pending мог бы зависнуть навечно в redeployed worker'е, но на практике cron (раз в 24ч) сам упрётся в skip при следующем проходе и не будет дописывать; для уборки зависшего pending_facts после рестарта достаточно одного туземного handler'а на старте бота: `app.post_init = lambda app: app.bot_data.clear_stale_pending_facts()` сканирует `user_data` всех юзеров и выкидывает батчи старше 48h. Необязательно для MVP — при нормальной частоте рестартов автоочистка через cron-skip достаточна.
+- 48h dismiss-таймер потеряется — pending мог бы зависнуть, но cron (раз в 24ч) сам упрётся в skip; для уборки достаточно `app.post_init = lambda app: app.bot_data.clear_stale_pending_facts()` сканит `user_data` всех юзеров и выкидывает батчи старше 48h. Необязательно для MVP.
 
-`last_mutated_fact_id` (undo для `save_fact` / `deactivate_fact`) тоже in-memory и теряется при рестарте — приемлемо, undo-окно TTL всё равно 10 мин, а факт в БД в корректном коммитнутом состоянии.
+`last_mutated_fact_id` (undo для Phase 1) тоже in-memory и теряется при рестарте — приемлемо, undo-окно TTL 10 мин, факт в БД в коммитнутом состоянии.
 
 **Почему здесь preview-confirm оправдан** (в отличие от Phase 1 `save_fact`):
-- Extractor может галлюцинировать — пользователь **должен** увидеть что сохраняется.
+- Extractor может галлюцинировать — пользователь **должен** увидеть, что сохраняется.
 - Batch-операция: один тап сохраняет 3 факта, а не три отдельных undo-кнопки.
 - Нет разговорного контекста в момент извлечения — юзер не писал только что, прерывать нечего, сообщение приходит само.
 
-**Риски extractor'а:** false positives (модель запомнит ерунду), стоимость (отдельный Claude-pass на каждого активного юзера). Phase 2 включаем только если Phase 1 tool-based подход покажет пропуски (Claude забывает звать `save_fact` — см. §11.3 trigger + §10 метрики).
+**Риски extractor'а:** false positives, стоимость (отдельный Claude-pass на каждого активного юзера). Phase 2 включаем только если Phase 1 tool-based подход покажет пропуски (см. §11.3 trigger + §10 метрики).
 
-**Ссылка на референс-реализацию:** `bot/main.py:641-689` (`_PREVIEWABLE_TOOLS`, `_extract_pending_workout`, `_apply_push_flag`) и `bot/main.py:828` (`workout_push`) — паттерн один-в-один, только вместо `dry_run` флага — список id'ов фактов для батч-записи.
+**Референс-реализация:** `bot/main.py:_PREVIEWABLE_TOOLS`, `_extract_pending_workout`, `_apply_push_flag`, `workout_push` — паттерн один-в-один, только вместо `dry_run` флага — список id'ов фактов для батч-записи.
 
 ---
 
@@ -277,12 +208,12 @@ _UNDOABLE_TOOLS = {
 
 ### Где
 
-`bot/prompts.py` разбивается на два строительных блока:
+`bot/prompts.py` разбит на два строительных блока:
 
-- `get_static_system_prompt() -> str` — константа, всё что сейчас в `SYSTEM_PROMPT_CHAT` без per-user подстановки.
-- `render_athlete_block(user, *, include_facts=True) -> str` — динамический хвост: athlete profile + goal + (опционально) facts. **Единственный reader** активных фактов в codebase'е.
+- `get_static_system_prompt() -> str` — константа, всё что в статической части `SYSTEM_PROMPT_CHAT`.
+- `render_athlete_block(user_id, language, *, include_facts=True) -> str` — динамический хвост: athlete profile + goal + (опционально) facts. **Единственный reader** активных фактов в codebase'е.
 
-`get_system_prompt_chat(user)` остаётся public API бота и просто склеивает их. Morning report / evening report / любой другой код, которому в будущем захочется подмешать факты (§далее), импортирует `render_athlete_block` напрямую — не дублирует SQL в `tasks/actors/reports.py`.
+`get_system_prompt_chat(user)` остаётся public API бота и склеивает их. Morning report / evening report / любой другой код, которому в будущем захочется подмешать факты, импортирует `render_athlete_block` напрямую — не дублирует SQL в `tasks/actors/reports.py`.
 
 ### Как
 
@@ -307,6 +238,8 @@ _UNDOABLE_TOOLS = {
 - [preference] не люблю длинные интервалы, предпочитаю пороговые 2х20 мин
 ```
 
+(EN-локализованный заголовок — `## What I remember about you`, выбирается по `user.language`.)
+
 **Правила:**
 
 - Сортировка по `topic` → внутри по `created_at` DESC. Стабильный порядок → кэш не ломается.
@@ -315,25 +248,17 @@ _UNDOABLE_TOOLS = {
 
 ### Morning report
 
-Для `tasks/actors/reports.py` (morning report через `MCPTool`) — **Phase 1 не инжектим** (`include_facts=False`). Morning report — это аналитика данных, а не диалог; факты релевантнее чату. Но функция `render_athlete_block` уже единая точка, поэтому опт-ин тривиален — один флаг в вызове, без рефакторинга SQL. Расширим если придёт feedback от атлетов.
+Для `tasks/actors/reports.py` (morning report через `MCPTool`) — **Phase 1 не инжектим** (`include_facts=False`). Morning report — это аналитика данных, а не диалог; факты релевантнее чату. Но `render_athlete_block` уже единая точка, опт-ин тривиален — один флаг в вызове, без рефакторинга SQL. Расширим если придёт feedback от атлетов.
 
 ---
 
 ## 6. Prompt caching — стратегия
 
-Сейчас `bot/agent.py:76` ставит **один** `cache_control` в конец system prompt:
+`bot/agent.py` ставит **два** `cache_control: ephemeral` маркера на system prompt:
 
 ```python
-cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-```
-
-**Почему одного маркера мало.** Anthropic prompt cache работает как **префиксный хэш**: хэш считается от начала до маркера. Если в конце блока меняется хоть один символ (добавили факт → блок `## Что я помню о тебе` переписался) — хэш префикса до маркера другой → **cache miss на весь system prompt**, включая статику. Текущая схема работает пока facts/goal не меняются — но как только сделаем `save_fact` в диалоге, следующее сообщение читает всё с нуля.
-
-**Как надо.** Разбиваем system prompt на **два** cacheable сегмента (лимит — 4, запас есть):
-
-```python
-static_prompt = get_static_system_prompt()           # ~весь текущий SYSTEM_PROMPT_CHAT
-dynamic_tail  = render_athlete_block(user)           # goal + facts + профиль
+static_prompt = get_static_system_prompt()           # ~весь текущий SYSTEM_PROMPT_CHAT (~780 tok)
+dynamic_tail  = render_athlete_block(user)           # goal + facts + профиль (~240 tok)
 
 cached_system = [
     {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}},
@@ -341,26 +266,28 @@ cached_system = [
 ]
 ```
 
-**Поведение:**
+**Почему одного маркера мало.** Anthropic prompt cache работает как **префиксный хэш**: хэш считается от начала до маркера. Если в конце блока меняется хоть один символ (добавили факт → блок `## Что я помню о тебе` переписался) — хэш префикса до маркера другой → **cache miss на весь system prompt**, включая статику. Текущая схема работает пока facts/goal не меняются — но как только делаем `save_fact` в диалоге, следующее сообщение читало бы всё с нуля.
+
+**Поведение с двумя маркерами:**
 
 - `static_prompt` хэшируется до маркера #1 → кэш **вечный** относительно изменений facts (пока не правим сам шаблон промпта).
 - `dynamic_tail` — свой кэш, тухнет только при `save_fact` / `deactivate_fact` / смене `goal`.
-- `save_fact` инвалидирует ровно хвост; статика (3–5к токенов) остаётся горячей.
+- `save_fact` инвалидирует ровно хвост (~240 tok); статика (~780 tok) остаётся горячей.
 
 **Эффект:**
 
 - TTL ephemeral 5 мин → при активном диалоге кэш попадает на каждой tool-use-loop итерации и в следующих сообщениях.
 - Cache read ≈10% от input tokens. На чате с tool-use (3–5 итераций) + частыми сохранениями фактов экономия **кратная** — без двух маркеров весь system prompt инвалидировался бы на каждом save.
 
-**Порядок внутри `dynamic_tail`:** athlete profile (редко) → goal (реже) → facts (чаще). Но после второго маркера порядок значения не имеет — всё одним хэшем. Оставляем читабельный порядок.
+**Порядок внутри `dynamic_tail`:** athlete profile (редко) → goal (реже) → facts (чаще). После второго маркера порядок значения не имеет — всё одним хэшем. Оставляем читабельный порядок.
 
-**Что делать в `agent.py`:** поменять строку 76 с одного blob'а на два элемента. Весь остальной tool-use-loop не трогаем. В `bot/prompts.py` разделить `SYSTEM_PROMPT_CHAT` на `get_static_system_prompt()` (константа) и `render_athlete_block(user, *, include_facts=True)` (динамика) — эта же функция вызывается из morning/evening report actor'ов при желании подмешать контекст (см. §5).
+**Лимит — 4 cache_control маркера на запрос**, у нас 2 — запас есть на будущие сегменты.
 
 ---
 
 ## 7. Topic taxonomy
 
-Свободный список, но с «каноническими» значениями для consistency. В docstring `save_fact` перечислен канон, Claude будет стремиться выбирать оттуда:
+Свободный список, но с «каноническими» значениями для consistency. В docstring `save_fact` перечислен канон, Claude стремится выбирать оттуда:
 
 | topic | примеры |
 |---|---|
@@ -380,41 +307,30 @@ cached_system = [
 ## 8. Multi-tenant isolation
 
 - `user_facts.user_id` — NOT NULL FK на `users(id) ON DELETE CASCADE`.
-- Все ORM-методы через `@dual` + `@with_session`, user_id — первый аргумент после `cls`.
-- MCP tools используют `get_current_user_id()` из `mcp_server.context` — атлет **не может** передать чужой `user_id` через параметр tool'а.
-- `list_facts` возвращает только факты текущего `user_id` (WHERE clause).
-- Как и всё в проекте, threat T1 из `MULTI_TENANT_SECURITY.md` покрывается row-level tenant filtering.
+- ORM-методы через `@dual` + `@with_session`, `user_id` — первый аргумент после `cls`.
+- MCP tools используют `get_current_user_id()` из `mcp_server.context` — атлет НЕ может передать чужой `user_id` через параметр tool'а.
+- `list_facts` / `reactivate_fact` возвращают/мутируют только факты текущего `user_id`.
+- Threat T1 из `MULTI_TENANT_SECURITY_SPEC.md` покрывается row-level tenant filtering.
 
-**Аудит:** `save_fact` и `deactivate_fact` работают через обычный Sentry wrapper (`@sentry_tool`). Отдельный audit-log пока не заводим (см. MT-spec T7 — будет в Phase 4).
+`save_fact` и `deactivate_fact` работают через обычный Sentry wrapper (`@sentry_tool`). Отдельный audit-log пока не заводим — будет в MT-spec Phase 4.
 
 ---
 
 ## 9. Phases
 
-### Phase 1 — MVP (tool-based + undo-кнопка)
+### Phase 1 — MVP (tool-based + undo) — ✅ shipped (commit `cf624ba`)
 
-> Статус: код мерджен в `cf624ba`. Owner smoke-test остался на деплой.
+См. code anchors в шапке. 28 acceptance items закрыты unit-тестами (`tests/data/test_user_facts.py`, `tests/bot/test_undo_button.py`, `tests/bot/test_personal_patterns_block.py`). Coverage:
+- Append-with-cap (per-topic `injury=5` / `health=5` / `default=3`, hard-cap 200)
+- Concurrent two-writer race (`asyncio.gather`) → cap honored, eviction reasons correct
+- Cross-tenant guard на `reactivate_fact`
+- Boundary: 300 chars accepted, 301 rejected; пустые `topic`/`fact` rejected
+- Renderer возвращает только свои факты, no-facts → блок не рендерится, заголовок локализован
+- Undo TTL: next-message ротация + 10-мин fallback job
 
-- [x] Alembic миграция `user_facts` — `migrations/versions/b8d1c4e7f0a3_add_user_facts.py`. Partial index `ix_user_facts_active` по `(user_id, topic, created_at DESC) WHERE deactivated_at IS NULL`.
-- [x] `data/db/user_fact.py` — ORM `UserFact` + `save_with_cap` (append-with-cap per-topic, hard-cap 200, `SELECT … FOR UPDATE` в одной транзакции).
-- [x] `TOPIC_CAPS = {"injury": 5, "health": 5}` + `DEFAULT_TOPIC_CAP = 3`.
-- [x] MCP tools в `mcp_server/tools/user_facts.py`: `save_fact` / `list_facts` / `deactivate_fact` / `reactivate_fact` / `get_fact_metrics`. Все через `get_current_user_id()`, tool-описания ужаты до ~1500 chars суммарно (см. §6) и добавлены в `tracking` группу `bot/tool_filter.py` (ALWAYS_INCLUDE). `save_fact` мапит `ValueError` в `{"error": ...}` чтобы Claude видел и повторил.
-- [x] `bot/prompts.py` — `get_static_system_prompt()` (константа, ~780 tok) + `render_athlete_block(user_id, language, *, include_facts=True)` (~240 tok tail). `_facts_block` рендерит `## Что я помню о тебе` / `## What I remember about you` по языку, пустой список → блок не рендерится.
-- [x] `bot/agent.py` — `_run_tool_use_loop` принимает `system: str | list[dict]`, `chat()` собирает двухсегментный `[static, athlete_block]` с двумя `cache_control: ephemeral`. `ChatResult.tool_calls` entries расширены полем `result` (нужен для post-commit id — `save_fact.fact_id`).
-- [x] `bot/main.py` — `UndoableTool` NamedTuple + `_UNDOABLE_TOOLS` dict; `_extract_pending_undoable` reverse-scan; `_clear_prior_undo_button` + `_expire_undo_button` job-callback; `handle_chat_message` + `handle_photo_message` собирают inline keyboard из race + undo рядов.
-- [x] Callback `fact_undo` — pop stash из `user_data`, прямой `MCPClient.call_tool(cfg.undo_tool, cfg.undo_args(fact_id))` без Claude. Реакция на stale payload / TTL / double-tap graceful (no information disclosure).
-- [x] TTL на undo-кнопку: next-message `edit_message_reply_markup(None)` + 10-мин `job_queue.run_once` fallback. Job проверяет `user_data[_LAST_UNDO_MSG_ID_KEY] == message_id` перед очисткой stash (защита от ротации при раннем save-then-save).
-- [x] Workout-handler'ы (`workout_sport_chosen`, `workout_dialog_text`) — фильтр = `set(_PREVIEWABLE_TOOLS.keys()) | _UNDOABLE_TOOL_NAMES`, undo-кнопка добавляется 3-й строкой к workout-превью keyboard'у (§4 edge case).
-- [x] Unit-тест `test_injury_cap_is_5` — 6-й факт → 1-й помечен `topic_cap`, cap=5.
-- [x] Unit-тест `test_default_topic_cap_is_3` — 4-й факт → 1-й помечен `topic_cap`, cap=3.
-- [x] Unit-тест `test_hard_cap_evicts_with_hard_cap_reason` — `monkeypatch` уменьшает HARD_CAP_ACTIVE до 10, 11-й факт (в новой topic, чтобы topic_cap не сработал) → самый старый помечен `hard_cap`.
-- [x] Unit-тест `test_two_concurrent_saves_honor_cap` — два concurrent `save_with_cap` через `asyncio.gather` → активных ровно cap, 2 eviction'а с `topic_cap`. Spec §3 документирует именно two-writer scenario.
-- [x] Unit-тест `test_reactivate_refuses_cross_tenant` — user B не может реактивировать факт user A, row остаётся deactivated, owner всё ещё может.
-- [x] Unit-тест `test_fact_over_300_chars_rejected` + boundary `test_fact_exactly_300_chars_accepted` + пустые `topic`/`fact`.
-- [x] Unit-тест `test_renderer_returns_only_own_facts` + `test_no_facts_block_when_empty` + `test_facts_heading_localized_by_language` — tenant isolation regression (threat T1 on render path).
-- [ ] Smoke-тест на owner: подкинуть факт в диалоге → тапнуть undo → факт деактивирован; сохранить новый → на следующий день он в промпте; Claude деактивирует по ошибке → тап «↩️ Вернуть» возвращает; мусорная болтовня «устал сегодня» идёт в `save_mood_checkin_tool`, не `save_fact`. **Требует живой деплой.**
+[ ] **Smoke-тест на owner** (требует живой деплой): подкинуть факт в диалоге → тапнуть undo → факт деактивирован; сохранить новый → на следующий день он в промпте; Claude деактивирует по ошибке → тап «↩️ Вернуть» возвращает; мусорная болтовня «устал сегодня» идёт в `save_mood_checkin_tool`, не `save_fact`.
 
-**Acceptance:** через неделю использования у owner'а есть ≥5 активных фактов; diff системного промпта показывает блок «Что я помню о тебе»; Claude в диалоге цитирует хотя бы один факт без повторного ввода; undo-кнопка работает на 100% мутаций (и save, и deactivate); `undo_tap_rate` <30% (иначе Claude слишком жадный — переписать docstring); `cache_hit_rate_chat` не упал после релиза.
+**Acceptance:** через неделю использования у owner'а есть ≥5 активных фактов; diff системного промпта показывает блок «Что я помню о тебе»; Claude в диалоге цитирует хотя бы один факт без повторного ввода; undo-кнопка работает на 100% мутаций; `undo_tap_rate` <30% (иначе Claude слишком жадный — переписать docstring); `cache_hit_rate_chat` не упал после релиза.
 
 ### Phase 2 — Async extractor с batch-approval (условный)
 
@@ -477,7 +393,7 @@ MCP tool `get_fact_metrics()` — **per-user**, как все остальные
 3. **Phase 2 trigger.** Минимум данных для надёжного ratio: `total_chat_msgs_30d >= 100`. Если выполнено **И** `tool_facts_per_100_msgs < 3` — включаем extractor для этого юзера. При `msgs < 100` не триггерим вообще: ratio на малой выборке шумный (у тихого юзера 0/10 даст нулевой ratio, но проблемы нет — просто мало данных).
 4. **Morning report inject.** Решено: Phase 1 не инжектим (`render_athlete_block(user, include_facts=False)`). Revisit после ≥2 недель данных.
 5. **Sensitive topics injection.** Факты `topic=health`/`family` могут быть чувствительными. Инжектим их наравне с остальными (иначе теряется смысл памяти), но не логируем тело факта в Sentry breadcrumbs — только `topic` + `fact_id`. См. §12.
-6. **Anthropic retention.** Factы из блока «Что я помню о тебе» уходят как часть system prompt'а в Anthropic API. Они **retain'ятся** согласно zero-retention policy (по умолчанию 30 дней на abuse monitoring, zero-retention для Tier 3 / enterprise agreements). Для `health`/`family` это означает: чувствительный текст на стороне провайдера до 30 дней. Trade-off осознанный — self-hosted LLM сравнимого качества стоит 10×+ и недоступен в проектом бюджете. Документируем в `docs/MULTI_TENANT_SECURITY.md` при первой multi-tenant enrollment (issue T6).
+6. **Anthropic retention.** Факты из блока «Что я помню о тебе» уходят как часть system prompt'а в Anthropic API. Они **retain'ятся** согласно zero-retention policy (по умолчанию 30 дней на abuse monitoring, zero-retention для Tier 3 / enterprise agreements). Для `health`/`family` это означает: чувствительный текст на стороне провайдера до 30 дней. Trade-off осознанный — self-hosted LLM сравнимого качества стоит 10×+ и недоступен в проектом бюджете. Документируем в `docs/MULTI_TENANT_SECURITY_SPEC.md` при первой multi-tenant enrollment (issue T6).
 
 ---
 
@@ -486,8 +402,8 @@ MCP tool `get_fact_metrics()` — **per-user**, как все остальные
 Перед merge PR Phase 1 прогнать `/security-review` на:
 
 - `data/db/user_fact.py` — tenant filtering в каждом `@classmethod`, в том числе в `reactivate_fact` (особая точка — обходит обычную «save→active» семантику, легко случайно забыть tenant guard).
-- `mcp_server/tools/save_fact.py` и смежные — использование `get_current_user_id()`, без user_id в параметрах.
+- `mcp_server/tools/user_facts.py` — использование `get_current_user_id()`, без `user_id` в параметрах.
 - `bot/prompts.py:render_athlete_block` — факты текущего пользователя подтягиваются по его `user_id`, не кэшируются between-users; единая точка reader'а (§5), chance на кросс-tenant leak сосредоточен в одной функции.
 - Sentry data scrubbing: `fact` body не попадает в breadcrumbs / event extra (см. §11.5), только `topic` и `fact_id`.
 - Unit-тест: пользователь A не видит факты пользователя B через MCP (`list_facts`, `reactivate_fact`).
-- Anthropic retention (§11.6) — убедиться что `health` / `family` факты документированы в `MULTI_TENANT_SECURITY.md` как acknowledged 30-day vendor retention (не surprise для аудита).
+- Anthropic retention (§11.6) — убедиться что `health` / `family` факты документированы в `MULTI_TENANT_SECURITY_SPEC.md` как acknowledged 30-day vendor retention (не surprise для аудита).
