@@ -10,6 +10,7 @@ from bot.i18n import _, set_language
 from data.db import AthleteGoal, AthleteSettings, User, UserDTO
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
+from data.sport_map import resolve_race_sport_type
 from tasks.dto import DateDTO, local_today
 from tasks.formatter import format_pace
 
@@ -135,6 +136,7 @@ def actor_sync_athlete_goals(user: UserDTO):
                     event_name=event.name or f"{category} event",
                     event_date=event.start_date_local,
                     intervals_event_id=event.id,
+                    sport_type=resolve_race_sport_type(event.type),
                 )
                 logger.info("Synced goal %s for user %d: %s %s", category, user.id, event.name, event.start_date_local)
 

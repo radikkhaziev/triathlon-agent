@@ -36,7 +36,6 @@ def _goal(
         event_name="Existing Race",
         event_date=event_date or (date.today() + timedelta(days=60)),
         intervals_event_id=intervals_event_id,
-        disciplines=None,
     )
 
 

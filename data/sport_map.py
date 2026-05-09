@@ -36,3 +36,36 @@ RAMP_SUPPORTED_INTERVALS: set[str] = {"Run", "Ride"}
 # (alphabetically before Run) for triathletes. Run-first matches the
 # legacy expectation and is the most common discipline.
 RAMP_PRIORITY: tuple[str, ...] = ("Run", "Ride", "Swim")
+
+
+# ---------------------------------------------------------------------------
+# Race-goal sport_type enum (issue #323 Strand A)
+# ---------------------------------------------------------------------------
+# Distinct from the activity normalization above: race goals can be
+# multi-sport (triathlon/duathlon/aquathlon) plus the catch-all "fitness"
+# bucket for non-race goals. Set via ``resolve_race_sport_type`` on writes
+# from Intervals sync / ``suggest_race``; user-editable via Settings.
+
+RACE_SPORT_TYPES: frozenset[str] = frozenset({"triathlon", "duathlon", "aquathlon", "run", "ride", "swim", "fitness"})
+
+
+def resolve_race_sport_type(raw: str | None) -> str:
+    """Map an Intervals.icu / Claude-supplied sport string to the AthleteGoal
+    sport_type enum. Unknown / empty inputs → "fitness" (least-specific bucket
+    so the row is never NULL — column is NOT NULL by schema)."""
+    if not raw:
+        return "fitness"
+    lowered = raw.strip().lower()
+    if lowered in RACE_SPORT_TYPES:
+        return lowered
+    # Common Intervals.icu activity-type aliases (capitalization-insensitive).
+    # Restrict to actual API values — race-name vocabulary like "Marathon" is
+    # not handled here; if Claude says "Marathon", that's a prompt-engineering
+    # miss to fix in `suggest_race`'s docstring, not a resolver bug.
+    if lowered in {"bike", "cycling", "virtualride"}:
+        return "ride"
+    if lowered in {"running", "trailrun", "virtualrun"}:
+        return "run"
+    if lowered in {"swimming", "openwaterswim"}:
+        return "swim"
+    return "fitness"

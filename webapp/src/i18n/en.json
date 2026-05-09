@@ -169,10 +169,26 @@
       "start_bot_no_username": "Bot is not configured yet — contact the instance owner."
     },
     "goal": {
+      "title": "Races",
+      "category": {
+        "RACE_A": "A — primary",
+        "RACE_B": "B — tune-up",
+        "RACE_C": "C — fitness check"
+      },
       "ctl_edit_hint": "Click to edit",
       "ctl_edit_hint_section": "Click any CTL value below to edit it.",
       "save_failed": "Failed to save",
-      "edit_via_chat_hint": "To change the name / date / priority — send /race in the bot chat."
+      "edit_via_chat_hint": "To change the name / date / priority — send /race in the bot chat.",
+      "sport_type": "Type",
+      "sport_type_options": {
+        "triathlon": "Triathlon",
+        "duathlon": "Duathlon",
+        "aquathlon": "Aquathlon",
+        "run": "Run",
+        "ride": "Ride",
+        "swim": "Swim",
+        "fitness": "Fitness"
+      }
     },
     "mcp": {
       "title": "Connect via MCP",

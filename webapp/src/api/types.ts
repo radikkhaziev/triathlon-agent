@@ -11,12 +11,42 @@ export interface IntervalsStatus {
   scope: string | null
 }
 
+// Race-goal classification (issue #323 Strand A) — mirrors backend
+// ``data.sport_map.RACE_SPORT_TYPES``. Distinct from ``SportTag`` (training
+// disciplines): a race can be multi-sport (triathlon) or non-race (fitness),
+// and the user picks this on the Settings → Race Goal section dropdown.
+export type SportType = 'triathlon' | 'duathlon' | 'aquathlon' | 'run' | 'ride' | 'swim' | 'fitness'
+
 export interface AuthMeGoal {
   id?: number | null
   event_name: string
   event_date: string
+  sport_type?: SportType
   ctl_target?: number | null
   per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
+}
+
+// Race goal category — RACE_A is the season anchor, B is a tune-up, C is a
+// fitness check. Mirrors backend `athlete_goals.category` value-set; tightened
+// from `string` to a literal union so i18n key building (`settings.goal.
+// category.${category}`) is typo-safe (Copilot review #325).
+export type GoalCategory = 'RACE_A' | 'RACE_B' | 'RACE_C'
+
+// Single active goal entry returned by `GET /api/athlete/goals` (#323 Strand C).
+// Distinct from `AuthMeGoal` — this one carries `category` (RACE_A/B/C) for the
+// list view's badge, while `AuthMeGoal` is the legacy single-anchor shape.
+export interface AthleteGoal {
+  id: number
+  category: GoalCategory
+  event_name: string
+  event_date: string
+  sport_type: SportType
+  ctl_target?: number | null
+  per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
+}
+
+export interface AthleteGoalsResponse {
+  goals: AthleteGoal[]
 }
 
 export type SportTag = 'swim' | 'ride' | 'run'

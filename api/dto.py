@@ -94,9 +94,14 @@ class PerSportTargetsPayload(BaseModel):
 class AthleteGoalPatchRequest(BaseModel):
     """Body for `PATCH /api/athlete/goal/{goal_id}` — local-only overlay fields.
 
-    Only ``ctl_target`` and ``per_sport_targets`` are writable from the UI; race
-    name/date/category live in Intervals.icu and must go through chat +
-    ``suggest_race`` MCP tool (which pushes the edit to Intervals.icu).
+    ``ctl_target`` / ``per_sport_targets`` / ``sport_type`` are writable from
+    the UI; race name/date/category live in Intervals.icu and must go through
+    chat + ``suggest_race`` MCP tool (which pushes the edit to Intervals.icu).
+
+    ``sport_type`` is local-only because Intervals.icu has no first-class
+    «multi-sport» activity type — a triathlon race is stored there as a Run/
+    Ride event by convention. The user fixes the discipline classification
+    locally via this endpoint (#323 Strand B).
 
     Missing fields are left untouched — the router distinguishes absence from
     explicit ``null`` via ``model_fields_set`` / ``exclude_unset`` so a PATCH
@@ -105,6 +110,11 @@ class AthleteGoalPatchRequest(BaseModel):
 
     ctl_target: float | None = Field(default=None, ge=0, le=200)
     per_sport_targets: PerSportTargetsPayload | None = None
+    # Schema is NOT NULL. ``None`` here means «omitted» for the purposes of
+    # ``model_fields_set`` (absence) — the router rejects an explicit-null
+    # body. Literal pinned to keep the dropdown server-validated; mirrors
+    # ``data.sport_map.RACE_SPORT_TYPES``.
+    sport_type: Literal["triathlon", "duathlon", "aquathlon", "run", "ride", "swim", "fitness"] | None = None
 
 
 # ---------------------------------------------------------------------------

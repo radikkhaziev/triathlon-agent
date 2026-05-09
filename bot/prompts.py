@@ -22,7 +22,7 @@ Today's date: {today}
 Athlete profile:
 - Age {athlete_age}
 - Sports: {sports}
-- Goal: {goal_event} ({goal_date})
+{goals_block}
 - LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
 - Data source: Intervals.icu (Garmin wearable sync)
 
@@ -113,7 +113,7 @@ Today's date: {today}
 Athlete profile:
 - Age {athlete_age}
 - Sports: {sports}
-- Goal: {goal_event} ({goal_date})
+{goals_block}
 - LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
 
 ## Инструкции для недельного отчёта
@@ -199,6 +199,32 @@ def _primary_sport(sports: list[str] | None) -> str:
     return "run"
 
 
+def _render_goals_block(goals: list[AthleteGoalDTO]) -> str:
+    """Render the Goals: section for the system prompt (#323 Strand D).
+
+    Three shapes depending on what `AthleteGoal.get_goals_for_prompt` returned:
+
+    * **0 goals** — single-line «Goal: не задана».
+    * **1 goal** — single-line, just the event + date + sport_type.
+    * **2 goals** — multi-line block with a focus-hint so Claude treats
+      RACE_A as the strategic anchor and the nearest race only as
+      tactical context (typical case: a B/C tune-up before the season A).
+
+    Caller substitutes the result into the templates' `{goals_block}` slot.
+    """
+    if not goals:
+        return "- Goal: не задана"
+    if len(goals) == 1:
+        g = goals[0]
+        return f"- Goal: {g.event_name} ({g.event_date}, {g.sport_type})"
+    a, n = goals[0], goals[1]
+    return (
+        "- Goals (focus on RACE_A; mention nearest only if directly relevant to today):\n"
+        f"  - RACE_A: {a.event_name} ({a.event_date}, {a.sport_type})\n"
+        f"  - Nearest: {n.event_name} ({n.event_date}, {n.sport_type})"
+    )
+
+
 def _show_ride_progression(sports: list[str] | None) -> bool:
     """Whether to render the weekly Ride-progression hint.
 
@@ -218,8 +244,8 @@ def _show_ride_progression(sports: list[str] | None) -> bool:
 
 def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
-    g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
-    today = local_today().isoformat()
+    today_date = local_today()
+    goals = AthleteGoal.get_goals_for_prompt(user_id, today_date)
 
     # Phase 3: Ride-only blocks render conditionally so a runner-only or
     # cyclist-only athlete doesn't see (Ride)-tagged guidance for sports
@@ -244,14 +270,13 @@ def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
         )
 
     return SYSTEM_PROMPT_WEEKLY.format(
-        today=today,
+        today=today_date.isoformat(),
         athlete_age=t.age or 0,
         sports=_format_sports(t.sports),
         primary_sport=_primary_sport(t.sports),
         progression_step=progression_step,
         format_sections_tail=format_sections_tail,
-        goal_event=g.event_name if g else "не задана",
-        goal_date=g.event_date if g else "—",
+        goals_block=_render_goals_block(goals),
         lthr_run=t.lthr_run or "—",
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",
@@ -262,15 +287,14 @@ def get_system_prompt_weekly(user_id: int, language: str = "ru") -> str:
 
 def get_system_prompt_v2(user_id: int, language: str = "ru") -> str:
     t: AthleteThresholdsDTO = AthleteSettings.get_thresholds(user_id)
-    g: AthleteGoalDTO | None = AthleteGoal.get_goal_dto(user_id)
-    today = local_today().isoformat()
+    today_date = local_today()
+    goals = AthleteGoal.get_goals_for_prompt(user_id, today_date)
     return SYSTEM_PROMPT_V2.format(
-        today=today,
+        today=today_date.isoformat(),
         athlete_age=t.age or 0,
         sports=_format_sports(t.sports),
         primary_sport=_primary_sport(t.sports),
-        goal_event=g.event_name if g else "не задана",
-        goal_date=g.event_date if g else "—",
+        goals_block=_render_goals_block(goals),
         lthr_run=t.lthr_run or "—",
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",
@@ -356,7 +380,7 @@ Today's date: {today}
 Athlete profile:
 - Age {athlete_age}
 - Sports: {sports}
-- Goal: {goal_event} ({goal_date})
+{goals_block}
 - LTHR Run: {lthr_run}, LTHR Bike: {lthr_bike}, FTP: {ftp}W, CSS: {css}s/100m
 - Data source: Intervals.icu (Garmin wearable sync)
 
@@ -672,9 +696,10 @@ async def render_athlete_block(
     # `return_exceptions=True` so a transient DB hiccup on any one fetch
     # degrades that block (renders empty) rather than killing the whole
     # chat reply (and cancelling the other in-flight queries).
+    today_date = local_today()
     coros = [
         AthleteSettings.get_thresholds(user_id),
-        AthleteGoal.get_goal_dto(user_id),
+        AthleteGoal.get_goals_for_prompt(user_id, today_date),
         AthleteSettings.get_all(user_id),
         _safe_compute_personal_patterns(user_id),
     ]
@@ -689,13 +714,12 @@ async def render_athlete_block(
         return value
 
     t = _fallback(fetched[0], AthleteThresholdsDTO(), "thresholds")
-    g = _fallback(fetched[1], None, "goal")
+    goals = _fallback(fetched[1], [], "goals")
     all_settings = _fallback(fetched[2], [], "settings_by_sport")
     patterns = _fallback(fetched[3], {"entries_total": 0, "entries_complete": 0}, "patterns")
     facts = _fallback(fetched[4], [], "facts") if include_facts else []
 
     settings_by_sport = {s.sport: s for s in all_settings}
-    today = local_today().isoformat()
 
     facts_section = ""
     if include_facts:
@@ -706,11 +730,10 @@ async def render_athlete_block(
     patterns_section = f"\n{patterns_block}\n" if patterns_block else ""
 
     return _ATHLETE_BLOCK_TEMPLATE.format(
-        today=today,
+        today=today_date.isoformat(),
         athlete_age=t.age or 0,
         sports=_format_sports(t.sports),
-        goal_event=g.event_name if g else "не задана",
-        goal_date=g.event_date if g else "—",
+        goals_block=_render_goals_block(goals),
         lthr_run=t.lthr_run or "—",
         lthr_bike=t.lthr_bike or "—",
         ftp=t.ftp or "—",

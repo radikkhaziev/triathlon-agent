@@ -47,3 +47,5 @@ backups/
 .DS_Store
 
 pitch/
+
+.claude/scheduled_tasks.lock

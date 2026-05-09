@@ -5,6 +5,50 @@ from mcp.server.fastmcp import FastMCP
 from data.db import AthleteGoal, AthleteSettings
 from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
 from mcp_server.context import get_current_user_id
+from tasks.dto import local_today
+
+
+def render_race_goal_resource(goals: list[AthleteGoalDTO]) -> str:
+    """Render the body of the ``athlete://goal`` MCP resource.
+
+    Module-level helper (extracted from a closure) so the rendering rules can
+    be exercised from unit tests — specifically the ``CTL=0`` not-skipped
+    invariant flagged in PR #325 by Copilot.
+
+    Output shapes:
+      * **0 goals** — single line «No active goal set.»
+      * **1 goal**  — block with no label.
+      * **2 goals** — RACE_A then Nearest, separated by blank line.
+    """
+    if not goals:
+        return "No active goal set."
+
+    lines: list[str] = []
+
+    def _emit(g: AthleteGoalDTO, label: str) -> None:
+        prefix = f"{label}: " if label else ""
+        lines.append(f"{prefix}{g.event_name}")
+        lines.append(f"  Date: {g.event_date}")
+        lines.append(f"  Sport: {g.sport_type}")
+        # ``is not None`` rather than truthy check — CTL=0 is a legitimate
+        # «no load» target during full taper / injury recovery, and we'd
+        # silently drop it with ``if g.ctl_target:`` (Copilot review #325).
+        if g.ctl_target is not None:
+            lines.append(f"  CTL Target (total): {g.ctl_target}")
+        if g.per_sport_targets:
+            for sport, target in g.per_sport_targets.items():
+                if target is None:
+                    continue
+                lines.append(f"  CTL Target ({sport}): {target}")
+
+    if len(goals) == 1:
+        _emit(goals[0], label="")
+    else:
+        _emit(goals[0], label="RACE_A")
+        lines.append("")
+        _emit(goals[1], label="Nearest")
+
+    return "\n".join(lines)
 
 
 def register_resources(mcp: FastMCP) -> None:
@@ -52,23 +96,13 @@ def register_resources(mcp: FastMCP) -> None:
 
     @mcp.resource("athlete://goal")
     async def race_goal() -> str:
-        """Current race goal: event name, date, CTL targets (total + per-sport)."""
+        """Current race goal(s) — RACE_A always (if set) plus the nearest race
+        if it differs from RACE_A (typically a B/C tune-up). See #323 Strand D
+        for the «focus on RACE_A; nearest is tactical context» framing.
+        """
         user_id = get_current_user_id()
-        g: AthleteGoalDTO | None = await AthleteGoal.get_goal_dto(user_id)
-        if not g:
-            return "No active goal set."
-
-        lines = [
-            f"Event: {g.event_name}",
-            f"Date: {g.event_date}",
-            f"Sport: {g.sport_type}",
-        ]
-        if g.ctl_target:
-            lines.append(f"CTL Target (total): {g.ctl_target}")
-        if g.per_sport_targets:
-            for sport, target in g.per_sport_targets.items():
-                lines.append(f"CTL Target ({sport}): {target}")
-        return "\n".join(lines)
+        goals: list[AthleteGoalDTO] = await AthleteGoal.get_goals_for_prompt(user_id, local_today())
+        return render_race_goal_resource(goals)
 
     @mcp.resource("athlete://thresholds")
     def thresholds() -> str:

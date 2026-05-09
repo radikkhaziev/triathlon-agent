@@ -321,7 +321,7 @@ class TestPromptBuilderSportsInjection:
     def test_get_system_prompt_v2_renders_sports_line(self):
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_v2(user_id=1, language="ru")
         assert "Sports: Run" in out
@@ -330,7 +330,7 @@ class TestPromptBuilderSportsInjection:
     def test_get_system_prompt_weekly_renders_sports_line(self):
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride", "run"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_weekly(user_id=1, language="ru")
         assert "Sports: Ride, Run" in out
@@ -339,7 +339,7 @@ class TestPromptBuilderSportsInjection:
         """Backward compat for users still in the gate rollout window."""
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(None)),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_v2(user_id=1, language="ru")
         assert "Sports: all" in out
@@ -354,8 +354,8 @@ class TestPromptBuilderSportsInjection:
                 new=AsyncMock(return_value=self._thr(["run"])),
             ),
             patch(
-                "bot.prompts.AthleteGoal.get_goal_dto",
-                new=AsyncMock(return_value=None),
+                "bot.prompts.AthleteGoal.get_goals_for_prompt",
+                new=AsyncMock(return_value=[]),
             ),
             patch(
                 "bot.prompts.AthleteSettings.get_all",
@@ -390,8 +390,8 @@ class TestPromptBuilderSportsInjection:
                 new=AsyncMock(return_value=self._thr(["ride", "run", "swim"])),
             ),
             patch(
-                "bot.prompts.AthleteGoal.get_goal_dto",
-                new=AsyncMock(return_value=None),
+                "bot.prompts.AthleteGoal.get_goals_for_prompt",
+                new=AsyncMock(return_value=[]),
             ),
             patch(
                 "bot.prompts.AthleteSettings.get_all",
@@ -500,7 +500,7 @@ class TestPhase3PromptIntegration:
     def test_morning_runner_uses_run_in_polarization(self):
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_v2(user_id=1, language="ru")
         assert "get_polarization_index(sport='run')" in out
@@ -508,7 +508,7 @@ class TestPhase3PromptIntegration:
     def test_morning_cyclist_uses_ride_in_polarization(self):
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_v2(user_id=1, language="ru")
         assert "get_polarization_index(sport='ride')" in out
@@ -523,7 +523,7 @@ class TestPhase3PromptIntegration:
                 "bot.prompts.AthleteSettings.get_thresholds",
                 return_value=self._thr(["swim", "ride", "run"]),
             ),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_v2(user_id=1, language="ru")
         assert "get_polarization_index(sport='run')" in out
@@ -532,7 +532,7 @@ class TestPhase3PromptIntegration:
         """Backward compat for users still in the gate rollout window."""
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(None)),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_v2(user_id=1, language="ru")
         assert "get_polarization_index(sport='run')" in out
@@ -547,7 +547,7 @@ class TestPhase3PromptIntegration:
         and we don't want this test to silently rebroaden."""
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_weekly(user_id=1, language="ru")
         assert "get_polarization_index(sport='run')" in out
@@ -562,7 +562,7 @@ class TestPhase3PromptIntegration:
         in Telegram. Assert non-Ride athletes get 1-6 sequential."""
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["run"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_weekly(user_id=1, language="ru")
         # Six-section run: ML insights branch is dropped, Наблюдение
@@ -576,7 +576,7 @@ class TestPhase3PromptIntegration:
     def test_weekly_cyclist_keeps_ride_progression_step(self):
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_weekly(user_id=1, language="ru")
         assert "get_polarization_index(sport='ride')" in out
@@ -591,7 +591,7 @@ class TestPhase3PromptIntegration:
                 "bot.prompts.AthleteSettings.get_thresholds",
                 return_value=self._thr(["swim", "ride", "run"]),
             ),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_weekly(user_id=1, language="ru")
         assert "get_polarization_index(sport='run')" in out
@@ -603,7 +603,7 @@ class TestPhase3PromptIntegration:
         Claude doesn't bother breaking down sports the athlete doesn't train."""
         with (
             patch("bot.prompts.AthleteSettings.get_thresholds", return_value=self._thr(["ride", "run"])),
-            patch("bot.prompts.AthleteGoal.get_goal_dto", return_value=None),
+            patch("bot.prompts.AthleteGoal.get_goals_for_prompt", return_value=[]),
         ):
             out = get_system_prompt_weekly(user_id=1, language="ru")
         assert "by-sport breakdown (Ride, Run)" in out

@@ -247,6 +247,7 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
                 "id": g.id,
                 "event_name": g.event_name,
                 "event_date": str(g.event_date),
+                "sport_type": g.sport_type,
                 "ctl_target": g.ctl_target,
                 "per_sport_targets": g.per_sport_targets,
             }

@@ -4,12 +4,32 @@ import Layout from '../components/Layout'
 import BackfillSection from '../components/BackfillSection'
 import { useAuth } from '../auth/useAuth'
 import { apiFetch } from '../api/client'
-import type { AuthMeResponse, IntervalsStatus, SportTag } from '../api/types'
+import type {
+  AthleteGoal,
+  AthleteGoalsResponse,
+  AuthMeResponse,
+  IntervalsStatus,
+  SportTag,
+  SportType,
+} from '../api/types'
 
 const SPORT_OPTIONS: { tag: SportTag; emoji: string }[] = [
   { tag: 'swim', emoji: '🏊' },
   { tag: 'ride', emoji: '🚴' },
   { tag: 'run', emoji: '🏃' },
+]
+
+// Race-goal sport_type enum — mirrors backend `data.sport_map.RACE_SPORT_TYPES`.
+// Order chosen for the Settings dropdown: multi-sport first (most common race
+// goals), then single sports, then catch-all.
+const SPORT_TYPE_OPTIONS: SportType[] = [
+  'triathlon',
+  'duathlon',
+  'aquathlon',
+  'run',
+  'ride',
+  'swim',
+  'fitness',
 ]
 
 type McpConfig = { url: string; token: string }
@@ -70,13 +90,11 @@ export default function Settings() {
     ftp?: number | null
     css?: number | null
   } | null>(null)
-  const [goal, setGoal] = useState<{
-    id?: number | null
-    event_name: string
-    event_date: string
-    ctl_target?: number | null
-    per_sport_targets?: { swim?: number; ride?: number; run?: number } | null
-  } | null>(null)
+  // List of all active future goals — fetched separately from /api/athlete/goals
+  // (#323 Strand C). `auth_me.goal` only carries the primary anchor for legacy
+  // single-goal consumers (morning report); the Settings list view needs ALL
+  // goals so the athlete can edit each one independently.
+  const [goals, setGoals] = useState<AthleteGoal[]>([])
   const [goalSaveError, setGoalSaveError] = useState<string | null>(null)
   const [sports, setSports] = useState<SportTag[] | null>(null)
   const [sportsSaveError, setSportsSaveError] = useState<string | null>(null)
@@ -94,7 +112,7 @@ export default function Settings() {
   // `intervals=null` forever, which would stick the UI in the "loading" text.
   useEffect(() => {
     if (!isAuthenticated) return
-    apiFetch<AuthMeResponse & { profile?: typeof profile; goal?: typeof goal }>('/api/auth/me')
+    apiFetch<AuthMeResponse & { profile?: typeof profile }>('/api/auth/me')
       .then(data => {
         setIntervals(data.intervals ?? { method: 'none', athlete_id: null, scope: null })
         // Default to true on missing field so old API responses don't lock
@@ -103,7 +121,6 @@ export default function Settings() {
         setBotChatInitialized(data.bot_chat_initialized ?? true)
         setBotUsername(data.bot_username ?? null)
         if (data.profile) setProfile(data.profile)
-        if (data.goal) setGoal(data.goal)
         // Defensive: only accept an actual array. Anything else (null,
         // undefined, "", number) collapses to null so the gate stays
         // closed — same hardening as App.tsx.
@@ -112,6 +129,25 @@ export default function Settings() {
       .catch(() => {
         setIntervals({ method: 'none', athlete_id: null, scope: null })
         setBotChatInitialized(true)
+      })
+  }, [isAuthenticated])
+
+  // Goals list — separate fetch from /api/auth/me so the Settings page owns
+  // its own state. Failure leaves `goals=[]`, which renders the empty state
+  // («No active goals — use /race in the bot to add one»). Demo session falls
+  // through to whatever the backend returns for the demo user (typically the
+  // owner's goals, read-only).
+  useEffect(() => {
+    if (!isAuthenticated) return
+    apiFetch<AthleteGoalsResponse>('/api/athlete/goals')
+      .then(data => {
+        if (Array.isArray(data.goals)) setGoals(data.goals)
+      })
+      .catch(() => {
+        // Don't show a UI error — the empty list is itself a valid state for a
+        // user with no goals yet. If this is a real failure, the next fetch
+        // (page reload) will retry.
+        setGoals([])
       })
   }, [isAuthenticated])
 
@@ -141,32 +177,41 @@ export default function Settings() {
   const sportsPutSeq = useRef(0)
   const lastSuccessfulSportsSeq = useRef(0)
 
-  // Push a local-only goal edit (ctl_target / per_sport_targets) to the backend.
+  // Push a local-only goal edit to the backend for one specific goal.
   // Applies optimistic update first; on failure rolls back and sets an inline
   // error message so the row re-mounts with the original value — provided the
   // failing request is still the latest (see patchSeq above).
   const patchGoal = async (
-    patch: Partial<{ ctl_target: number | null; per_sport_targets: Record<string, number | null> }>,
+    goalId: number,
+    patch: Partial<{
+      ctl_target: number | null
+      per_sport_targets: Record<string, number | null>
+      sport_type: SportType
+    }>,
   ) => {
-    if (!goal?.id) return
     const seq = ++patchSeq.current
-    const prev = goal
-    const next = {
-      ...goal,
-      ...(patch.ctl_target !== undefined ? { ctl_target: patch.ctl_target } : {}),
-      ...(patch.per_sport_targets !== undefined
-        ? {
-            per_sport_targets: {
-              ...(goal.per_sport_targets ?? {}),
-              ...patch.per_sport_targets,
-            },
-          }
-        : {}),
-    }
-    setGoal(next)
+    const prev = goals
+    setGoals(curr =>
+      curr.map(g => {
+        if (g.id !== goalId) return g
+        return {
+          ...g,
+          ...(patch.ctl_target !== undefined ? { ctl_target: patch.ctl_target } : {}),
+          ...(patch.sport_type !== undefined ? { sport_type: patch.sport_type } : {}),
+          ...(patch.per_sport_targets !== undefined
+            ? {
+                per_sport_targets: {
+                  ...(g.per_sport_targets ?? {}),
+                  ...patch.per_sport_targets,
+                },
+              }
+            : {}),
+        }
+      }),
+    )
     setGoalSaveError(null)
     try {
-      await apiFetch(`/api/athlete/goal/${goal.id}`, {
+      await apiFetch(`/api/athlete/goal/${goalId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
@@ -178,7 +223,7 @@ export default function Settings() {
       // (`seq < patchSeq.current`), keep the current state — our older failure
       // no longer reflects the user's intent.
       if (seq === patchSeq.current && seq > lastSuccessfulSeq.current) {
-        setGoal(prev)
+        setGoals(prev)
         const msg = e instanceof Error ? e.message : String(e)
         setGoalSaveError(msg || t('settings.goal.save_failed'))
       }
@@ -461,44 +506,68 @@ export default function Settings() {
         </Section>
       )}
 
-      {/* Race Goal */}
-      {goal && (
-        <Section title="Race Goal" icon="🏁">
-          <Row label="Event" value={String(goal.event_name)} />
-          <Row label="Date" value={String(goal.event_date)} />
-          {!isDemo && goal.id && (
-            <p className="text-[11px] text-text-dim mt-2 mb-1 leading-snug">
-              {t('settings.goal.ctl_edit_hint_section')}
-            </p>
-          )}
-          <EditableNumberRow
-            label="CTL Target"
-            value={goal.ctl_target ?? null}
-            editHint={t('settings.goal.ctl_edit_hint')}
-            disabled={isDemo || !goal.id}
-            onCommit={next => patchGoal({ ctl_target: next })}
-          />
-          <EditableNumberRow
-            label="Swim CTL"
-            value={goal.per_sport_targets?.swim ?? null}
-            editHint={t('settings.goal.ctl_edit_hint')}
-            disabled={isDemo || !goal.id}
-            onCommit={next => patchGoal({ per_sport_targets: { swim: next } })}
-          />
-          <EditableNumberRow
-            label="Bike CTL"
-            value={goal.per_sport_targets?.ride ?? null}
-            editHint={t('settings.goal.ctl_edit_hint')}
-            disabled={isDemo || !goal.id}
-            onCommit={next => patchGoal({ per_sport_targets: { ride: next } })}
-          />
-          <EditableNumberRow
-            label="Run CTL"
-            value={goal.per_sport_targets?.run ?? null}
-            editHint={t('settings.goal.ctl_edit_hint')}
-            disabled={isDemo || !goal.id}
-            onCommit={next => patchGoal({ per_sport_targets: { run: next } })}
-          />
+      {/* Race Goals — list view (#323 Strand C) */}
+      {goals.length > 0 && (
+        <Section title={t('settings.goal.title')} icon="🏁">
+          {goals.map((g, idx) => (
+            <div key={g.id} className={idx > 0 ? 'mt-5 pt-4 border-t border-border' : ''}>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[12px] text-accent font-semibold tracking-wide">
+                  {t(`settings.goal.category.${g.category}`, { defaultValue: g.category })}
+                </span>
+              </div>
+              <Row label="Event" value={String(g.event_name)} />
+              <Row label="Date" value={String(g.event_date)} />
+              <div className="flex items-center justify-between py-2 border-b border-border">
+                <span className="text-[13px] text-text-dim">{t('settings.goal.sport_type')}</span>
+                <select
+                  value={g.sport_type}
+                  disabled={isDemo}
+                  onChange={e => patchGoal(g.id, { sport_type: e.target.value as SportType })}
+                  className="text-[13px] bg-surface border border-border rounded-md px-2 py-1 text-text disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer font-sans"
+                >
+                  {SPORT_TYPE_OPTIONS.map(opt => (
+                    <option key={opt} value={opt}>
+                      {t(`settings.goal.sport_type_options.${opt}`)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {!isDemo && (
+                <p className="text-[11px] text-text-dim mt-2 mb-1 leading-snug">
+                  {t('settings.goal.ctl_edit_hint_section')}
+                </p>
+              )}
+              <EditableNumberRow
+                label="CTL Target"
+                value={g.ctl_target ?? null}
+                editHint={t('settings.goal.ctl_edit_hint')}
+                disabled={isDemo}
+                onCommit={next => patchGoal(g.id, { ctl_target: next })}
+              />
+              <EditableNumberRow
+                label="Swim CTL"
+                value={g.per_sport_targets?.swim ?? null}
+                editHint={t('settings.goal.ctl_edit_hint')}
+                disabled={isDemo}
+                onCommit={next => patchGoal(g.id, { per_sport_targets: { swim: next } })}
+              />
+              <EditableNumberRow
+                label="Bike CTL"
+                value={g.per_sport_targets?.ride ?? null}
+                editHint={t('settings.goal.ctl_edit_hint')}
+                disabled={isDemo}
+                onCommit={next => patchGoal(g.id, { per_sport_targets: { ride: next } })}
+              />
+              <EditableNumberRow
+                label="Run CTL"
+                value={g.per_sport_targets?.run ?? null}
+                editHint={t('settings.goal.ctl_edit_hint')}
+                disabled={isDemo}
+                onCommit={next => patchGoal(g.id, { per_sport_targets: { run: next } })}
+              />
+            </div>
+          ))}
           {goalSaveError && (
             <p className="text-[12px] text-red mt-2">{goalSaveError}</p>
           )}
