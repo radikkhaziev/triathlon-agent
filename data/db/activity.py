@@ -780,6 +780,10 @@ class Race(Base):
     rpe: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Manual entry post-race — input for fueling_compliance_pct (PR3 / spec §14).
+    # NULL when athlete didn't log it; compliance metric stays NULL too.
+    carbs_consumed_g: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -803,3 +807,53 @@ class Race(Base):
             .order_by(Activity.start_date_local.desc())
         )
         return list(result.scalars().all())
+
+    # Sport-filter map for ``get_recent_for_user``. AthleteGoal.sport_type
+    # vocabulary (`run`/`ride`/`swim`) → Activity.type (`Run`/`Ride`/`Swim`).
+    # Triathlon-family goals (`triathlon`/`duathlon`/`aquathlon`) and `fitness`
+    # are NOT in this map — those skip Activity-type filtering because tri races
+    # are logged as multi-sport activities or per-leg rows that don't cleanly
+    # reduce to one Activity.type.
+    _SPORT_TO_ACTIVITY_TYPE: dict[str, str] = {"run": "Run", "ride": "Ride", "swim": "Swim"}
+
+    @classmethod
+    @dual
+    def get_recent_for_user(
+        cls,
+        user_id: int,
+        *,
+        sport_type: str | None = None,
+        since: date | None = None,
+        limit: int = 5,
+        session: Session,
+    ) -> list[tuple[Race, str, str | None]]:
+        """Recent races for race-plan context-build.
+
+        Returns ``[(race, activity_start_date_local, activity_type), ...]`` —
+        we co-fetch Activity.start_date_local + type in one query because the
+        prompt summarizer needs both alongside Race fields, and a separate
+        per-row lookup would N+1 in async context.
+
+        ``sport_type`` matches AthleteGoal.sport_type vocabulary. For
+        triathlon-family / fitness goals we skip Activity-type filtering (see
+        ``_SPORT_TO_ACTIVITY_TYPE`` rationale). ``since`` filters by
+        Activity.start_date_local; the recency-vs-cold-start trade-off is the
+        caller's responsibility — drop ``since`` and re-query if empty.
+        """
+        sport = (sport_type or "").lower()
+        # Belt-and-braces: Activity.user_id MUST also match. A stale Race row
+        # whose activity_id points at a foreign tenant's Activity (e.g. Race
+        # row pre-dated tenant migration, or Intervals.icu activity_id reused
+        # cross-account) would otherwise leak Activity metadata via the JOIN.
+        # See security review secM1 (2026-05-09).
+        stmt = (
+            select(cls, Activity.start_date_local, Activity.type)
+            .join(Activity, Activity.id == cls.activity_id)
+            .where(cls.user_id == user_id, Activity.user_id == user_id)
+        )
+        if sport in cls._SPORT_TO_ACTIVITY_TYPE:
+            stmt = stmt.where(Activity.type == cls._SPORT_TO_ACTIVITY_TYPE[sport])
+        if since is not None:
+            stmt = stmt.where(Activity.start_date_local >= since.isoformat())
+        stmt = stmt.order_by(Activity.start_date_local.desc()).limit(limit)
+        return [(race, dt, atype) for race, dt, atype in session.execute(stmt).all()]

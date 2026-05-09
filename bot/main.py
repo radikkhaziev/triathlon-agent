@@ -36,6 +36,7 @@ from bot.decorator import athlete_required, user_required
 from bot.donate_nudge import get_nudge_text, should_show_nudge
 from bot.i18n import _
 from bot.i18n import set_language as _set_lang
+from bot.markdown import md_to_html
 from bot.scheduler import create_scheduler
 from bot.tools import MCPClient
 from config import settings
@@ -346,8 +347,8 @@ async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE, user: Us
     code = generate_code(str(user.chat_id))
     login_url = f"{settings.API_BASE_URL}/login"
     await update.message.reply_text(
-        f"🔑 Код: `{code}`\n\nДействует 5 минут. Введите на странице:\n{login_url}",
-        parse_mode="Markdown",
+        f"🔑 Код: <code>{code}</code>\n\nДействует 5 минут. Введите на странице:\n{login_url}",
+        parse_mode="HTML",
     )
 
 
@@ -675,10 +676,12 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             rows.append([_undo_button(cfg.button_text)])
         reply_markup = InlineKeyboardMarkup(rows) if rows else None
 
-        # Telegram Markdown is fragile — fallback to plain text on parse error
         try:
-            sent = await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=reply_markup)
+            sent = await update.message.reply_text(
+                md_to_html(result.text), parse_mode="HTML", reply_markup=reply_markup
+            )
         except Exception:
+            logger.warning("HTML render failed, falling back to plain text", exc_info=True)
             sent = await update.message.reply_text(result.text, reply_markup=reply_markup)
 
         if undoable is not None:
@@ -701,7 +704,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             # after the main response was already delivered.
             nudge_text = get_nudge_text()
             try:
-                await update.message.reply_text(nudge_text, parse_mode="Markdown")
+                await update.message.reply_text(md_to_html(nudge_text), parse_mode="HTML")
             except Exception:
                 try:
                     await update.message.reply_text(nudge_text)
@@ -768,8 +771,11 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup = InlineKeyboardMarkup(rows) if rows else None
 
         try:
-            sent = await update.message.reply_text(result.text, parse_mode="Markdown", reply_markup=reply_markup)
+            sent = await update.message.reply_text(
+                md_to_html(result.text), parse_mode="HTML", reply_markup=reply_markup
+            )
         except Exception:
+            logger.warning("HTML render failed, falling back to plain text", exc_info=True)
             sent = await update.message.reply_text(result.text, reply_markup=reply_markup)
 
         if undoable is not None:
@@ -790,7 +796,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if should_show_nudge(user, result.nudge_boundary, result.request_count):
             nudge_text = get_nudge_text()
             try:
-                await update.message.reply_text(nudge_text, parse_mode="Markdown")
+                await update.message.reply_text(md_to_html(nudge_text), parse_mode="HTML")
             except Exception:
                 try:
                     await update.message.reply_text(nudge_text)
@@ -1113,8 +1119,9 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     try:
-        sent = await query.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
+        sent = await query.message.reply_text(md_to_html(response_text), reply_markup=keyboard, parse_mode="HTML")
     except Exception:
+        logger.warning("HTML render failed, falling back to plain text", exc_info=True)
         sent = await query.message.reply_text(response_text, reply_markup=keyboard)
 
     if undoable is not None:
@@ -1176,8 +1183,9 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     try:
-        sent = await update.message.reply_text(response_text, reply_markup=keyboard, parse_mode="Markdown")
+        sent = await update.message.reply_text(md_to_html(response_text), reply_markup=keyboard, parse_mode="HTML")
     except Exception:
+        logger.warning("HTML render failed, falling back to plain text", exc_info=True)
         sent = await update.message.reply_text(response_text, reply_markup=keyboard)
 
     if undoable is not None:
@@ -1461,8 +1469,9 @@ async def handle_adapt_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     try:
-        await query.message.reply_text(response, reply_markup=keyboard, parse_mode="Markdown")
+        await query.message.reply_text(md_to_html(response), reply_markup=keyboard, parse_mode="HTML")
     except Exception:
+        logger.warning("HTML render failed, falling back to plain text", exc_info=True)
         await query.message.reply_text(response, reply_markup=keyboard)
 
 
@@ -1494,15 +1503,15 @@ async def handle_update_zones_callback(update: Update, context: ContextTypes.DEF
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     lines = [
-        "*Who Am I*",
-        f"ID: `{user.id}`",
-        f"First name: {user.first_name or '—'}",
-        f"Last name: {user.last_name or '—'}",
-        f"Username: @{user.username}" if user.username else "Username: —",
-        f"Language: {user.language_code or '—'}",
+        "<b>Who Am I</b>",
+        f"ID: <code>{user.id}</code>",
+        f"First name: {html.escape(user.first_name or '—')}",
+        f"Last name: {html.escape(user.last_name or '—')}",
+        f"Username: @{html.escape(user.username)}" if user.username else "Username: —",
+        f"Language: {html.escape(user.language_code or '—')}",
         f"Is bot: {user.is_bot}",
     ]
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------

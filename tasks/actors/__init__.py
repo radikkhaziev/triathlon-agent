@@ -19,6 +19,7 @@ from .avatars import actor_download_user_avatar  # noqa: F401
 from .bootstrap import actor_bootstrap_step, actor_send_bootstrap_start_notification  # noqa: F401
 from .card import actor_generate_workout_card  # noqa: F401
 from .progression import actor_retrain_progression_model  # noqa: F401
+from .race_plan import actor_send_pre_race_plan_push  # noqa: F401
 from .reports import (  # noqa: F401
     actor_compose_user_evening_report,
     actor_compose_user_morning_report,
