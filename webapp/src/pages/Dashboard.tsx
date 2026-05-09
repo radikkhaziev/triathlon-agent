@@ -7,7 +7,7 @@ import ErrorMessage from '../components/ErrorMessage'
 import { ChartCard, chartOptions } from '../components/ChartCard'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS, SPORT_ICONS, TSB_ZONE_COLORS } from '../lib/constants'
-import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
+import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, GoalProgress, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
 
 Chart.register(...registerables)
 
@@ -283,13 +283,13 @@ function ProgressBar({
 }
 
 function GoalTab() {
-  const [goal, setGoal] = useState<GoalResponse | null>(null)
+  const [goalsResponse, setGoalsResponse] = useState<GoalResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     apiFetch<GoalResponse>('/api/goal')
-      .then(setGoal)
+      .then(setGoalsResponse)
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setLoading(false))
   }, [])
@@ -297,33 +297,43 @@ function GoalTab() {
   if (loading) return <LoadingSpinner />
   if (error) return <ErrorMessage message={error} />
   // The Dashboard shell already hides the Goal tab when the athlete has no
-  // race, so we should never actually hit `has_goal: false` here. Keep a
+  // race, so we should never actually hit `has_goals: false` here. Keep a
   // lightweight fallback in case the two fetches race (Dashboard reads
   // /api/auth/me, GoalTab reads /api/goal — the goal could be deleted
   // between the two).
-  if (!goal || !goal.has_goal) {
+  if (!goalsResponse || !goalsResponse.has_goals) {
     return <div className="text-center py-6 text-text-dim">No race set.</div>
   }
 
   return (
     <>
+      {goalsResponse.goals.map(g => (
+        <GoalCard key={g.id} goal={g} />
+      ))}
+    </>
+  )
+}
+
+function GoalCard({ goal: g }: { goal: GoalProgress }) {
+  return (
+    <>
       <div className="text-center py-4 text-xl font-bold">
-        <span className="text-[var(--button)]">{goal.weeks_remaining}</span> weeks to {goal.event_name}
+        <span className="text-[var(--button)]">{g.weeks_remaining}</span> weeks to {g.event_name}
       </div>
 
       <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
         <ProgressBar
           label={<span>Overall CTL</span>}
-          current={goal.ctl_current}
-          target={goal.ctl_target}
-          pct={goal.overall_pct}
+          current={g.ctl_current}
+          target={g.ctl_target}
+          pct={g.overall_pct}
           color={CHART_COLORS.ctl}
         />
 
-        {goal.per_sport && (
+        {g.per_sport && (
           <div className="mt-3 pt-3 border-t border-bg">
             {(['swim', 'ride', 'run'] as const).map(sport => {
-              const block = goal.per_sport?.[sport]
+              const block = g.per_sport?.[sport]
               if (!block) return null
               const meta = SPORT_META[sport]
               return (
@@ -340,7 +350,7 @@ function GoalTab() {
           </div>
         )}
 
-        {!goal.per_sport && goal.ctl_target && (
+        {!g.per_sport && g.ctl_target && (
           <div className="text-[11px] text-text-dim mt-3 pt-3 border-t border-bg">
             Set per-sport CTL targets in Settings to see swim / ride / run progress.
           </div>

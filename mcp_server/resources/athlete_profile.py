@@ -30,14 +30,18 @@ def render_race_goal_resource(goals: list[AthleteGoalDTO]) -> str:
         lines.append(f"{prefix}{g.event_name}")
         lines.append(f"  Date: {g.event_date}")
         lines.append(f"  Sport: {g.sport_type}")
-        # ``is not None`` rather than truthy check — CTL=0 is a legitimate
-        # «no load» target during full taper / injury recovery, and we'd
-        # silently drop it with ``if g.ctl_target:`` (Copilot review #325).
+        # Overall ``ctl_target=0``: legit «no load» target during full taper /
+        # injury recovery — render it (``is not None`` not truthy, Copilot #325).
         if g.ctl_target is not None:
             lines.append(f"  CTL Target (total): {g.ctl_target}")
+        # Per-sport ``target=0``: by project convention means «not part of this
+        # race plan» (e.g. swim=0 on a run-only goal), not full taper. Drop to
+        # match the Dashboard endpoint's per-sport rule (api/routers/dashboard.py).
+        # Keeping the two consumers aligned avoids the «Claude sees swim=0,
+        # webapp doesn't» divergence flagged in code review.
         if g.per_sport_targets:
             for sport, target in g.per_sport_targets.items():
-                if target is None:
+                if target is None or target <= 0:
                     continue
                 lines.append(f"  CTL Target ({sport}): {target}")
 

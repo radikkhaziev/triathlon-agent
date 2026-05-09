@@ -15,6 +15,7 @@ from sqlalchemy import select
 from api.deps import get_data_user_id, require_viewer
 from config import settings
 from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
+from data.db.dto import AthleteGoalDTO
 from data.utils import extract_sport_ctl, normalize_sport
 
 router = APIRouter()
@@ -270,33 +271,95 @@ async def weekly_recap(
     }
 
 
-@router.get("/api/goal")
-async def goal(user: User = Depends(require_viewer)) -> dict:
-    """Race goal progress for the Goal tab.
+def _goal_progress_dict(
+    g: AthleteGoalDTO,
+    today: date,
+    current_ctl: float | None,
+    sport_ctl: dict[str, float | None],
+) -> dict:
+    """Build a single goal's progress block for the Goal tab.
 
-    Returns ``{"has_goal": false}`` when the athlete has no active race —
-    the React Dashboard hides the Goal tab entirely in that case (per the
-    [END-12] scoping decision; we don't want to push users into a CTA they
-    didn't ask for, and the tab list is shorter and clearer with it gone).
-
-    When a goal exists, the response always includes the overall CTL bar
-    (``ctl_current`` / ``ctl_target`` / ``overall_pct``). Per-sport bars
-    are only included when ``per_sport_targets`` is set on the goal —
-    auto-splitting an overall target by canonical 70.3 ratios was rejected
-    because the per-sport mix varies too much between athletes to fake.
+    Extracted so the list endpoint (`/api/goal`) can map over all active
+    goals (#323 Strand C extension to Dashboard) — the formula is identical
+    for each row and only the input DTO differs.
     """
-    uid = get_data_user_id(user)
-    g = await AthleteGoal.get_goal_dto(uid)
-    if not g:
-        return {"has_goal": False}
-
-    today = _today_local()
-    # Clamp both to 0 if the athlete forgot to deactivate a past goal — a
+    # Clamp to 0 if the athlete forgot to deactivate a past goal — a
     # negative "days_remaining" in the JSON is misleading. Floor-divide
     # before clamping so day-of-event reads "0 weeks" instead of rounding
     # up to "1 week to go" the morning of.
     days_remaining = max(0, (g.event_date - today).days)
     weeks_remaining = max(0, days_remaining // 7)
+
+    # Explicit zero-guard — `g.ctl_target=0` is a legit value (full-taper anchor)
+    # but division by it would crash. ``is not None and > 0`` keeps the intent
+    # obvious and protects against any future negative-target bug.
+    overall_pct = (
+        round(100 * current_ctl / g.ctl_target)
+        if (current_ctl is not None and g.ctl_target is not None and g.ctl_target > 0)
+        else None
+    )
+
+    block: dict = {
+        "id": g.id,
+        "category": g.category,
+        "event_name": g.event_name,
+        "event_date": str(g.event_date),
+        "sport_type": g.sport_type,
+        "weeks_remaining": weeks_remaining,
+        "days_remaining": days_remaining,
+        "ctl_current": round(current_ctl, 1) if current_ctl is not None else None,
+        "ctl_target": g.ctl_target,
+        "overall_pct": overall_pct,
+    }
+
+    # Per-sport bars: only emit sports that actually have a target. A sport
+    # with target=0 or missing is treated as "not part of this race plan"
+    # and dropped, not rendered as 0% (which would look like a regression).
+    targets: dict = g.per_sport_targets or {}
+    per_sport: dict[str, dict] = {}
+    for sport in ("swim", "ride", "run"):
+        target = targets.get(sport)
+        if target is None or target <= 0:
+            continue
+        cur = sport_ctl.get(sport)
+        per_sport[sport] = {
+            "ctl_current": round(cur, 1) if cur is not None else None,
+            "ctl_target": target,
+            "pct": round(100 * cur / target) if cur is not None else None,
+        }
+    if per_sport:
+        block["per_sport"] = per_sport
+
+    return block
+
+
+@router.get("/api/goal")
+async def goal(user: User = Depends(require_viewer)) -> dict:
+    """Race-goal progress list for the Goal tab.
+
+    Returns ``{"has_goals": false, "goals": []}`` when the athlete has no
+    active future race — the React Dashboard hides the Goal tab in that
+    case (per the [END-12] scoping decision; we don't push users into a
+    CTA they didn't ask for, and the tab list is shorter and clearer
+    with it gone).
+
+    When goals exist, returns ``{"has_goals": true, "goals": [...]}`` with
+    one block per active future goal (sort: ``event_date ASC`` so the
+    nearest race is first). Each block always includes the overall CTL
+    bar (``ctl_current`` / ``ctl_target`` / ``overall_pct``); per-sport
+    bars are only included when ``per_sport_targets`` is set on the goal
+    — auto-splitting an overall target by canonical 70.3 ratios was
+    rejected because the per-sport mix varies too much between athletes
+    to fake.
+
+    Shape changed from single-goal to list in #323 Strand C — Dashboard's
+    Goal tab now mirrors Settings' all-goals view.
+    """
+    uid = get_data_user_id(user)
+    today = _today_local()
+    goals = await AthleteGoal.get_goals_for_settings(uid, today)
+    if not goals:
+        return {"has_goals": False, "goals": []}
 
     async with get_session() as session:
         result = await session.execute(
@@ -309,39 +372,11 @@ async def goal(user: User = Depends(require_viewer)) -> dict:
 
     current_ctl = float(row.ctl) if row and row.ctl is not None else None
     sport_ctl = extract_sport_ctl(row.sport_info) if row else {"swim": None, "ride": None, "run": None}
-    targets: dict = g.per_sport_targets or {}
 
-    overall_pct = round(100 * current_ctl / g.ctl_target) if (current_ctl is not None and g.ctl_target) else None
-
-    response: dict = {
-        "has_goal": True,
-        "event_name": g.event_name,
-        "event_date": str(g.event_date),
-        "weeks_remaining": weeks_remaining,
-        "days_remaining": days_remaining,
-        "ctl_current": round(current_ctl, 1) if current_ctl is not None else None,
-        "ctl_target": g.ctl_target,
-        "overall_pct": overall_pct,
+    return {
+        "has_goals": True,
+        "goals": [_goal_progress_dict(g, today, current_ctl, sport_ctl) for g in goals],
     }
-
-    # Per-sport bars: only emit sports that actually have a target. A sport
-    # with target=0 or missing is treated as "not part of this race plan"
-    # and dropped, not rendered as 0% (which would look like a regression).
-    per_sport: dict[str, dict] = {}
-    for sport in ("swim", "ride", "run"):
-        target = targets.get(sport)
-        if not target or target <= 0:
-            continue
-        cur = sport_ctl.get(sport)
-        per_sport[sport] = {
-            "ctl_current": round(cur, 1) if cur is not None else None,
-            "ctl_target": target,
-            "pct": round(100 * cur / target) if cur is not None else None,
-        }
-    if per_sport:
-        response["per_sport"] = per_sport
-
-    return response
 
 
 @router.get("/api/recovery-trend")

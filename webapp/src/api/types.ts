@@ -366,28 +366,39 @@ export interface GoalSportProgress {
   pct: number | null
 }
 
-// Discriminated union: ``has_goal: false`` means the athlete has no active
-// race and the Goal tab is hidden. ``has_goal: true`` always carries the
-// overall CTL bar fields; ``per_sport`` is only present when
-// ``per_sport_targets`` is set on the AthleteGoal (END-12 scoping decision —
-// don't fake per-sport bars from a single overall target).
+// One goal's progress block — overall CTL bar always present, ``per_sport``
+// only when ``per_sport_targets`` is set on the AthleteGoal (END-12 scoping
+// decision — don't fake per-sport bars from a single overall target).
+export interface GoalProgress {
+  id: number
+  category: GoalCategory
+  event_name: string
+  event_date: string
+  sport_type: SportType
+  weeks_remaining: number
+  days_remaining: number
+  ctl_current: number | null
+  ctl_target: number | null
+  overall_pct: number | null
+  per_sport?: {
+    swim?: GoalSportProgress
+    ride?: GoalSportProgress
+    run?: GoalSportProgress
+  }
+}
+
+// Discriminated union: ``has_goals: false`` means the athlete has no active
+// future race and the Goal tab is hidden. ``has_goals: true`` carries one
+// progress block per active future goal (sort: ``event_date ASC``, nearest
+// first). Shape changed from single-goal to list in #323 Strand C — Dashboard
+// Goal tab now mirrors Settings' all-goals view.
+//
+// Both arms type ``goals`` as ``GoalProgress[]`` (rather than the empty tuple
+// on the false arm) so call sites that pass the array around generically
+// don't need extra narrowing — the discriminator stays ``has_goals``.
 export type GoalResponse =
-  | { has_goal: false }
-  | {
-      has_goal: true
-      event_name: string
-      event_date: string
-      weeks_remaining: number
-      days_remaining: number
-      ctl_current: number | null
-      ctl_target: number | null
-      overall_pct: number | null
-      per_sport?: {
-        swim?: GoalSportProgress
-        ride?: GoalSportProgress
-        run?: GoalSportProgress
-      }
-    }
+  | { has_goals: false; goals: GoalProgress[] }
+  | { has_goals: true; goals: GoalProgress[] }
 
 export interface WeeklyRecapBucket {
   week_start: string

@@ -252,9 +252,26 @@ class AthleteGoal(Base):
     @classmethod
     @dual
     def get_goal_dto(cls, user_id: int, *, session: Session) -> AthleteGoalDTO | None:
+        """Return the primary anchor goal as a single DTO. Used by `auth_me.goal`
+        (Dashboard tab gate) and `get_goal_progress` MCP tool.
+
+        Past races filtered out — same rule as `get_goals_for_settings` and
+        `get_goals_for_prompt` (#323 Strand C extension). Without this, an
+        athlete with only stale active rows would see a Goal-tab gate fire on
+        the dashboard but the list endpoint would return empty — a misleading
+        UX where the tab opens to «No race set».
+        """
+        # SQLAlchemy resolves Python's `date.today()` lazily inside the query,
+        # but @dual sync/async dispatch makes that finicky — pass the value in
+        # explicitly via a Python-level filter to keep behaviour deterministic.
+        today = date.today()
         result = session.execute(
             select(cls)
-            .where(cls.user_id == user_id, cls.is_active.is_(True))
+            .where(
+                cls.user_id == user_id,
+                cls.is_active.is_(True),
+                cls.event_date >= today,
+            )
             .order_by(cls.category.asc(), cls.event_date.asc())
             .limit(1)
         )
