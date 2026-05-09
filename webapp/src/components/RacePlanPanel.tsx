@@ -45,20 +45,24 @@ function ConfidenceBadge({ tier }: { tier: ConfidenceTier }) {
 
 function LegRow({ leg }: { leg: RacePlanLeg }) {
   const { t } = useTranslation()
+  // pacing is JSON-schema-required but legacy plans may lack it — guard.
+  const pacing = leg.pacing
   return (
     <div className="border-l-2 border-border pl-2 py-1">
       <div className="flex items-baseline gap-2 text-sm">
         <span className="font-semibold capitalize">{leg.leg}</span>
         {leg.distance && <span className="text-text-dim">{leg.distance}</span>}
       </div>
-      <div className="text-xs tabular-nums mt-0.5">
-        {leg.pacing.low} <span className="text-text-dim">→</span>{' '}
-        <span className="font-semibold">{leg.pacing.target}</span>{' '}
-        <span className="text-text-dim">→</span> {leg.pacing.cap}
-        {leg.hr_ceiling_bpm && (
-          <span className="text-text-dim ml-2">{t('race_plan.leg_hr_cap', { value: leg.hr_ceiling_bpm })}</span>
-        )}
-      </div>
+      {pacing && (pacing.low || pacing.target || pacing.cap) && (
+        <div className="text-xs tabular-nums mt-0.5">
+          {pacing.low} <span className="text-text-dim">→</span>{' '}
+          <span className="font-semibold">{pacing.target}</span>{' '}
+          <span className="text-text-dim">→</span> {pacing.cap}
+          {leg.hr_ceiling_bpm && (
+            <span className="text-text-dim ml-2">{t('race_plan.leg_hr_cap', { value: leg.hr_ceiling_bpm })}</span>
+          )}
+        </div>
+      )}
       {leg.notes && <div className="text-[11px] text-text-dim mt-1">{leg.notes}</div>}
     </div>
   )
@@ -228,7 +232,15 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
     )
   }
 
-  const inner = plan.payload.plan
+  // Defensive: payload is JSONB (no DB schema enforcement) and Claude can omit
+  // optional sections even when JSON-schema marks them required (observed in
+  // prod plan_id=1 where ``contingencies`` was absent). Treat every section
+  // as optional in the renderer — better empty card than white-screen exception.
+  const inner = plan.payload?.plan ?? {}
+  const legs = inner.legs ?? []
+  const fueling = inner.fueling
+  const transitions = inner.transitions ?? []
+  const contingencies = inner.contingencies ?? []
   return (
     <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
       <div className="flex items-center justify-between mb-2">
@@ -242,50 +254,62 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
         </div>
       )}
 
-      <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
-        {t('race_plan.section_warmup')}
-      </div>
-      <div className="text-xs">{inner.warmup}</div>
+      {inner.warmup && (
+        <>
+          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+            {t('race_plan.section_warmup')}
+          </div>
+          <div className="text-xs">{inner.warmup}</div>
+        </>
+      )}
 
-      <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
-        {t('race_plan.section_legs')}
-      </div>
-      <div className="space-y-2">
-        {/* L4: index keys are safe — `legs` is rendered top-to-bottom in API order. */}
-        {inner.legs.map((leg, i) => (
-          <LegRow key={i} leg={leg} />
-        ))}
-      </div>
+      {legs.length > 0 && (
+        <>
+          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+            {t('race_plan.section_legs')}
+          </div>
+          <div className="space-y-2">
+            {/* L4: index keys are safe — `legs` is rendered top-to-bottom in API order. */}
+            {legs.map((leg, i) => (
+              <LegRow key={i} leg={leg} />
+            ))}
+          </div>
+        </>
+      )}
 
-      <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
-        {t('race_plan.section_fueling')}
-      </div>
-      <div className="text-xs">
-        <span className="font-semibold tabular-nums">
-          {t('race_plan.fueling_carbs', { value: inner.fueling.carbs_g_per_hour })}
-        </span>
-        {inner.fueling.fluid_ml_per_hour != null && (
-          <span className="text-text-dim">
-            {t('race_plan.fueling_fluid', { value: inner.fueling.fluid_ml_per_hour })}
-          </span>
-        )}
-        {inner.fueling.sodium_mg_per_hour != null && (
-          <span className="text-text-dim">
-            {t('race_plan.fueling_sodium', { value: inner.fueling.sodium_mg_per_hour })}
-          </span>
-        )}
-        {inner.fueling.notes && <div className="text-[11px] text-text-dim mt-1">{inner.fueling.notes}</div>}
-      </div>
+      {fueling && fueling.carbs_g_per_hour != null && (
+        <>
+          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+            {t('race_plan.section_fueling')}
+          </div>
+          <div className="text-xs">
+            <span className="font-semibold tabular-nums">
+              {t('race_plan.fueling_carbs', { value: fueling.carbs_g_per_hour })}
+            </span>
+            {fueling.fluid_ml_per_hour != null && (
+              <span className="text-text-dim">
+                {t('race_plan.fueling_fluid', { value: fueling.fluid_ml_per_hour })}
+              </span>
+            )}
+            {fueling.sodium_mg_per_hour != null && (
+              <span className="text-text-dim">
+                {t('race_plan.fueling_sodium', { value: fueling.sodium_mg_per_hour })}
+              </span>
+            )}
+            {fueling.notes && <div className="text-[11px] text-text-dim mt-1">{fueling.notes}</div>}
+          </div>
+        </>
+      )}
 
-      {inner.transitions && inner.transitions.length > 0 && (
+      {transitions.length > 0 && (
         <>
           <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
             {t('race_plan.section_transitions')}
           </div>
           <div className="space-y-1 text-xs">
-            {inner.transitions.map((tx, i) => (
+            {transitions.map((tx, i) => (
               <div key={i}>
-                <span className="font-semibold">{tx.name}:</span> {tx.checklist.join(' · ')}
+                <span className="font-semibold">{tx.name}:</span> {(tx.checklist ?? []).join(' · ')}
                 {tx.target_time_sec != null && (
                   <span className="text-text-dim">
                     {t('race_plan.leg_transition_target', { value: tx.target_time_sec })}
@@ -297,17 +321,21 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
         </>
       )}
 
-      <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
-        {t('race_plan.section_contingencies')}
-      </div>
-      <div className="space-y-1 text-xs">
-        {/* L4: scenario-strings can collide (two "weather" plans) — index key is the safe default. */}
-        {inner.contingencies.map((c, i) => (
-          <div key={i}>
-            <span className="font-semibold capitalize">{c.scenario}:</span> {c.plan}
+      {contingencies.length > 0 && (
+        <>
+          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+            {t('race_plan.section_contingencies')}
           </div>
-        ))}
-      </div>
+          <div className="space-y-1 text-xs">
+            {/* L4: scenario-strings can collide (two "weather" plans) — index key is the safe default. */}
+            {contingencies.map((c, i) => (
+              <div key={i}>
+                <span className="font-semibold capitalize">{c.scenario}:</span> {c.plan}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="flex items-center justify-between text-[10px] text-text-dim mt-4 pt-2 border-t border-bg">
         <span>
