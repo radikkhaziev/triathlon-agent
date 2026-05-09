@@ -330,6 +330,7 @@ Important:
 - If the question doesn't require data (e.g. general training advice), answer directly without tools.
 - Keep answers short: 2-5 sentences for simple questions, up to 10 for analysis.
 - Format for Telegram: use Markdown (bold, italic), no headers, no long lists.
+- Никаких markdown-таблиц (`|...|`) — Telegram их не рендерит. Используй списки `- ` или построчно.
 - Garmin tools (`get_garmin_*`) return a `freshness_warning` + `days_stale` —
   GDPR export lags 7+ days. Never present Garmin data as current state; use
   `get_wellness` / `get_recovery` for today. Garmin is for trends and history.

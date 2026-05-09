@@ -16,6 +16,7 @@ from api.deps import get_data_user_id, require_viewer
 from config import settings
 from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
 from data.db.dto import AthleteGoalDTO
+from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
 from data.utils import extract_sport_ctl, normalize_sport
 
 router = APIRouter()
@@ -274,14 +275,17 @@ async def weekly_recap(
 def _goal_progress_dict(
     g: AthleteGoalDTO,
     today: date,
-    current_ctl: float | None,
-    sport_ctl: dict[str, float | None],
+    overall_series: list[tuple[date, float]],
+    sport_series: dict[str, list[tuple[date, float]]],
 ) -> dict:
     """Build a single goal's progress block for the Goal tab.
 
     Extracted so the list endpoint (`/api/goal`) can map over all active
     goals (#323 Strand C extension to Dashboard) — the formula is identical
     for each row and only the input DTO differs.
+
+    ``cur`` per-sport is already rounded to 1dp by ``extract_sport_ctl``;
+    we round again for explicitness, which is idempotent.
     """
     # Clamp to 0 if the athlete forgot to deactivate a past goal — a
     # negative "days_remaining" in the JSON is misleading. Floor-divide
@@ -289,6 +293,7 @@ def _goal_progress_dict(
     # up to "1 week to go" the morning of.
     days_remaining = max(0, (g.event_date - today).days)
     weeks_remaining = max(0, days_remaining // 7)
+    current_ctl = overall_series[-1][1] if overall_series else None
 
     # Explicit zero-guard — `g.ctl_target=0` is a legit value (full-taper anchor)
     # but division by it would crash. ``is not None and > 0`` keeps the intent
@@ -310,6 +315,7 @@ def _goal_progress_dict(
         "ctl_current": round(current_ctl, 1) if current_ctl is not None else None,
         "ctl_target": g.ctl_target,
         "overall_pct": overall_pct,
+        "projection": project_ctl_target(overall_series, g.ctl_target, today, g.event_date),
     }
 
     # Per-sport bars: only emit sports that actually have a target. A sport
@@ -321,11 +327,13 @@ def _goal_progress_dict(
         target = targets.get(sport)
         if target is None or target <= 0:
             continue
-        cur = sport_ctl.get(sport)
+        s_series = sport_series.get(sport, [])
+        cur = s_series[-1][1] if s_series else None
         per_sport[sport] = {
             "ctl_current": round(cur, 1) if cur is not None else None,
             "ctl_target": target,
             "pct": round(100 * cur / target) if cur is not None else None,
+            "projection": project_ctl_target(s_series, target, today, g.event_date),
         }
     if per_sport:
         block["per_sport"] = per_sport
@@ -361,21 +369,38 @@ async def goal(user: User = Depends(require_viewer)) -> dict:
     if not goals:
         return {"has_goals": False, "goals": []}
 
+    # Pull a 14-day window so _goal_progress_dict can compute a ramp-rate
+    # projection. Asc order is what project_ctl_target expects (and the dict
+    # builder also uses [-1] for "current" — keeps a single ordering).
+    # Wellness.date is a String column ("YYYY-MM-DD"); ISO lex-sort matches
+    # date order so .isoformat() compare and date.fromisoformat() readback
+    # are intentional, not a Date-column accident.
+    window_start = today - timedelta(days=PROJECTION_WINDOW_DAYS - 1)
     async with get_session() as session:
         result = await session.execute(
-            select(Wellness)
-            .where(Wellness.user_id == uid, Wellness.ctl.isnot(None))
-            .order_by(Wellness.date.desc())
-            .limit(1)
+            select(Wellness.date, Wellness.ctl, Wellness.sport_info)
+            .where(
+                Wellness.user_id == uid,
+                Wellness.ctl.isnot(None),
+                Wellness.date >= window_start.isoformat(),
+            )
+            .order_by(Wellness.date.asc())
         )
-        row = result.scalar_one_or_none()
+        rows = result.all()
 
-    current_ctl = float(row.ctl) if row and row.ctl is not None else None
-    sport_ctl = extract_sport_ctl(row.sport_info) if row else {"swim": None, "ride": None, "run": None}
+    overall_series: list[tuple[date, float]] = [(date.fromisoformat(d), float(ctl)) for d, ctl, _ in rows]
+    sport_series: dict[str, list[tuple[date, float]]] = {"swim": [], "ride": [], "run": []}
+    for d, _ctl, sport_info in rows:
+        per = extract_sport_ctl(sport_info)
+        dt = date.fromisoformat(d)
+        for sport in ("swim", "ride", "run"):
+            v = per.get(sport)
+            if v is not None:
+                sport_series[sport].append((dt, float(v)))
 
     return {
         "has_goals": True,
-        "goals": [_goal_progress_dict(g, today, current_ctl, sport_ctl) for g in goals],
+        "goals": [_goal_progress_dict(g, today, overall_series, sport_series) for g in goals],
     }
 
 

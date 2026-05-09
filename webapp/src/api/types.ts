@@ -360,10 +360,26 @@ export interface ActivitiesSeries {
   activities: { date: string; sport: string; tss: number }[]
 }
 
+// Forward CTL projection from the recent 14-day ramp rate. ``projected_date``
+// is filled when a date is reachable; ``reason`` explains the null cases
+// (declining/flat/insufficient_data) or ``already_at_target`` for an honest
+// success. ``on_track`` is the caller-friendly verdict — backend computes it
+// as ``predicted_CTL_at_event_date >= target`` (linear extrapolation from
+// today's CTL using the regression slope), NOT as a date comparison; this
+// avoids float-rounding flips on the boundary. Null when there's no event
+// date to compare against, or when the projection itself is unavailable.
+export interface GoalProjection {
+  ramp_per_week: number | null
+  projected_date: string | null
+  reason: 'insufficient_data' | 'declining' | 'flat' | 'already_at_target' | null
+  on_track: boolean | null
+}
+
 export interface GoalSportProgress {
   ctl_current: number | null
   ctl_target: number
   pct: number | null
+  projection: GoalProjection | null
 }
 
 // One goal's progress block — overall CTL bar always present, ``per_sport``
@@ -380,6 +396,7 @@ export interface GoalProgress {
   ctl_current: number | null
   ctl_target: number | null
   overall_pct: number | null
+  projection: GoalProjection | null
   per_sport?: {
     swim?: GoalSportProgress
     ride?: GoalSportProgress
