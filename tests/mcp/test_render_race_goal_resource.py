@@ -49,15 +49,18 @@ class TestRenderRaceGoalResource:
         out = render_race_goal_resource([_dto(ctl_target=0)])
         assert "CTL Target (total): 0" in out
 
-    def test_per_sport_zero_renders(self) -> None:
-        """Same invariant for per-sport CTL=0 — full taper sport-block."""
-        out = render_race_goal_resource([_dto(per_sport_targets={"swim": 0, "ride": 0, "run": 0})])
-        assert "CTL Target (swim): 0" in out
-        assert "CTL Target (ride): 0" in out
-        assert "CTL Target (run): 0" in out
+    def test_per_sport_zero_dropped(self) -> None:
+        """Per-sport ``target=0`` means «sport not in this race's plan» (project
+        convention — see Dashboard endpoint at api/routers/dashboard.py for the
+        same rule). Drop, don't render. Differs from the OVERALL ctl_target
+        which renders 0 as legit full-taper."""
+        out = render_race_goal_resource([_dto(per_sport_targets={"swim": 0, "ride": 35.0, "run": 25.0})])
+        assert "CTL Target (swim)" not in out
+        assert "CTL Target (ride): 35.0" in out
+        assert "CTL Target (run): 25.0" in out
 
     def test_per_sport_none_skipped(self) -> None:
-        """`None` per-sport target legitimately means «not set», skip it."""
+        """`None` per-sport target — same drop, same reason as `0`."""
         out = render_race_goal_resource([_dto(per_sport_targets={"swim": None, "ride": 35.0})])
         assert "CTL Target (swim)" not in out
         assert "CTL Target (ride): 35.0" in out

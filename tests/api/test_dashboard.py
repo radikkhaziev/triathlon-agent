@@ -419,12 +419,17 @@ async def _seed_wellness_with_sport_ctl(
 
 
 class TestGoal:
-    async def test_no_goal_returns_has_goal_false(self, client):
+    """Shape changed in #323 Strand C: ``/api/goal`` now returns ``{"has_goals": bool, "goals": [...]}``
+    — a list of progress blocks, one per active future goal, sorted by ``event_date ASC``.
+    Past goals are filtered out (the helper ``get_goals_for_settings`` enforces it).
+    """
+
+    async def test_no_goal_returns_empty_list(self, client):
         async with client as c:
             resp = await c.get("/api/goal")
 
         assert resp.status_code == 200
-        assert resp.json() == {"has_goal": False}
+        assert resp.json() == {"has_goals": False, "goals": []}
 
     async def test_goal_without_per_sport_targets(self, client):
         """Athlete with overall target only — single overall bar, no per_sport block."""
@@ -435,16 +440,20 @@ class TestGoal:
             resp = await c.get("/api/goal")
 
         data = resp.json()
-        assert data["has_goal"] is True
-        assert data["event_name"] == "Ironman 70.3"
-        assert data["weeks_remaining"] == 10  # 70 // 7
-        assert data["days_remaining"] == 70
-        assert data["ctl_current"] == 60.0
-        assert data["ctl_target"] == 80.0
-        assert data["overall_pct"] == 75  # 60/80 * 100
+        assert data["has_goals"] is True
+        assert len(data["goals"]) == 1
+        g = data["goals"][0]
+        assert g["event_name"] == "Ironman 70.3"
+        assert g["category"] == "RACE_A"
+        assert g["sport_type"] == "triathlon"
+        assert g["weeks_remaining"] == 10  # 70 // 7
+        assert g["days_remaining"] == 70
+        assert g["ctl_current"] == 60.0
+        assert g["ctl_target"] == 80.0
+        assert g["overall_pct"] == 75  # 60/80 * 100
         # Per-sport block must be omitted when targets are absent (END-12 scoping
         # decision — don't fake bars from canonical 70.3 ratios).
-        assert "per_sport" not in data
+        assert "per_sport" not in g
 
     async def test_goal_with_per_sport_targets(self, client):
         await _seed_goal(
@@ -468,13 +477,45 @@ class TestGoal:
             resp = await c.get("/api/goal")
 
         data = resp.json()
-        assert data["has_goal"] is True
-        assert data["weeks_remaining"] == 12
-        assert data["per_sport"] == {
+        assert data["has_goals"] is True
+        g = data["goals"][0]
+        assert g["weeks_remaining"] == 12
+        assert g["per_sport"] == {
             "swim": {"ctl_current": 12.0, "ctl_target": 15.0, "pct": 80},
             "ride": {"ctl_current": 28.0, "ctl_target": 35.0, "pct": 80},
             "run": {"ctl_current": 20.0, "ctl_target": 25.0, "pct": 80},
         }
+
+    async def test_multiple_goals_returned_sorted_by_date(self, client):
+        """#323 Strand C: Dashboard Goal tab shows ALL active goals, nearest first.
+        Each goal carries its own progress block computed from the same wellness row."""
+        await _seed_goal(
+            1,
+            event_date=_FIXED_TODAY + timedelta(days=120),
+            ctl_target=80.0,
+            event_name="Far A-race",
+            category="RACE_A",
+        )
+        await _seed_goal(
+            1,
+            event_date=_FIXED_TODAY + timedelta(days=30),
+            ctl_target=60.0,
+            event_name="Near tune-up",
+            category="RACE_B",
+        )
+        await _seed_wellness(1, _FIXED_TODAY, ctl=50.0, atl=45.0)
+
+        async with client as c:
+            resp = await c.get("/api/goal")
+
+        data = resp.json()
+        assert data["has_goals"] is True
+        assert len(data["goals"]) == 2
+        # Sort: nearest first
+        assert data["goals"][0]["event_name"] == "Near tune-up"
+        assert data["goals"][0]["weeks_remaining"] == 4  # 30 // 7
+        assert data["goals"][1]["event_name"] == "Far A-race"
+        assert data["goals"][1]["weeks_remaining"] == 17  # 120 // 7
 
     async def test_per_sport_drops_sports_without_target(self, client):
         """A target=0 or missing entry means "not part of this race plan" — drop, don't render 0%."""
@@ -498,10 +539,10 @@ class TestGoal:
         async with client as c:
             resp = await c.get("/api/goal")
 
-        data = resp.json()
-        assert "per_sport" in data
-        assert set(data["per_sport"].keys()) == {"run"}
-        assert data["per_sport"]["run"]["pct"] == 72  # 18 / 25
+        g = resp.json()["goals"][0]
+        assert "per_sport" in g
+        assert set(g["per_sport"].keys()) == {"run"}
+        assert g["per_sport"]["run"]["pct"] == 72  # 18 / 25
 
     async def test_overall_pct_handles_missing_target(self, client):
         """Athlete set the race but never set a CTL target — overall_pct must be null, not /0."""
@@ -511,11 +552,10 @@ class TestGoal:
         async with client as c:
             resp = await c.get("/api/goal")
 
-        data = resp.json()
-        assert data["has_goal"] is True
-        assert data["ctl_target"] is None
-        assert data["overall_pct"] is None
-        assert data["ctl_current"] == 60.0
+        g = resp.json()["goals"][0]
+        assert g["ctl_target"] is None
+        assert g["overall_pct"] is None
+        assert g["ctl_current"] == 60.0
 
     async def test_zero_weeks_remaining_on_race_day(self, client):
         """Day-of-event reads "0 weeks", not rounded up to 1."""
@@ -525,22 +565,21 @@ class TestGoal:
         async with client as c:
             resp = await c.get("/api/goal")
 
-        data = resp.json()
-        assert data["weeks_remaining"] == 0
-        assert data["days_remaining"] == 0
+        g = resp.json()["goals"][0]
+        assert g["weeks_remaining"] == 0
+        assert g["days_remaining"] == 0
 
-    async def test_past_race_clamps_to_zero(self, client):
-        """Athlete forgot to deactivate a past goal — both counters clamp to 0
-        rather than returning a negative `days_remaining` in the JSON."""
+    async def test_past_race_filtered_out(self, client):
+        """``get_goals_for_settings`` filters past goals server-side — past races
+        no longer surface in the Dashboard list (was «clamps to 0» pre-Strand-C)."""
         await _seed_goal(1, event_date=_FIXED_TODAY - timedelta(days=10), ctl_target=80.0)
         await _seed_wellness(1, _FIXED_TODAY, ctl=70.0, atl=55.0)
 
         async with client as c:
             resp = await c.get("/api/goal")
 
-        data = resp.json()
-        assert data["weeks_remaining"] == 0
-        assert data["days_remaining"] == 0
+        # Past goal silently dropped — list is empty
+        assert resp.json() == {"has_goals": False, "goals": []}
 
     async def test_no_wellness_yet(self, client):
         """Brand-new athlete with a goal but no wellness rows yet renders an
@@ -551,9 +590,10 @@ class TestGoal:
             resp = await c.get("/api/goal")
 
         data = resp.json()
-        assert data["has_goal"] is True
-        assert data["ctl_current"] is None
-        assert data["overall_pct"] is None
+        assert data["has_goals"] is True
+        g = data["goals"][0]
+        assert g["ctl_current"] is None
+        assert g["overall_pct"] is None
 
     async def test_per_user_scoping(self, client):
         """Goal for another user must not leak into the response."""
@@ -566,7 +606,7 @@ class TestGoal:
             resp = await c.get("/api/goal")
 
         # User 1 has no goal of their own; user 2's must not leak through
-        assert resp.json() == {"has_goal": False}
+        assert resp.json() == {"has_goals": False, "goals": []}
 
 
 # ---------------------------------------------------------------------------
