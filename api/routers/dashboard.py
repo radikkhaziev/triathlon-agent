@@ -283,9 +283,6 @@ def _goal_progress_dict(
     Extracted so the list endpoint (`/api/goal`) can map over all active
     goals (#323 Strand C extension to Dashboard) — the formula is identical
     for each row and only the input DTO differs.
-
-    ``cur`` per-sport is already rounded to 1dp by ``extract_sport_ctl``;
-    we round again for explicitness, which is idempotent.
     """
     # Clamp to 0 if the athlete forgot to deactivate a past goal — a
     # negative "days_remaining" in the JSON is misleading. Floor-divide
@@ -328,6 +325,9 @@ def _goal_progress_dict(
         if target is None or target <= 0:
             continue
         s_series = sport_series.get(sport, [])
+        # ``cur`` is already 1-dp from extract_sport_ctl; the round() here is
+        # idempotent — kept explicit so a future change to that helper doesn't
+        # silently leak full-precision floats into the API response.
         cur = s_series[-1][1] if s_series else None
         per_sport[sport] = {
             "ctl_current": round(cur, 1) if cur is not None else None,

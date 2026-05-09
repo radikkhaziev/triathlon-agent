@@ -404,18 +404,15 @@ export interface GoalProgress {
   }
 }
 
-// Discriminated union: ``has_goals: false`` means the athlete has no active
-// future race and the Goal tab is hidden. ``has_goals: true`` carries one
-// progress block per active future goal (sort: ``event_date ASC``, nearest
-// first). Shape changed from single-goal to list in #323 Strand C — Dashboard
-// Goal tab now mirrors Settings' all-goals view.
-//
-// Both arms type ``goals`` as ``GoalProgress[]`` (rather than the empty tuple
-// on the false arm) so call sites that pass the array around generically
-// don't need extra narrowing — the discriminator stays ``has_goals``.
-export type GoalResponse =
-  | { has_goals: false; goals: GoalProgress[] }
-  | { has_goals: true; goals: GoalProgress[] }
+// ``has_goals: false`` means the athlete has no active future race and the
+// Goal tab is hidden; ``goals`` is then ``[]``. When true, ``goals`` holds
+// one progress block per active future goal (sort: ``event_date ASC``,
+// nearest first). Shape changed from single-goal to list in #323 Strand C —
+// Dashboard Goal tab now mirrors Settings' all-goals view.
+export interface GoalResponse {
+  has_goals: boolean
+  goals: GoalProgress[]
+}
 
 export interface WeeklyRecapBucket {
   week_start: string

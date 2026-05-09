@@ -272,10 +272,13 @@ function ProgressBar({
   // (insufficient_data / no event_date — we don't know either way).
   const pctColorClass = offTrack ? 'text-red-600' : onTrackOk ? 'text-green-600' : ''
   // Show the assumption (ramp + projected_date) inline only when we have a
-  // real projection — gives the user a transparency cue to sanity-check the
-  // verdict against their own training intuition. Hidden for declining/flat/
-  // insufficient_data (those route to the warnings panel below the card).
-  const showAssumption = projection?.projected_date && projection.ramp_per_week !== null
+  // real projection AND the verdict isn't off-track — for off-track cases the
+  // warnings panel below the card already carries the same date in plainer
+  // language, so showing both duplicates info. Hidden for declining/flat/
+  // insufficient_data (those also route to the warnings panel).
+  const ramp = projection?.ramp_per_week
+  const projectedDate = projection?.projected_date
+  const showAssumption = projectedDate != null && ramp != null && !offTrack
   return (
     <div className="mb-2">
       <div className="flex items-center gap-2">
@@ -296,8 +299,7 @@ function ProgressBar({
       </div>
       {showAssumption && (
         <div className="text-[10px] text-text-dim ml-[80px] tabular-nums">
-          {(projection.ramp_per_week as number) >= 0 ? '+' : ''}
-          {(projection.ramp_per_week as number).toFixed(1)}/wk · proj. {projection.projected_date}
+          {ramp >= 0 ? '+' : ''}{ramp.toFixed(1)}/wk · proj. {projectedDate}
         </div>
       )}
     </div>
@@ -418,7 +420,7 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
         )}
 
         {warnings.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-bg space-y-1" role="alert">
+          <div className="mt-3 pt-3 border-t border-bg space-y-1" role="status">
             {warnings.map(w => (
               <div key={w} className="text-[11px] text-red-600">
                 <span aria-hidden="true">⚠ </span>
