@@ -90,12 +90,6 @@ class AthleteThresholdsDTO(BaseModel):
 
     age: int | None = None
     sports: list[str] | None = None  # subset of {"swim","ride","run"}; None = not yet picked
-    # Discovered from AthleteSettings rows (lowercase enum, sorted). Used by
-    # the SportsPicker to prefill checkboxes — the user's already-synced
-    # Intervals.icu sport-rows are a strong default. Computed in
-    # AthleteSettings.get_thresholds so we don't issue a second SELECT in
-    # auth_me for the same data.
-    available_sports: list[str] = []
     lthr_run: int | None = None
     lthr_bike: int | None = None
     max_hr: int | None = None

@@ -217,6 +217,13 @@
     "start_bot_no_username": "Bot is not configured yet — contact the instance owner.",
     "start_bot_after_hint": "After /start, just refresh this page."
   },
+  "oauth_migration": {
+    "title": "Reconnect Intervals.icu",
+    "description": "Your account is on a legacy API key. To keep using the app, reconnect via OAuth — it's safer and doesn't require copying keys by hand.",
+    "cta": "🔗 Reconnect via OAuth",
+    "redirecting": "Redirecting to Intervals.icu...",
+    "error": "Failed to start reconnection. Please try again in a minute."
+  },
   "bot_chat_banner": {
     "message": "No active Telegram chat with you yet — press /start in the bot to get morning reports and notifications.",
     "cta": "💬 Open the bot"
