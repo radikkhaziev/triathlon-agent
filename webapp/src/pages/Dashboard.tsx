@@ -250,38 +250,56 @@ function ProgressBar({
   target,
   pct,
   color,
-  onTrack,
+  projection,
 }: {
   label: React.ReactNode
   current: number | null
   target: number | null
   pct: number | null
   color: string
-  onTrack?: boolean | null
+  projection?: GoalProjection | null
 }) {
   // Bar fill is clamped to 100% so an over-target athlete (pct > 100) doesn't
   // overflow the row, but the numeric pct is shown as-is so they can see the
   // overshoot. A null pct (no target or no current CTL) renders an empty bar
   // and "—" instead of a misleading 0%.
   const fill = pct === null ? 0 : Math.min(100, Math.max(0, pct))
+  const onTrack = projection?.on_track
   const offTrack = onTrack === false
+  const onTrackOk = onTrack === true
   const barColor = offTrack ? '#dc2626' : color
+  // Tri-state pct color: red off-track, green on-track, neutral when null
+  // (insufficient_data / no event_date — we don't know either way).
+  const pctColorClass = offTrack ? 'text-red-600' : onTrackOk ? 'text-green-600' : ''
+  // Show the assumption (ramp + projected_date) inline only when we have a
+  // real projection — gives the user a transparency cue to sanity-check the
+  // verdict against their own training intuition. Hidden for declining/flat/
+  // insufficient_data (those route to the warnings panel below the card).
+  const showAssumption = projection?.projected_date && projection.ramp_per_week !== null
   return (
-    <div className="flex items-center gap-2 mb-2">
-      <span className={`w-[72px] text-[13px] font-semibold ${offTrack ? 'text-red-600' : ''}`}>{label}</span>
-      <div className={`flex-1 h-2.5 rounded-full overflow-hidden ${offTrack ? 'bg-red-100' : 'bg-bg'}`}>
-        <div
-          className="h-full rounded-full transition-[width] duration-500"
-          style={{ width: `${fill}%`, background: barColor }}
-        />
+    <div className="mb-2">
+      <div className="flex items-center gap-2">
+        <span className={`w-[72px] text-[13px] font-semibold ${offTrack ? 'text-red-600' : ''}`}>{label}</span>
+        <div className={`flex-1 h-2.5 rounded-full overflow-hidden ${offTrack ? 'bg-red-100' : 'bg-bg'}`}>
+          <div
+            className="h-full rounded-full transition-[width] duration-500"
+            style={{ width: `${fill}%`, background: barColor }}
+          />
+        </div>
+        <span className={`w-12 text-[13px] text-right tabular-nums ${pctColorClass}`}>
+          {pct === null ? '—' : `${pct}%`}
+        </span>
+        <span className="w-16 text-[11px] text-right text-text-dim tabular-nums">
+          {current === null ? '—' : current.toFixed(0)}
+          {target !== null ? ` / ${Math.round(target)}` : ''}
+        </span>
       </div>
-      <span className={`w-12 text-[13px] text-right tabular-nums ${offTrack ? 'text-red-600' : ''}`}>
-        {pct === null ? '—' : `${pct}%`}
-      </span>
-      <span className="w-16 text-[11px] text-right text-text-dim tabular-nums">
-        {current === null ? '—' : current.toFixed(0)}
-        {target !== null ? ` / ${Math.round(target)}` : ''}
-      </span>
+      {showAssumption && (
+        <div className="text-[10px] text-text-dim ml-[80px] tabular-nums">
+          {(projection.ramp_per_week as number) >= 0 ? '+' : ''}
+          {(projection.ramp_per_week as number).toFixed(1)}/wk · proj. {projection.projected_date}
+        </div>
+      )}
     </div>
   )
 }
@@ -375,7 +393,7 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
           target={g.ctl_target}
           pct={g.overall_pct}
           color={CHART_COLORS.ctl}
-          onTrack={g.projection?.on_track ?? null}
+          projection={g.projection}
         />
 
         {g.per_sport && (
@@ -392,7 +410,7 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
                   target={block.ctl_target}
                   pct={block.pct}
                   color={meta.color}
-                  onTrack={block.projection?.on_track ?? null}
+                  projection={block.projection}
                 />
               )
             })}

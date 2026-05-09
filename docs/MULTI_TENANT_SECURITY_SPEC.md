@@ -2,6 +2,13 @@
 
 > Threat model, data isolation, auth/authz, API security, secrets management — всё что нужно до перехода на multi-tenant.
 
+**Status (2026-05-09):**
+- Phase 1 / 1.1 / 1.2 / 1.3 — ✅ done
+- Phase 2 (Auth Upgrade) — **deferred, no current use cases** (см. §9 Phase 2 audit note)
+- Phase 3 (Security Hardening) — **deferred until traffic warrants**; punch-list зафиксирован в §9 Phase 3 audit note
+- Phase 4 (Observability) — not started
+- Phase 5 (Registration & Multi-User) — not started
+
 **Related issues:**
 
 | Issue | Title                                                          | Status           | Phase                                                                |
@@ -780,23 +787,74 @@ ai_usage (новая таблица)
 
 ### Phase 2 — Auth Upgrade
 
-24. [ ] JWT — добавить `tenant_id`, `role`, `scope`, `jti` claims
-25. [ ] Рассмотреть миграцию на PyJWT (вместо кастомного HS256)
-26. [ ] initData — проверка `auth_date` freshness (< 15 мин). **Не 5 минут** — Mini App может быть открыто дольше до первого API-вызова. 15 минут — компромисс между безопасностью и UX
-27. [ ] Bot middleware — `resolve_tenant()` вместо `TELEGRAM_CHAT_ID` проверок
-28. [ ] API deps — обновить `get_current_role()` → `get_current_user()` (возвращает User)
-29. [ ] MCP auth — per-tenant JWT + API keys для external clients
-30. [ ] Token revocation — Redis blacklist для `jti`. **Критично:** при деактивации пользователя — немедленно blacklist все его `jti` (не ждать expiry 7 дней)
-31. [ ] Добавить `created_by` (user_id) к GitHub issue creation (**#48**)
+> **Status:** deferred 2026-05-09 — текущий threat profile не оправдывает работу. См. audit note ниже.
+
+**Audit (2026-05-09) — что есть в коде vs spec:**
+
+| # | Item | Status | Где / почему |
+|---|---|---|---|
+| 23 | JWT claims (`tenant_id`/`role`/`scope`/`jti`/`iss`/`aud`) | DEFER | `api/auth.py:78-99` create_jwt сейчас несёт `{sub, iat, exp, purpose}`. Добавление `role`/`tenant_id` в payload **минус** для безопасности: stale-данные до 7 дней TTL. `tenant_id` ускоряет lookup на ~1ms — не bottleneck. `iss`/`aud` cargo cult для single-service |
+| 24 | PyJWT migration | DEFER | Кастомный HS256 рабочий, протестирован. `Рассмотреть` в spec — не блокер |
+| 25 | initData freshness < 15 min | DONE | `api/deps.py:99-106` (`time.time() - int(auth_date_str) > 900`). Widget flow: `api/auth.py:138-140` |
+| 26 | Bot middleware `resolve_tenant()` | DONE (different shape) | Decorators `@athlete_required` / `@user_required` в `bot/decorator.py:48-101` делают `User.get_by_chat_id` + `is_active` фильтр. Функционально эквивалентно §4.3, отдельный middleware-файл = churn |
+| 27 | API deps `get_current_user()` returning User | DONE | `api/deps.py:17-83`. Role guards `require_viewer` / `require_athlete` / `require_owner` в `api/deps.py:111-152` |
+| 28 | MCP per-tenant auth | DONE (different shape) | `api/server.py:35-83` `MCPAuthMiddleware` → `User.get_by_mcp_token`. Plain Bearer + DB lookup проще JWT для одной аудитории — токен сам = secret |
+| 29 | Token revocation (Redis blacklist для `jti`) | DEFER | Нет use case: единственный пользователь = self-data, нет deactivation/ban-flow, нет logout, утечка JWT ≠ cross-tenant breach. 7-day TTL автоматически закрывает. Когда появится ban-flow — ввести `users.token_epoch` (5 строк, проще blacklist'а) |
+| 30 | `created_by` на GitHub issue (**#48**) | DONE | `mcp_server/tools/github.py:122` пишет `_Reported via MCP by user_id={user_id}_` в body. Внешний resource, отдельной колонки не надо |
+
+**Trigger для перезапуска Phase 2:** появление **любого** из:
+- ban / soft-delete flow (`User.deactivate()` начинают вызывать в проде)
+- утечка JWT в логах / Sentry / GitHub
+- multi-audience MCP (внешние клиенты = `external` audience claim становится осмысленным)
+- юридический mandate logout flow (GDPR Art. 17, при включении регистрации)
+
+**При триггере** — реальный объём работы:
+- Item 29 (revocation) — добавить колонку `users.token_epoch INT NOT NULL DEFAULT extract(epoch from now())`, проверять `payload['iat'] >= user.token_epoch` в `verify_jwt`. На deactivate / ban / forced-logout: `UPDATE users SET token_epoch=now()`. Один запрос, без Redis-blacklist.
+- Item 23 — добавить только то, что реально используется в endpoint guards. На текущей архитектуре — ничего.
 
 ### Phase 3 — Security Hardening
 
-32. [ ] Redis rate limiting — per-tenant, per-endpoint (**#37**)
-33. [ ] CORS whitelist (убрать `*`)
-34. [ ] Security headers middleware (CSP вместо deprecated X-XSS-Protection)
-35. [ ] Input validation — date ranges, week_offset limits, activity ownership checks
-36. [ ] Аудит всех 32 MCP tools на tenant isolation (чеклист в 6.5)
-37. [ ] Fernet key rotation plan — при компрометации `FIELD_ENCRYPTION_KEY`: скрипт `re_encrypt_all_keys(old_key, new_key)` для перешифровки всех `intervals_api_key` в users table. Документировать процедуру в runbook
+> **Status:** deferred 2026-05-09 — мало пользователей, мало запросов, нет наблюдаемого abuse. Аудит ниже фиксирует точную точку старта когда trigger сработает.
+
+**Audit (2026-05-09):**
+
+| # | Item | Status | Где / план |
+|---|---|---|---|
+| 32 | Redis rate limiting (**#37**) | DEFER | Redis client `data/redis_client.py:14-47` (get/init/close only, без rate-limit helper'ов). 5 in-process лимитеров уже защищают конкретные abuse-векторы — их надо мигрировать на Redis при появлении multi-worker uvicorn / рестартов под нагрузкой (см. punch-list ниже) |
+| 33 | CORS whitelist | DONE (partial) | `api/server.py:129-135` уже `allow_origins=[settings.API_BASE_URL]`, не `*`. Spec §6.3 хочет ещё `https://{web,webk,weba,webz}.telegram.org` — Mini App работает без них (WebView не шлёт Origin). Cosmetic, можно добавить когда понадобится |
+| 34 | Security headers middleware | TODO | `api/server.py` не выставляет `X-Frame-Options` / CSP / HSTS / `X-Content-Type-Options`. Готовый шаблон в §6.6. Сделать одним PR — мало кода, низкий риск. Триггер: production-grade hardening / security-audit |
+| 35 | Input validation (date ±2y, week_offset ±52, activity ownership) | TODO | Pydantic типы есть, диапазоны и cross-tenant ownership-проверки точечные. Делать per-endpoint при добавлении новых API |
+| 36 | MCP tool tenant isolation audit | TODO | 58 tools (CLAUDE.md, spec §6.5 пишет 32 — устарело). Read-only review через `security-reviewer` subagent. Триггер: до открытия публичной регистрации |
+| 37 | Fernet key rotation plan | DEFER | Ключ не компрометирован. `re_encrypt_all` script + runbook — gold-plating до момента ротации. Откладываем |
+
+**Item 32 punch-list (готов к реализации когда сработает trigger):**
+
+5 in-process rate limiters, которые надо мигрировать на Redis:
+
+| File:line | Key | Limit | Назначение |
+|---|---|---|---|
+| `api/routers/auth.py:37-44` | `_demo_attempts[ip]` | 5 / 5 min | Demo password brute-force shield |
+| `api/routers/auth.py:38` | `_mcp_config_last_access[user.id]` | 1 / 60 s | MCP token disclosure endpoint anti-spam |
+| `api/routers/auth.py:64` | `_retry_backfill_last_success[user.id]` | 1 / 1 h | Bootstrap backfill retry button |
+| `api/routers/intervals/oauth.py:99` | OAuth init | (см. файл) | Anti-flood OAuth initiation |
+| `mcp_server/tools/github.py:38-56` | sliding-window per user.id | 5 / 24 h | GitHub issue creation cap |
+
+**Реализация (когда триггернет):**
+
+1. `data/redis_client.py` — добавить sliding-window helper через ZADD/ZREMRANGEBYSCORE: `async def check_and_record_rate_limit(key, limit, window_sec) -> int | None` (returns `retry_after` секунд или `None` = allow). Если `get_redis() is None` — fail-open (None), in-process fallback опционально.
+2. Мигрировать 5 callsite'ов выше: ключи `rl:demo:{ip}`, `rl:mcp_token:{user_id}`, `rl:backfill:{user_id}`, `rl:oauth_init:{user_id}`, `rl:gh_issue:{user_id}`. На каждом — на 429 ответ с `Retry-After` header.
+3. Удалить in-process dicts + связанные lazy-prune'ы в `api/routers/auth.py`.
+4. Тесты: round-trip (1st passes / Nth blocks / window expires), Redis-down fallback, regression на каждом callsite'е.
+
+**Skip from spec §6.1:**
+
+Generic global limits из таблицы §6.1 (60 GET/min, 30 MCP/min, 20 bot msg/min) **не реализуем** — для текущего профиля (1-2 юзера, MCP свой, Telegram сам шейпит) ложноположительные 429 на нормальном usage > выгода. Делаем только реально существующие 5 точечных лимитеров.
+
+**Trigger для запуска Phase 3:**
+- Multi-worker uvicorn (in-process dicts перестают шариться между процессами)
+- Frequent restarts под нагрузкой (теряем counters → demo brute-force resets)
+- Открытие регистрации (item 36 MCP audit становится обязательным до)
+- Любой security-audit / production hardening
 
 ### Phase 4 — Observability
 
