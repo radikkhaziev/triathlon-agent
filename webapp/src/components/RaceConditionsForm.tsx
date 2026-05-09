@@ -109,7 +109,7 @@ export default function RaceConditionsForm({
     <div className="border-t border-bg pt-3 mt-3">
       <button
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={() => setOpen(!open)}
         className="w-full flex items-center justify-between text-[11px] text-text-dim hover:text-text"
       >
         <span>{t('race_plan.conditions.title')}</span>
