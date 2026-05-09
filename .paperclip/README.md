@@ -1,124 +1,133 @@
-# Triathlon Agent — Paperclip Company
+# Endurai — Paperclip Company Package
 
-Markdown package describing the AI development team for the [`triathlon-agent`](https://github.com/radikkhaziev/triathlon-agent) project, conformant to the [Agent Companies specification](https://agentcompanies.io/specification) (`agentcompanies/v1`).
+Markdown package describing the **Endurai** AI development company. Contains the company definition, one CTO agent (company-wide), and one project (`triathlon-agent`) with two project-locked agents. Conformant to the [Agent Companies specification](https://agentcompanies.io/specification) (`agentcompanies/v1`).
 
-This is **not** the triathlon coaching product itself — that's the rest of the repo (`bot/`, `api/`, `data/`, `mcp_server/`, `webapp/`). This package describes the **team that develops it** when running under [Paperclip](https://github.com/paperclipai/paperclip) orchestration.
-
-## Workflow
-
-Pipeline pattern with manual release gate:
-
-```
-Radik (board)
-  ▼
-CEO ── intake, prioritization, human-handoff coordination
-  ▼
-Tech Lead ── decomposition, worktree, /spec gate, drives review chain
-  ▼
-Worktree (Claude Code main session) ── actual implementation
-  ▼  uses .claude/agents/* and .claude/skills/* directly from repo
-Reviewer chain: code-reviewer → optional migration/security-reviewer → Copilot
-  ▼
-Radik ── final human review, merge feat-PR into dev
-
-Release (manual, no paperclip):
-  Radik decides timing → opens dev → main PR himself → merges
-  push to main triggers existing .github/workflows/deploy.yml
-```
-
-Full architectural rationale and Phase plan: see [`docs/PAPERCLIP_SETUP_SPEC.md`](../docs/PAPERCLIP_SETUP_SPEC.md) at repo root.
+This package creates a fresh Endurai company. Recommended path: wipe any existing Endurai data via `paperclipai company delete <id>` first, then import this package as a new company.
 
 ## Org chart
 
+```
+Radik (board user)
+   │
+   ▼
+CTO (company-wide, reportsTo: null)
+   │
+   ▼ owns project
+   │
+   └── Triathlon Agent (project)
+         ├── triathlon-engineer  (reportsTo: cto, project-locked)
+         └── triathlon-tech-lead (reportsTo: cto, project-locked)
+```
+
 | Agent | Title | Reports to | Adapter | Skills | Trigger |
 |---|---|---|---|---|---|
-| `ceo` | Chief Executive Officer | — (board) | `claude_local` | `triathlon-dev`, `github-workflow` | Heartbeat + board messages |
-| `tech-lead` | Engineering Tech Lead | `ceo` | `claude_local` | `triathlon-dev`, `spec`, `pr-review-chain`, `github-workflow` | CEO delegation, worktree events |
+| `cto` | Chief Technology Officer | — (board) | `claude_local` | `triathlon-dev`, `spec`, `github-workflow` | Heartbeat + board messages |
+| `triathlon-engineer` | Software Engineer — triathlon-agent | `cto` | `claude_local` | `triathlon-dev`, `spec`, `pr-review-chain`, `github-workflow` | Event: CTO delegation; reactive: tech-lead handoff after Copilot review |
+| `triathlon-tech-lead` | Tech Lead — triathlon-agent | `cto` | `claude_local` | `triathlon-dev`, `pr-review-chain`, `github-workflow` | Heartbeat: every 30 min; webhook: GitHub `Pull request reviews` event (when configured) |
 
-No Release Manager — release to `main` is fully manual, owned by the board user. No cron, no routines block in `.paperclip.yaml`.
+Read-only review subagents (`code-reviewer`, `security-reviewer`, `migration-reviewer`, `architecture-advisor`, `spec-curator`, `unit-test-writer`) are NOT registered as paperclip employees. They live in `.claude/agents/` and are invoked from inside `triathlon-engineer`'s worktree session via Claude Code's `Agent` tool.
 
-Read-only reviewer agents (`code-reviewer`, `security-reviewer`, `migration-reviewer`, `spec-curator`, `architecture-advisor`, `unit-test-writer`) are **not** registered as paperclip employees — they live in `.claude/agents/` and are invoked from inside the worktree main session via Claude Code's `Agent` tool. Bringing them up to paperclip company level would duplicate the abstraction.
+## Workflow
 
-## Getting Started
+```
+Radik (board) ──message/issue──▶ CTO (intake — single channel from user)
+                                    │
+                                    ▼ delegates Triathlon-Agent task
+                     ┌──────────────┴──────────────┐
+                     ▼                             ▼
+          triathlon-engineer              triathlon-tech-lead
+       spawns worktree, does           polls PRs via gh, drives
+       implementation + invokes        review chain through Copilot
+       .claude/agents/ subagents       timing, writes timing markers,
+       inside worktree                 tags Radik when ready
+                     │                             │
+                     └────── feat-PR in dev ───────┘
+                                    │
+                                    ▼
+                Radik (final review, manual squash merge)
+                                    │
+                                    ▼
+        Manual release: Radik opens dev → main PR himself,
+        squash merges → existing .github/workflows/deploy.yml fires
+```
 
-This package imports into a running Paperclip instance via the CLI:
+Full architectural rationale: [`docs/PAPERCLIP_SETUP_SPEC.md`](../docs/PAPERCLIP_SETUP_SPEC.md) at repo root.
+
+## Prerequisites on the Paperclip host
+
+- **`gh` CLI installed and authenticated** on the host where paperclip runs. Both CTO and `triathlon-tech-lead` call `gh pr view / edit / comment` on every heartbeat from their orchestration sessions (not just inside worktrees). If `gh` is missing, those agents silently break on first heartbeat.
+- **Node.js 20+, paperclip configured**, `claude` CLI in `$PATH` (used by `claude_local` adapter).
+
+## Getting Started — wipe + fresh import
 
 ```bash
-# On the paperclip server (or wherever paperclipai CLI is installed)
+# 1. List existing companies on the paperclip host
+npx paperclipai company list
+
+# 2. If an Endurai company already exists, delete it (destructive — exports first if needed)
+npx paperclipai company delete <endurai-id>
+# or by prefix:
+# npx paperclipai company delete endurai
+
+# 3. Import this package as a new company
 npx paperclipai company import \
   https://github.com/radikkhaziev/triathlon-agent/tree/dev/.paperclip \
   --target new \
-  --new-company-name "Triathlon Agent" \
+  --new-company-name Endurai \
   --ref dev \
   --yes
 ```
 
-Or from a local checkout:
+Or from a local checkout on the server:
 
 ```bash
 cd ~/triathlon-agent && git pull origin dev
 npx paperclipai company import ./.paperclip \
-  --target new \
-  --new-company-name "Triathlon Agent" \
-  --yes
+  --target new --new-company-name Endurai --yes
 ```
 
-Auth: `paperclipai company *` commands require board access. If the server is headless and `xdg-open` fails, either tunnel `:3100` (`ssh -L 3100:localhost:3100 paperclip@server`) and approve the CLI auth URL in your local browser, or pass `--api-key <board-token>` directly with a token created in the Paperclip UI.
-
-## Prerequisites on the Paperclip host
-
-- **`gh` CLI installed and authenticated** on the host where paperclip runs. Both agents call `gh` directly from their orchestration sessions (not just inside worktrees) — CEO uses `gh issue list / gh pr list / gh pr comment` for intake and human-review chasing, Tech Lead uses `gh pr create / gh pr edit --add-reviewer / gh pr view --json` for PR lifecycle. If `gh` is missing on the host, both agents silently break on first heartbeat.
-- **Node.js 20+, paperclip configured**, `claude` CLI in `$PATH` (used by `claude_local` adapter).
+CLI auth: `paperclipai company *` commands require board access. If the server is headless, tunnel `:3100` (`ssh -L 3100:localhost:3100 paperclip@<server>`) and approve the printed CLI auth URL in your local browser, or pass `--api-key <board-token>` directly.
 
 ## Setup after import
 
-1. **Set secrets in Paperclip UI** (Agent → Inputs → Env): `GH_TOKEN` for both `ceo` and `tech-lead`. Both required: CEO continuously calls `gh issue list / pr list / pr comment` for intake and queue chasing; Tech Lead calls `gh pr create / pr edit --add-reviewer copilot-pull-request-reviewer / pr view --json` for the PR lifecycle.
-2. **Set heartbeat cadence** in the UI (see "Heartbeat cadence" section below — values not in `.paperclip.yaml`, lost on re-import).
-3. **Enable agents.**
+1. **Verify org chart in UI** — should show CTO at top, Triathlon Agent project under it, two project-locked agents (`triathlon-engineer`, `triathlon-tech-lead`) with project-lock badges.
+2. **Set `GH_TOKEN` secret** for all three agents (Agent → Inputs → Env). All three required (CTO for triage CLI, engineer for worktree-PR creation, tech-lead for PR lifecycle ops).
+3. **Set heartbeat cadence** in UI (see "Heartbeat cadence" below — values not in `.paperclip.yaml`, lost on re-import).
+4. **Enable agents.**
 
 ## Heartbeat cadence (UI-only, document any changes here)
 
-The Agent Companies spec (`agentcompanies/v1`) doesn't carry a standard per-agent heartbeat field, and `.paperclip.yaml` in this package doesn't pin one either. Cadence lives **in the Paperclip UI** and is **lost on re-import** unless you record it. Current values:
+The Agent Companies spec doesn't carry a standard per-agent heartbeat field, and `.paperclip.yaml` in this package doesn't pin one. Cadence lives **in the Paperclip UI** and is **lost on re-import** unless you record it. Current values:
 
 | Agent | Cadence | Why |
 |---|---|---|
-| `ceo` | Every 30 min | Frequent enough to chase the human-review queue; cheap enough not to burn budget on no-op heartbeats |
-| `tech-lead` | Event-driven only (no fixed interval) | Triggered by CEO delegation and worktree status changes, not by clock |
+| `cto` | Every 30 min | Frequent enough to chase the human-review queue across projects; cheap enough not to burn budget on no-op heartbeats |
+| `triathlon-engineer` | Event-driven only (no fixed interval) | Wakes when CTO delegates a task or `triathlon-tech-lead` hands back a PR after Copilot review |
+| `triathlon-tech-lead` | Every 30 min | Polls all open project PRs; webhook triggers (Phase 3) drop latency to seconds for Copilot reviews |
 
-If you change these values in the UI, update this table in the same commit so re-import after a wipe doesn't drift the contract.
+If you change values in the UI, update this table in the same commit so re-import after a wipe doesn't drift the contract.
 
 ## Skills
 
-The agents reference skills by shortname in their `AGENTS.md` frontmatter:
+Per `agentcompanies/v1` §8, paperclip's importer tries to resolve `skills:` shortnames against `skills/<shortname>/SKILL.md` inside the package — and **this package intentionally vendors nothing**. Skills load through Claude Code's native `.claude/skills/` cwd-scan: every session (paperclip-orchestration sessions for CTO and tech-lead, worktree sessions spawned by the engineer) runs inside a checkout of this repo, so `.claude/skills/{triathlon-dev,spec,pr-review-chain,github-workflow}` is found and loaded by Claude Code itself.
 
-```yaml
-skills:
-  - triathlon-dev
-  - spec
-  - pr-review-chain
-  - github-workflow
-```
-
-Per `agentcompanies/v1` §8, paperclip's importer tries to resolve those names against `skills/<shortname>/SKILL.md` inside the company package — and **this package intentionally vendors nothing**. The actual skill content reaches the agent through a different path: Claude Code (the runtime spawned by the `claude_local` adapter) natively scans `.claude/skills/` in its working directory at startup. Since each session — both the paperclip-orchestration sessions (CEO, Tech Lead) and the worktree sessions — runs inside a checkout of this repo, `.claude/skills/{triathlon-dev,spec,pr-review-chain,github-workflow}` is found and loaded by Claude Code itself.
-
-Net effect: the `skills:` frontmatter field is **documentation of intent**; the actual loading is done by Claude Code's native skill discovery, not by paperclip's resolver. If a skill is missing from `.claude/skills/`, the agent simply won't have it — no error from paperclip's side.
-
-Same logic applies to `.claude/agents/` reviewers (`code-reviewer`, `security-reviewer`, etc.) — those are Claude Code subagents reachable via the `Agent` tool, only resolvable inside a session whose cwd contains `.claude/agents/`. Tech Lead does **not** invoke them directly; the worktree session does, on Tech Lead's instruction.
+Net effect: the `skills:` frontmatter is **documentation of intent**; actual loading is Claude Code's job, not paperclip's. Same logic for `.claude/agents/` reviewers — they resolve only inside sessions whose cwd contains `.claude/agents/` (i.e., worktree sessions invoked by the engineer).
 
 ## Directory layout
 
 ```
 .paperclip/
-├── COMPANY.md                ← entry-point, schema=agentcompanies/v1
+├── COMPANY.md                                  ← package root, schema=agentcompanies/v1
 ├── agents/
-│   ├── ceo/AGENTS.md
-│   └── tech-lead/AGENTS.md
-├── .paperclip.yaml           ← Paperclip vendor extension (adapter + env)
-├── README.md                 ← this file
+│   ├── cto/AGENTS.md                           ← company-wide CTO (the only top-level agent)
+│   ├── triathlon-engineer/AGENTS.md            ← project-locked engineer
+│   └── triathlon-tech-lead/AGENTS.md           ← project-locked PR orchestrator
+├── projects/
+│   └── triathlon-agent/PROJECT.md              ← Triathlon Agent project, owner: cto
+├── .paperclip.yaml                             ← Paperclip vendor extension (adapter + env + project lock)
+├── README.md                                   ← this file
 └── LICENSE
 ```
-
-Skills are referenced by shortname in each `AGENTS.md`; they resolve to `.claude/skills/<shortname>/SKILL.md` in the same repo. We do **not** vendor skill content into this package — Claude Code in the worktree gets them directly.
 
 ## References
 

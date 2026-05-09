@@ -1,15 +1,17 @@
 schema: paperclip/v1
 
-# Paperclip vendor extension for the Triathlon Agent company.
-# Base markdown package (COMPANY.md, agents/*/AGENTS.md) stays portable —
-# this file holds adapter wiring and env inputs.
+# Paperclip vendor extension for the Endurai company package.
+# Base markdown package (COMPANY.md, agents/*/AGENTS.md, projects/*/PROJECT.md) stays portable —
+# this file holds adapter wiring, env inputs, and project-locking flags.
 #
-# No routines / no cron: dev → main release is fully manual, owned by the board user (Radik).
-# When he chooses, he opens `gh pr create --base main --head dev` himself and merges; the existing
+# No routines / no cron at any level: dev → main release is fully manual,
+# owned by the board user (Radik). When he chooses, he opens
+# `gh pr create --base main --head dev` himself and merges; the existing
 # `.github/workflows/deploy.yml` fires on push to main without any paperclip involvement.
 
 agents:
-  ceo:
+  cto:
+    # Company-wide CTO — no project lock (operates across all projects).
     adapter:
       type: claude_local
       config:
@@ -21,10 +23,11 @@ agents:
         GH_TOKEN:
           kind: secret
           requirement: required
-          # CEO uses gh CLI continuously — issue triage (`gh issue list`),
+          # CTO uses gh CLI continuously — issue triage (`gh issue list`),
           # PR queue chasing (`gh pr list`), comments (`gh pr comment`).
 
-  tech-lead:
+  triathlon-engineer:
+    project: triathlon-agent          # project-locked
     adapter:
       type: claude_local
       config:
@@ -34,4 +37,17 @@ agents:
         GH_TOKEN:
           kind: secret
           requirement: required
-          # Tech Lead opens worktree branches, creates feat-PRs, requests Copilot reviews.
+          # Engineer opens worktree branches, creates feat-PRs, runs gh pr * commands.
+
+  triathlon-tech-lead:
+    project: triathlon-agent          # project-locked
+    adapter:
+      type: claude_local
+      config:
+        model: claude-opus-4-6
+    inputs:
+      env:
+        GH_TOKEN:
+          kind: secret
+          requirement: required
+          # Tech Lead drives PR review chain via gh pr edit/view/comment on every heartbeat.

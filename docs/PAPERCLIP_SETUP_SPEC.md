@@ -27,14 +27,19 @@ Worktree получает рабочую копию репо целиком — 
 
 ## 2. Оркестрационный слой paperclip
 
+Endurai — fresh company, разворачивается с нуля. Org-chart упрощённый: одно лицо board (Radik) → один CTO на верху (без CEO) → project-locked агенты под ним.
+
 | Роль | Назначение | Где живёт |
 |---|---|---|
-| **CEO** | Канал общения с тобой; принимает свободно-формулированные задачи; чейзит human-review queue. | `.paperclip/agents/ceo/AGENTS.md` |
-| **Tech Lead** | Декомпозиция, открытие worktree, прогон review chain, cleanup. | `.paperclip/agents/tech-lead/AGENTS.md` |
+| **`cto`** | Канал между Radik и project-locked агентами. Intake, triage, risk-zone классификация, strategic decisions, чейзинг human-review queue. Не пишет код, не делает daily PR ops. | `.paperclip/agents/cto/AGENTS.md` |
+| **`triathlon-engineer`** | Worktree implementation, invoke `.claude/agents/` subagents изнутри worktree session, флипы `pr-review-chain-status` маркера. Project-locked: triathlon-agent. | `.paperclip/agents/triathlon-engineer/AGENTS.md` |
+| **`triathlon-tech-lead`** | Phase 3 PR-orchestration: `gh pr edit --add-reviewer copilot`, 4h timeout, `@radikkhaziev` на ready-for-human. Project-locked: triathlon-agent. | `.paperclip/agents/triathlon-tech-lead/AGENTS.md` |
+
+Будущие проекты (Endurai Shorts, Personal, Onboarding) добавляются отдельно через UI или дополнительные импорты. Они получат свои project-locked engineer + tech-lead, тоже под существующим CTO.
 
 Релиз `dev → main` — **не агентская роль**. Ты сам решаешь когда мерджить, открываешь release-PR одной командой `gh pr create --base main --head dev` (или из UI GitHub'а), мерджишь после своего review. Push в `main` триггерит существующий `.github/workflows/deploy.yml` без участия paperclip'а.
 
-Внутри worktree эти роли невидимы — Claude Code просто получает задачу и инструкции от Tech Lead'а как initial prompt.
+Внутри worktree эти роли невидимы — Claude Code просто получает задачу и инструкции от `triathlon-engineer`'а как initial prompt.
 
 ---
 
@@ -239,53 +244,75 @@ description: |
 - [ ] Branch protection для `dev` и `main` (§4.4).
 - [ ] Skill `.claude/skills/pr-review-chain/SKILL.md` (§6). Должен зафиксировать:
   - **Signal contract со split ownership** между worktree session и Tech Lead: маркеры `pr-review-chain-status: {ready-for-copilot, ready-for-human}` (только worktree пишет/перезаписывает), `pr-review-chain-copilot-requested-at: <ISO-8601 UTC>` и `pr-review-chain-copilot-timeout-at: <ISO-8601 UTC>` (только Tech Lead пишет, append-only). Каждый автор не трогает чужие маркеры — это снимает race condition на read-modify-write через `gh pr edit --body` (GitHub API не даёт optimistic concurrency).
-  - **Copilot timeout fallback** на 4h без `reviews[].author.login == "copilot-pull-request-reviewer"` → Tech Lead append'ит `copilot-timeout-at` маркер, на следующем heartbeat'е тегает Радика «review without Copilot».
+  - **Copilot timeout fallback** на 4h без подходящего review → Tech Lead append'ит `copilot-timeout-at` маркер, на следующем heartbeat'е тегает Радика «review without Copilot».
   - **CI gate перед add-reviewer**: Copilot review запрашивается только если `statusCheckRollup` зелёный, чтобы fixup-push'и не ловили Copilot на грязный diff.
-  - **Точное условие «Copilot ответил»**: `reviews[].author.login == "copilot-pull-request-reviewer"` (top-level review submission, не inline comments — Copilot всегда submit'ит review объект).
+  - **Точное условие «Copilot ответил» с time-filter**: `reviews[].author.login == "copilot-pull-request-reviewer"` AND `reviews[].submittedAt > <copilot-requested-at marker timestamp>`. Только review submitted *после* нашего add-reviewer запроса засчитывается. Без time-filter получается infinite loop при повторном флипе `ready-for-copilot` (manual body edit / engineer-session bug): Tech Lead увидит старый Copilot review, hand-back'нет engineer'у, тот снова флипнет, цикл.
+  - **Worktree cleanup на heartbeat'е** (отдельный housekeeping pass у Tech Lead'а): `worktree:list` → для каждого проверить **origin URL guard** (`git -C <worktree-path> remote get-url origin` должен matching `radikkhaziev/triathlon-agent`, иначе SKIP — multi-project safety) → проверить branch в origin через `git ls-remote` → если branch удалён (auto-deleted на merge per branch-protection) → `worktree:cleanup <slug> --force`. Без origin guard'а Tech Lead резанул бы worktrees других проектов (Endurai Shorts и т.д.), потому что их branches не найдутся в triathlon-agent ls-remote. Engineer event-driven, не должен сам мониторить post-merge state.
+  - **Hotfix path** (см. §4.6): branch от `main`, не от `dev`; `worktree:make --start-point main`; PR base = `main`; engineer пишет explicit маркер `<!-- pr-review-chain-hotfix: skip-copilot -->` в PR body (вместо обычного `ready-for-copilot`). Tech Lead имеет dedicated highest-priority branch 2 в decision tree, которая распознаёт этот маркер, sanity-чекает `baseRefName == "main"`, и сразу тегает Радика `"@radikkhaziev hotfix ready for human review (Copilot skipped per spec §4.6) — base=main"`. После merge в `main` — отдельный feat-backport PR в `dev` через нормальный review chain.
 
-  Источник правды до выхода скилла — `.paperclip/agents/tech-lead/AGENTS.md` Phase 3, оттуда копировать в skill бит-в-бит.
+  Источник правды до выхода скилла — `.paperclip/agents/triathlon-tech-lead/AGENTS.md` (Phase 3 + housekeeping pass) и `.paperclip/agents/triathlon-engineer/AGENTS.md` (hotfix path), оттуда копировать в skill бит-в-бит.
 - [ ] Решение про деплой зафиксировано: `.github/workflows/deploy.yml` не меняем; релизный путь = PR `dev → main` → existing workflow триггерится на push в `main`.
 - [ ] Дополнить `triathlon-dev/SKILL.md` строкой «PR base branch: `dev`. Push в `main` только через release-PR».
 - [ ] Этот документ влит в `dev`.
 
-**Phase 1 — Paperclip company import (≈час):**
+**Phase 1 — Wipe paperclip + fresh Endurai company import (≈час):**
 
-Пакет компании уже описан в репо: `.paperclip/COMPANY.md` + `.paperclip/agents/{ceo,tech-lead}/AGENTS.md` + `.paperclip/.paperclip.yaml`. Формат — Agent Companies spec (`agentcompanies/v1`), импортируется через `paperclipai company import`. Release Manager-агента нет — релизы вручную (см. §4.1).
+Пакет описан в репо как **company package** с одним проектом: `.paperclip/COMPANY.md` (root, name=Endurai) + `.paperclip/agents/{cto,triathlon-engineer,triathlon-tech-lead}/AGENTS.md` + `.paperclip/projects/triathlon-agent/PROJECT.md` + `.paperclip/.paperclip.yaml`. Импорт через `--target new --new-company-name Endurai`. Существующая Endurai (если есть) удаляется через `company delete` перед импортом.
 
-- [ ] (Опц.) Почистить дефолтную компанию, если paperclip создал её при `onboard` и она не нужна:
+- [ ] **Wipe существующей Endurai (если есть)** — destructive, делает clean state:
   ```bash
-  npx paperclipai company list                 # увидеть id
-  npx paperclipai company delete <selector>    # удалить по id или shortname
+  npx paperclipai company list                              # увидеть id
+  # (опц.) бэкап перед wipe:
+  # npx paperclipai company export <endurai-id> --include company,agents,projects,issues,tasks,skills --out /tmp/endurai-backup
+  npx paperclipai company delete <endurai-id>               # или: company delete endurai
   ```
-  Видеорендер-компания на этом сервере — отдельная, не трогаем.
-- [ ] Импорт пакета. Headless server, поэтому через SSH-туннель сначала открываем CLI auth:
+- [ ] **Push `.paperclip/` на GitHub в `dev`** — `--ref dev` импортирует с GitHub'а, не из локального чекаута. Если пакет ещё не закоммичен:
+  ```bash
+  cd ~/triathlon-agent
+  git checkout dev && git pull origin dev
+  git add .paperclip docs/PAPERCLIP_SETUP_SPEC.md
+  git commit -m "paperclip: company package v2.9 (fresh Endurai with single CTO)"
+  git push origin dev
+  ```
+- [ ] **Headless CLI auth** (один раз на сессию, если ещё не сделан):
   ```bash
   # Локально на ноуте
   ssh -L 3100:localhost:3100 paperclip@<server>
-  # На сервере в новой сессии
+  # На сервере
   npx paperclipai company list                 # триггерит auth, печатает URL
-  # Открываем напечатанный http://localhost:3100/cli-auth/... в локальном браузере, аппрувим.
+  # Открываем http://localhost:3100/cli-auth/... в локальном браузере, аппрувим.
   ```
-  Альтернатива без туннеля — создать board API key в UI и пробрасывать через `--api-key`.
-- [ ] Применить компанию из git-репо:
+  Альтернатива — создать board API key в UI и пробрасывать через `--api-key`.
+- [ ] **Dry-run импорта** — paperclip покажет что распарсил из пакета, не применяя:
   ```bash
   npx paperclipai company import \
     https://github.com/radikkhaziev/triathlon-agent/tree/dev/.paperclip \
     --target new \
-    --new-company-name "Triathlon Agent" \
+    --new-company-name Endurai \
+    --ref dev \
+    --dry-run
+  ```
+  Должен показать: company «Endurai», 3 агента (`cto`, `triathlon-engineer`, `triathlon-tech-lead`), 1 проект (`triathlon-agent`). Если ругнётся на YAML / неизвестные поля — поправить пакет, push в dev, повторить dry-run.
+- [ ] **Реальный импорт**:
+  ```bash
+  npx paperclipai company import \
+    https://github.com/radikkhaziev/triathlon-agent/tree/dev/.paperclip \
+    --target new \
+    --new-company-name Endurai \
     --ref dev \
     --yes
   ```
-  Или из локального чекаута на сервере, если он там есть:
+  Или из локального чекаута на сервере:
   ```bash
   cd ~/triathlon-agent && git pull origin dev
   npx paperclipai company import ./.paperclip \
-    --target new --new-company-name "Triathlon Agent" --yes
+    --target new --new-company-name Endurai --yes
   ```
-- [ ] Прописать секрет `GH_TOKEN` для **обоих агентов** в Paperclip UI (Agent → Inputs → Env) — required и для `ceo` (gh issue/pr CLI), и для `tech-lead` (PR-флоу).
-- [ ] Настроить heartbeat cadence в UI (нет в `.paperclip.yaml`, теряется на re-import — см. README): CEO 30 мин, Tech Lead event-driven only. Если меняешь — обнови таблицу в `.paperclip/README.md` в том же коммите.
-- [ ] Включить heartbeats обоих агентов.
-- [ ] Bootstrap для worktree (выполнится автоматически при первом `worktree:make`, но проверить хотя бы раз руками):
+- [ ] **Verify в UI**: компания Endurai появилась. Org chart: CTO at top → Triathlon Agent project → `triathlon-engineer` и `triathlon-tech-lead` под CTO с project-lock badge на оба. Если project lock не auto-применился — выставить руками в Agent → Settings → Project lock = triathlon-agent.
+- [ ] **Прописать секрет `GH_TOKEN`** для всех **трёх агентов** (Agent → Inputs → Env). Required для всех: CTO (intake CLI), engineer (PR creation), tech-lead (PR lifecycle ops).
+- [ ] **Настроить heartbeat cadence** в UI (нет в `.paperclip.yaml`, теряется на re-import — см. `.paperclip/README.md`): CTO 30 мин, `triathlon-engineer` event-driven only, `triathlon-tech-lead` 30 мин. Если меняешь — обнови таблицу в README в том же коммите.
+- [ ] **Включить heartbeats** всех агентов.
+- [ ] **Bootstrap для worktree** (выполнится автоматически при первом `worktree:make`, но проверить хотя бы раз руками):
   ```bash
   npx paperclipai worktree:make pilot-test --start-point dev
   cd ~/paperclip-pilot-test
@@ -334,6 +361,10 @@ Engineer описывает противоречие в комментарии P
 
 - **2026-05-08 (v1):** первая версия. Slim изначально не получилась — заложил 12 author-агентов и Phase 0 на «заполнить весь `.claude/`». Не учитывала уже-существующую инфраструктуру.
 - **2026-05-08 (v2):** переписано после ревью. Author-агенты убраны (исполнитель = Claude Code в worktree). Documented существующих 6 read-only агентов и 3 skills вместо изобретения новых. Spec-first порог переведён с размера на зоны риска. Phase 0 сокращена до полдня (PR template + branch protection + один skill). Модели — per-agent через YAML frontmatter (как уже работает), без глобального `settings.json`.
+- **2026-05-09 (v2.11):** два post-v2.10 hardening fix'а. (a) **Hotfix marker contract** замкнут — engineer обещал что Tech Lead «recognize the hotfix marker», но Tech Lead этого не реализовывал. Чинено через **branch 2 (highest priority)** в Tech Lead decision tree: `<!-- pr-review-chain-hotfix: skip-copilot -->` маркер от engineer'а распознаётся, делается sanity-check `baseRefName == "main"`, тегается Радик с явным hotfix-сообщением. Engineer'овская hotfix-секция получила точную форму маркера и описание flow «один маркер, один tag». Старые branch'и Tech Lead'а перенумерованы 2-6 → 3-7. (b) **Multi-project worktree safety** — Tech Lead housekeeping pass `worktree:list` глобален, в multi-project setup мог бы резать чужие worktrees (Endurai Shorts), потому что их branches не найдутся в triathlon-agent ls-remote. Добавлен **origin URL guard**: `git -C <worktree-path> remote get-url origin` должен matching `radikkhaziev/triathlon-agent`, иначе SKIP. Сейчас single-project, но защита от регрессии при добавлении второго.
+- **2026-05-09 (v2.10):** три post-v2.9 hardening fix'а после ревью пакета. (a) **Time-filter на «Copilot ответил»** — добавлено условие `reviews[].submittedAt > copilot-requested-at` к проверке Tech Lead'а в branch 4. Без него потенциальный infinite loop при повторном `ready-for-copilot` флипе: старый Copilot review засчитывался как ответ на новый запрос. (b) **Worktree cleanup перенесён с engineer'а на tech-lead'а** — у engineer'а event-driven триггеры (CTO delegation + tech-lead handback), он не наблюдает merge надёжно. Tech Lead на heartbeat'е добавил housekeeping pass: `worktree:list` → cross-check branch existence через `git ls-remote` → если auto-deleted на merge, `worktree:cleanup --force`. Из engineer.md удалено ложное cleanup-обязательство, оставлено только issue closure. (c) **Hotfix path** добавлен в engineer.md как отдельная секция со ссылкой на §4.6 — branch от `main`, `worktree:make --start-point main`, PR base = `main`, опц. skip Copilot через explicit hotfix-маркер, mandatory backport в dev. Phase 0 чеклист расширен под все три пункта в `pr-review-chain` skill'е.
+- **2026-05-09 (v2.9):** второй pivot — пакет вернулся к **company package** форме (как v2.7), но с дополнительной упрощённой иерархией: один **CTO** на верху вместо CEO+CTO пары. Поводом стал выбор Радика — wipe существующей Endurai через `paperclipai company delete` и fresh-import как новой компании, чтобы не разбираться с archive/collision механикой при импорте в существующую. Что сделано: (a) Восстановлен `.paperclip/COMPANY.md` (name: Endurai, schema=agentcompanies/v1). (b) Удалён `agents/ceo/` (был только что), создан `agents/cto/AGENTS.md` с объединёнными intake + strategic ownership ответственностями. (c) `agents/triathlon-engineer/` и `agents/triathlon-tech-lead/` сохранены как project-locked под CTO. (d) `projects/triathlon-agent/PROJECT.md` сохранён, `.paperclip/PROJECT.md` (root, project-package marker) удалён. (e) `.paperclip.yaml` обновлён: cto entry без project-lock + два project-locked engineer/tech-lead. (f) Phase 1 переписан: `company delete <id>` для wipe, `company import --target new --new-company-name Endurai` для fresh import, dry-run между. README — целиком переписан под company-package framing. Будущие проекты (Endurai Shorts и т.д.) добавляются отдельно через UI или дополнительные импорты.
+- **2026-05-09 (v2.8):** архитектурный pivot — пакет переделан из **company package** в **project package**, импортируется в существующую Endurai company через `--target existing`. Поводом стало обнаружение в paperclip-инстансе уже существующих company-level агентов (CEO, CTO) и проектной модели «один CEO + CTO на компанию, project-locked Coder+Reviewer на проект». Что сделано: (a) Удалён `.paperclip/COMPANY.md` и `.paperclip/agents/ceo/AGENTS.md` (используются existing CEO+CTO Endurai). (b) `agents/tech-lead/` переименован в `agents/triathlon-tech-lead/` с явным project-lock и `reportsTo: cto`. (c) Добавлен `agents/triathlon-engineer/AGENTS.md` — заменяет старый TriathlonCoder, делает worktree-implementation работу. (d) Добавлен `PROJECT.md` как root пакета (schema=agentcompanies/v1, owner=cto). (e) `.paperclip.yaml` обновлён под новые slug'и + явное `project: triathlon-agent` поле. (f) Phase 1 переписан: pre-import cleanup (delete старых TriathlonCoder, TriathlonReviewer и project), `company import --target existing -C <endurai-id> --include agents,projects`, verify project-lock в UI. README — целиком переписан под project-package framing с org chart разделением company-wide vs project-locked.
 - **2026-05-09 (v2.7):** production-hardening контракта worktree↔Tech Lead. (a) Race на PR body edit устранён через **split ownership** маркеров: `pr-review-chain-status: *` пишет только worktree (overwrite своего же), `copilot-requested-at` и `copilot-timeout-at` пишет только Tech Lead (append-only). Никто не трогает чужие маркеры. Tech Lead больше не делает replace `ready-for-copilot → ready-for-human-no-copilot` — вместо этого приписывает `copilot-timeout-at`, и на следующем heartbeat'е branch 3 тегает Радика. Маркер `ready-for-human-no-copilot` удалён как ненужный. (b) Phase 3 переписан как priority-ordered branching (first match wins), что делает residual race безобидным: status flip от worktree всегда выигрывает над timeout flag от Tech Lead. (c) Add-reviewer теперь требует CI green (statusCheckRollup SUCCESS) — раньше fixup-push мог поймать Copilot на грязный diff. (d) «Copilot responded» зафиксировано как `reviews[].author.login == "copilot-pull-request-reviewer"` (top-level review, не inline comments). Phase 0 чеклист расширен под новый контракт.
 - **2026-05-09 (v2.6):** закрыт liveness-баг с Copilot review. Что было: Tech Lead Phase 3 поллил `gh pr view` бесконечно, ожидая Copilot; если Copilot тихо упал/не пингает/model error — PR висел навсегда без эскалации Радику. Что сделано: добавлен 4h timeout на add-reviewer запрос, новый PR-body маркер `<!-- pr-review-chain-copilot-requested-at: <ISO-8601 UTC> -->` (пишет Tech Lead сразу после `gh pr edit --add-reviewer`), новый fallback маркер `<!-- pr-review-chain-status: ready-for-human-no-copilot -->`. Tech Lead AGENTS Phase 3 переписан с новыми условиями ветвления. Phase 0 чеклист расширен: pr-review-chain SKILL.md обязан унаследовать оба контракта (signal + timeout) бит-в-бит из AGENTS.md.
 - **2026-05-09 (v2.5):** правки после четвёртого прохода. (a) Битая cross-ref в README про GH_TOKEN заменена на инлайн-объяснение почему оба токена required (CEO — gh issue/pr CLI на каждом heartbeat; Tech Lead — gh pr create/edit/view). (b) Зафиксирован signal contract между worktree session и Tech Lead: HTML-маркеры в PR body footer — `<!-- pr-review-chain-status: ready-for-copilot -->` и `<!-- pr-review-chain-status: ready-for-human -->`. Источник правды — Tech Lead AGENTS.md Phase 3 до тех пор, пока Phase 0 не родит `pr-review-chain/SKILL.md`, который этот контракт залочит. (c) Добавлен явный prerequisite в README: `gh` CLI на хосте paperclip'а (оба агента вызывают его напрямую из orchestration сессий, не только в worktree).

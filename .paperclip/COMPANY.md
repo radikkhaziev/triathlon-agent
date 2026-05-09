@@ -1,53 +1,77 @@
 ---
-name: Triathlon Agent
-description: Development company for the triathlon-agent project — a personal Ironman 70.3 coaching AI agent
-slug: triathlon-agent
+name: Endurai
+description: Personal AI development company — currently runs the triathlon-agent project; other projects (Endurai Shorts, etc.) are added separately later
+slug: endurai
 schema: agentcompanies/v1
 version: 0.1.0
 license: MIT
 authors:
   - name: Radik Khaziev
 goals:
-  - Ship features for triathlon-agent reliably and on time
-  - Maintain multi-tenant security invariants (per docs/MULTI_TENANT_SECURITY_SPEC.md)
-  - Keep CTL/ATL/TSB and HRV calculations deterministic and tested
-  - Preserve spec corpus integrity in docs/ as the source of truth
+  - Develop and maintain the triathlon-agent project (multi-tenant Ironman 70.3 coaching AI)
+  - Add other product projects under the same company as needs arise (Endurai Shorts, etc.)
 requirements:
   secrets:
     - GH_TOKEN
 ---
 
-The Triathlon Agent company develops and maintains the `triathlon-agent` project — a multi-tenant AI coaching platform for Ironman 70.3 athletes. The product itself is described in `CLAUDE.md` and `docs/`; this company describes the **team** that develops it.
+The Endurai company is Radik's personal AI dev shop. It contains one or more projects, each developed by project-locked agents reporting to a single company-wide CTO.
+
+## Org chart
+
+```
+Radik (board user, sole owner)
+   │
+   ▼
+CTO (company-wide, reportsTo: null)
+   │
+   ▼ owns projects
+   │
+   ├── Project: Triathlon Agent
+   │     ├── triathlon-engineer  (reportsTo: cto, project: triathlon-agent)
+   │     └── triathlon-tech-lead (reportsTo: cto, project: triathlon-agent)
+   │
+   └── (future projects added separately)
+```
+
+No CEO role — CTO does both intake (from Radik) and tech leadership directly. Simplicity over ceremony for solo ops.
 
 ## Workflow pattern
 
-Pipeline. Work flows from idea → planning → implementation in worktree → review chain → merge to dev. Release to `main` is **fully manual**, owned by the board user.
+Pipeline with manual release gate:
 
 ```
-Radik (board)
-  → CEO (intake, prioritization)
-  → Tech Lead (decomposition, worktree, /spec gate)
-  → Claude Code in worktree (main session, executes work, calls existing reviewer agents)
-  → Reviewer chain (code-reviewer, migration-reviewer, security-reviewer, then Copilot)
-  → Radik (final human review, merge feat-PR into dev)
-
-Release path (no paperclip involvement):
-  → Radik decides timing → opens release-PR `dev → main` himself → merges
-  → push to main triggers existing .github/workflows/deploy.yml → containers redeploy
+Radik ──message/issue──▶ CTO (intake, triage, risk-zone check, delegation)
+                            │
+                            ▼ delegates Triathlon-Agent task
+                  ┌─────────┴─────────┐
+                  ▼                   ▼
+       triathlon-engineer    triathlon-tech-lead
+   (worktree implementation,  (gh CLI lifecycle,
+    runs .claude/agents/        Copilot timing,
+    subagents inside session)   tags Radik when ready)
+                  │                   │
+                  └── feat-PR in dev ─┘
+                            │
+                            ▼
+                Radik (final review, manual squash merge)
+                            │
+                            ▼
+       Manual release: Radik opens dev → main PR himself,
+       merges → existing .github/workflows/deploy.yml fires
 ```
-
-The CEO and Tech Lead are paperclip-orchestration agents (running on heartbeats and event triggers). The actual implementation happens inside `worktree:make` instances where Claude Code is the executor — that session leverages the existing `.claude/agents/` (code-reviewer, security-reviewer, migration-reviewer, spec-curator, architecture-advisor, unit-test-writer) and `.claude/skills/` (triathlon-dev, spec, github-workflow, pr-review-chain) directly from the repo.
 
 ## Boundaries
 
-- The company does **not** describe how triathlon-agent itself runs (Telegram bot, MCP server, Dramatiq workers) — that is the *product*, see `CLAUDE.md`.
-- The company **only** describes the development team for triathlon-agent. The user's video-rendering project lives in its own paperclip company.
-- Read-only reviewer agents (`code-reviewer`, `security-reviewer`, etc.) are **not** registered as paperclip employees. They are subagents invoked from inside the main worktree session via Claude Code's `Agent` tool. Bringing them up to paperclip's company level would duplicate the abstraction.
+- **No CEO** — intake responsibility folded into CTO.
+- **No Release Manager** — release to `main` is fully manual, owned by Radik.
+- **Read-only review subagents** (`code-reviewer`, `security-reviewer`, `migration-reviewer`, `architecture-advisor`, `spec-curator`, `unit-test-writer`) are NOT registered as paperclip employees. They live in `.claude/agents/` and are invoked from inside `triathlon-engineer`'s worktree session via Claude Code's `Agent` tool.
+- **Other projects** (Endurai Shorts, Onboarding, Personal) are not in this package — they are added separately through paperclip UI or separate package imports later.
 
 ## References
 
-- Architecture & operations: `docs/PAPERCLIP_SETUP_SPEC.md`
-- Project context: `CLAUDE.md`, `docs/OPERATIONS.md`
-- Existing skills referenced by agents below: `.claude/skills/{triathlon-dev,spec,github-workflow,pr-review-chain}/SKILL.md`
+- Architecture, git-flow, PR review chain, Phase plan: `docs/PAPERCLIP_SETUP_SPEC.md`
+- Project context for the *product*: `CLAUDE.md`, `docs/OPERATIONS.md`
+- Agent skills (loaded by Claude Code at runtime via `.claude/skills/` cwd-scan): `triathlon-dev`, `spec`, `pr-review-chain`, `github-workflow`
 
 Generated with [Paperclip company-creator](https://github.com/paperclipai/paperclip) conventions; conforms to the [Agent Companies specification](https://agentcompanies.io/specification).
