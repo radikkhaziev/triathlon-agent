@@ -11,6 +11,72 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## Race-goal cleanup (issue #323) — all 4 strands complete (2026-05-09)
+
+End-to-end cleanup of `athlete_goals` after the table accumulated a mix of orphan fields (`disciplines` JSON column, never read), hardcoded defaults (`sport_type="triathlon"` set unconditionally on Intervals webhook sync), and a single-anchor UX where Settings showed only one goal even though athletes routinely have multiple A/B/C in a season.
+
+### Strand A — Backend cleanup
+
+- **Schema:** migration `z6a7b8c9d0e1` drops `athlete_goals.disciplines` column (`batch_alter_table` + reversible downgrade). Round-trip up/down/up clean.
+- **Helper:** `data/sport_map.py:resolve_race_sport_type(raw)` + `RACE_SPORT_TYPES` frozenset — race-goal sport_type enum (`triathlon`/`duathlon`/`aquathlon`/`run`/`ride`/`swim`/`fitness`). Distinct from the activity-canonical `INTERVALS_TO_LOWER` map (`Ride`/`Run`/`Swim` only) because race goals can be multi-sport.
+- **`AthleteGoal.upsert_from_intervals` + `suggest_race`:** both now require `sport_type: str` kwarg; resolved via `resolve_race_sport_type(event.type)` (Intervals webhook path) or `resolve_race_sport_type(sport)` (Claude `suggest_race` path). On the **update** branch, `sport_type` is intentionally NOT overwritten — user-edits via Settings (Strand B) win, Intervals re-sync logs an `info` divergence note. No data migration: existing `sport_type="triathlon"` rows stay; user fixes via Settings.
+- **DTO:** `AthleteGoalDTO.disciplines` field removed; `category: str | None = None` added (Strand C).
+- **`_to_dto`:** module-level helper consolidating ORM → DTO mapping. One edit point for new columns.
+
+### Strand B — Edit `sport_type` via Settings
+
+- **PATCH endpoint:** `AthleteGoalPatchRequest.sport_type` Pydantic Literal (server-validated against the 7 enum values). Router rejects explicit `null` with HTTP 400 (schema is NOT NULL; only field-absence leaves the column untouched). `update_local_fields` extends with `sport_type: str = _UNSET` sentinel param + ORM-layer `RACE_SPORT_TYPES` enum guard (defense-in-depth for CLI/direct callers).
+- **Frontend:** dropdown `<select>` between Date and CTL Target rows in each goal card. Optimistic update + monotonic-seq rollback (existing pattern). RU/EN i18n: `settings.goal.sport_type` + `settings.goal.sport_type_options.{triathlon,duathlon,aquathlon,run,ride,swim,fitness}`.
+- **Pydantic-Literal ↔ frozenset drift guard:** `tests/test_sport_map.py:test_pydantic_literal_matches_resolver_enum` introspects `AthleteGoalPatchRequest.model_fields["sport_type"]` and asserts the Literal args equal `RACE_SPORT_TYPES`. Catches the case where someone adds a new sport_type but forgets one of the two Python sources.
+
+### Strand C — List ALL goals in Settings
+
+- **New endpoint:** `GET /api/athlete/goals` → `{"goals": [{id, category, event_name, event_date, sport_type, ctl_target, per_sport_targets}, ...]}`. Sorted by `event_date ASC` (nearest race first). Auth: `require_viewer` (read-only OK for demo session — they see owner's goals on the read-only tour). PATCH on the same router stays on `require_athlete` (write blocked for demo).
+- **ORM helper:** `AthleteGoal.get_goals_for_settings(user_id, today)` — returns ALL active future goals, no max-2 cap (different from `get_goals_for_prompt`). Past races filtered out (not editable).
+- **Frontend:** Settings page now maps over `goals: AthleteGoal[]` and renders one card per goal. Each card has its own `patchGoal(goalId, patch)` invocation; rollback restores the entire array snapshot. Category badge `RACE_A/B/C` rendered in accent color above each event name; localized via `settings.goal.category.*` i18n keys.
+- **`auth_me.goal`:** kept for legacy callers (still single-anchor for `Dashboard.tsx`'s `has_goal` gate). Settings page no longer reads it — separated into its own fetch.
+- **TestClient regression guard:** `test_get_endpoint_uses_require_viewer_not_require_athlete` wires the route through FastAPI `dependency_overrides` so a future revert to `require_athlete` would fail-fast.
+
+### Strand D — RACE_A + nearest race in Claude's prompts
+
+- **Helper:** `AthleteGoal.get_goals_for_prompt(user_id, today)` returns 0/1/2 DTOs:
+  - **0** — no future races. Render «Goal: не задана».
+  - **1** — only one future race, OR RACE_A IS the nearest race. Single-line.
+  - **2** — RACE_A exists AND nearest is a different event (typically a B/C tune-up before the season A). RACE_A first, nearest second.
+- **Prompt templates:** `SYSTEM_PROMPT_V2` (morning), `SYSTEM_PROMPT_WEEKLY`, `_ATHLETE_BLOCK_TEMPLATE` (chat) — replaced single `Goal: {event} ({date})` line with `{goals_block}` placeholder rendered via `_render_goals_block(goals)`. Two-goal shape includes a focus-hint: «Goals (focus on RACE_A; mention nearest only if directly relevant to today)».
+- **MCP resource:** `athlete://goal` updated to render both events (with `RACE_A:` / `Nearest:` labels) when 2 goals returned, single block when 1.
+- **Token cost:** ~+30 tokens in `dynamic_tail` cache segment for two-goal case. No effect on prefix-cache hits (segment-tail invalidation only).
+
+### Tests
+
+- `tests/test_sport_map.py` — 30 tests on resolver: canonical enum, capitalization, Intervals aliases, empty/None, unknown→fitness, output-in-enum invariant, Pydantic-Literal drift guard.
+- `tests/db/test_athlete_goal.py` — 16 tests across 3 classes: `TestUpsertFromIntervalsSportType` (insert/update/no-stomp), `TestGetGoalsForPrompt` (0/1/2 shapes + per-user scoping), `TestGetGoalsForSettings` (all-active, sort, past-filtered, dto-carries-category, per-user).
+- `tests/api/test_athlete_goal.py` — 21 tests (PATCH endpoint + ORM `update_local_fields`): partial update, explicit-null clear, sport_type set/null/literal-rejected/combined, ORM enum guard.
+- `tests/api/test_athlete_goals_list.py` — 6 tests (GET endpoint): empty, single, multi-preserve-order, resolution helper, demo-role-read, TestClient `require_viewer` wiring guard.
+- `tests/bot/test_render_goals_block.py` — 5 unit tests on the renderer (no DB / async): empty, single-line, two-goal block with focus-hint, sport_type rendering.
+- `tests/bot/test_prompts_zones.py` — bulk-replaced 18 patches `get_goal_dto` → `get_goals_for_prompt` (semantic equivalence verified).
+
+**Total:** ~25 files, +780/−340 lines, 170 tests passing.
+
+### Decisions log
+
+- **No data migration for existing `sport_type="triathlon"`** — user fixes via Settings dropdown (Strand B). Heuristic re-resolve from Intervals would be brittle (most events have `type="Run"` etc., even for triathlon races where Intervals lacks a multi-sport activity type).
+- **`require_viewer` not `require_athlete` on GET** — demo's read-only tour needs to see owner's goals. PATCH stays on `require_athlete`.
+- **Two-goal cap in `get_goals_for_prompt`** — three+ goals would bloat the system prompt. RACE_A + nearest covers «strategic anchor + tactical context» without chatter.
+- **Pydantic Literal + frozenset duplication accepted** — codegen across Python/TS/JSON would be heavyweight; the drift-guard test is cheap and effective for the Python side.
+
+### Known follow-ups (not blocking)
+
+- M2: per-sport CTL inputs render unconditionally regardless of `sport_type` (e.g. swim/bike inputs visible for `sport_type="run"` goal). UX polish.
+- M3: shared `patchSeq` across all goal cards — failed late PATCH on goal A could roll back goal B's optimistic update via the snapshot. Per-goal seq map would fix.
+- M4: frontend doesn't re-sort `goals` (trusts server `event_date ASC`). Defensive sort guard cheap.
+- L2: empty `goals.length === 0` hides the entire section — no «Add goal» CTA. Chat hint at the bottom still says «use /race in the bot».
+- L3: race-goal sport_type enum exists in 5 places (Python frozenset, Pydantic Literal, TS union, dropdown options array, prompt rendering — last one indirect). Drift-guard tests cover Python side.
+- L5: `auth_me.goal.sport_type` is forward-compat (webapp doesn't read it from there).
+- H1: pre-existing — `Dashboard.tsx` still reads `auth_me.goal` for `has_goal` gate. Cleanup before fully retiring legacy single-goal field on `auth_me`.
+
+---
+
 ## OAuth bootstrap backfill — Phase 1+2 complete
 
 - Chunk-recursive `actor_bootstrap_step`, `CHUNK_DAYS=30`, cursor state in `user_backfill_state`.

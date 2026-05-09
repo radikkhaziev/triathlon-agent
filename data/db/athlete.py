@@ -23,6 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from data.db.common import Base, Session
 from data.db.decorator import dual
 from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
+from data.sport_map import RACE_SPORT_TYPES
 
 # Sentinel for partial updates: distinguishes "field not provided" from
 # "explicitly set to None" so a PATCH does not silently clear untouched
@@ -30,6 +31,20 @@ from data.db.dto import AthleteGoalDTO, AthleteThresholdsDTO
 _UNSET: object = object()
 
 logger = logging.getLogger(__name__)
+
+
+def _to_dto(goal: AthleteGoal) -> AthleteGoalDTO:
+    """Convert AthleteGoal ORM row to its DTO. Single source of field mapping
+    so adding a column requires touching one place, not every call site."""
+    return AthleteGoalDTO(
+        id=goal.id,
+        event_name=goal.event_name,
+        event_date=goal.event_date,
+        sport_type=goal.sport_type,
+        category=goal.category,
+        ctl_target=goal.ctl_target,
+        per_sport_targets=goal.per_sport_targets,
+    )
 
 
 class AthleteSettings(Base):
@@ -206,8 +221,10 @@ class AthleteGoal(Base):
 
     event_name: Mapped[str] = mapped_column(String, nullable=False)
     event_date: Mapped[date] = mapped_column(Date, nullable=False)
-    sport_type: Mapped[str] = mapped_column(String(20), nullable=False)  # triathlon/run/ride/swim/fitness
-    disciplines: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Swim", "Ride", "Run"]
+    # Enum lives in `data.sport_map.RACE_SPORT_TYPES`. Set via
+    # `resolve_race_sport_type` on writes from Intervals sync / `suggest_race`;
+    # user-editable via Settings (#323 Strand B).
+    sport_type: Mapped[str] = mapped_column(String(20), nullable=False)
 
     ctl_target: Mapped[float | None] = mapped_column(Float, nullable=True)
     per_sport_targets: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"swim": 15, "ride": 35, "run": 25}
@@ -244,21 +261,93 @@ class AthleteGoal(Base):
         goal = result.scalar_one_or_none()
         if not goal:
             return None
-        return AthleteGoalDTO(
-            id=goal.id,
-            event_name=goal.event_name,
-            event_date=goal.event_date,
-            sport_type=goal.sport_type,
-            disciplines=goal.disciplines,
-            ctl_target=goal.ctl_target,
-            per_sport_targets=goal.per_sport_targets,
-        )
+        return _to_dto(goal)
 
     @classmethod
     @dual
     def get_all(cls, user_id: int, *, session: Session) -> list[AthleteGoal]:
         result = session.execute(select(cls).where(cls.user_id == user_id).order_by(cls.event_date.asc()))
         return list(result.scalars().all())
+
+    @classmethod
+    @dual
+    def get_goals_for_settings(
+        cls,
+        user_id: int,
+        today: date,
+        *,
+        session: Session,
+    ) -> list[AthleteGoalDTO]:
+        """Return ALL active future goals for the Settings list view (#323
+        Strand C). Past races filtered out — they're not editable.
+
+        Sort: ``event_date ASC`` so the nearest race is first in the UI. The
+        category badge (RACE_A/B/C) is on each card so the athlete sees the
+        season anchor regardless of position.
+        """
+        rows = (
+            session.execute(
+                select(cls)
+                .where(
+                    cls.user_id == user_id,
+                    cls.is_active.is_(True),
+                    cls.event_date >= today,
+                )
+                .order_by(cls.event_date.asc())
+            )
+            .scalars()
+            .all()
+        )
+        return [_to_dto(g) for g in rows]
+
+    @classmethod
+    @dual
+    def get_goals_for_prompt(
+        cls,
+        user_id: int,
+        today: date,
+        *,
+        session: Session,
+    ) -> list[AthleteGoalDTO]:
+        """Return the goals to inject into Claude's system prompt (#323 Strand D).
+
+        Returns 0/1/2 entries:
+          * **0** — no active future races. Caller renders «Goals: не задана».
+          * **1** — either there's only one upcoming race, OR the nearest race
+            IS the RACE_A. Render as a single line.
+          * **2** — RACE_A exists AND the nearest race is a different event
+            (typically a tune-up B/C closer than the season A). First entry
+            is RACE_A, second is the nearest. Render as a two-line block with
+            «focus on RACE_A» hint.
+
+        Past races filtered out — Claude doesn't need them in current-state
+        context. ``get_races`` MCP tool covers race-history queries.
+        """
+        rows = (
+            session.execute(
+                select(cls)
+                .where(
+                    cls.user_id == user_id,
+                    cls.is_active.is_(True),
+                    cls.event_date >= today,
+                )
+                .order_by(cls.event_date.asc())
+            )
+            .scalars()
+            .all()
+        )
+        if not rows:
+            return []
+
+        race_a = next((r for r in rows if r.category == "RACE_A"), None)
+        nearest = rows[0]  # ordered by event_date ASC
+
+        result: list[AthleteGoalDTO] = []
+        if race_a is not None:
+            result.append(_to_dto(race_a))
+        if race_a is None or nearest.id != race_a.id:
+            result.append(_to_dto(nearest))
+        return result
 
     @classmethod
     @dual
@@ -270,9 +359,18 @@ class AthleteGoal(Base):
         event_name: str,
         event_date: date,
         intervals_event_id: int,
+        sport_type: str,
         session: Session,
     ) -> AthleteGoal:
-        """Upsert goal from Intervals.icu event. Does NOT overwrite CTL targets."""
+        """Upsert goal from Intervals.icu event.
+
+        Does NOT overwrite CTL targets or `sport_type` on existing rows. The
+        user can fix the sport via Settings (#323 Strand B), and a re-sync
+        should not stomp the user-edit. **Side effect of this trade-off:** if
+        the user renames a race in Intervals.icu (Run → Triathlon), our local
+        `sport_type` stays as the original — a WARN log fires so ops can spot
+        the divergence. User has to fix via Settings if they care.
+        """
         now = datetime.now(timezone.utc)
         existing = session.execute(
             select(cls).where(
@@ -282,6 +380,14 @@ class AthleteGoal(Base):
         ).scalar_one_or_none()
 
         if existing:
+            if existing.sport_type != sport_type:
+                logger.info(
+                    "athlete_goal %d: Intervals reports sport_type=%r, keeping stored %r "
+                    "(user may have edited via Settings)",
+                    existing.id,
+                    sport_type,
+                    existing.sport_type,
+                )
             existing.event_name = event_name
             existing.event_date = event_date
             existing.category = category
@@ -300,7 +406,7 @@ class AthleteGoal(Base):
             category=category,
             event_name=event_name,
             event_date=event_date,
-            sport_type="triathlon",
+            sport_type=sport_type,
             intervals_event_id=intervals_event_id,
             is_active=True,
             synced_at=now,
@@ -435,9 +541,11 @@ class AthleteGoal(Base):
         user_id: int,
         ctl_target: float | None = _UNSET,
         per_sport_targets: dict | None = _UNSET,
+        sport_type: str = _UNSET,
         session: Session,
     ) -> AthleteGoal | None:
-        """Patch local-only overlay fields (``ctl_target``, ``per_sport_targets``).
+        """Patch local-only overlay fields (``ctl_target``, ``per_sport_targets``,
+        ``sport_type``).
 
         ``_UNSET`` sentinel distinguishes "field not provided" from "explicit
         clear" so the helper never silently stomps columns the caller didn't
@@ -448,6 +556,9 @@ class AthleteGoal(Base):
           * ``per_sport_targets={"ride": 40}`` — **merge** into the existing
             blob, preserving other sport keys. PATCH-semantics: one sport at
             a time doesn't wipe the others.
+          * ``sport_type="run"`` — overwrite. Caller is responsible for enum
+            validation (router does this via Pydantic). Schema is NOT NULL so
+            an explicit `None` is not a valid input.
 
         Returns the updated goal or ``None`` if not found or not owned by
         ``user_id``. Callers should 404 in the latter case (not 403) to avoid
@@ -467,6 +578,16 @@ class AthleteGoal(Base):
                 current = dict(goal.per_sport_targets or {})
                 current.update(per_sport_targets)
                 goal.per_sport_targets = current
+        if sport_type is not _UNSET:
+            # Defense-in-depth: API DTO already validates against the
+            # Pydantic Literal, but a CLI / direct ORM call could bypass it.
+            # The Settings dropdown invariant relies on a fixed value-set —
+            # raise loudly rather than write garbage that breaks the UI.
+            if sport_type not in RACE_SPORT_TYPES:
+                raise ValueError(
+                    f"sport_type={sport_type!r} not in RACE_SPORT_TYPES; " f"valid values: {sorted(RACE_SPORT_TYPES)}"
+                )
+            goal.sport_type = sport_type
 
         session.commit()
         return goal

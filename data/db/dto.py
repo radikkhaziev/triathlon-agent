@@ -105,7 +105,10 @@ class AthleteGoalDTO(BaseModel):
     event_name: str
     event_date: date
     sport_type: str
-    disciplines: list[str] | None = None
+    # RACE_A / RACE_B / RACE_C — populated by get_goals_for_settings (#323
+    # Strand C, list view). Older callers (get_goal_dto / get_goals_for_prompt)
+    # don't need it for prompt rendering, so the field stays optional.
+    category: str | None = None
     ctl_target: float | None = None
     per_sport_targets: dict | None = None  # {"swim": 15, "ride": 35, "run": 25}
 

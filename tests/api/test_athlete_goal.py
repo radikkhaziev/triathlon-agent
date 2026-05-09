@@ -30,8 +30,19 @@ def _user(user_id: int = 1) -> SimpleNamespace:
     )
 
 
-def _goal(*, goal_id: int = 10, ctl_target: float | None = 55.0, per_sport_targets: dict | None = None):
-    return SimpleNamespace(id=goal_id, ctl_target=ctl_target, per_sport_targets=per_sport_targets)
+def _goal(
+    *,
+    goal_id: int = 10,
+    ctl_target: float | None = 55.0,
+    per_sport_targets: dict | None = None,
+    sport_type: str = "triathlon",
+):
+    return SimpleNamespace(
+        id=goal_id,
+        ctl_target=ctl_target,
+        per_sport_targets=per_sport_targets,
+        sport_type=sport_type,
+    )
 
 
 class TestPatchAthleteGoal:
@@ -58,7 +69,7 @@ class TestPatchAthleteGoal:
         assert kwargs["ctl_target"] == 65.0
         # per_sport_targets NOT in kwargs — field was not set in the body
         assert "per_sport_targets" not in kwargs
-        assert out == {"goal_id": 10, "ctl_target": 65.0, "per_sport_targets": None}
+        assert out == {"goal_id": 10, "ctl_target": 65.0, "per_sport_targets": None, "sport_type": "triathlon"}
 
     @pytest.mark.asyncio
     async def test_ctl_target_explicit_null_clears_field(self):
@@ -152,6 +163,60 @@ class TestPatchAthleteGoal:
         with pytest.raises(ValidationError):
             AthleteGoalPatchRequest(ctl_target=201)
 
+    # --- sport_type (issue #323 Strand B) ---------------------------------
+
+    @pytest.mark.asyncio
+    async def test_sport_type_set_calls_update_with_value(self):
+        body = AthleteGoalPatchRequest(sport_type="triathlon")
+        updated = _goal(sport_type="triathlon")
+        with patch(
+            "api.routers.athlete.AthleteGoal.update_local_fields",
+            AsyncMock(return_value=updated),
+        ) as update_mock:
+            out = await patch_athlete_goal(goal_id=10, body=body, user=_user())
+
+        kwargs = update_mock.await_args.kwargs
+        assert kwargs["sport_type"] == "triathlon"
+        # ctl_target NOT in kwargs — field was not set in the body
+        assert "ctl_target" not in kwargs
+        assert out["sport_type"] == "triathlon"
+
+    @pytest.mark.asyncio
+    async def test_sport_type_explicit_null_returns_400(self):
+        """Schema is NOT NULL — null is not a valid value, only absence (omit
+        field) leaves the column untouched. Router rejects null with 400."""
+        body = AthleteGoalPatchRequest(sport_type=None)
+        # update should NOT be called — router rejects before ORM
+        update_mock = AsyncMock()
+        with patch("api.routers.athlete.AthleteGoal.update_local_fields", update_mock):
+            with pytest.raises(HTTPException) as exc:
+                await patch_athlete_goal(goal_id=10, body=body, user=_user())
+        assert exc.value.status_code == 400
+        update_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sport_type_rejected_outside_enum(self):
+        """Pydantic Literal validates value-set; bogus strings → ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            AthleteGoalPatchRequest(sport_type="not_a_real_sport")  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_combined_sport_type_and_ctl_target(self):
+        """Both fields in one PATCH — both forwarded to ORM."""
+        body = AthleteGoalPatchRequest(sport_type="run", ctl_target=80.0)
+        updated = _goal(sport_type="run", ctl_target=80.0)
+        with patch(
+            "api.routers.athlete.AthleteGoal.update_local_fields",
+            AsyncMock(return_value=updated),
+        ) as update_mock:
+            await patch_athlete_goal(goal_id=10, body=body, user=_user())
+
+        kwargs = update_mock.await_args.kwargs
+        assert kwargs["sport_type"] == "run"
+        assert kwargs["ctl_target"] == 80.0
+
 
 class TestOrmPartialMerge:
     """Direct tests on AthleteGoal.update_local_fields — the real preservation
@@ -239,6 +304,60 @@ class TestOrmPartialMerge:
             session=session,
         )
         assert out is None
+        session.commit.assert_not_called()
+
+    def test_sport_type_overwrites_existing(self):
+        """Patching only sport_type writes the value, leaves ctl/per-sport untouched."""
+        from data.db import AthleteGoal
+
+        goal = SimpleNamespace(
+            id=10,
+            user_id=1,
+            sport_type="triathlon",
+            ctl_target=55.0,
+            per_sport_targets={"swim": 15.0, "ride": 35.0, "run": 25.0},
+        )
+        session = self._fake_session(goal)
+
+        AthleteGoal.update_local_fields(
+            10,
+            user_id=1,
+            sport_type="run",
+            session=session,
+        )
+
+        assert goal.sport_type == "run"
+        assert goal.ctl_target == 55.0  # untouched
+        assert goal.per_sport_targets == {"swim": 15.0, "ride": 35.0, "run": 25.0}  # untouched
+
+    def test_sport_type_unset_does_not_touch_field(self):
+        """When sport_type is omitted (sentinel _UNSET), the column stays."""
+        from data.db import AthleteGoal
+
+        goal = SimpleNamespace(id=10, user_id=1, sport_type="triathlon", ctl_target=None, per_sport_targets=None)
+        session = self._fake_session(goal)
+
+        AthleteGoal.update_local_fields(10, user_id=1, ctl_target=42.0, session=session)
+
+        assert goal.sport_type == "triathlon"  # NOT touched even though we updated ctl_target
+        assert goal.ctl_target == 42.0
+
+    def test_sport_type_outside_enum_raises_value_error(self):
+        """ORM-layer defense-in-depth (#323 Strand C L4): API Literal already
+        validates, but a CLI / direct call must also be guarded so a typo
+        can't write garbage that breaks the Settings dropdown invariant."""
+        import pytest as _pytest
+
+        from data.db import AthleteGoal
+
+        goal = SimpleNamespace(id=10, user_id=1, sport_type="triathlon", ctl_target=None, per_sport_targets=None)
+        session = self._fake_session(goal)
+
+        with _pytest.raises(ValueError, match="not in RACE_SPORT_TYPES"):
+            AthleteGoal.update_local_fields(10, user_id=1, sport_type="not_a_real_sport", session=session)
+
+        # Field NOT mutated, no commit
+        assert goal.sport_type == "triathlon"
         session.commit.assert_not_called()
 
     @pytest.mark.asyncio

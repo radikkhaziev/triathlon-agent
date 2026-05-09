@@ -1,22 +1,58 @@
-"""Athlete-scoped mutations: local-only overlay edits on `athlete_goals`.
+"""Athlete-scoped reads + mutations on `athlete_goals`.
 
-Only fields that don't exist in Intervals.icu live here (``ctl_target``,
-``per_sport_targets``). Fields that sync from Intervals (name/date/category)
-are NOT writable — those require a chat-flow push through
+PATCH targets local-only overlay fields (``ctl_target``, ``per_sport_targets``,
+``sport_type``); fields that sync from Intervals (name/date/category) are NOT
+writable — those require a chat-flow push through
 ``mcp_server/tools/races.py:suggest_race``, which mirrors the change to
 Intervals.icu in addition to the local DB.
+
+GET returns the list of active future goals for the Settings page list view
+(#323 Strand C); ``auth_me.goal`` keeps a single-goal field for legacy callers
+that only need a primary anchor.
 """
 
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.deps import get_data_user_id, require_athlete
+from api.deps import get_data_user_id, require_athlete, require_viewer
 from api.dto import AthleteGoalPatchRequest
 from data.db import AthleteGoal, User
+from tasks.dto import local_today
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/api/athlete/goals")
+async def list_athlete_goals(
+    user: User = Depends(require_viewer),
+) -> dict:
+    """List active future goals for the Settings list view (#323 Strand C).
+
+    Past races are filtered out — they're not editable. Sort: ``event_date
+    ASC`` so the nearest race is first.
+
+    Read-only endpoint — uses ``require_viewer`` so demo sessions can see the
+    owner's goals (read-only tour). Write path (PATCH below) stays on
+    ``require_athlete``; demo gets 403 on edits.
+    """
+    data_uid = get_data_user_id(user)
+    goals = await AthleteGoal.get_goals_for_settings(data_uid, local_today())
+    return {
+        "goals": [
+            {
+                "id": g.id,
+                "category": g.category,
+                "event_name": g.event_name,
+                "event_date": str(g.event_date),
+                "sport_type": g.sport_type,
+                "ctl_target": g.ctl_target,
+                "per_sport_targets": g.per_sport_targets,
+            }
+            for g in goals
+        ],
+    }
 
 
 @router.patch("/api/athlete/goal/{goal_id}")
@@ -48,9 +84,18 @@ async def patch_athlete_goal(
             kwargs["per_sport_targets"] = None
         else:
             # Only include keys the caller actually set, to avoid wiping
-            # disciplines they didn't touch when writing the JSON blob.
+            # other sports they didn't touch when writing the JSON blob.
             set_keys = payload.model_fields_set
             kwargs["per_sport_targets"] = {k: getattr(payload, k) for k in set_keys}
+    if "sport_type" in fields_set:
+        # Schema is NOT NULL — explicit ``null`` is not a valid edit (drop the
+        # field instead to skip it). Pydantic Literal already restricts the
+        # value-set to RACE_SPORT_TYPES.
+        if body.sport_type is None:
+            raise HTTPException(
+                status_code=400, detail="sport_type cannot be null. Omit the field to leave it unchanged."
+            )
+        kwargs["sport_type"] = body.sport_type
 
     data_uid = get_data_user_id(user)
     goal = await AthleteGoal.update_local_fields(goal_id, user_id=data_uid, **kwargs)
@@ -69,4 +114,5 @@ async def patch_athlete_goal(
         "goal_id": goal.id,
         "ctl_target": goal.ctl_target,
         "per_sport_targets": goal.per_sport_targets,
+        "sport_type": goal.sport_type,
     }

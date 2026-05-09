@@ -10,6 +10,7 @@ from sqlalchemy import select
 from data.db import Activity, AthleteGoal, Race, Wellness, get_session
 from data.intervals.client import IntervalsAsyncClient
 from data.intervals.dto import EventExDTO
+from data.sport_map import resolve_race_sport_type
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
 from mcp_server.sentry import sentry_tool
@@ -260,13 +261,6 @@ async def update_race(
 # ---------------------------------------------------------------------------
 
 
-_TRIATHLON_DISCIPLINES = {
-    "Triathlon": ["Swim", "Ride", "Run"],
-    "Duathlon": ["Run", "Ride", "Run"],
-    "Aquathlon": ["Swim", "Run"],
-}
-
-
 def _format_preview(
     *,
     name: str,
@@ -453,7 +447,6 @@ async def suggest_race(
             # Non-fatal — proceed to create path.
 
     # --- Build Intervals payload -------------------------------------------
-    disciplines = _TRIATHLON_DISCIPLINES.get(sport)
     payload = EventExDTO(
         category=category,
         type=sport or None,
@@ -486,6 +479,7 @@ async def suggest_race(
             event_name=name,
             event_date=event_date,
             intervals_event_id=intervals_event_id,
+            sport_type=resolve_race_sport_type(sport),
         )
     except Exception as e:
         # Intervals succeeded, DB didn't — idempotent retry will recover (§4.4).
@@ -502,17 +496,6 @@ async def suggest_race(
         except Exception:
             logger.warning("suggest_race: set_ctl_target failed for goal %d", goal.id, exc_info=True)
             ctl_target_saved = False
-
-    # --- Fill triathlon disciplines if applicable --------------------------
-    if disciplines and goal.disciplines != disciplines:
-        try:
-            async with get_session() as session:
-                fresh = await session.get(AthleteGoal, goal.id)
-                if fresh is not None:
-                    fresh.disciplines = disciplines
-                    await session.commit()
-        except Exception:
-            logger.warning("suggest_race: disciplines backfill failed for goal %d", goal.id, exc_info=True)
 
     # --- Response ----------------------------------------------------------
     days_to_race = (event_date - today).days

@@ -341,6 +341,7 @@ class TestActorSyncAthleteGoals:
             event_name="Ironman 70.3",
             event_date=date(2026, 9, 15),
             intervals_event_id=999,
+            sport_type="fitness",  # ScheduledWorkoutDTO.type defaults to None → "fitness"
         )
         mock_notify.send.assert_called_once()
 
