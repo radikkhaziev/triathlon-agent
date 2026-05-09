@@ -480,10 +480,20 @@ class TestGoal:
         assert data["has_goals"] is True
         g = data["goals"][0]
         assert g["weeks_remaining"] == 12
+        # Single-day wellness can't compute a 14-day ramp — projection is
+        # insufficient_data per sport AND for the overall block. Bar still
+        # renders the % correctly.
+        insufficient = {
+            "ramp_per_week": None,
+            "projected_date": None,
+            "reason": "insufficient_data",
+            "on_track": None,
+        }
+        assert g["projection"] == insufficient
         assert g["per_sport"] == {
-            "swim": {"ctl_current": 12.0, "ctl_target": 15.0, "pct": 80},
-            "ride": {"ctl_current": 28.0, "ctl_target": 35.0, "pct": 80},
-            "run": {"ctl_current": 20.0, "ctl_target": 25.0, "pct": 80},
+            "swim": {"ctl_current": 12.0, "ctl_target": 15.0, "pct": 80, "projection": insufficient},
+            "ride": {"ctl_current": 28.0, "ctl_target": 35.0, "pct": 80, "projection": insufficient},
+            "run": {"ctl_current": 20.0, "ctl_target": 25.0, "pct": 80, "projection": insufficient},
         }
 
     async def test_multiple_goals_returned_sorted_by_date(self, client):

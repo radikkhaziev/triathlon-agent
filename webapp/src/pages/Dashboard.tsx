@@ -7,7 +7,7 @@ import ErrorMessage from '../components/ErrorMessage'
 import { ChartCard, chartOptions } from '../components/ChartCard'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS, SPORT_ICONS, TSB_ZONE_COLORS } from '../lib/constants'
-import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, GoalProgress, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
+import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, GoalProgress, GoalProjection, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
 
 Chart.register(...registerables)
 
@@ -250,28 +250,32 @@ function ProgressBar({
   target,
   pct,
   color,
+  onTrack,
 }: {
   label: React.ReactNode
   current: number | null
   target: number | null
   pct: number | null
   color: string
+  onTrack?: boolean | null
 }) {
   // Bar fill is clamped to 100% so an over-target athlete (pct > 100) doesn't
   // overflow the row, but the numeric pct is shown as-is so they can see the
   // overshoot. A null pct (no target or no current CTL) renders an empty bar
   // and "—" instead of a misleading 0%.
   const fill = pct === null ? 0 : Math.min(100, Math.max(0, pct))
+  const offTrack = onTrack === false
+  const barColor = offTrack ? '#dc2626' : color
   return (
     <div className="flex items-center gap-2 mb-2">
-      <span className="w-[72px] text-[13px] font-semibold">{label}</span>
-      <div className="flex-1 h-2.5 bg-bg rounded-full overflow-hidden">
+      <span className={`w-[72px] text-[13px] font-semibold ${offTrack ? 'text-red-600' : ''}`}>{label}</span>
+      <div className={`flex-1 h-2.5 rounded-full overflow-hidden ${offTrack ? 'bg-red-100' : 'bg-bg'}`}>
         <div
           className="h-full rounded-full transition-[width] duration-500"
-          style={{ width: `${fill}%`, background: color }}
+          style={{ width: `${fill}%`, background: barColor }}
         />
       </div>
-      <span className="w-12 text-[13px] text-right tabular-nums">
+      <span className={`w-12 text-[13px] text-right tabular-nums ${offTrack ? 'text-red-600' : ''}`}>
         {pct === null ? '—' : `${pct}%`}
       </span>
       <span className="w-16 text-[11px] text-right text-text-dim tabular-nums">
@@ -280,6 +284,34 @@ function ProgressBar({
       </span>
     </div>
   )
+}
+
+// Build the under-card warning string for an off-track projection. Only
+// called when ``on_track === false``; the projected_date branch carries the
+// concrete delta, the null branches surface why we couldn't project.
+//
+// Date math is done in UTC (``T00:00:00Z``) — local-time parsing would shift
+// dates by ±1d across DST boundaries (e.g. user in Europe/Belgrade in late
+// March). Lateness is clamped to ``>= 0``, not ``>= 1``: a same-day projection
+// against on_track=false (rare due to projected_date rounding vs the float
+// predicted_at_event check on the server) reads as "0w late" honestly rather
+// than fake-padding to 1w.
+function formatProjectionWarning(
+  label: string,
+  p: GoalProjection,
+  target: number | null,
+  eventDate: string,
+): string {
+  if (!p.projected_date) {
+    if (p.reason === 'declining') return `${label}: CTL is declining — target not reachable at current rate`
+    if (p.reason === 'flat') return `${label}: CTL is flat — target not reachable at current rate`
+    return `${label}: not enough data to project`
+  }
+  const proj = new Date(p.projected_date + 'T00:00:00Z')
+  const ev = new Date(eventDate + 'T00:00:00Z')
+  const weeksLate = Math.max(0, Math.round((proj.getTime() - ev.getTime()) / (7 * 86400e3)))
+  const tgt = target !== null ? Math.round(target) : '?'
+  return `${label}: at current pace you'll hit ${tgt} on ${p.projected_date} — ${weeksLate}w late`
 }
 
 function GoalTab() {
@@ -315,6 +347,21 @@ function GoalTab() {
 }
 
 function GoalCard({ goal: g }: { goal: GoalProgress }) {
+  // Collect off-track warnings once so the JSX stays flat. Per-sport bars
+  // only contribute when their target is set (block !== undefined).
+  const warnings: string[] = []
+  if (g.projection && g.projection.on_track === false) {
+    warnings.push(formatProjectionWarning('Overall', g.projection, g.ctl_target, g.event_date))
+  }
+  if (g.per_sport) {
+    for (const sport of ['swim', 'ride', 'run'] as const) {
+      const block = g.per_sport[sport]
+      if (block?.projection && block.projection.on_track === false) {
+        warnings.push(formatProjectionWarning(SPORT_META[sport].label, block.projection, block.ctl_target, g.event_date))
+      }
+    }
+  }
+
   return (
     <>
       <div className="text-center py-4 text-xl font-bold">
@@ -328,6 +375,7 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
           target={g.ctl_target}
           pct={g.overall_pct}
           color={CHART_COLORS.ctl}
+          onTrack={g.projection?.on_track ?? null}
         />
 
         {g.per_sport && (
@@ -344,9 +392,22 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
                   target={block.ctl_target}
                   pct={block.pct}
                   color={meta.color}
+                  onTrack={block.projection?.on_track ?? null}
                 />
               )
             })}
+          </div>
+        )}
+
+        {warnings.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-bg space-y-1" role="alert">
+            {warnings.map(w => (
+              <div key={w} className="text-[11px] text-red-600">
+                <span aria-hidden="true">⚠ </span>
+                <span className="sr-only">Warning: </span>
+                {w}
+              </div>
+            ))}
           </div>
         )}
 

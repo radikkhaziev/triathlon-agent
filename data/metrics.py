@@ -374,6 +374,114 @@ def calculate_sport_ctl(
 
 
 # ---------------------------------------------------------------------------
+# CTL Target Projection
+# ---------------------------------------------------------------------------
+
+PROJECTION_WINDOW_DAYS = 14
+
+
+_FLAT_RAMP_TOLERANCE = 0.05  # CTL/week — anything tighter is float noise
+
+
+def project_ctl_target(
+    ctl_series: list[tuple[date_type, float]],
+    target: float | None,
+    today: date_type,
+    event_date: date_type | None = None,
+) -> dict | None:
+    """Estimate when CTL will reach ``target`` at the current ramp rate.
+
+    Slope is a least-squares fit over the supplied window (numpy.polyfit).
+    Two-endpoint slope was rejected because Intervals.icu CTL wobbles
+    ±0.5 day-to-day during easy/hard sequencing — a single noisy oldest
+    day would swing the projected_date by weeks. ``current_ctl`` for the
+    gap calculation stays the actual newest reading (what the user sees
+    on the bar), not the regression intercept.
+
+    ``event_date`` is optional. When supplied, ``on_track`` is computed
+    against the raw (unrounded) days-to-target to avoid display-rounding
+    flipping the verdict day-over-day. Without it, ``on_track`` stays
+    None for the success branch (caller decides).
+
+    Returns ``None`` if there is no target. Otherwise a dict shaped
+    ``{ramp_per_week, projected_date, reason, on_track}``.
+    """
+    if target is None or target <= 0:
+        return None
+    if len(ctl_series) < 2:
+        return {
+            "ramp_per_week": None,
+            "projected_date": None,
+            "reason": "insufficient_data",
+            "on_track": None,
+        }
+
+    series = sorted(ctl_series, key=lambda x: x[0])
+    oldest_dt, _ = series[0]
+    newest_dt, newest_ctl = series[-1]
+    days_span = (newest_dt - oldest_dt).days
+    if days_span < 7:
+        return {
+            "ramp_per_week": None,
+            "projected_date": None,
+            "reason": "insufficient_data",
+            "on_track": None,
+        }
+
+    days_arr = np.array([(d - oldest_dt).days for d, _ in series], dtype=float)
+    ctls_arr = np.array([c for _, c in series], dtype=float)
+    slope_per_day_np, _intercept = np.polyfit(days_arr, ctls_arr, 1)
+    slope_per_day = float(slope_per_day_np)  # cast off numpy scalar early — keeps `>=` Python-native
+    ramp_per_week = slope_per_day * 7
+    gap = target - newest_ctl
+
+    if gap <= 0:
+        return {
+            "ramp_per_week": round(ramp_per_week, 2),
+            "projected_date": None,
+            "reason": "already_at_target",
+            "on_track": True,
+        }
+    if abs(ramp_per_week) < _FLAT_RAMP_TOLERANCE:
+        return {
+            "ramp_per_week": round(ramp_per_week, 2),
+            "projected_date": None,
+            "reason": "flat",
+            "on_track": False,
+        }
+    if ramp_per_week < 0:
+        return {
+            "ramp_per_week": round(ramp_per_week, 2),
+            "projected_date": None,
+            "reason": "declining",
+            "on_track": False,
+        }
+
+    days_to_target = gap / ramp_per_week * 7
+    projected = today + timedelta(days=int(round(days_to_target)))
+    # on_track via "predicted CTL at event_date >= target", not days comparison —
+    # the inverse `gap / ramp` accumulates float error (e.g. 13.5/3.5*7 yields
+    # 27.0000000000004) and would flip a true boundary case to False.
+    on_track: bool | None
+    if event_date is not None:
+        days_remaining = (event_date - today).days
+        predicted_at_event = newest_ctl + slope_per_day * days_remaining
+        # 1e-6 epsilon — np.polyfit can return slope ±1e-15 from the true
+        # value on perfectly linear input, which flips boundary cases (predicted
+        # = target ± 1e-14) the wrong way. CTL precision is 0.1, so 1e-6 is
+        # well below anything user-visible.
+        on_track = predicted_at_event >= target - 1e-6
+    else:
+        on_track = None
+    return {
+        "ramp_per_week": round(ramp_per_week, 2),
+        "projected_date": projected.isoformat(),
+        "reason": None,
+        "on_track": on_track,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Combined Recovery Score
 # ---------------------------------------------------------------------------
 
