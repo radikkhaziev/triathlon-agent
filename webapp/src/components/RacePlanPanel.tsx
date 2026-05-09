@@ -131,7 +131,15 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
         }
         setError({
           status: err instanceof ApiError ? err.status : 0,
-          detail: err instanceof ApiError ? (err.detail as ErrorState['detail']) : (err as Error).message,
+          // Non-ApiError branch: prefer Error.message, but fall back to String(err)
+          // so the UI never shows blank when something non-Error gets thrown
+          // (e.g. a string, a plain object, or AbortError without .message).
+          detail:
+            err instanceof ApiError
+              ? (err.detail as ErrorState['detail'])
+              : err instanceof Error
+                ? err.message
+                : String(err),
         })
       })
       .finally(() => setLoading(false))
@@ -160,7 +168,12 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
     } catch (err: unknown) {
       setError({
         status: err instanceof ApiError ? err.status : 0,
-        detail: err instanceof ApiError ? (err.detail as ErrorState['detail']) : (err as Error).message,
+        detail:
+          err instanceof ApiError
+            ? (err.detail as ErrorState['detail'])
+            : err instanceof Error
+              ? err.message
+              : String(err),
       })
     } finally {
       setGenerating(false)

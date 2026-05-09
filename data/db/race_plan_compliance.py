@@ -97,6 +97,34 @@ class RacePlanCompliance(Base):
 
     @classmethod
     @dual
+    def save_many_for_legs(
+        cls,
+        rows_data: list[dict],
+        *,
+        session: Session,
+    ) -> list[RacePlanCompliance]:
+        """Atomic bulk insert: all-or-nothing in one session/commit.
+
+        Each item in ``rows_data`` is a dict with the same field names as
+        ``save_for_leg`` arguments (``user_id``, ``race_plan_id``, ``race_id``,
+        ``leg_name``, ``hr_compliance_pct``, ``band_compliance_pct``,
+        ``fueling_compliance_pct``, ``leg_duration_sec``, ``notes``). Used by
+        ``compute_compliance`` so a plan with N legs doesn't trigger N commits.
+
+        Returns the persisted rows (ids populated post-flush) in input order.
+        Empty input → empty output, no commit issued.
+        """
+        if not rows_data:
+            return []
+        rows = [cls(**data) for data in rows_data]
+        session.add_all(rows)
+        session.commit()
+        for row in rows:
+            session.refresh(row)
+        return rows
+
+    @classmethod
+    @dual
     def get_for_race_plan(
         cls,
         race_plan_id: int,

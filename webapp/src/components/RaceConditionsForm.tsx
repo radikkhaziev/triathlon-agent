@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ApiError, apiFetch } from '../api/client'
 import type { InheritableConditionsResponse, InheritableRace, RaceConditionsInput } from '../api/types'
@@ -33,6 +33,13 @@ export default function RaceConditionsForm({
   onInheritableLoaded,
 }: RaceConditionsFormProps) {
   const { t } = useTranslation()
+  // useId gives a stable, document-unique id prefix per render-site. Needed
+  // because the panel mounts this form twice (no-plan vs has-plan branch) —
+  // duplicate hard-coded ids would break label-for-input association.
+  const fieldId = useId()
+  const elevationId = `${fieldId}-elevation`
+  const tempId = `${fieldId}-temp`
+  const inheritId = `${fieldId}-inherit`
   const [openLocal, setOpenLocal] = useState(false)
   const [inheritableLocal, setInheritableLocal] = useState<InheritableRace[] | null>(null)
   const open = openProp ?? openLocal
@@ -112,10 +119,11 @@ export default function RaceConditionsForm({
       {open && (
         <div className="mt-2 space-y-2">
           <div className="flex items-center gap-2">
-            <label className="text-[11px] text-text-dim w-32">
+            <label htmlFor={elevationId} className="text-[11px] text-text-dim w-32">
               {t('race_plan.conditions.elevation_label')}
             </label>
             <input
+              id={elevationId}
               type="number"
               min={0}
               max={15000}
@@ -126,10 +134,11 @@ export default function RaceConditionsForm({
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-[11px] text-text-dim w-32">
+            <label htmlFor={tempId} className="text-[11px] text-text-dim w-32">
               {t('race_plan.conditions.temp_label')}
             </label>
             <input
+              id={tempId}
               type="number"
               min={-50}
               max={60}
@@ -140,10 +149,11 @@ export default function RaceConditionsForm({
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-[11px] text-text-dim w-32">
+            <label htmlFor={inheritId} className="text-[11px] text-text-dim w-32">
               {t('race_plan.conditions.inherit_label')}
             </label>
             <select
+              id={inheritId}
               onChange={e => handleInherit(e.target.value)}
               disabled={loadingInherit || (inheritable?.length === 0)}
               defaultValue=""

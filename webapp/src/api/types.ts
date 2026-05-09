@@ -553,8 +553,13 @@ export interface RacePlanPayload {
   // Inline race-block (spec §11.3 — accepted as snapshot for goal-deletion resilience).
   race: Record<string, unknown>
   confidence_tier: ConfidenceTier
-  generated_at: string
-  model_version: string
+  // generated_at / model_version are mirrored on the top-level RacePlanResponse
+  // (sourced from the row columns by api/routers/race_plan.py:_format_plan_response).
+  // The service writes them into payload too, but UI should read the top-level
+  // fields — declare them optional here so test fixtures and any future
+  // payload-only-or-top-level-only response shapes both type-check.
+  generated_at?: string
+  model_version?: string
   // PR2.3: tracks per-day force_regen quota (resets implicitly per UTC day).
   regen_count_today?: number
 }

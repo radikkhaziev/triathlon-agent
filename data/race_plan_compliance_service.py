@@ -24,7 +24,7 @@ returns ``[]`` rather than raising.
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -122,9 +122,16 @@ def _compute_fueling_compliance(
         or plan_carbs <= 0
     ):
         return None
-    actual_g_hr = race_carbs_consumed_g / (activity_moving_time_sec / 3600.0)
-    pct = min(actual_g_hr, plan_carbs) / plan_carbs * 100
-    return Decimal(str(round(pct, 2)))
+    # Decimal end-to-end: avoids float artifacts (e.g. 200/4*100/75 round-trip)
+    # and gives deterministic ROUND_HALF_UP for the NUMERIC(5,2) column —
+    # tests assert exact decimals like 66.67, so the quantize policy has to
+    # be explicit rather than relying on str(round(...)) banker's-rounding mix.
+    plan_carbs_d = Decimal(str(plan_carbs))
+    carbs_consumed_d = Decimal(race_carbs_consumed_g)
+    moving_hours = Decimal(activity_moving_time_sec) / Decimal("3600")
+    actual_g_hr = carbs_consumed_d / moving_hours
+    pct = min(actual_g_hr, plan_carbs_d) / plan_carbs_d * Decimal("100")
+    return pct.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 async def compute_compliance(
@@ -188,25 +195,30 @@ async def compute_compliance(
         activity.moving_time if activity else None,
     )
 
-    rows: list[RacePlanCompliance] = []
-    for leg in legs:
-        leg_name = leg.get("leg") or "?"
-        hr_pct = _compute_hr_compliance(leg, activity.average_hr if activity else None)
-        band_pct = _compute_band_compliance(leg, activity_detail)
-        leg_duration_sec = activity.moving_time if activity else None  # whole-activity proxy
-
-        row = await RacePlanCompliance.save_for_leg(
-            user_id=user_id,
-            race_plan_id=plan_row.id,
-            race_id=race_id,
-            leg_name=leg_name,
-            hr_compliance_pct=hr_pct,
-            band_compliance_pct=band_pct,
-            fueling_compliance_pct=fueling_pct,
-            leg_duration_sec=leg_duration_sec,
-            notes=_PR3_NOTES,
-        )
-        rows.append(row)
+    # Build per-leg dicts in memory first, then write the whole batch in ONE
+    # session/commit via save_many_for_legs. The previous loop called
+    # save_for_leg per leg → N commits per plan; for a triathlon (3 legs) that
+    # was 3 round-trips where 1 suffices, and for future ultra plans it scales
+    # linearly. Atomicity also matters: a partial write here would leave the
+    # plan with some leg-rows missing, which the dashboard couldn't tell apart
+    # from "compute hasn't run yet".
+    avg_hr = activity.average_hr if activity else None
+    leg_duration_sec = activity.moving_time if activity else None  # whole-activity proxy
+    rows_data = [
+        {
+            "user_id": user_id,
+            "race_plan_id": plan_row.id,
+            "race_id": race_id,
+            "leg_name": leg.get("leg") or "?",
+            "hr_compliance_pct": _compute_hr_compliance(leg, avg_hr),
+            "band_compliance_pct": _compute_band_compliance(leg, activity_detail),
+            "fueling_compliance_pct": fueling_pct,
+            "leg_duration_sec": leg_duration_sec,
+            "notes": _PR3_NOTES,
+        }
+        for leg in legs
+    ]
+    rows = await RacePlanCompliance.save_many_for_legs(rows_data)
 
     logger.info(
         "compute_compliance: persisted %d compliance rows for plan_id=%d (user=%d, race_id=%s)",
