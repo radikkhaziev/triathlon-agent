@@ -551,3 +551,42 @@ class TestWeeklyIdempotency:
 
         result = cl.publish_weekly_changelog()
         assert result["status"] == "published"
+
+    def test_window_includes_pr_merged_eight_days_ago(
+        self,
+        enabled_settings: None,
+        no_existing_discussion: None,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_publish: dict[str, Any],
+    ) -> None:
+        """Pin the days=8 buffer behaviour: a PR merged ~7d 23h ago (Sat
+        afternoon of the previous week, after that week's Sun-15:00 cron
+        had already published) MUST appear in the current Sunday's digest.
+
+        With the legacy days=7 window such a PR would slide into next
+        week's window only — by which point the «what shipped» framing
+        has decayed. This test locks the +1d buffer documented inline in
+        ``publish_weekly_changelog`` so a future tightening to days=7
+        flips the result and surfaces the regression.
+        """
+        captured: dict[str, datetime] = {}
+
+        def capture_since(repo: str, since: datetime, *, token: str) -> list[cl.MergedPR]:
+            captured["since"] = since
+            return [_make_pr(1, merged_at=datetime.now(timezone.utc) - timedelta(days=7, hours=23))]
+
+        monkeypatch.setattr(cl, "fetch_merged_prs", capture_since)
+        monkeypatch.setattr(cl, "call_claude", lambda prompt: "## 🎯\n- bullet")
+
+        result = cl.publish_weekly_changelog()
+
+        assert result["status"] == "published"
+        # The Saturday-afternoon PR (7d 23h ago) is strictly later than `since`,
+        # so the GitHub query MUST return it. We verify by asserting `since` is
+        # ≥ 8 days back (the buffer) — a regression to days=7 leaves `since`
+        # only 7d back, the PR's `merged_at` slips past it, and the assertion
+        # below fails.
+        now = datetime.now(timezone.utc)
+        assert (now - captured["since"]) >= timedelta(days=7, hours=23, minutes=30), (
+            f"`since` is {now - captured['since']!r} back — too narrow. " f"days=8 buffer should be ≥ ~8 days."
+        )

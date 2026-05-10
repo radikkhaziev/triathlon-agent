@@ -31,5 +31,6 @@ from .race_plan_compliance import RacePlanCompliance  # noqa
 from .tracking import ApiUsageDaily, IqosDaily, MoodCheckin, StarTransaction  # noqa
 from .user import User  # noqa
 from .user_fact import HARD_CAP_ACTIVE, SOFT_WARN_ACTIVE, TOPIC_CAPS, UserFact  # noqa
+from .weekly_report import WeeklyReport  # noqa
 from .wellness import Wellness  # noqa
 from .workout import AiWorkout, ExerciseCard, ScheduledWorkout, TrainingLog, WorkoutCard  # noqa

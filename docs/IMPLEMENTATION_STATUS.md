@@ -344,6 +344,59 @@ POC Discussion #334 was created manually 2026-05-09 to validate the end-to-end f
 
 ---
 
+## Weekly report archive — PR1+PR2+PR3 complete (2026-05-10)
+
+End-to-end fix for the long-standing «Sunday weekly report disappears from chat» bug. Telegram returns `ok=true` to `sendMessage` for Claude's ~4 KB markdown but the recipient never sees it on some weeks (visible-text limit + opaque spam heuristic). Solution: persist the markdown server-side in a new `weekly_reports` table, swap the chat send to a short notification + WebApp button into the webapp's archive view. The chat becomes a pointer; the archive is the source of truth.
+
+### PR1 — backend storage + actor wiring
+
+- **Schema:** migration `bb8c9d0e1f2a` adds `weekly_reports` (`id`, `user_id` FK, `week_start DATE`, `content_md TEXT`, `model TEXT`, `generated_at TIMESTAMPTZ`). UNIQUE on `(user_id, week_start)` is the idempotency anchor — cron coalesce / manual rerun / watchdog re-kick all resolve to UPSERT, never duplicate. Composite index `ix_weekly_reports_user_week_desc` on `(user_id, week_start DESC)` drives the history list endpoint (PR2). FK without `ON DELETE CASCADE` — auditable history that survives user deactivation.
+- **ORM:** `data/db/weekly_report.py` with three `@dual` methods. `upsert` uses Postgres `ON CONFLICT DO UPDATE` — atomic, no SELECT-then-update race. `RETURNING cls` + project-wide `expire_on_commit=False` keeps the detached row readable post-commit; no `session.refresh` needed (would only add a round-trip). `now_utc` materialised once so INSERT and ON CONFLICT branches stamp identical `generated_at`. `list_for_user(user_id, *, limit, before)` is the cursor-paginated read for the history endpoint — strict `<` semantics on `week_start` so the cursor row never echoes across pages. `get_one(user_id, week_start)` — single-row lookup, scoped by `user_id` from auth (path's `week_start` is a filter, never a tenant key).
+- **Actor split:** extracted `tasks/actors/reports.py:generate_and_save_weekly_report(user) → (content_md, week_start) | None` — the «generate via Claude+MCP and persist» path. `actor_compose_weekly_report` is now a thin wrapper that calls the helper, and on success builds preview + WebApp button + Telegram send. CLI shares the same helper without touching Telegram.
+- **Persist-before-send:** `WeeklyReport.upsert` runs BEFORE `tg.send_message`, so the original Telegram-drop bug no longer loses content — the archive is durable regardless of chat delivery.
+- **Chat send:** notification label «📊 Недельный отчёт готов» + extracted preview + inline keyboard with `web_app` button → `{API_BASE_URL}/weekly/<iso_monday>`. Stays well under 4 KB (notification text ~250 chars), so the original drop-bug surface is gone in addition to being durable.
+- **Preview helper:** `data/weekly_preview.py:extract_weekly_preview` — leaf-module pure function, no DB / network / secrets surface, safe for both router and actor to import without dragging dramatiq+sentry+MCPTool. Anchor regex `^[\s#*_>\-]*📊` + `re.MULTILINE` matches «📊 Итог недели» heading at line-start (allowing `**📊 …`, `## 📊 …`); rejects inline 📊 mentions in body text. Fallback path skips leading `#` headings, `---`/`===` dividers, blank lines until prose. Returns `—` placeholder when anchor matched but document is heading-only (rather than echoing `Итог`). Strips bold/italic markdown, truncates at word boundary with ellipsis (`rstrip(" .,;:…—")` + `…`).
+- **Model name single-source:** `MCPTool.WEEKLY_MODEL: ClassVar[str] = "claude-sonnet-4-6"` — read by the API call AND stored in `weekly_reports.model`. Eliminates drift between the hardcoded literal and the actual Claude model used. `ClassVar` annotation matches the `_TG_400_PERMANENT_SUBSTRINGS` precedent in the same file.
+- **Tests:** 21 cases across `tests/db/test_weekly_report.py` + `tests/data/test_weekly_preview.py`. ORM: upsert idempotency (insert + overwrite + audit-bump), cursor pagination strict-`<`, cross-tenant isolation on both `list_for_user` and `get_one`, sync-path round-trip via `asyncio.to_thread` (so the sync `@dual` branch isn't dead-untested). Preview: anchor path, line-start-only anchor (rejects inline 📊), bold-before-emoji `**📊`, `## 📊` heading, fallback skips `#`/`---`/blank, heading-only → `—` placeholder, word-boundary truncation.
+
+### PR2 — REST endpoints
+
+- **List:** `GET /api/weekly-reports?limit=20&before=<iso>` — returns `{items: [{week_start, preview, generated_at}], next_before}`. `next_before` is the oldest row's `week_start` when the page filled the limit (more history available); `null` means end-of-history. Hard cap `limit ≤ 50` via `Query(le=50)` — anything above returns 422. Server-renders `preview` from `extract_weekly_preview(content_md)` so the list payload stays small (21 cards × ~220 chars ≈ 5 KB vs 21 × full markdown ≈ 80 KB).
+- **Detail:** `GET /api/weekly-reports/{week_start}` — full markdown + `model` + `generated_at`. FastAPI auto-parses `week_start` as `date`; malformed string → 422 before our code runs. Cross-tenant defence: 404 (not 200) for a week that exists but belongs to another user.
+- **Auth:** both `require_athlete` — own-history-only, no demo read-through. Weekly summaries reference `user_facts` (injuries, family context) so demo cross-read would leak athlete-private context that the rest of the dashboard already gates on athlete identity.
+- **Tests:** 10 cases in `tests/api/test_weekly_reports_routes.py`. List: empty-state, ordering, `next_before` set when page fills, `before` cursor returns older rows, limit-above-cap → 422, cross-tenant isolation. Detail: full content round-trip, 404 on missing, 404 on cross-tenant, 422 on malformed ISO date.
+
+### PR3 — webapp archive UI + chat-link restoration
+
+- **Routes:** `/weekly` (list) and `/weekly/:weekStart` (detail), both gated by `dataRoute(...)` so the existing onboarding/sports gates apply.
+- **List page** (`webapp/src/pages/WeeklyReports.tsx`): infinite-scroll via `Load more` button + cursor `before`. Each card = Mon-Sun range + 3-line preview + chevron. Empty-state copy «No weekly reports yet — first arrives Sunday evening». Per-page error rendered inline below the list so the first page stays readable instead of collapsing into a full-screen error on a `Load more` failure.
+- **Detail page** (`webapp/src/pages/WeeklyReport.tsx`): `react-markdown@^9` rendered with custom Tailwind component overrides (h1/h2/h3, p, ul/ol/li, strong/em, hr, code, a) — project doesn't ship the typography plugin so we override per-element. Prev/next chevrons shift the URL by ±7 days; `next` disabled when it'd land on a future Monday. Malformed path / missing report → 404-state with «Back to list» CTA. Trade-off: prev/next don't pre-validate existence (would require an extra API call or a `neighbours` field on the detail response), so one click can land on an empty week — accepted for API minimalism.
+- **Navigation:** `/weekly` added to `MORE_NAV_ITEMS` between `/plan` and `/settings`. Sidebar (desktop ≥768px) and BottomTabs More-menu (mobile) inherit it via `ALL_NAV_ITEMS`.
+- **Types & i18n:** `WeeklyReportListItem` / `WeeklyReportListResponse` / `WeeklyReportDetail` in `webapp/src/api/types.ts`. i18n keys `nav.weekly` + `weekly.{title,empty,load_more,loading_more,error_load,not_found,back_to_list,prev_week,next_week}` ru/en.
+- **Bundle cost:** +50 KB gzipped from `react-markdown` (built JS 700 → 751 KB). Above the 500 KB Vite warning but acceptable for now; code-split is a separate concern.
+
+### CLI — manual backfill
+
+- `python -m cli create-weekly-report` — sweeps all active athletes via `User.get_active_athletes()`, runs `generate_and_save_weekly_report(user_dto)` per user, NEVER touches Telegram. Per-user `try/except` with `sentry_sdk.capture_exception` + tally `saved/skipped/failed` so one bad athlete (Intervals 5xx, expired OAuth, transient Anthropic) doesn't abort the whole sweep. Sequential — ~30-40s/user, ~$0.04/user via Claude. Used to backfill missed Sunday cron firings (the original drop-bug) or seed the webapp history view in dev. Idempotent per user: re-running overwrites the existing row for the current Mon-Sun window.
+
+### Decisions log
+
+- **No webapp-route stub in PR2** — the `/weekly/<date>` page lives in PR3. Between PR1 merge and PR3 merge the actor sent the FULL markdown (pre-PR1 chat behaviour), no preview or button — a button to a non-existent route silent-redirects to `/wellness` via the catch-all and breaks the implied UX. Persistence still happened during that window, so PR3 launches with archive content already accumulated.
+- **Preview-helper leaf module** — `data/weekly_preview.py` rather than `tasks/actors/reports.py`. The API router would otherwise transitively pull dramatiq+sentry+MCPTool just to compute a string. Mirrors the «no API import path crosses tasks/» discipline from MT spec §6.
+- **Auth: `require_athlete` not `require_viewer`** — weekly summaries surface `user_facts` (injuries, schedule, family), demo cross-read would expose private context. Different from the changelog endpoint where the data is global-per-repo.
+- **Cursor `<` strict, not `<=`** — same convention as Stripe/GitHub list APIs. The cursor row never echoes across pages.
+
+### Operational follow-ups
+
+- First real cron under the new path: Sun 17 May 19:00 Belgrade. Smoke check: actor logs `Weekly report saved+sent for user N week=YYYY-MM-DD` and the chat shows preview+button (not full markdown).
+- Manual prod backfill: `docker compose run --rm api python -m cli create-weekly-report` to seed week 4–10 May for all athletes — saves ~$0.85 cost, ~10-15 min sequential.
+
+### Pending / deferred
+
+- PR4 (optional, not scheduled): user-controlled regeneration from the webapp («mark as bad, regenerate» button). Trigger: athlete feedback that a particular week's summary is off.
+
+---
+
 ## Pending
 
 - MT Phase 2 (JWT upgrade): tenant_id, role, scope claims, bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY_SPEC.md`.

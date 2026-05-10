@@ -15,6 +15,7 @@ from api.dashboard_routes import router as dashboard_router
 from api.routers.changelog import router as changelog_router
 from api.routers.dashboard import router as dashboard_real_router
 from api.routers.race_plan import router as race_plan_router
+from api.routers.weekly_reports import router as weekly_reports_router
 from api.routes import router
 from api.telegram_webhook import router as telegram_webhook_router
 from bot.main import build_application
@@ -153,6 +154,7 @@ app.include_router(router)
 app.include_router(dashboard_real_router)
 app.include_router(dashboard_router)
 app.include_router(race_plan_router)
+app.include_router(weekly_reports_router)
 app.include_router(changelog_router)
 app.include_router(telegram_webhook_router)
 

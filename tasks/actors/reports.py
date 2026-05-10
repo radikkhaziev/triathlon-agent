@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 
 import dramatiq
 import sentry_sdk
@@ -21,12 +21,14 @@ from data.db import (
     User,
     UserBackfillState,
     UserDTO,
+    WeeklyReport,
     Wellness,
     WellnessPostDTO,
     get_sync_session,
 )
 from data.intervals.client import IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
+from data.weekly_preview import extract_weekly_preview
 from data.workout_adapter import compute_constraints, needs_adaptation, parse_humango_description
 from tasks.dto import local_today
 from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message, format_pace
@@ -288,27 +290,96 @@ def actor_compose_user_morning_report(
 # ---------------------------------------------------------------------------
 
 
-@dramatiq.actor(queue_name="default", time_limit=600_000)
-@validate_call
-def actor_compose_weekly_report(user: UserDTO):
-    """Generate weekly training summary via Claude + MCP tools."""
+def _weekly_report_chat_keyboard(week_start_iso: str) -> dict:
+    """Inline keyboard with a single «Open full report» WebApp button.
+
+    Routes to the webapp's ``/weekly/<iso_monday>`` page (PR3). Uses
+    Telegram's ``web_app`` button type (Mini App launch) rather than a
+    plain URL — keeps the athlete inside the Telegram client instead of
+    bouncing to the system browser. Same UX choice as the race-plan push
+    (``bot/race_plan_telegram.py:build_open_in_webapp_keyboard``).
+    """
+    url = f"{settings.API_BASE_URL.rstrip('/')}/weekly/{week_start_iso}"
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": _("📊 Открыть полный отчёт"),
+                    "web_app": {"url": url},
+                }
+            ]
+        ]
+    }
+
+
+def generate_and_save_weekly_report(user: UserDTO) -> tuple[str, date] | None:
+    """Generate this week's report via Claude+MCP and persist it. No chat send.
+
+    Returns ``(content_md, week_start)`` on success, ``None`` when generation
+    yielded empty text or the user record has vanished between dispatch and
+    actor run. Persists BEFORE the caller decides what to do with the text
+    — same idempotent ``WeeklyReport.upsert`` path whether the trigger is
+    the Sunday cron or the manual ``create-weekly-report`` CLI.
+
+    Splitting this out lets the CLI command exercise the exact pipeline
+    without triggering a Telegram notification, which is the whole point of
+    the manual path: backfill / dev-test without disturbing the athlete.
+    """
     # UserDTO carries no credentials (issue #147) — re-fetch ORM for mcp_token.
     with get_sync_session() as session:
         _user_orm = session.get(User, user.id)
     if _user_orm is None:
         logger.warning("Weekly report skipped: user %d no longer exists", user.id)
-        return
+        return None
     mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
     text = mcp.generate_weekly_report_via_mcp()
 
     if not text:
         logger.warning("Weekly report empty for user %d", user.id)
+        return None
+
+    # Monday of the summarised week. The cron fires Sunday 19:00 Belgrade,
+    # so weekday()==6 → week_start = today − 6 days = same week's Monday.
+    # The CLI inherits this anchor — running mid-week creates/overwrites the
+    # row for the current Mon-Sun window.
+    today = local_today()
+    week_start = today - timedelta(days=today.weekday())
+
+    WeeklyReport.upsert(
+        user_id=user.id,
+        week_start=week_start,
+        content_md=text,
+        model=MCPTool.WEEKLY_MODEL,
+    )
+    return text, week_start
+
+
+@dramatiq.actor(queue_name="default", time_limit=600_000)
+@validate_call
+def actor_compose_weekly_report(user: UserDTO):
+    """Generate weekly training summary via Claude + MCP tools.
+
+    Chat send is a short notification: localised label + extracted preview
+    + WebApp button → ``/weekly/<week_start>`` (PR3 webapp route). Keeps
+    the message under 600 chars so Telegram's 4096 visible-text limit is
+    nowhere near an issue (the original drop-bug PR1 addressed). Full
+    markdown lives in ``weekly_reports.content_md`` and renders in the
+    webapp on tap.
+    """
+    result = generate_and_save_weekly_report(user)
+    if result is None:
         return
+    text, week_start = result
+
+    set_language(user.language or "ru")
+    preview = extract_weekly_preview(text)
+    chat_text = f"{_('📊 Недельный отчёт готов')}\n\n{preview}"
+    keyboard = _weekly_report_chat_keyboard(week_start.isoformat())
 
     tg = TelegramTool(user=user)
     if not user.is_silent:
-        tg.send_message(text=text, markdown=True)
-    logger.info("Weekly report sent for user %d", user.id)
+        tg.send_message(text=chat_text, reply_markup=keyboard, markdown=True)
+    logger.info("Weekly report saved+sent for user %d week=%s", user.id, week_start.isoformat())
 
 
 # ---------------------------------------------------------------------------

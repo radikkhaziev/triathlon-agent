@@ -838,6 +838,16 @@ class MCPTool:
             logger.exception("Morning report generation failed for %s", _dt)
             return None
 
+    # Single source of truth for the Claude model used by the weekly-report
+    # generator. Read by the actor / CLI so the value stored in
+    # ``weekly_reports.model`` always matches what was actually called below
+    # — eliminates drift between the hardcoded literal and the API request.
+    # ``ClassVar`` is mandatory: ``MCPTool`` is a dataclass, and an unannotated
+    # str literal would be safe today but a future ``: str = ...`` annotation
+    # would silently turn it into an instance field per-call (consistent with
+    # the ``_TG_400_PERMANENT_SUBSTRINGS`` precedent above).
+    WEEKLY_MODEL: ClassVar[str] = "claude-sonnet-4-6"
+
     # Tools allowed in weekly report (no Garmin, no workout creation, no admin).
     # Some entries (get_activities, get_hrv_analysis, get_recovery, get_rhr_analysis,
     # get_wellness_range) aren't named in SYSTEM_PROMPT_WEEKLY explicitly — Claude
@@ -908,7 +918,7 @@ class MCPTool:
             max_iterations = 12
             for _ in range(max_iterations):
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=self.WEEKLY_MODEL,
                     max_tokens=4096,
                     system=system,
                     messages=messages,

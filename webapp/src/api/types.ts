@@ -601,6 +601,30 @@ export interface InheritableConditionsResponse {
   races: InheritableRace[]
 }
 
+// Weekly report archive (PR2/PR3 of weekly-report feature).
+// `preview` is server-rendered (`tasks/actors/reports.py:extract_weekly_preview`)
+// — the headline paragraph stripped of markdown markers, ≤220 chars. Detail
+// view fetches the full markdown via `WeeklyReportDetail` only on click.
+export interface WeeklyReportListItem {
+  week_start: string  // ISO Monday, e.g. "2026-05-04"
+  preview: string
+  generated_at: string  // ISO timestamp
+}
+
+export interface WeeklyReportListResponse {
+  items: WeeklyReportListItem[]
+  // ISO Monday — pass back as `before=` for the next page. `null` means the
+  // client has reached the end of history and should stop fetching.
+  next_before: string | null
+}
+
+export interface WeeklyReportDetail {
+  week_start: string
+  content_md: string
+  generated_at: string
+  model: string
+}
+
 // Latest weekly changelog Discussion (PR2 of WEEKLY_CHANGELOG_SPEC). The
 // sidebar fetches this on mount; 404/503 → no link rendered. Unread state
 // is computed locally in the component by comparing ``url`` against
