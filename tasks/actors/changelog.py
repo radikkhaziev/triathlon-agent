@@ -378,7 +378,7 @@ def create_discussion(*, repo_id: str, category_id: str, title: str, body: str, 
 def publish_weekly_changelog(*, force: bool = False) -> dict:
     """Run the full pipeline once. Returns `{status, ...}` dict — never raises.
 
-    Idempotent by week: if a Discussion was created within the last 7 days,
+    Idempotent by week: if a Discussion was created within the last 8 days,
     we skip (and the Sun 15:00 cron sees a Wed manual ``publish-changelog``
     and gracefully steps aside). Pass ``force=True`` to override — used by
     the CLI when the owner really wants a second digest in the same week.
@@ -408,10 +408,20 @@ def publish_weekly_changelog(*, force: bool = False) -> dict:
         return {"status": "skipped_disabled"}
 
     now = datetime.now(timezone.utc)
-    since = now - timedelta(days=7)
+    # 8d (not 7d) is intentional. The cron fires Sun 15:00; the owner sometimes
+    # merges PRs Sun afternoon AFTER the cron has already run. With a strict 7d
+    # window those PRs would only be picked up by NEXT Sunday's digest — by
+    # which point the «what shipped this week» framing has decayed. A +1d
+    # buffer pulls the previous Saturday afternoon onward into scope so the
+    # owner can keep merging on Sunday without pushing to Monday.
+    # Cost: a 24h overlap with last week's window — a PR merged Sat 16:00 can
+    # appear in BOTH last week's and this week's digest. Acceptable: Claude
+    # de-duplicates on its own, and the owner can always patch the Discussion
+    # by hand within the 4h buffer to the 19:00 weekly report.
+    since = now - timedelta(days=8)
     # Title shows the 7-day Mon-Sun window (publish day = Sunday, week_start =
-    # 6 days back). ``since`` for the GitHub query stays at -7d so we don't
-    # miss a PR merged Sun 23:59 of the previous week.
+    # 6 days back). ``since`` widens to -8d so Sun-afternoon merges from the
+    # previous week (after the previous cron) still surface in this digest.
     week_end = now
     week_start = now - timedelta(days=6)
 

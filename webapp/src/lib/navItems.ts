@@ -23,6 +23,7 @@ export const PRIMARY_NAV_ITEMS: NavItem[] = [
 /** Secondary items — hidden behind the "More" button on mobile. */
 export const MORE_NAV_ITEMS: NavItem[] = [
   { path: '/plan', labelKey: 'nav.plan', icon: '📋' },
+  { path: '/weekly', labelKey: 'nav.weekly', icon: '📊' },
   { path: '/settings', labelKey: 'nav.settings', icon: '⚙️' },
 ]
 

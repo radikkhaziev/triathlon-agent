@@ -336,3 +336,9 @@ msgid ""
 msgstr ""
 "Daily message limit reached ({used}/{limit}). Donors get unlimited — /donate "
 "to lift the cap."
+
+msgid "📊 Открыть полный отчёт"
+msgstr "📊 Open full report"
+
+msgid "📊 Недельный отчёт готов"
+msgstr "📊 Weekly report is ready"

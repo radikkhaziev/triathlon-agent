@@ -20,6 +20,8 @@ import Activity from './pages/Activity'
 import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
 import Progress from './pages/Progress'
+import WeeklyReport from './pages/WeeklyReport'
+import WeeklyReports from './pages/WeeklyReports'
 
 export default function App() {
   useEffect(() => {
@@ -160,6 +162,8 @@ export default function App() {
       <Route path="/activity/:id" element={dataRoute(Activity)} />
       <Route path="/progress" element={dataRoute(Progress)} />
       <Route path="/dashboard" element={dataRoute(Dashboard)} />
+      <Route path="/weekly" element={dataRoute(WeeklyReports)} />
+      <Route path="/weekly/:weekStart" element={dataRoute(WeeklyReport)} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
     </>

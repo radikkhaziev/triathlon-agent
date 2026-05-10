@@ -6,6 +6,7 @@ from calendar import monthrange
 from datetime import date, timedelta
 
 import httpx
+import sentry_sdk
 from sqlalchemy import select
 
 from config import settings
@@ -100,6 +101,16 @@ def main() -> None:
         help="After patching hrvt2_pace, dispatch actor_update_zones to push HRVT2 + pace to Intervals.icu",
     )
 
+    sub.add_parser(
+        "create-weekly-report",
+        help="Generate this week's weekly report for ALL active athletes and save to DB "
+        "without sending to Telegram. Mirrors actor_compose_weekly_report's pipeline up to "
+        "(but excluding) the chat push — use for backfilling a Sunday cron firing that didn't "
+        "deliver, or for seeding the webapp history view (PR2/PR3) end-to-end. "
+        "Idempotent per user: re-running overwrites each existing row for the current "
+        "Mon-Sun window. Sequential — ~30-40s/user, ~$0.04/user.",
+    )
+
     p_pc = sub.add_parser(
         "publish-changelog",
         help="Manually trigger the weekly changelog publisher (debug). "
@@ -136,6 +147,8 @@ def main() -> None:
         _bootstrap_sync(args.user_id, period_days=args.period, force=args.force)
     elif args.command == "reprocess-ramp-test":
         _reprocess_ramp_test(args.user_id, args.activity_id, push=args.push)
+    elif args.command == "create-weekly-report":
+        _create_weekly_report_all()
     elif args.command == "publish-changelog":
         _publish_changelog(force=args.force)
 
@@ -692,6 +705,57 @@ def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
         )
     else:
         print("(dry-run — pass --push to dispatch actor_update_zones)")
+
+
+def _create_weekly_report_all() -> None:
+    """Generate this week's report for every active athlete; no Telegram sends.
+
+    Same code path as the Sunday cron actor minus the chat push — useful for
+    filling in a missed Sunday delivery (the original bug PR1 addresses is
+    Telegram silently dropping long messages despite ``ok=true``) or for
+    seeding the webapp history view in dev. Idempotent per user: re-running
+    overwrites each existing row for the current Mon-Sun window.
+
+    Errors per user (Intervals 5xx, expired OAuth, transient Anthropic) are
+    caught and logged so one bad athlete doesn't abort the whole sweep —
+    mirrors the actor's fail-soft contract (``generate_and_save_weekly_report``
+    returns ``None``; here we surface that as a per-user line).
+    """
+    from tasks.actors.reports import generate_and_save_weekly_report
+
+    athletes = User.get_active_athletes()
+    if not athletes:
+        print("No active athletes — nothing to do.")
+        return
+
+    print(f"Generating weekly reports for {len(athletes)} active athletes…")
+    saved = 0
+    skipped = 0
+    failed = 0
+    for u in athletes:
+        user_dto = UserDTO.model_validate(u)
+        try:
+            result = generate_and_save_weekly_report(user_dto)
+        except Exception as e:
+            # Surface to Sentry: silently swallowed per-user failures would
+            # turn this recovery tool into an observability blackhole — by
+            # design we keep iterating, but each break-the-build error
+            # should still raise a flag in the dashboard.
+            sentry_sdk.capture_exception(e)
+            print(f"  user_id={u.id} chat_id={u.chat_id} FAILED: {type(e).__name__}: {e}")
+            failed += 1
+            continue
+        if result is None:
+            print(f"  user_id={u.id} chat_id={u.chat_id} skipped (empty text or stale user)")
+            skipped += 1
+            continue
+        text, week_start = result
+        print(f"  user_id={u.id} chat_id={u.chat_id} saved week_start={week_start} len={len(text)}")
+        saved += 1
+
+    base = settings.API_BASE_URL.rstrip("/")
+    print(f"\nDone: saved={saved} skipped={skipped} failed={failed}")
+    print(f"View any user's report at {base}/weekly/<YYYY-MM-DD> (Monday of target week).")
 
 
 def _publish_changelog(*, force: bool = False) -> None:

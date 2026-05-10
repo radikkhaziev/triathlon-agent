@@ -12,7 +12,8 @@
     "more": "More",
     "progress": "Progress",
     "dashboard": "Dashboard",
-    "settings": "Settings"
+    "settings": "Settings",
+    "weekly": "Weekly reports"
   },
   "rpe": {
     "label": "RPE",
@@ -287,5 +288,16 @@
   "sidebar": {
     "whats_new": "What's new",
     "unread": "unread"
+  },
+  "weekly": {
+    "title": "Weekly reports",
+    "empty": "No weekly reports yet. The first one will arrive Sunday evening.",
+    "load_more": "Load more",
+    "loading_more": "Loading…",
+    "error_load": "Failed to load reports",
+    "not_found": "No report saved for this week.",
+    "back_to_list": "Back to list",
+    "prev_week": "Previous",
+    "next_week": "Next"
   }
 }
