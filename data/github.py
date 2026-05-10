@@ -8,6 +8,21 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Shared GraphQL query — used by both ``tasks/actors/changelog.py`` (sync
+# idempotency lookup) and ``api/routers/changelog.py`` (async sidebar feed).
+# Lives here, not in the actor module, so importing the constant from the
+# API process doesn't drag worker-only deps (``dramatiq``, ``anthropic``)
+# along with it.
+LATEST_DISCUSSION_QUERY = """
+query($categoryId: ID!, $owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    discussions(first: 1, categoryId: $categoryId, orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes { url title createdAt }
+    }
+  }
+}
+"""
+
 
 async def create_issue(title: str, body: str, labels: list[str] | None = None) -> dict:
     """Create a GitHub issue via REST API.

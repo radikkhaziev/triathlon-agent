@@ -288,6 +288,59 @@ Six coupled changes shipped under one PR. Specs: `docs/RAMP_TEST_BIKE_SPEC.md` (
 
 ---
 
+## Weekly changelog publisher — PR1 + PR2 complete (2026-05-10)
+
+End-to-end implementation of `docs/WEEKLY_CHANGELOG_SPEC.md`. Athlete-facing «What's new» digest auto-generated weekly from merged PRs and published as a GitHub Discussion in `Announcements`; webapp sidebar shows an unread-badge link until the athlete clicks.
+
+### PR1 — backend actor + cron
+
+- **Actor:** `tasks/actors/changelog.py:actor_publish_weekly_changelog` (sync Dramatiq, `max_retries=0`). Pipeline: GitHub REST `pulls?state=closed&base=main` (paginated, stops once `updated_at < since`) → pre-filter (drop `chore|ci|build|test|docs:` regex, `user.type=='Bot'`, `SKIP_AUTHORS` allowlist, `skip-changelog`/`internal`/`dependencies` labels, non-`main` base, dedup on `(title.lower(), sha1(body[:200])[:8])`) → top-50 by `merged_at desc` → Claude `claude-sonnet-4-6` (max_tokens=800, temp=0.3, body trunc at 1500 chars + `... [truncated]`) → if Claude returns `NO_USER_FACING_CHANGES` skip → GraphQL `createDiscussion` mutation. Fail-soft on every branch — `{"status": "skipped_error", "stage": ..., "error": ...}` plus `sentry_sdk.capture_exception`, never raises. Status return values: `skipped_disabled` / `skipped_no_prs` / `skipped_all_filtered` / `skipped_internal` / `skipped_already_published` / `skipped_error` / `published`.
+- **Cron:** `bot/scheduler.py:scheduler_publish_weekly_changelog_job` (Sun 15:00 Belgrade, `misfire_grace_time=7200, coalesce=True`). 4h buffer before the weekly report (Sun 19:00) so the owner can patch the Discussion by hand if Claude misfires.
+- **Idempotency by week:** before publishing, the actor calls `fetch_latest_discussion()` (sync GraphQL helper, mirrors the FastAPI endpoint) and checks if the latest Discussion is within the last 7d 12h (`now - timedelta(days=7, hours=12)`). The 12h padding is in the past direction — it widens the window to catch a Discussion that's *just over* 7 days old when cron fires N seconds late (jitter). A flat `-7d` cutoff would have produced a duplicate on every late-firing Sunday. Lookup is best-effort: a GraphQL failure logs a warning and falls through to publish (worst case a duplicate, recoverable via `gh`).
+- **Env vars (opt-in):** `CHANGELOG_REPO_ID` and `CHANGELOG_DISCUSSION_CATEGORY_ID` default to empty in `config.py`; production values for `radikkhaziev/triathlon-agent` (`R_kgDORnuZCQ` / `DIC_kwDORnuZCc4C8reQ`) live in `.env.example` and must be copied into prod `.env` to enable publishing. Empty defaults protect forks from accidentally publishing into the upstream repo's Announcements category. Also gated on `GITHUB_TOKEN` and `ANTHROPIC_API_KEY` non-empty (M2 from review — empty Anthropic key shouldn't burn a GitHub fetch first).
+- **CLI:** `python -m cli publish-changelog [--force]` — manual trigger, idempotent by default, `--force` bypasses the lookup. Cron always runs without `--force`.
+- **Tests:** 26 cases in `tests/tasks/test_weekly_changelog.py`. Pre-filter table-driven (10), prompt truncation (3), title formatting (2 — same-month + cross-month), end-to-end status branches (8 incl. concrete frozen-time title `неделя 04–10 мая 2026` to lock the C1 7-day Mon-Sun fix from review), idempotency (5 incl. boundary at 7d 0m and 7d 13h to lock the `-12h` padding constant). Sentry capture-fixture asserts `capture_exception` fires on each error branch.
+
+### PR2 — REST endpoint + webapp link
+
+- **Endpoint:** `api/routers/changelog.py:get_latest_changelog` — `GET /api/changelog/latest`, `require_viewer`. GraphQL `discussions(first:1, categoryId, orderBy:CREATED_AT desc)`. Returns `{url, title, published_at}` or 404 if no Discussion. **1h in-process cache** for both 200 AND 404 (a fresh repo with no Discussion yet would otherwise burn a GraphQL call per page load until first publish lands). 503 + `Retry-After: 300` on GitHub upstream failure — must go on the `HTTPException(headers=...)`, not the `Response` object, because FastAPI replaces body with error JSON and drops `response.headers`. Module-level `_CACHE` dict — fine on single-worker uvicorn; `# NOTE` comment flags Redis migration trigger when `--workers N` flips.
+- **Webapp:** `webapp/src/components/Sidebar.tsx` — `useEffect` fetches `/api/changelog/latest` on mount, gated on `useAuth().isAuthenticated` (H1 from review — without the gate the centralized `apiFetch` 401 handler force-redirects unauthenticated users on `/login` to `/login`, breaking login flow). Compares `cl.url` to `localStorage["changelog.last_seen_url"]`; renders a `● What's new` link **only** when unread (visual-debt avoidance — postoянная эмодзи-ссылка для not-readers = noise, §10 deviation). Click → `localStorage.setItem` (wrapped in `try/catch` for Safari private mode `QuotaExceededError`, H2 from review) + `setUnread(false)` → link disappears in-session.
+- **Types:** `webapp/src/api/types.ts:ChangelogLatest` interface.
+- **i18n:** `sidebar.whats_new` — «Что нового» / «What's new».
+- **Tests:** 9 cases in `tests/api/test_changelog_routes.py` — happy path shape, 404 empty, 1h cache (200), 1h cache (404), 503+Retry-After header survives, 503 doesn't poison cache, disabled→404 without GitHub call, demo viewer reads, **cache shared across users** (M1 from review — two stub user_ids, assert single GraphQL call to lock the «one Discussion per repo, global cache» contract).
+
+### Decisions log (deviations from spec)
+
+- **§4 hard-drop regex narrowed** to `chore|ci|build|test|docs:` (was `+perf|style|refactor`). `perf:` улучшения user-facing («дашборд в 3× быстрее»), `style:` чаще про UI Tailwind, `refactor:` иногда меняет UX. Trust Claude's «only what athlete notices» rule; +5-7k tokens worst-case ≈ $0.02/week.
+- **§4 dedup key** changed to `(title.lower().strip(), sha1(body[:200])[:8])` — stacked PRs with same title but different bodies survive, while accidental re-merges (POC #318/#320 byte-identical title and body) collapse.
+- **§5 body truncation** 500 → 1500 chars + `... [truncated]` suffix. Our PR bodies are 800-1500 chars («What was done / How to verify» template) — 500 cut exactly the «How to verify» block, where Claude reads user-facing impact. ~$0.04-0.11/week worst-case (was «<$0.01/week» in spec §12; new range ~$2-6/year still negligible).
+- **§10 sidebar** — unread-only via localStorage, NOT permanent emoji link. Visual-debt avoidance for athletes who don't read changelogs.
+- **§13 idempotency padding** — `-7d 12h` cutoff (NOT `-6d 12h` as initially suggested in review; that direction shrinks the window and worsens late-jitter). Caught by boundary tests during fix-cycle.
+- **§9 cache 404** — endpoint caches the «no Discussion yet» state too, not just happy path. Cheap protection against fresh-repo page-load amplification.
+
+### Operational follow-ups (organizational, not code)
+
+- §16 step 3 — 4 weeks observation after first real cron run, tune prompt if Claude output drifts.
+- §15.2 — owner enables GitHub email notification on `Announcements` category (one-click in repo settings) so athlete comments don't go unread.
+- §15.3 — empirical decision on a predefined emoji-section allowlist after 3-4 real publications.
+
+### Phase 2 (deferred until trigger)
+
+- Bilingual single Discussion with `<!--LANG-SEPARATOR-->` (§11). Trigger: first active EN athlete (`SELECT COUNT(*) FROM users WHERE is_active AND athlete_id IS NOT NULL AND language = 'en'`).
+- Email digest opt-in (`User.email_digest_optin` column). Only if requested.
+- Inline Markdown rendering (vs current open-in-new-tab). Overkill without explicit ask.
+
+### Skipped (consciously)
+
+- §12 `ApiUsageDaily.increment` cost tracking — single weekly call ≈ $0.04-0.11, not worth the sync-helper churn. Add later if cost monitoring becomes useful.
+- §15.5 dedup across weeks — superseded by weekly idempotency at the actor level (Wed manual + Sun cron no longer overlap).
+
+### POC artifacts
+
+POC Discussion #334 was created manually 2026-05-09 to validate the end-to-end flow before writing the spec. Deleted via `gh api graphql` 2026-05-10 as part of deploy prep so the first legitimate cron run isn't blocked by the idempotency check. Repo ID + Category ID resolved during the POC are now baked into `config.py` defaults.
+
+---
+
 ## Pending
 
 - MT Phase 2 (JWT upgrade): tenant_id, role, scope claims, bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY_SPEC.md`.

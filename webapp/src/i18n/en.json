@@ -283,5 +283,9 @@
       "inherit_loading": "Loading past races…",
       "inherit_empty": "No past races to inherit from."
     }
+  },
+  "sidebar": {
+    "whats_new": "What's new",
+    "unread": "unread"
   }
 }

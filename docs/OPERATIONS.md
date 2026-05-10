@@ -64,6 +64,7 @@ POST /api/auth/retry-backfill            — manual re-run of OAuth bootstrap. D
 POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
 POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
+GET  /api/changelog/latest               — latest weekly Discussion (`{url, title, published_at}` or 404). 1h in-process cache (200 + 404). 503+`Retry-After:300` on GitHub-side failure. `require_viewer` (demo can read). See `docs/WEEKLY_CHANGELOG_SPEC.md`
 GET  /health
 POST /telegram/webhook                  — webhook mode only
 POST /mcp                               — MCP (Streamable HTTP, Bearer auth)
@@ -104,6 +105,20 @@ python -m cli import-garmin <user_id> <source> [--types] [--period] [--force] [-
 python -m cli backfill-races <user_id> [period]                  # create Race records for historical race activities
 python -m cli bootstrap-sync <user_id> [--period 365] [--force]  # chunk-recursive OAuth bootstrap backfill (wellness + activities)
 python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]  # back-fill hrvt2_pace (Run) / hrvt2_power (Ride) on one ramp test (post v2c3d4e5f6a7 / w3d4e5f6a7b8)
+python -m cli publish-changelog [--force]                        # manually trigger the weekly changelog (idempotent by week; --force overrides)
+```
+
+### `publish-changelog`
+
+Manual trigger for the weekly changelog publisher (`docs/WEEKLY_CHANGELOG_SPEC.md`). Same code path as the Sun 15:00 cron — fetches merged PRs from the last 7 days, runs the pre-filter, asks Claude for a 3-7-bullet summary, publishes a GitHub Discussion in `Announcements`.
+
+Idempotent by week: if a Discussion was created within the last 7 days 12 hours (the padded window — see spec §13), the actor returns `skipped_already_published` and does NOT publish a duplicate. So a Wed manual trigger naturally blocks the next Sun cron from double-posting.
+
+`--force` skips the idempotency check — use only when you really want a second digest in the same week (e.g., a major mid-week feature launch). Cron always runs without `--force`.
+
+```bash
+# Smoke test on prod after deploy: publishes a real Discussion
+docker compose run --rm api python -m cli publish-changelog
 ```
 
 ### `reprocess-ramp-test`

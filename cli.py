@@ -100,6 +100,20 @@ def main() -> None:
         help="After patching hrvt2_pace, dispatch actor_update_zones to push HRVT2 + pace to Intervals.icu",
     )
 
+    p_pc = sub.add_parser(
+        "publish-changelog",
+        help="Manually trigger the weekly changelog publisher (debug). "
+        "Runs the same code path as the Sun 15:00 cron — fetches PRs, calls Claude, "
+        "creates a Discussion. Idempotent by week: re-running within ~7d 12h of the "
+        "last Discussion is a no-op (12h padding for cron-jitter, see spec §13). "
+        "See docs/WEEKLY_CHANGELOG_SPEC.md §16.",
+    )
+    p_pc.add_argument(
+        "--force",
+        action="store_true",
+        help="Override weekly idempotency — publish a second Discussion this week.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -122,6 +136,8 @@ def main() -> None:
         _bootstrap_sync(args.user_id, period_days=args.period, force=args.force)
     elif args.command == "reprocess-ramp-test":
         _reprocess_ramp_test(args.user_id, args.activity_id, push=args.push)
+    elif args.command == "publish-changelog":
+        _publish_changelog(force=args.force)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -676,6 +692,19 @@ def _reprocess_ramp_test(user_id: int, activity_id: str, *, push: bool) -> None:
         )
     else:
         print("(dry-run — pass --push to dispatch actor_update_zones)")
+
+
+def _publish_changelog(*, force: bool = False) -> None:
+    """Manual trigger for the weekly changelog publisher.
+
+    Runs the same path as the Sun 15:00 cron, prints the result dict.
+    Idempotent by default — a Wed run blocks the Sun cron from publishing a
+    duplicate. Pass ``--force`` to override.
+    """
+    from tasks.actors.changelog import publish_weekly_changelog
+
+    result = publish_weekly_changelog(force=force)
+    print(f"publish_weekly_changelog(force={force}) → {result}")
 
 
 def _shell() -> None:
