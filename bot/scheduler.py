@@ -15,6 +15,7 @@ from tasks.actors import (
     actor_compose_user_evening_report,
     actor_compose_weekly_report,
     actor_fetch_user_activities,
+    actor_publish_weekly_changelog,
     actor_retrain_progression_model,
     actor_send_onboarding_hey,
     actor_send_pre_race_plan_push,
@@ -234,6 +235,17 @@ async def scheduler_pre_race_plan_push_job() -> None:
     logger.info("Dispatched pre-race push for %d goals (race_date=%s)", len(dispatches), target_iso)
 
 
+async def scheduler_publish_weekly_changelog_job() -> None:
+    """Sunday 15:00 — single fan-out, no per-user dispatch.
+
+    Чем не 19:30 после weekly: 4-часовой буфер до weekly report (Sun 19:00)
+    нужен чтобы успеть глазами проверить Discussion и поправить вручную если
+    Claude выдал ересь — weekly report уйдёт атлетам со ссылкой на свежий
+    changelog.
+    """
+    actor_publish_weekly_changelog.send()
+
+
 async def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
@@ -329,6 +341,19 @@ async def create_scheduler() -> AsyncIOScheduler:
         scheduler_pre_race_plan_push_job,
         trigger=CronTrigger(hour=8, minute=0, timezone=settings.TIMEZONE),
         id="scheduler_pre_race_plan_push_job",
+        misfire_grace_time=7200,
+        coalesce=True,
+    )
+
+    # Weekly changelog publisher (docs/WEEKLY_CHANGELOG_SPEC.md). Sun 15:00
+    # leaves a 4h buffer before the weekly report (Sun 19:00) so the owner
+    # can glance over the Discussion and patch by hand if Claude misfired.
+    # Empty CHANGELOG_REPO_ID / CHANGELOG_DISCUSSION_CATEGORY_ID make the
+    # actor a no-op — registering the job unconditionally is harmless.
+    scheduler.add_job(
+        scheduler_publish_weekly_changelog_job,
+        trigger=CronTrigger(day_of_week="sun", hour=15, minute=0, timezone=settings.TIMEZONE),
+        id="scheduler_publish_weekly_changelog_job",
         misfire_grace_time=7200,
         coalesce=True,
     )

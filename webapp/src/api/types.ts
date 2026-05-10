@@ -600,3 +600,13 @@ export interface InheritableRace {
 export interface InheritableConditionsResponse {
   races: InheritableRace[]
 }
+
+// Latest weekly changelog Discussion (PR2 of WEEKLY_CHANGELOG_SPEC). The
+// sidebar fetches this on mount; 404/503 → no link rendered. Unread state
+// is computed locally in the component by comparing ``url`` against
+// ``localStorage["changelog.last_seen_url"]`` — see spec §10.
+export interface ChangelogLatest {
+  url: string
+  title: string
+  published_at: string  // ISO timestamp from GitHub
+}

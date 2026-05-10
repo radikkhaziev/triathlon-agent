@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: SecretStr = SecretStr("")  # PAT for issue creation
     GITHUB_REPO: str = "radikkhaziev/triathlon-agent"
 
+    # Weekly changelog publisher (see docs/WEEKLY_CHANGELOG_SPEC.md). Opt-in:
+    # empty defaults so a fork with a GITHUB_TOKEN doesn't accidentally try
+    # to publish into the upstream repo's Announcements category. Set both
+    # in .env to enable. Resolve via:
+    #   gh api graphql -f query='query { repository(owner:"X", name:"Y") {
+    #     id discussionCategories(first:20) { nodes { id name } } } }'
+    # Production values for radikkhaziev/triathlon-agent are in `.env.example`.
+    CHANGELOG_REPO_ID: str = ""
+    CHANGELOG_DISCUSSION_CATEGORY_ID: str = ""
+
     # Sentry
     SENTRY_DSN: str = ""  # empty = Sentry disabled
     SENTRY_ENVIRONMENT: str = "production"
