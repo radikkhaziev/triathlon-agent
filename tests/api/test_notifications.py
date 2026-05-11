@@ -324,6 +324,22 @@ class TestPostActivityEnrichment:
         assert "7.5%" in msg
         assert "🟡" in msg
 
+    def test_decoupling_negative_small_is_green(self):
+        """abs() grading per docs/knowledge/decoupling.md — small negative drift is the
+        normal warm-up / overhydration artefact, not a red flag."""
+        detail = _make_detail(decoupling=-3.5)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
+        assert "-3.5%" in msg  # signed value preserved so the reader sees the direction
+        assert "🟢" in msg
+
+    def test_decoupling_negative_large_is_red(self):
+        """abs(-12) = 12 > 10% threshold → red. Large-magnitude drift in either
+        direction is anomalous (likely hardware glitch or pacing issue)."""
+        detail = _make_detail(decoupling=-12.5)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
+        assert "-12.5%" in msg
+        assert "🔴" in msg
+
     def test_fitness_snapshot(self):
         detail = _make_detail(ctl_snapshot=18.9, atl_snapshot=38.3)
         msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
@@ -356,6 +372,39 @@ class TestPostActivityEnrichment:
         weather = _make_weather(max_rain_mm=2.5)
         msg = build_post_activity_message(_make_activity(), _make_hrv(), weather=weather)
         assert "🌧 2.5 mm" in msg
+
+    def test_weather_temp_only_no_wind(self):
+        """Sparse weather (only temp) — must render the temp bit without
+        attempting wind/headwind/precipitation formatting."""
+        weather = _make_weather(
+            avg_temp_c=21.0,
+            avg_feels_like_c=None,
+            avg_wind_speed_mps=None,
+            avg_wind_gust_mps=None,
+            prevailing_wind_deg=None,
+            headwind_pct=None,
+            tailwind_pct=None,
+            max_rain_mm=None,
+            max_snow_mm=None,
+            avg_clouds=None,
+        )
+        msg = build_post_activity_message(_make_activity(type="Run"), _make_hrv(activity_type="Run"), weather=weather)
+        assert "🌡 21°C" in msg
+        assert "💨" not in msg
+        assert "🌧" not in msg
+
+    def test_weather_low_wind_suppressed(self):
+        """Wind < _WIND_MIN_MPS (0.5 m/s = 1.8 km/h) is below detection floor — drop."""
+        weather = _make_weather(avg_wind_speed_mps=0.2, headwind_pct=10.0)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), weather=weather)
+        assert "💨" not in msg
+
+    def test_weather_headwind_below_threshold_no_tag(self):
+        """Wind shows but headwind tag only when ≥ _HEADWIND_MIN_PCT (25%)."""
+        weather = _make_weather(avg_wind_speed_mps=4.0, headwind_pct=15.0)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), weather=weather)
+        assert "💨" in msg
+        assert "встречный" not in msg
 
     def test_polarization_long_workout(self):
         activity = _make_activity(moving_time=4800)  # 80 min ≥60
@@ -393,6 +442,27 @@ class TestPostActivityEnrichment:
         ach = _make_achievement(value=320.0, secs=300)
         msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=[ach])
         assert "5m PR 320 W" in msg
+
+    def test_achievement_ftp_change_missing_delta_skipped(self):
+        """FTP_CHANGE row with extra=None must NOT crash and must NOT render —
+        without a delta there's no headline number to show."""
+        ach = _make_achievement(type="FTP_CHANGE", value=215.0, secs=None, ftp_at_time=215, extra=None)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=[ach])
+        assert "⚡ FTP" not in msg
+        assert "🏆" not in msg  # nothing got rendered
+
+    def test_achievement_ftp_change_missing_ftp_at_time_skipped(self):
+        """FTP_CHANGE without ``ftp_at_time`` — same skip path. Defensive against
+        Intervals.icu payloads that omit the rolling FTP block."""
+        ach = _make_achievement(type="FTP_CHANGE", value=215.0, secs=None, ftp_at_time=None, extra={"delta": 5})
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=[ach])
+        assert "⚡ FTP" not in msg
+
+    def test_achievement_best_power_missing_secs_skipped(self):
+        """BEST_POWER without ``secs`` can't render the window label — skip."""
+        ach = _make_achievement(type="BEST_POWER", value=500.0, secs=None)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=[ach])
+        assert "🏆" not in msg
 
     def test_achievements_capped_at_four(self):
         many = [_make_achievement(value=float(100 + i), secs=5) for i in range(8)]
