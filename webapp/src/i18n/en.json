@@ -168,6 +168,14 @@
       "start_bot_open": "Open the bot in Telegram",
       "start_bot_no_username": "Bot is not configured yet — contact the instance owner."
     },
+    "profile": {
+      "age_edit_hint": "Click to edit (18-90)",
+      "save_failed": "Failed to save"
+    },
+    "editable_number": {
+      "error_invalid": "Enter a number between {{min}} and {{max}}.",
+      "error_out_of_range": "Value must be between {{min}} and {{max}}."
+    },
     "goal": {
       "title": "Races",
       "category": {
