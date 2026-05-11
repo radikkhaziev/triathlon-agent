@@ -22,6 +22,7 @@ import mcp_server.tools.mood  # noqa: F401
 import mcp_server.tools.polarization  # noqa: F401
 import mcp_server.tools.progress  # noqa: F401
 import mcp_server.tools.progression  # noqa: F401
+import mcp_server.tools.race_projection  # noqa: F401
 import mcp_server.tools.races  # noqa: F401
 import mcp_server.tools.ramp_tests  # noqa: F401
 import mcp_server.tools.recovery  # noqa: F401

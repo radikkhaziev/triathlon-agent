@@ -1,4 +1,4 @@
-"""Tests for the per-user zones block rendered into SYSTEM_PROMPT_CHAT.
+"""Tests for the per-user zones block rendered into the chat athlete block.
 
 Covers:
 - _pct_ranges: sentinel trimming, top-zone capping.

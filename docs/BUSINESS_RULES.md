@@ -75,7 +75,7 @@ Zones come from Intervals.icu sport-settings (`athlete_settings.{hr,power,pace}_
 per-user, typically 5-7 zones. `hr_zones` = absolute bpm; `power_zones` = **%FTP**
 (pre-normalized by Intervals, not watts); `pace_zones` = %threshold (100.0 = threshold).
 
-The chat prompt renders these straight into `SYSTEM_PROMPT_CHAT` via
+The chat prompt renders these straight into the athlete block via
 `bot/prompts._zones_block()` so workout generation always uses the athlete's own zones.
 
 Friel fallbacks (applied only when Intervals.icu hasn't been synced yet):

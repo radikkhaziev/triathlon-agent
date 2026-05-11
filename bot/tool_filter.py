@@ -61,6 +61,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "get_weight_trend",
         "get_workout_compliance",
         "predict_ctl",
+        "get_race_projection",
         "get_races",
         "tag_race",
         "update_race",
