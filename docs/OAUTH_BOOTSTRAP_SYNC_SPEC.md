@@ -1,235 +1,72 @@
 # OAuth Bootstrap Sync Spec
 
-> После успешного Intervals.icu OAuth автоматически бэкфилим историю (wellness, activities, training load) за год назад. Один chunk-recursive Dramatiq-actor идёт хронологически (oldest → newest) шагами по 30 дней и вызывает сам себя до конца периода. Persistent state — для UX-прогресса и resume'а.
->
-> Закрывает [issue #226](https://github.com/radikkhaziev/triathlon-agent/issues/226).
+**Status:** ✅ Phase 1+2 shipped (2026-04-21 / 2026-04-22). Closes [issue #226](https://github.com/radikkhaziev/triathlon-agent/issues/226).
 
-**Status:** ✅ Phase 1+2 done (2026-04-21 / 2026-04-22). 1 follow-up — CLAUDE.md описание онбординга (✅ landed в Operations §Onboarding).
+Annual chunk-recursive backfill after Intervals.icu OAuth: один Dramatiq-actor (`actor_bootstrap_step`) идёт хронологически 30-дневными чанками, ре-диспатчит сам себя до конца периода. Persistent state в `user_backfill_state` (cursor-based, atomic UPDATE) — для UX-прогресса, resume'а, watchdog rescue.
 
-**Related:**
+---
 
-| Issue / Spec / code | Связь |
+## Where the code lives
+
+| Layer | Artifact |
 |---|---|
-| [#226](https://github.com/radikkhaziev/triathlon-agent/issues/226) | Основной трекер |
-| `api/routers/intervals/oauth.py` | OAuth callback fast-path + bootstrap kick-off |
-| `tasks/actors/bootstrap.py` | `actor_bootstrap_step` + `_finalize_bootstrap` + start/completion senders |
-| `data/db/backfill.py` | `UserBackfillState` ORM + atomic helpers |
-| `bot/scheduler.py:scheduler_watchdog_bootstrap` | Watchdog cron (Phase 2) |
-| `cli.py:bootstrap-sync` | Manual rerun (`--force`) |
-| `webapp/src/components/BackfillSection.tsx` | Progress bar + button state machine |
-| `tasks/actors/{wellness,activities,training_log,athlete,workouts}.py` | Per-day actors — остаются для daily cron, переиспользуются в fast-path |
-| `docs/MULTI_TENANT_SECURITY_SPEC.md` T2 | Per-user credentials, OAuth-scoped |
-| `docs/WEBHOOK_DATA_CAPTURE_SPEC.md` §6 | Backfill webhook-only полей (weather/MMP/achievements) — отдельная история |
+| OAuth callback fast-path + kick-off | `api/routers/intervals/oauth.py` |
+| Chunk actor + finalize | `tasks/actors/bootstrap.py:actor_bootstrap_step` + `_finalize_bootstrap` |
+| State ORM (atomic helpers) | `data/db/backfill.py:UserBackfillState` |
+| Watchdog cron (Phase 2) | `bot/scheduler.py:scheduler_watchdog_bootstrap` |
+| Manual rerun | `cli.py:bootstrap-sync` (`--force` resets state) |
+| Webapp progress UI | `webapp/src/components/BackfillSection.tsx` (7-state button machine) |
+| Retry endpoint (Phase 2) | `POST /api/auth/retry-backfill` (business cooldown + 1h anti-spam) |
+| Post-onboarding nudge | `actor_send_onboarding_hey` + `UserBackfillState.hey_message` |
+
+CLAUDE.md «Operations §Onboarding» — точка входа из docs; этот файл архивирует **почему**.
 
 ---
 
-## 1. Мотивация
+## Key parameters
 
-Pre-spec dispatcher после OAuth слал только `actor_sync_athlete_settings` + `actor_user_wellness(today)`. Activities, исторические wellness, training_log — нет. Атлет заходит в webapp → пустой `/wellness` и `/activities` → «бот вообще работает?».
-
-Issue #226 требует 30/90/14 дней. ML-фичи (`ML_HRV_PREDICTION_SPEC`, `ML_RACE_PROJECTION_SPEC`) хотят 180+ дней. Делаем годовой бэкфилл по умолчанию, range-API'шкой Intervals.icu (`oldest`/`newest` на `/wellness{ext}` + `/activities`) — ~26 range-запросов вместо 730 per-day, wall-clock 3-5 мин.
-
----
-
-## 2. Scope
-
-### Phase 1 (MVP) — ✅ shipped
-
-- Таблица `user_backfill_state` для tracking + resume через cursor.
-- Один **chunk-recursive actor** `actor_bootstrap_step(user, cursor_dt)` — 30-дневный chunk за вызов, продвигает cursor, ре-диспатчит до конца периода.
-- Последний chunk финализирует inline: training_log enrichment + Telegram notify.
-- OAuth callback: fast-path (today + settings + goals + workouts) + kick off первого step'а.
-- Синхронный «первый день» (today wellness + settings + today activities + race goals) — webapp non-empty в течение 30 сек.
-- Telegram start + completion (с coverage stats).
-- Idempotency: повторный OAuth не триггерит новый бэкфилл если `status='completed'` <7d назад.
-- `GET /api/auth/backfill-status` для webapp-прогресса.
-
-### Phase 2 — ✅ shipped (quality-of-life)
-
-- Progress bar в `/settings` (poll каждые 5s пока `running`).
-- `<BackfillButton />` 7-state machine (§6) — primary/quiet/secondary/danger/disabled-countdown варианты.
-- `POST /api/auth/retry-backfill` с двумя guard'ами (business cooldown + 1h anti-spam rate limit).
-- Configurable period (default 365, можно ужать до 180/90 через query param).
-- `scheduler_watchdog_bootstrap` cron — rescue stuck state после Dramatiq's `max_retries`, escalation 3 kick'а → `watchdog_exhausted`.
-
-### Non-goals (decisions)
-
-- **Concurrent parallel chunks** — даёт N×-ускорение, но ломает хронологический порядок downstream-анализа (HRV baseline дня N зависит от N-7/N-60) и съедает rate limit.
-- **Bulk save всей истории + отдельный finalize-drain** — для sparse activities counter-bookkeeping требует Redis-set intersection; downstream-анализ в случайном порядке ломает rolling-window baselines.
-- **Рекурсивный per-day pipeline (365 итераций)** — избыточен по API calls (730 HTTP вместо 26) и enqueue overhead. Chunk'и по 30 дней — компромисс между bulk-эффективностью и chronological-correctness.
-- **Backfill webhook-only полей** (weather/MMP/achievements) — `WEBHOOK_DATA_CAPTURE_SPEC` §6, разовый прогон после merge'а.
+- `CHUNK_DAYS = 30` — ~30-45 sec / step, ~13 итераций / год, wall-clock 3-5 min. Запас до Dramatiq `time_limit=300_000`.
+- `period_days = 365` default; 180/90 через query param.
+- 26 range-fetch'ей (`get_wellness_range` + `get_activities` per chunk) + per-activity-details dispatch (естественный worker-throttle).
 
 ---
 
-## 3. Архитектура — chunk-recursive self-rescheduling step
+## Decisions log (load-bearing)
 
-```
-OAuth callback (was_new=True)
-    │
-    ├─ Synchronous fast-path (<2s, non-blocking sends):
-    │    • actor_sync_athlete_settings
-    │    • actor_sync_athlete_goals               ← RACE_A/B/C видны сразу
-    │    • actor_user_wellness(today)
-    │    • actor_fetch_user_activities(today, today)
-    │    • actor_user_scheduled_workouts          ← 14 дней вперёд
-    │    • _actor_send_bootstrap_start_notification
-    │
-    └─ actor_bootstrap_step.send(user, cursor_dt=oldest, period_days=365)
-         │
-         ▼
-    actor_bootstrap_step  ← один актор, всё в нём
-         │
-         ├─ (First call) UserBackfillState.upsert(status='running', cursor=oldest)
-         │  (Subsequent) read state, guard status=='running', deauth-guard
-         │
-         ├─ chunk_end = min(cursor + CHUNK_DAYS - 1, newest_dt)
-         │
-         ├─ 1 HTTP: client.get_wellness_range(cursor, chunk_end)
-         ├─ 1 HTTP: client.get_activities(cursor, chunk_end)
-         │
-         ├─ Chronological loop for dt in [cursor .. chunk_end]:
-         │    • Wellness.upsert(dt) + process_wellness_analysis_sync(dt)
-         │    • Activity.save_bulk(...) + actor_fetch_activity_details.send(id)
-         │
-         ├─ UserBackfillState.advance_cursor(chunk_end + 1)  (atomic UPDATE)
-         │
-         ├─ if chunk_end < newest_dt:
-         │     actor_bootstrap_step.send(user, cursor=chunk_end + 1)
-         │     return
-         │
-         └─ else: _finalize_bootstrap(user, state)
-               • actor_recalculate_training_log.send (если нужно)
-               • EMPTY_INTERVALS sentinel если wellness_count + activity_count == 0
-               • UserBackfillState.mark_finished('completed')
-               • _actor_send_bootstrap_completion_notification.send(delay=60s)
-```
-
-### Почему chunk-recursion, а не bulk+drain
-
-- **Хронологическая корректность downstream.** HRV baseline — rolling 7/60 дней. Bulk + 365 concurrent `_actor_compute_wellness_analysis` → race на окно. Chronological loop внутри chunk'а гарантирует порядок.
-- **Counter тривиальный.** `progress_pct = (cursor - oldest) / period_days`. Никаких Redis-множеств, никакого AND-intersection по двум sparse источникам.
-- **Resume бесплатный.** Dramatiq at-least-once пере-доставляет in-flight step. Chain оборвался → watchdog видит `status='running' AND last_step_at > 15min ago` и перезапускает с `state.cursor_dt`.
-- **Observability встроена.** Каждый step логирует `cursor → chunk_end`.
-- **Одна задача в очереди.** 10 параллельных onboarding'ов = 10 задач, не 10 × 365 = 3650.
-- **Idempotency встроена.** Retry всего step'а = no-op (upserts + `actor_fetch_activity_details` идемпотентны).
-
-### `CHUNK_DAYS = 30` — эмпирический выбор
-
-- Step ~30-45 сек (2 range-fetch'а + 5-15 details dispatch + HRV/recovery inline по 30 датам).
-- ~13 итераций на год → 3-5 мин wall-clock.
-- Огромный запас до Dramatiq's `time_limit=300_000` (5 мин per chunk, есть `max_retries=3`).
-- API volume: 13 × 2 = 26 range-запросов + 50-150 per-activity details через естественный worker-throttle.
-
-### Concurrency со scheduler'ом
-
-`actor_user_wellness(today)` от cron'а крутится каждые 10 мин; bootstrap трогает `[oldest .. today-1]`. `newest_dt = today - 1` зафиксирован на момент первого step'а — пересечений дат **by construction** нет. Полночь edge: bootstrap прошёл до старого `newest`, scheduler возьмёт новый `today`; upsert idempotent. На `activity_details` гонка возможна (chunk и scheduler оба триггерят `actor_fetch_activity_details` для одного `activity_id`) — `ActivityDetail.save` делает ON CONFLICT UPSERT, consistent.
+1. **Chunk-recursion, не bulk+drain.** Хронологическая корректность downstream-анализа: HRV baseline rolling 7/60 дней — bulk + 365 concurrent compute'ов даст race на окно. Внутри чанка — chronological loop с inline `process_wellness_analysis_sync` (sort key через `date.fromisoformat(w.id)`, не lexicographic — code-reviewer 🔴 catch 2026-04-22).
+2. **Cursor через atomic UPDATE, без Redis.** Один step пишет `cursor=chunk_end+1`, следующий читает. Lost-update race'а нет — single-statement UPDATE WHERE status='running'. ORM helpers (`advance_cursor` / `mark_finished` / `mark_failed`) — все без read-modify-write.
+3. **Watchdog escalation cap = 3 kick'а без advance'а cursor'а** → `mark_failed('watchdog_exhausted')`. Защита от infinite re-kick сломанной цепочки. Counter живёт в `last_error` как `watchdog_kick_N`, `advance_cursor` чистит при успешном прогрессе → reset автоматически.
+4. **HRV baseline inline sync, не fan-out.** `process_wellness_analysis_sync` делает save + RHR + HRV + Banister + recovery синхронно в chronological loop — bootstrap вызывает inline, не через `actor_user_wellness.send()`. Cross-day ordering требует sync; training_log/athlete_settings остались async (per-day idempotent).
+5. **Completion notification `delay=60_000`.** `actor_user_wellness.send()` fire-and-forget — к моменту finalize последний chunk's wellness actors ещё в полёте. 60s delay + completion actor пере-читает счётчики из БД.
 
 ---
 
-## 4. Cursor semantics — нет races, нет Redis
-
-Каждый step:
-1. Читает `cursor_dt` (следующий необработанный день).
-2. Обрабатывает `[cursor_dt .. min(cursor_dt + CHUNK_DAYS - 1, newest_dt)]`.
-3. Атомарным `UPDATE … WHERE status='running'` пишет `cursor=chunk_end+1`, `last_step_at=now()`, `chunks_done+=1`.
-4. Если `chunk_end >= newest_dt` → `_finalize_bootstrap` inline.
-
-Один actor пишет cursor, следующий читает. Lost-update race'а нет. ORM helpers (`advance_cursor` / `mark_finished` / `mark_failed`) — все построены на single-statement `UPDATE`, никакого read-modify-write, никакого Redis-bookkeeping. Реализация: `data/db/backfill.py`.
-
-`hey_message` (post-onboarding nudge таймстамп) сбрасывается в NULL вместе со всеми остальными при `--force` retry, что вместе с фильтром `status='completed'` в cron'е (§6.6) гарантирует, что повторный nudge уйдёт ТОЛЬКО когда новый бутстрап реально завершится.
-
----
-
-## 5. Failure semantics
-
-### 5.1. Transient внутри step'а
-
-Dramatiq `max_retries=3` + exp backoff. Intervals 429 → retry через 60s. Network errors → 5s/30s/150s. Retry перезапускает весь step; upserts идемпотентны.
-
-### 5.2. Worker restart
-
-In-flight step: at-least-once redelivery после restart'а. Scheduled next step (`actor_bootstrap_step.send()` после commit'а cursor'а) — message в Redis, worker подберёт.
-
-### 5.3. Chain обрыв после исчерпания `max_retries`
-
-Step exhausted → message failed → `state.status='running'` навечно. **Watchdog cron** (`scheduler_watchdog_bootstrap`, каждые 10 мин) ищет `running AND last_step_at < now() - 15min` → re-dispatch `actor_bootstrap_step(cursor=state.cursor_dt)`. Cursor CAS гарантирует, что chain подхватится с последней зафиксированной позиции.
-
-**Escalation:** `_BOOTSTRAP_MAX_WATCHDOG_KICKS=3` без advance'а cursor'а → `mark_failed(error='watchdog_exhausted')`. Защита от infinite re-kick broken chain'а. Счётчик живёт в `last_error` как `watchdog_kick_N`; `advance_cursor` чистит `last_error=None` при успешном прогрессе → counter reset автоматически.
-
-### 5.4. Ручной rerun
-
-`python -m cli bootstrap-sync <user_id> [--period 365] [--force]`. С `--force` ресетит state через `UserBackfillState.start()`, обходит idempotency guard.
-
----
-
-## 6. Idempotency
+## Idempotency cooldowns
 
 | Сценарий | Cooldown | Поведение |
 |---|---|---|
-| `was_new=False` (refresh OAuth) | — | Bootstrap не триггерится. |
-| `status='running'` | — | `actor_bootstrap_step` early-return, повторный `.send` no-op. |
-| `status='completed'`, `last_error != 'EMPTY_INTERVALS'`, <7d | 7 дней | Skip (webhooks обслуживают incremental updates). |
-| `status='completed'`, `last_error == 'EMPTY_INTERVALS'`, <1h | **1 час** | Intervals был пуст (Garmin ещё не доехал). Короткий cooldown — retry пока Intervals догоняет. |
-| `status='failed'` / `completed` >7d ago | — | Разрешаем rerun (state overwritten, cursor сброшен на oldest). |
+| `was_new=False` (refresh OAuth) | — | Bootstrap не триггерится |
+| `status='running'` | — | Early-return, `.send` no-op |
+| `completed`, `last_error != EMPTY_INTERVALS`, <7d | 7 дней | Skip (webhooks обслуживают incremental) |
+| `completed`, `last_error == EMPTY_INTERVALS`, <1h | **1 час** | Intervals был пуст (Garmin догоняет) — короткий retry |
+| `failed` / `completed` >7d | — | Allow rerun, state overwritten |
 
-Внутри chunk'а идемпотентность встроена: `Wellness.upsert` + `Activity.save_bulk` (ON CONFLICT) + `actor_fetch_activity_details` (skip if exists).
-
----
-
-## 7. UX
-
-### 7.1. Button state machine (`<BackfillButton />`)
-
-Webapp читает `/api/auth/backfill-status` + `finished_at` + `last_error` → рендерит кнопку по таблице:
-
-| `status` | data | `last_error` | Время с `finished_at` | Кнопка |
-|---|---|---|---|---|
-| `none` | — | — | — | **«Загрузить историю»** (primary) |
-| `running` | — | — | — | Скрыта, progress bar |
-| `completed` | есть | — | <7d | Quiet «✅ История загружена» |
-| `completed` | есть | — | ≥7d | Secondary «Пересинхронизировать» |
-| `completed` | пусто | `EMPTY_INTERVALS` | <1h | Disabled countdown «Доступно через N мин» |
-| `completed` | пусто | `EMPTY_INTERVALS` | ≥1h | Primary «Повторить импорт» |
-| `failed` | — | `<error>` | — | Danger «Попробовать снова» + tooltip с sanitized error |
-
-**Сервер не вычисляет button text** — только возвращает state, UI решает. `last_error` проходит `_sanitize_last_error` allowlist (`api/routers/auth.py`): `EMPTY_INTERVALS`, `watchdog_exhausted`, `OAuth revoked during backfill` пропускаются; `watchdog_kick_N` → `None`; всё остальное → `"internal"`. Defensive guard от raw `str(httpx_error)` с URL/токенами.
-
-### 7.2. Webhooks vs ручной re-import
-
-Если Intervals после bootstrap'а подтянет старые Garmin данные — каждая новая wellness/activity запись прилетит через `WELLNESS_UPDATED` / `ACTIVITY_UPLOADED` webhook, dispatcher запишет. **Ручной re-import нужен только** когда webhooks пропустили или юзер явно хочет всё перечитать (новый device в Garmin с годами истории — редкий кейс).
-
-### 7.3. Post-onboarding nudge (issue #258)
-
-Через 24-48ч после `finished_at` cron-job отправляет one-shot Telegram nudge «эй, можешь со мной чатиться» — для тех, кто прошёл OAuth, но молчит. Идемпотентность через mark-first: `actor_send_onboarding_hey` сначала `UserBackfillState.mark_hey_sent(user_id)` (атомарный `UPDATE … RETURNING`); race теряет один nudge при сбое send'а — приемлемо, т.к. one-shot UX.
+Все upserts ON CONFLICT идемпотентны.
 
 ---
 
-## 8. Multi-tenant / security
+## Security invariants (verified 2026-04-21/22)
 
-- `user_backfill_state.user_id` FK + CASCADE — tenant-scoped.
-- `actor_bootstrap_step(user_id)` — сервисный actor, вызывается из OAuth callback, CLI или watchdog (не из MCP). Не нарушает T1 — данные не отдаются через MCP, фон.
-- `GET /api/auth/backfill-status` через `require_viewer`, читает row по `current_user.id` (не по параметру) → 100% tenant isolation.
-- `POST /api/auth/retry-backfill` — два independent guard'а: business cooldown (7d/1h/immediate в зависимости от завершённого статуса) + anti-spam in-process 1/hour per user. Demo-reject ДО rate-limit lookup'а (у demo `user.id == owner.id`, иначе demo-сессия делила бы budget владельца).
-- `IntervalsSyncClient.for_user(user)` читает per-user Fernet-encrypted токен (`users.intervals_access_token_encrypted`).
-
-Security review (2026-04-21, 2026-04-22): T1/T2/T14 invariants держатся. Все ORM-запросы scoped по `user_id`. Open hardening (post-Phase 2): `_retry_backfill_last_success` живёт in-process, single-worker assumption — при scaling уйдёт в Redis INCR+EXPIRE.
+- `user_backfill_state.user_id` FK + CASCADE.
+- `actor_bootstrap_step(user_id)` — service actor (OAuth callback / CLI / watchdog), не из MCP → T1 не нарушает.
+- `GET /api/auth/backfill-status` — `require_viewer`, читает по `current_user.id`, никаких параметров.
+- `POST /api/auth/retry-backfill` — два независимых guard'а (business cooldown + in-process 1/hour). Demo-reject ДО rate-limit lookup'а (у demo `user.id == owner.id`).
+- `last_error` через `_sanitize_last_error` allowlist (`api/routers/auth.py`) — allowlist: `EMPTY_INTERVALS`, `watchdog_exhausted`, `OAuth revoked during backfill`; всё остальное → `"internal"`. Защита от утечки raw `str(httpx_error)` с URL/токенами.
 
 ---
 
-## 9. Decisions log
+## Pending hardening
 
-- **Sort key wellness inside chunk** — `date.fromisoformat(w.id)`, не lexicographic string. Lexicographic был coupled к текущему ISO-date shape Intervals' ID, мог silently сломаться на format change. Unparseable IDs → `date.max`, идут в конец (2026-04-22, code-reviewer 🔴 critical).
-- **Watchdog escalation cap** — 3 kick'а без advance'а → `watchdog_exhausted`. Защищает от infinite re-kick.
-- **Completion notification 60s delay.** `actor_user_wellness.send()` fire-and-forget — к моменту finalize последний chunk's wellness actors ещё в полёте. `send_with_options(delay=60_000)` + completion actor сам пере-читает счётчики из БД.
-- **HRV baseline ordering — inline sync, не fan-out.** `process_wellness_analysis_sync` в `tasks/actors/wellness.py` делает save + RHR + HRV + Banister + recovery синхронно. Bootstrap вызывает inline в chronological loop вместо `actor_user_wellness.send()`. Фан-аут (training_log enrichment, athlete_settings sync) остался async — per-day idempotent, cross-day ordering не нужен.
-- **Retention policy на `user_backfill_state`** — 1 row/user навсегда. На 100+ юзерах незаметно; на 10k+ — `DELETE WHERE finished_at < now() - 90d AND status='completed'` + cron. В MVP skip.
-
----
-
-## 10. Open questions
-
-- **CHUNK_DAYS tuning.** 30 — стартовый выбор. Если step превысит `time_limit=5min` — уменьшить до 14 или 7. Configurable через CLI flag.
-- **Rate-limit throttle на per-activity details.** Peak ~40-50 req/min. Если Intervals начнёт 429'ить — `dramatiq-rate-limit` middleware с 50 req/min per user. Не нужно сейчас.
-- **Late-arriving Garmin данные** — покрыто: (a) `WELLNESS_UPDATED` / `ACTIVITY_UPLOADED` webhooks, (b) Empty-import cooldown 1h, (c) Completed re-sync cooldown 7d.
-- **Deauth mid-backfill.** Per-step deauth-guard в `actor_bootstrap_step` (читает `user.intervals_auth_method == 'none'` → `mark_failed`). `APP_SCOPE_CHANGED` webhook должен вызвать `UserBackfillState.mark_failed()` если есть active state — отменяет дальнейшие step retries.
-- **Backfill webhook-only полей.** Weather/MMP/achievements приходят только через `ACTIVITY_UPLOADED` webhook. Для исторических activities эти поля будут null. Отдельный `backfill-webhook-data` actor — разовый прогон после merge'а `WEBHOOK_DATA_CAPTURE_SPEC` Phase 3.
+- **Multi-worker rate-limit lookup.** `_retry_backfill_last_success` живёт in-process — single-worker assumption. При scaling уйдёт в Redis INCR+EXPIRE.
+- **`APP_SCOPE_CHANGED` webhook should call `UserBackfillState.mark_failed()`** if there's active state — cancels further step retries. Currently per-step deauth-guard catches it, но раньше будет чище.
+- **Retention policy `user_backfill_state`** — 1 row/user навсегда. На 10k+ юзерах: `DELETE WHERE finished_at < now() - 90d AND status='completed'` + cron. Skip до явной нужды.

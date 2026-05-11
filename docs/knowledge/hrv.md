@@ -207,7 +207,7 @@ DFA a1 рассчитывается в скользящем окне (2 мину
 
 Конкретная decision matrix Recovery × TSB → max-zone + длительность — это архитектурное решение модуля адаптации, не теория HRV. Каноническое место: `docs/ADAPTIVE_TRAINING_PLAN_SPEC.md` §«Правила адаптации». Здесь фиксируем только базовые инварианты:
 
-- `RMSSD = red` → recommendation = `skip` всегда (`data/metrics.py:440-441`)
+- `RMSSD = red` → recommendation = `skip` всегда (`data/metrics.py:547-549`)
 - `category in (excellent, good)` → `zone2_ok`
 - `category = moderate` → `zone1_long`
 - `category = low` → `zone1_short`

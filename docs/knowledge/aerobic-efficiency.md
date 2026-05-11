@@ -34,6 +34,8 @@ EF = Speed (m/s) / Average HR
 
 ## Swim — Pace and SWOLF
 
+> **Implementation status:** SWOLF + pace trend are live (`mcp_server/tools/progress.py:_calc_swolf` / `get_efficiency_trend` Swim branch). CSS value is stored as `athlete_settings.threshold_pace` for Swim (exposed as `css` in `AthleteThresholdsDTO`, `data/db/athlete.py:207`) and updated manually. **Automated CSS test protocol** (400 m + 200 m all-out → derived CSS, drift detection, zone push to Intervals) is pending `RAMP_TEST_SWIM_SPEC` Phase 2.
+
 HR in water is unreliable (even with a chest strap under a wetsuit), and there is no power meter, so EF is not applicable. Instead we track stroke economy and raw pace.
 
 ### Pace trend
