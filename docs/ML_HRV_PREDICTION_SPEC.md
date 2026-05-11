@@ -59,7 +59,7 @@
 - **POC 2: predict run pace at given HR** (см. §13 Open question — пересекается с `get_efficiency_trend`).
 - **POC 3: unsupervised workout clustering** — UMAP + HDBSCAN. Ценность не доказана, откладываем.
 - **Incremental/online learning** вместо weekly full retrain.
-- **Visual SHAP PNG** (waterfall plot как PNG в Telegram, по образцу workout card).
+- **Visual SHAP PNG** (waterfall plot как PNG в Telegram).
 - **Cross-user features** — как другие атлеты с похожим профилем реагируют на те же паттерны.
 
 ### Non-goals
@@ -294,7 +294,7 @@ HRV 45 (−7 vs 30d baseline). Главные факторы сегодня:
 
 ### 7.3. PNG waterfall (Phase 2)
 
-`shap.plots.waterfall(...)` → PNG → `TelegramTool.send_document(mime_type="image/png")` (для прозрачности фона — как в workout card, см. `tasks/tools.py`).
+`shap.plots.waterfall(...)` → PNG → `TelegramTool.send_document(mime_type="image/png")` (для прозрачности фона, см. `tasks/tools.py`).
 
 В MVP — только текст. PNG добавим если UX-фидбек запросит визуал.
 

@@ -36,7 +36,7 @@ triathlon-agent/
 ├── config.py / sentry_config.py / cli.py
 ├── bot/          # Telegram bot: main.py (handlers), agent.py (ClaudeAgent), tools.py (MCPClient), prompts.py, scheduler.py
 ├── tasks/        # Dramatiq actors: broker.py, actors/ (wellness, activities, training_log, reports, workout)
-├── data/         # Domain: metrics.py, hrv_activity.py, workout_adapter.py, ramp_tests.py, crypto.py, card_renderer.py
+├── data/         # Domain: metrics.py, hrv_activity.py, workout_adapter.py, ramp_tests.py, crypto.py
 │   ├── intervals/  # Intervals.icu client + DTOs
 │   ├── garmin/     # Garmin GDPR parser + importer
 │   └── db/         # SQLAlchemy ORM (@dual sync/async), all models, decorators
