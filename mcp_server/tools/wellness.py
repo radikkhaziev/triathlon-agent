@@ -22,7 +22,6 @@ def _row_to_dict(row: Wellness) -> dict:
         "hrv": row.hrv,
         "sleep_secs": row.sleep_secs,
         "sleep_score": row.sleep_score,
-        "sleep_quality": row.sleep_quality,
         "body_fat": row.body_fat,
         "vo2max": row.vo2max,
         "steps": row.steps,

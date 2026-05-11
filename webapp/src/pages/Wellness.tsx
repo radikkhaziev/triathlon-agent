@@ -69,7 +69,7 @@ export default function Wellness() {
           <Section icon="😴" title={t('wellness.sleep')}>
             <div className="grid grid-cols-2 gap-2">
               <MetricCard label="Sleep Score" value={data.sleep?.score != null ? String(data.sleep.score) : '--'} />
-              <MetricCard label={t('wellness.duration')} value={data.sleep?.duration || '--'} sub={data.sleep?.quality != null ? `${t('wellness.quality')}: ${data.sleep.quality}` : undefined} />
+              <MetricCard label={t('wellness.duration')} value={data.sleep?.duration || '--'} />
             </div>
           </Section>
 

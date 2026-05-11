@@ -61,7 +61,6 @@ def _make_wellness(**overrides):
         "resting_hr": 42,
         "sleep_score": 85.0,
         "sleep_secs": 28800,
-        "sleep_quality": 3,
         "recovery_score": 72.0,
         "recovery_category": "good",
         "recovery_recommendation": "zone2_ok",
