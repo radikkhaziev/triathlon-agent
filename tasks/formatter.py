@@ -138,11 +138,14 @@ def sport_emoji(activity_type: str | None) -> str:
 def format_pace(sec_per_km: float | None) -> str | None:
     """Render s/km value as ``M:SS/km``. Returns ``None`` on invalid input.
 
-    Uses ``round`` (not truncate) so 290.6 → 4:51, not 4:50. This matters for
-    derived paces (``moving_time / distance``) where a .5s rounding choice
-    accumulates across the activity. Ramp-test messages call this with an
-    already-int value from ``parse_pace_to_sec``, so the rounding is a no-op
-    on that path.
+    Uses ``round`` (not truncate) so 290.6 → 4:51, not 4:50. Three call sites:
+      - Run summary in ``_build_summary_line`` — derived from ``moving_time /
+        distance``, fractional second is meaningful.
+      - Race summary in ``_build_post_race_message`` (``race.avg_pace_sec_km``,
+        Float column) — old behaviour truncated; switching to ``round`` can
+        flip the displayed pace by 1s on the ``.5+`` boundary. Acceptable.
+      - Ramp-test messages — already feed an int from ``parse_pace_to_sec``,
+        so rounding is a no-op on that path.
     """
     if not sec_per_km or sec_per_km <= 0:
         return None
@@ -159,6 +162,16 @@ def _format_hms(seconds: int | None) -> str | None:
 
 
 _ZONE_LABELS = ("Z1", "Z2", "Z3", "Z4", "Z5", "Z6", "Z7")
+
+# Decoupling traffic-light thresholds — abs() grading per docs/knowledge/decoupling.md.
+# Negative drift with abs < 5% is the «normal warm-up artefact» case (green); large
+# magnitudes (positive or negative) flag instability or hardware glitches (red).
+_DECOUPLING_GREEN_PCT = 5.0
+_DECOUPLING_YELLOW_PCT = 10.0
+
+# Weather noise gates — below these the data is too quiet to surface.
+_WIND_MIN_MPS = 0.5  # ~1.8 km/h — below ambient detection floor
+_HEADWIND_MIN_PCT = 25.0  # surface "headwind X%" only when ≥ this share of the ride
 
 
 def _format_pace_sec_per_100m(sec_per_km: float | None) -> str | None:
@@ -233,11 +246,13 @@ def _build_efficiency_line(detail: ActivityDetail | None) -> str | None:
     if detail.efficiency_factor:
         bits.append(f"EF {detail.efficiency_factor:.2f}")
     if detail.decoupling is not None:
-        # Green ≤5%, yellow 5-10%, red >10% — see docs/knowledge/decoupling.md.
+        # abs() grading per docs/knowledge/decoupling.md — negative drift with
+        # small magnitude is the normal warm-up artefact (green); large magnitudes
+        # in either direction flag instability and surface as red.
         abs_drift = abs(detail.decoupling)
-        if abs_drift > 10:
+        if abs_drift > _DECOUPLING_YELLOW_PCT:
             drift_emoji = "🔴"
-        elif abs_drift >= 5:
+        elif abs_drift >= _DECOUPLING_GREEN_PCT:
             drift_emoji = "🟡"
         else:
             drift_emoji = "🟢"
@@ -283,7 +298,7 @@ def _build_weather_line(weather: ActivityWeather | None) -> str | None:
             temp += f" ({_('ощущается')} {weather.avg_feels_like_c:.0f})"
         bits.append(temp)
 
-    if weather.avg_wind_speed_mps is not None and weather.avg_wind_speed_mps >= 0.5:
+    if weather.avg_wind_speed_mps is not None and weather.avg_wind_speed_mps >= _WIND_MIN_MPS:
         # Intervals.icu stores wind in m/s; convert to km/h for legibility.
         wind_kmh = weather.avg_wind_speed_mps * 3.6
         wind = f"💨 {wind_kmh:.0f} km/h"
@@ -291,7 +306,7 @@ def _build_weather_line(weather: ActivityWeather | None) -> str | None:
         if direction:
             wind += f" {direction}"
         # Headwind % from Intervals.icu — share of activity spent into the wind.
-        if weather.headwind_pct is not None and weather.headwind_pct >= 25:
+        if weather.headwind_pct is not None and weather.headwind_pct >= _HEADWIND_MIN_PCT:
             wind += f" ({_('встречный')} {weather.headwind_pct:.0f}%)"
         bits.append(wind)
 
@@ -408,11 +423,12 @@ def _format_zone_bar(times_sec: list[int] | None, label: str) -> list[str]:
             bar_chars.append(fill_blocks[rem])
 
     bar = "".join(bar_chars)
-    # Pad to full width — addresses user's «не во всю длину» complaint.
+    # Pad to full width — addresses user's «не во всю длину» complaint. Total
+    # eighths can't exceed ``_BAR_WIDTH * 8`` (floor-division upstream), so
+    # the truncation branch is dead but kept as belt-and-braces against future
+    # math drift.
     if len(bar) < _BAR_WIDTH:
         bar = bar + "░" * (_BAR_WIDTH - len(bar))
-    else:
-        bar = bar[:_BAR_WIDTH]
 
     label_bits: list[str] = []
     for i, t in enumerate(times_sec):
@@ -422,7 +438,11 @@ def _format_zone_bar(times_sec: list[int] | None, label: str) -> list[str]:
         mins = int(round(t / 60))
         label_bits.append(f"{zone_label} {mins}m")
 
-    return [f"{label}  {bar}", "       " + " · ".join(label_bits)]
+    # Indent the label row to sit under the bar, not under the label. Computed
+    # from ``label`` length + the 2-space separator so longer labels (e.g.
+    # «Power») don't break alignment if added later.
+    label_indent = " " * (len(label) + 2)
+    return [f"{label}  {bar}", label_indent + " · ".join(label_bits)]
 
 
 def _build_zone_bars(activity: Activity, detail: ActivityDetail | None) -> list[str]:

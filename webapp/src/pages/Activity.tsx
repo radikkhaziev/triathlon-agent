@@ -14,7 +14,7 @@ import {
   sportLabel,
 } from '../lib/formatters'
 import { SPORT_ICONS } from '../lib/constants'
-import type { ActivityDetailsResponse, RaceInfo } from '../api/types'
+import type { ActivityDetailsResponse, ActivityWeatherInfo, RaceInfo } from '../api/types'
 
 export default function Activity() {
   const { t, i18n } = useTranslation()
@@ -126,6 +126,9 @@ export default function Activity() {
               return <Card label="Distance & More" value={ps[0]} sub={ps.slice(1).join(' \u00B7 ')} />
             })()}
           </div>
+
+          {/* Outdoor weather — present when ACTIVITY_UPLOADED webhook had has_weather=True */}
+          {data.weather && <WeatherCard weather={data.weather} />}
 
           {/* Zone bars — full-width labelled, replaces the old narrow chart.js card */}
           {(hrZones?.some(v => v > 0) || powerZones?.some(v => v > 0) || paceZones?.some(v => v > 0)) && (
@@ -313,6 +316,84 @@ function DfaItem({ label, value, pct }: { label: string; value: number | string 
     <div className="bg-surface border border-border rounded-[10px] px-3 py-2.5">
       <div className="text-[11px] text-text-dim">{label}</div>
       <div className={`text-base font-bold mt-px ${colorCls}`}>{display}</div>
+    </div>
+  )
+}
+
+// 8-point compass \u2014 render `prevailing_wind_deg` (0\u00b0=N, clockwise) as a short
+// locale-neutral abbreviation. Falls back to '' when degree is missing so the
+// caller can drop the suffix cleanly.
+function windOctant(deg: number | null | undefined): string {
+  if (deg == null) return ''
+  const octants = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  return octants[Math.round((((deg % 360) + 360) % 360) / 45) % 8]
+}
+
+function WeatherCard({ weather }: { weather: ActivityWeatherInfo }) {
+  // Temp: "18\u00b0C feels 17" when delta \u22651\u00b0C, else just "18\u00b0C". Mirrors the Telegram
+  // formatter's logic so both surfaces agree on when to surface feels-like.
+  const temp = weather.avg_temp_c
+  const feels = weather.avg_feels_like_c
+  const tempStr =
+    temp != null
+      ? feels != null && Math.abs(feels - temp) >= 1
+        ? `${Math.round(temp)}\u00b0C \u00b7 feels ${Math.round(feels)}\u00b0`
+        : `${Math.round(temp)}\u00b0C`
+      : null
+
+  // Wind: m/s \u2192 km/h, hide weak winds (<0.5 m/s = ~1.8 km/h, below detection floor).
+  const wind = weather.avg_wind_speed_mps
+  const windStr =
+    wind != null && wind >= 0.5
+      ? `${Math.round(wind * 3.6)} km/h ${windOctant(weather.prevailing_wind_deg)}`.trim()
+      : null
+  const headwindStr =
+    weather.headwind_pct != null && weather.headwind_pct >= 25
+      ? `headwind ${Math.round(weather.headwind_pct)}%`
+      : null
+
+  // Precipitation \u2014 only render when actually wet.
+  const rainStr =
+    weather.max_rain_mm != null && weather.max_rain_mm > 0 ? `${weather.max_rain_mm.toFixed(1)} mm` : null
+  const snowStr =
+    weather.max_snow_mm != null && weather.max_snow_mm > 0 ? `${weather.max_snow_mm.toFixed(1)} mm` : null
+
+  return (
+    <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-4">
+      <div className="text-sm font-bold mb-2 pb-1 border-b border-border">Weather</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px]">
+        {tempStr && (
+          <div>
+            <span className="text-text-dim">\ud83c\udf21 Temperature</span>{' '}
+            <span className="font-semibold">{tempStr}</span>
+          </div>
+        )}
+        {windStr && (
+          <div>
+            <span className="text-text-dim">\ud83d\udca8 Wind</span>{' '}
+            <span className="font-semibold">{windStr}</span>
+            {headwindStr && <span className="text-text-dim"> \u00b7 {headwindStr}</span>}
+          </div>
+        )}
+        {rainStr && (
+          <div>
+            <span className="text-text-dim">\ud83c\udf27 Rain</span>{' '}
+            <span className="font-semibold">{rainStr}</span>
+          </div>
+        )}
+        {snowStr && (
+          <div>
+            <span className="text-text-dim">\u2744\ufe0f Snow</span>{' '}
+            <span className="font-semibold">{snowStr}</span>
+          </div>
+        )}
+        {weather.avg_clouds != null && (
+          <div>
+            <span className="text-text-dim">\u2601\ufe0f Clouds</span>{' '}
+            <span className="font-semibold">{Math.round(weather.avg_clouds)}%</span>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

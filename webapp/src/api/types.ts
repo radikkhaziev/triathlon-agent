@@ -318,6 +318,23 @@ export interface RaceInfo {
   race_day_hrv_status: string | null
 }
 
+// Outdoor weather block — from `ACTIVITY_UPLOADED` webhook when
+// `dto.has_weather=True`. Indoor / virtual rides return `weather: null`.
+export interface ActivityWeatherInfo {
+  avg_temp_c: number | null
+  min_temp_c: number | null
+  max_temp_c: number | null
+  avg_feels_like_c: number | null
+  avg_wind_speed_mps: number | null
+  avg_wind_gust_mps: number | null
+  prevailing_wind_deg: number | null
+  headwind_pct: number | null
+  tailwind_pct: number | null
+  avg_clouds: number | null
+  max_rain_mm: number | null
+  max_snow_mm: number | null
+}
+
 export interface ActivityDetailsResponse {
   activity_id: string
   type: string | null
@@ -331,6 +348,7 @@ export interface ActivityDetailsResponse {
   race?: RaceInfo | null
   details: ActivityDetails | null
   hrv: ActivityHRV | null
+  weather: ActivityWeatherInfo | null
 }
 
 // Dashboard

@@ -6,7 +6,7 @@ from sqlalchemy import exists, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, ActivityHrv, FitnessProjection, Race, User, get_session
+from data.db import Activity, ActivityDetail, ActivityHrv, ActivityWeather, FitnessProjection, Race, User, get_session
 from data.ml.progression import get_latest_analysis
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.tools.polarization import get_polarization_multi_window
@@ -89,6 +89,7 @@ async def activity_details(
 
         detail = await session.get(ActivityDetail, activity_id)
         hrv = await session.get(ActivityHrv, activity_id)
+        weather = await session.get(ActivityWeather, activity_id)
         race = None
         if activity.is_race:
             race = (
@@ -131,6 +132,26 @@ async def activity_details(
         ),
         "details": serialize_activity_details(detail) if detail else None,
         "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
+        # Outdoor weather block — populated from ACTIVITY_UPLOADED webhook when
+        # `dto.has_weather=True`. Indoor / virtual rides have no row.
+        "weather": (
+            {
+                "avg_temp_c": weather.avg_temp_c,
+                "min_temp_c": weather.min_temp_c,
+                "max_temp_c": weather.max_temp_c,
+                "avg_feels_like_c": weather.avg_feels_like_c,
+                "avg_wind_speed_mps": weather.avg_wind_speed_mps,
+                "avg_wind_gust_mps": weather.avg_wind_gust_mps,
+                "prevailing_wind_deg": weather.prevailing_wind_deg,
+                "headwind_pct": weather.headwind_pct,
+                "tailwind_pct": weather.tailwind_pct,
+                "avg_clouds": weather.avg_clouds,
+                "max_rain_mm": weather.max_rain_mm,
+                "max_snow_mm": weather.max_snow_mm,
+            }
+            if weather
+            else None
+        ),
     }
 
 
