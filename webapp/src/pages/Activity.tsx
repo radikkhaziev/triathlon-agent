@@ -364,32 +364,32 @@ function WeatherCard({ weather }: { weather: ActivityWeatherInfo }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[13px]">
         {tempStr && (
           <div>
-            <span className="text-text-dim">\ud83c\udf21 Temperature</span>{' '}
+            <span className="text-text-dim">{'\u{1F321}\ufe0f Temperature'}</span>{' '}
             <span className="font-semibold">{tempStr}</span>
           </div>
         )}
         {windStr && (
           <div>
-            <span className="text-text-dim">\ud83d\udca8 Wind</span>{' '}
+            <span className="text-text-dim">{'\u{1F4A8} Wind'}</span>{' '}
             <span className="font-semibold">{windStr}</span>
-            {headwindStr && <span className="text-text-dim"> \u00b7 {headwindStr}</span>}
+            {headwindStr && <span className="text-text-dim">{` \u00b7 ${headwindStr}`}</span>}
           </div>
         )}
         {rainStr && (
           <div>
-            <span className="text-text-dim">\ud83c\udf27 Rain</span>{' '}
+            <span className="text-text-dim">{'\u{1F327}\ufe0f Rain'}</span>{' '}
             <span className="font-semibold">{rainStr}</span>
           </div>
         )}
         {snowStr && (
           <div>
-            <span className="text-text-dim">\u2744\ufe0f Snow</span>{' '}
+            <span className="text-text-dim">{'\u2744\ufe0f Snow'}</span>{' '}
             <span className="font-semibold">{snowStr}</span>
           </div>
         )}
         {weather.avg_clouds != null && (
           <div>
-            <span className="text-text-dim">\u2601\ufe0f Clouds</span>{' '}
+            <span className="text-text-dim">{'\u2601\ufe0f Clouds'}</span>{' '}
             <span className="font-semibold">{Math.round(weather.avg_clouds)}%</span>
           </div>
         )}
