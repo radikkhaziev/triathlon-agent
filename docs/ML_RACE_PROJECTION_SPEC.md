@@ -561,8 +561,8 @@ CREATE TABLE race_projections (
 
 ### Phase 1 (MVP, user 1) — ✅ shipped 2026-05-11
 
-- [x] `data/ml/race_features.py` — per-discipline feature builders, unit-тесты (17 cases).
-- [x] `data/ml/race_predict.py` — `predict_splits_with_ci()` возвращает структуру §9.2 (10 cases).
+- [x] `data/ml/race_features.py` — per-discipline feature builders, unit-тесты (24 cases incl. z1-filter unit + pipeline-integration).
+- [x] `data/ml/race_predict.py` — `predict_splits_with_ci()` возвращает структуру §9.2 (16 cases incl. physiological floor clamp + quality gate).
 - [x] `data/ml/race_train.py` — XGBRegressor per discipline + bootstrap residuals (500 resamples) → `static/models/race_{user}_{discipline}.joblib`.
 - [x] MCP tool `get_race_projection` — оба режима + cold-start fallback + all error envelopes §9.3 (7 cases).
 - [x] Bootstrap residuals → CI в ответе, inflation `sqrt(days/30)` для Mode 2.
@@ -572,6 +572,22 @@ CREATE TABLE race_projections (
 - [x] **Schema deps:** `fitness_projection.sport_info JSONB` (migration `b8c9d0e1f2a3`) + `FitnessProjection.{get, sport_info_by_type}`. Per-sport CTL helper lives inline at `data/ml/race_features.py:_compute_sport_ctl_series` (pandas-batch, ORM-method form turned out zero-caller and was removed).
 - [x] CLI `train-race-models <user_id>`.
 - [x] Документация: этот файл + секция в CLAUDE.md + развёрнутая секция в `docs/IMPLEMENTATION_STATUS.md`.
+
+### Phase 1.5 — z1 recovery filter (✅ shipped 2026-05-11)
+
+- [x] `_is_recovery_dominated(hr_zone_times)` + `Z1_RECOVERY_THRESHOLD = 0.70` constant (§6.3).
+- [x] Filter applied in `build_dataset` loop for Run sport only (Ride uses `is_indoor` + power corridor, Swim has no zone splits).
+- [x] Missing zone data passes through unchanged (don't shrink n on sparse details).
+- [x] Log line per training run reports `n_filtered_recovery` count for debugging.
+- [x] Tests: unit helper (6 cases) + pipeline-integration regression guard (1 case) — fixture with 3 Run rows, 1 recovery, returned DataFrame has 2 rows.
+
+### Quality gate (✅ shipped 2026-05-11)
+
+- [x] `ModelBelowAcceptance` exception + `_enforce_quality_gate(bundle, discipline, *, user_id)` (`data/ml/race_predict.py`).
+- [x] Per-discipline floor `_QUALITY_FLOORS` (Run r²≥0.20/mae≤40, Ride 0.20/25W, Swim 0.05/15 sec/100m). Calibrated against user 1/14/23/39/62 real metrics 2026-05-12.
+- [x] Legacy bundles without `metrics` field pass through (backwards-compat).
+- [x] NaN guard in metric comparison (defensive — `nan < 0.20` would silently admit garbage).
+- [x] Envelope gains `below_acceptance: list[str]` field; MCP tool emits `reason="model_below_acceptance"` distinct from `model_not_trained`.
 
 ### Phase 1 runtime acceptance (pending)
 

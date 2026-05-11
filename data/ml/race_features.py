@@ -10,6 +10,7 @@ that may be sparse are passed through as NaN rather than imputed.
 
 import logging
 import math
+from collections.abc import Sequence
 from datetime import date, timedelta
 
 import pandas as pd
@@ -27,6 +28,15 @@ MIN_DURATION_SEC = 25 * 60
 
 # Min training set size before XGBoost actually has a chance.
 MIN_EXAMPLES = 30
+
+# Phase 1.5 z1-filter (§6.3): drop activities where ≥70% of moving_time was in
+# Zone 1 (pure recovery). The training target (pace/power) on a recovery jog is
+# uncorrelated with the athlete's actual race-grade capacity, so including such
+# rows injects high-variance noise that the model interprets as «athlete is in
+# weak form at this CTL/HRV». Threshold is conservative — true Z2-base runs
+# (Z1 ~10-15%, Z2 ~75%) stay in. Applies to Run; Ride uses `is_indoor`/power
+# corridor instead. Swim has no zone splits in `activity_details` worth using.
+Z1_RECOVERY_THRESHOLD = 0.70
 
 
 class InsufficientDataError(Exception):
@@ -57,7 +67,8 @@ def _fetch_activities(user_id: int, sport: str) -> pd.DataFrame:
                     ad.elevation_gain AS elevation_gain,
                     ad.avg_power      AS avg_power,
                     ad.normalized_power AS normalized_power,
-                    ad.pace           AS pace_mps
+                    ad.pace           AS pace_mps,
+                    ad.hr_zone_times  AS hr_zone_times
                 FROM activities a
                 LEFT JOIN activity_details ad ON ad.activity_id = a.id
                 WHERE a.user_id = :uid AND a.type = :sport
@@ -70,6 +81,55 @@ def _fetch_activities(user_id: int, sport: str) -> pd.DataFrame:
         )
     df["date"] = df["date"].astype(str)
     return df
+
+
+def _coerce_zone_seconds(value) -> float:
+    """Normalize a single zone-time entry to a non-negative finite float.
+
+    None / NaN / non-numeric → 0.0 (treat as «no time recorded in this zone»).
+    Truthiness shortcuts (`x or 0`) don't work here — `bool(float('nan')) is True`,
+    so a NaN slip through silently and poisons the sum to NaN, which makes the
+    `>= threshold` comparison return False and disables the filter.
+    """
+    if value is None:
+        return 0.0
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(v) or v < 0:
+        return 0.0
+    return v
+
+
+def _is_recovery_dominated(hr_zone_times) -> bool:
+    """True iff Z1 (pure recovery) ≥ ``Z1_RECOVERY_THRESHOLD`` of **recorded
+    HR zone time** (not the activity's full ``moving_time`` — those can differ
+    when the chest strap drops out or the watch pauses; we only judge the
+    fraction we can actually see).
+
+    Accepts any non-string sequence (list / tuple / numpy.ndarray) since
+    SQLAlchemy / pandas may return either depending on the JSON loader path.
+    Strings/bytes are rejected to avoid iterating characters.
+
+    Unknown zones (None or empty array) → False — don't filter what we can't
+    measure. NaN entries are coerced to 0 so they don't poison the sum.
+    """
+    if hr_zone_times is None or isinstance(hr_zone_times, (str, bytes)):
+        return False
+    if not isinstance(hr_zone_times, Sequence):
+        # Numpy arrays etc. — try iterating; bail out if not iterable.
+        try:
+            hr_zone_times = list(hr_zone_times)
+        except TypeError:
+            return False
+    if len(hr_zone_times) == 0:
+        return False
+    seconds = [_coerce_zone_seconds(z) for z in hr_zone_times]
+    total = sum(seconds)
+    if total <= 0:
+        return False
+    return (seconds[0] / total) >= Z1_RECOVERY_THRESHOLD
 
 
 def _fetch_wellness(user_id: int) -> pd.DataFrame:
@@ -344,12 +404,20 @@ def build_dataset(user_id: int, discipline: str) -> pd.DataFrame:
     }
 
     rows: list[dict] = []
+    n_filtered_recovery = 0
     for _, act in activities.iterrows():
         target = _target_value(act, sport)
         if target is None:
             continue
         if pd.isna(act["avg_hr"]):
             continue  # need HR for target_hr feature
+        # Phase 1.5 z1-filter (§6.3): drop pure-recovery activities so the
+        # model doesn't learn «athlete in OK form ran 6:30/km» from a recovery
+        # jog. Activities without zone data pass through (XGBoost ignores via
+        # NaN on derived features), so we don't shrink n on unsynced details.
+        if sport == "Run" and _is_recovery_dominated(act.get("hr_zone_times")):
+            n_filtered_recovery += 1
+            continue
 
         dt_str = act["date"]
         # Cumulative + recent metrics. Use TSS (training load), NOT distance —
@@ -390,6 +458,15 @@ def build_dataset(user_id: int, discipline: str) -> pd.DataFrame:
         f["activity_id"] = act["activity_id"]
         f["date"] = dt_str
         rows.append(f)
+
+    if n_filtered_recovery:
+        logger.info(
+            "z1-filter: dropped %d recovery-dominated %s activities (≥%.0f%% Z1) for user_id=%d",
+            n_filtered_recovery,
+            sport,
+            Z1_RECOVERY_THRESHOLD * 100,
+            user_id,
+        )
 
     if not rows:
         return pd.DataFrame()
