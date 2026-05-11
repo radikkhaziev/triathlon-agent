@@ -131,7 +131,6 @@ export interface RHRBlock {
 // Sleep
 export interface SleepData {
   score: number | null
-  quality: number | null
   duration: string | null
   duration_secs: number | null
 }

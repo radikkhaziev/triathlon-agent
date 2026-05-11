@@ -161,7 +161,6 @@ async def _build_wellness_response(row, target_date: date, user_id: int, languag
         "rhr": _rhr_block(rhr_row, language),
         "sleep": {
             "score": row.sleep_score,
-            "quality": row.sleep_quality,
             "duration": _format_sleep_duration(row.sleep_secs, language),
             "duration_secs": row.sleep_secs,
         },
