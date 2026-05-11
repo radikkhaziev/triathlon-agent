@@ -1,983 +1,348 @@
 # Multi-Tenant Security Specification
 
-> Threat model, data isolation, auth/authz, API security, secrets management — всё что нужно до перехода на multi-tenant.
+> Threat model, data isolation, auth/authz, secrets — что нужно до и после перехода на multi-tenant. Spec живёт как **reference catalog угроз** (§2 T1-T19) + **deferred punch-lists** для Phase 2/3 (§9).
 
 **Status (2026-05-09):**
-- Phase 1 / 1.1 / 1.2 / 1.3 — ✅ done
-- Phase 2 (Auth Upgrade) — **deferred, no current use cases** (см. §9 Phase 2 audit note)
-- Phase 3 (Security Hardening) — **deferred until traffic warrants**; punch-list зафиксирован в §9 Phase 3 audit note
-- Phase 4 (Observability) — not started
-- Phase 5 (Registration & Multi-User) — not started
 
-**Related issues:**
+- **Phase 1 / 1.1 / 1.2 / 1.3** — ✅ done. Users table + `user_id` на 13 таблицах, per-user MCP tokens, OAuth-scoped credentials, scheduler per-tenant.
+- **Phase 2** (JWT upgrade с tenant_id/role/scope claims) — **deferred 2026-05-09**, нет use case. Trigger conditions + punch-list в §9.
+- **Phase 3** (security hardening, Redis rate-limit migration) — **deferred 2026-05-09**, traffic profile не оправдывает. Trigger + punch-list в §9.
+- **Phase 4** (observability — audit log, AI cost tracking, structured logs) — not started.
+- **Phase 5** (registration & multi-user, invite codes, GDPR erasure/export) — not started.
 
-| Issue | Title                                                          | Status           | Phase                                                                |
-| ----- | -------------------------------------------------------------- | ---------------- | -------------------------------------------------------------------- |
-| #41   | Design security agent before multi-tenant                      | open, needs-spec | This spec                                                            |
-| #15   | Design and implement multi-tenant architecture                 | open             | All phases                                                           |
-| #34   | Add multi-user table to store bot users                        | **done**         | Phase 1                                                              |
-| #49   | Add unique indexes for multi-tenant data isolation             | **done**         | Phase 1                                                              |
-| #48   | Add created_by field to GitHub issues in multi-tenant context  | open, security   | Phase 2                                                              |
-| #47   | Define manual onboarding process for new athlete               | open, needs-spec | Phase 5                                                              |
-| #37   | Integrate Redis for caching and session storage                | open             | Phase 3 (rate limiting)                                              |
-| #3    | Job endpoints: add status tracking for background job failures | open             | Phase 4 (observability)                                              |
-| #40   | Integrate Sentry for error monitoring                          | open             | Phase 4 (observability)                                              |
-| #50   | Add i18n support for multi-language interface                  | open, needs-spec | Phase 5 (per-user `language` in users table)                         |
-| #51   | Switch LLM model for Telegram chat                             | open             | Phase 5 (per-user `preferred_model` in users table, API key routing) |
-| #132  | Реализовать web login через Telegram                           | **done**         | Threat T12 (Telegram Login Widget)                                   |
+**Related issues:** #41 (security agent), #15 (multi-tenant arch), #34 (users table) ✅, #49 (unique indexes) ✅, #48 (created_by in GH issues) ✅, #47 (onboarding), #37 (Redis caching), #3 (job failure tracking), #40 (Sentry), #50 (i18n), #51 (per-user LLM model), #132 (Telegram Login Widget) ✅.
 
 ---
 
-## 1. Current State (Single-Tenant)
+## 1. Current implementation snapshot
 
-### Что есть сейчас
+| Concern | Code |
+|---|---|
+| Auth — Telegram initData | `api/deps.py` (HMAC-SHA256, `auth_date <15min` freshness gate) |
+| Auth — Telegram Login Widget | `api/auth.py:verify_telegram_widget_auth` (SHA256 over data-check-string, 24h replay window, constant-time compare) |
+| Auth — JWT (desktop) | `api/auth.py` (custom HS256, 7-day TTL, `purpose` claim) |
+| Auth — MCP | `api/server.py:MCPAuthMiddleware` → `User.get_by_mcp_token` (per-user Bearer) |
+| Role guards | `api/deps.py:require_viewer / require_athlete / require_owner` |
+| Bot decorators | `bot/decorator.py:@athlete_required / @user_required` (resolve via `chat_id`) |
+| Per-user credentials | `users.api_key_encrypted` / `intervals_access_token_encrypted` (Fernet at rest) |
+| MCP context | `mcp_server/context.py:get_current_user_id()` (contextvars, never tool parameter) |
+| Audit log allowlist | `api/routers/auth.py:_sanitize_last_error` (whitelist: `EMPTY_INTERVALS`, `watchdog_exhausted`, `OAuth revoked during backfill`; everything else → `"internal"`) |
 
-| Компонент                | Реализация                                                                                   | Файл                              |
-| ------------------------ | -------------------------------------------------------------------------------------------- | --------------------------------- |
-| Auth — Telegram initData | HMAC-SHA256 верификация                                                                      | `api/deps.py`                     |
-| Auth — JWT (desktop)     | Кастомный HS256 JWT, 7-day expiry                                                            | `api/auth.py`                     |
-| Auth — MCP               | Статический Bearer token (`MCP_AUTH_TOKEN`)                                                  | `api/server.py` MCPAuthMiddleware |
-| Roles                    | 3 роли: anonymous / viewer / owner                                                           | `api/deps.py`                     |
-| Owner detection          | `user.id == TELEGRAM_CHAT_ID` (hardcoded)                                                    | `api/deps.py`, `bot/main.py`      |
-| Rate limiting            | Verify-code: 5 attempts / 5 min per IP                                                       | `api/auth.py`                     |
-| Bot access               | `@athlete_required` — атлет с `athlete_id`, всё остальное по `@user_required`                 | `bot/decorator.py`                |
-| Secrets                  | `pydantic SecretStr` + `.env`                                                                | `config.py`                       |
-| DB                       | **Phase 1 done:** `users` table + `user_id` FK на 13 таблицах, callers hardcoded `user_id=1` | `data/database.py`                |
-| Crypto                   | Fernet encryption для per-user secrets                                                       | `data/crypto.py`                  |
-
-### Ключевые уязвимости для multi-tenant (оставшиеся)
-
-1. ~~**Нет `user_id` / `tenant_id`**~~ — **РЕШЕНО:** user_id на всех таблицах, CRUD обновлены. Callers пока hardcoded `user_id=1`
-2. **Один набор credentials** — `INTERVALS_API_KEY`, `ANTHROPIC_API_KEY` и т.д. хардкодятся в `.env`. Per-user `api_key_encrypted` готов в users table, но не подключен
-3. **Кастомный JWT** — самописный HS256 без стандартных claims (iss, aud), без ротации ключей
-4. **In-memory state** — `_pending_codes`, `_verify_attempts` теряются при рестарте (частично решено Redis #37)
-5. **MCP auth** — один статический токен на всех, не привязан к пользователю
-6. **Bot handler** — проверяет `TELEGRAM_CHAT_ID` в handler-ах, а не middleware
-7. **Нет audit log** — нет записи кто что делал
+Schema: 36 tables, 13 with `user_id` FK + index (migrations `268670b22cd7` users + `f0d2f435b802` user_id backfill). `exercise_cards` остаётся общей библиотекой без `user_id`. ORM `@dual` decorator + `@with_session` гарантируют user-scoped queries.
 
 ---
 
-## 2. Threat Model
+## 2. Threat Model (STRIDE-lite)
 
 ### Actors
 
-| Actor                   | Описание                                   | Текущий доступ                         |
-| ----------------------- | ------------------------------------------ | -------------------------------------- |
-| **Owner**               | Владелец инстанса (ты)                     | Полный доступ ко всему                 |
-| **Viewer**              | Друг с Telegram, share link                | Read-only через webapp                 |
-| **Anonymous**           | Случайный человек                          | Только лендинг                         |
-| **Attacker — external** | Атакует API endpoints                      | Rate limiting на verify-code           |
-| **Attacker — tenant**   | Другой пользователь системы (multi-tenant) | **Новый actor — не существует сейчас** |
+| Actor | Описание | Текущий доступ |
+|---|---|---|
+| **Owner** | Владелец инстанса | Полный доступ |
+| **Viewer** | Друг через share-link | Read-only webapp |
+| **Anonymous** | Случайный | Только лендинг |
+| **Attacker — external** | Атакует API endpoints | Rate limiting на verify-code/демо |
+| **Attacker — tenant** | Другой пользователь системы | **Новый actor — multi-tenant** |
 
-### Threats (STRIDE-lite)
+### Threats
 
 #### T1. Tenant Data Leak (Spoofing + Information Disclosure)
 
-- **Что:** Пользователь A видит HRV/wellness/workouts пользователя B
-- **Где:** Все CRUD функции в `database.py` — `WellnessRow.get()`, `get_activities()`, etc.
-- **Severity:** Critical
-- **Mitigation:** Row-level tenant_id filtering (см. раздел 3)
+- **Что:** User A видит HRV/wellness/workouts user B.
+- **Где:** все CRUD в `data/db/*`.
+- **Severity:** Critical.
+- **Mitigation:** row-level `user_id` filtering. Реализовано — все CRUD методы требуют `user_id` параметр.
 
 #### T2. Cross-Tenant Intervals.icu Access (Elevation of Privilege)
 
-- **Что:** Пользователь A триггерит sync, который пишет данные пользователя B
-- **Где:** `IntervalsClient` использует глобальный `INTERVALS_API_KEY` + `INTERVALS_ATHLETE_ID`
-- **Severity:** Critical
-- **Mitigation:** Per-tenant credentials store (см. раздел 4)
+- **Что:** User A триггерит sync, который пишет данные user B.
+- **Где:** `IntervalsClient` использует per-user credentials.
+- **Severity:** Critical.
+- **Mitigation:** `IntervalsClient.for_user(user)` non-singleton factory, читает per-user Fernet-encrypted токен. Реализовано (Phase 1.2).
 
 #### T3. JWT Token Reuse Across Tenants (Spoofing)
 
-- **Что:** JWT содержит только `sub: chat_id`, нет tenant scope
-- **Где:** `api/auth.py` — `create_jwt()` / `verify_jwt()`
-- **Severity:** High
-- **Mitigation:** Добавить `tenant_id` + `scope` claims
+- **Что:** JWT содержит только `sub: chat_id`, нет tenant scope.
+- **Где:** `api/auth.py:create_jwt / verify_jwt`.
+- **Severity:** High (теоретически).
+- **Mitigation (current):** `sub=chat_id` достаточно — DB lookup по `chat_id` даёт user_id; нет шеринга токенов между chat_id. Phase 2 audit (§9) откладывает claim-расширение до появления ban/logout flow.
 
 #### T4. MCP Token Sharing (Elevation of Privilege)
 
-- **Что:** Один `MCP_AUTH_TOKEN` на всех — кто знает токен, видит всё
-- **Где:** `api/server.py` MCPAuthMiddleware
-- **Severity:** High
-- **Mitigation:** Per-tenant MCP tokens или JWT-based MCP auth
+- **Что:** Один MCP токен на всех.
+- **Где:** ранее `MCP_AUTH_TOKEN`.
+- **Severity:** High.
+- **Mitigation:** Per-user `mcp_token` (random 32-byte hex, `users.mcp_token UNIQUE`). Lookup через `User.get_by_mcp_token`. Реализовано.
 
 #### T5. Bot Command Injection (Tampering)
 
-- **Что:** Чужой Telegram user отправляет `/dashboard` или `/workout` → видит чужие данные
-- **Где:** `bot/main.py` — проверка `TELEGRAM_CHAT_ID` только в отдельных handlers
-- **Severity:** Medium (сейчас single-tenant, будет Critical в multi-tenant)
-- **Mitigation:** Bot middleware для tenant resolution по chat_id
+- **Что:** Чужой Telegram user отправляет `/dashboard` → видит чужие данные.
+- **Где:** `bot/main.py` handlers.
+- **Severity:** Medium → Critical в multi-tenant.
+- **Mitigation:** `@athlete_required` / `@user_required` декораторы резолвят `User` через `chat_id` + `is_active` filter (`bot/decorator.py:48-101`). Реализовано.
 
 #### T6. Secrets in Environment (Information Disclosure)
 
-- **Что:** Все API ключи в одном `.env`, один утёкший ключ = доступ ко всему
-- **Где:** `config.py`
-- **Severity:** Medium
-- **Mitigation:** Secrets vault (HashiCorp Vault / AWS Secrets Manager) или encrypted per-tenant store в DB
+- **Что:** Все ключи в одном `.env`, один утёкший = доступ ко всему.
+- **Severity:** Medium.
+- **Mitigation:** Per-user `api_key_encrypted` / `intervals_access_token_encrypted` (Fernet). Globals (`ANTHROPIC_API_KEY`, `INTERVALS_API_KEY` legacy) остаются. Vault — out of scope.
 
 #### T7. No Audit Trail (Repudiation)
 
-- **Что:** Нет записи кто что делал — кто триггернул sync, кто создал workout
-- **Где:** Все endpoints
-- **Severity:** Medium
-- **Mitigation:** Audit log table + structured logging
+- **Что:** Нет записи кто что делал.
+- **Severity:** Medium.
+- **Mitigation:** Phase 4 (not started). Текущий paliative: `logger.info` на write endpoints (`PATCH /api/athlete/goal/{id}`, `PATCH /api/athlete/profile`).
 
 #### T8. AI Prompt Injection via Shared Context (Tampering)
 
-- **Что:** В multi-tenant AI agent может подмешать данные другого tenant в prompt
-- **Где:** `ai/claude_agent.py` — `analyze_morning()`, `chat()`
-- **Severity:** High
-- **Mitigation:** Strict tenant-scoped data loading, никогда не смешивать tenant data в одном prompt
+- **Что:** Multi-tenant AI agent подмешивает данные другого tenant в prompt.
+- **Где:** `bot/agent.py` `chat()`, `tasks/tools.py` `generate_morning_report`.
+- **Severity:** High.
+- **Mitigation:** `render_athlete_block(user)` строго scoped. MCP tools — `get_current_user_id()` из contextvars (не параметр). Реализовано.
 
 #### T9. Denial of Service — Resource Exhaustion (Availability)
 
-- **Что:** Один пользователь спамит sync jobs / AI chat / MCP tools, исчерпывая ресурсы для всех
-- **Где:** `bot/scheduler.py`, `api/routes.py`, `mcp_server/`
-- **Severity:** Medium (single-tenant), High (multi-tenant)
-- **Mitigation:** Per-tenant rate limits, job queuing, AI quota enforcement (см. разделы 6.1, 8.3)
+- **Что:** Один user спамит sync / AI chat / MCP, исчерпывая ресурсы.
+- **Severity:** Medium → High в multi-tenant.
+- **Mitigation:** 5 точечных in-process rate limiters (см. §9 Phase 3 punch-list). Migration to Redis pending Phase 3 trigger.
 
 #### T10. Background Job Cross-Tenant Pollution (Information Disclosure)
 
-- **Что:** Scheduler job обрабатывает всех пользователей и случайно смешивает данные
-- **Где:** `bot/scheduler.py` — cron jobs (sync wellness, workouts, activities, DFA)
-- **Severity:** High
-- **Mitigation:** Per-tenant job execution с tenant_id context, job isolation (см. раздел 6.5)
+- **Что:** Scheduler job обрабатывает всех пользователей и смешивает данные.
+- **Где:** `bot/scheduler.py` cron jobs.
+- **Severity:** High.
+- **Mitigation:** Per-user dispatch loops (`actor_user_wellness(user_id)`, `actor_fetch_user_activities(user_id, ...)`). Каждый job tenant-scoped. Реализовано (Phase 1.3).
 
 #### T11. initData Replay Attack (Spoofing)
 
-- **Что:** Перехваченный Telegram initData переиспользуется спустя дни — нет проверки `auth_date` freshness
-- **Где:** `api/deps.py` — `_verify_and_parse_init_data()`
-- **Severity:** Medium
-- **Mitigation:** Проверять `auth_date` < 15 минут, reject stale initData. 15 мин а не 5 — Mini App может быть открыто до первого API-вызова дольше 5 минут
+- **Что:** Перехваченный initData переиспользуется спустя дни.
+- **Где:** `api/deps.py:_verify_and_parse_init_data`.
+- **Severity:** Medium.
+- **Mitigation:** `auth_date < 15 min` (`api/deps.py:99-106`). 15 мин а не 5 — Mini App может быть открыто до первого API-вызова дольше 5. Реализовано.
 
 #### T12. Telegram Login Widget Replay / Forgery (Spoofing)
 
-- **Что:** Подделка или реплей payload от Telegram Login Widget → выпуск JWT на чужого юзера
-- **Где:** `api/auth.py:verify_telegram_widget_auth()`, эндпоинт `POST /api/auth/telegram-widget`
-- **Severity:** High (auth path, ведёт к выпуску сессионного JWT)
-- **Mitigation (реализовано):**
-  - HMAC-SHA256 над data-check-string (все поля кроме `hash`, sorted by key, `\n`-разделители), secret_key = `SHA256(bot_token)` — по спеке https://core.telegram.org/widgets/login
-  - Constant-time сравнение (`hmac.compare_digest`)
-  - Replay window: `auth_date` старше 24ч → reject (лимит самой спеки Telegram)
-  - Clock skew: `auth_date` в будущем >60с → reject
-  - Пустой `TELEGRAM_BOT_TOKEN` → reject (никакой fallback на статический секрет)
-  - **Auto-provisioning с default role `viewer`**: если юзера нет → создаём row в `users` с `chat_id`, `username`, `display_name` из Telegram payload. Это тот же паттерн, что у бота в `/start` (`bot/main.py:start`). Upgrade до `athlete` (с `athlete_id`, `api_key`, и т.д.) остаётся ручным через `cli shell` — никакого auto-promote на основе HMAC-подписи. То есть widget открывает только read-only доступ viewer'а к общим данным
-- **Operator setup:** `/setdomain` в `@BotFather` → `bot.endurai.me` (иначе виджет не рендерится). `TELEGRAM_BOT_USERNAME` в `.env` для фронта через `GET /api/auth/telegram-widget-config`
-- **Тесты:** `tests/api/test_telegram_widget_auth.py` — 18 кейсов, включая valid/tampered/missing-fields/stale/future/wrong-token/empty-token/null-optional/extra-fields-signed-through
-
-#### T14. Silent Re-Activation of Blocked Users (Tampering / Availability)
-
-- **Что:** Пользователь блокирует бота в Telegram → `users.is_active=False` (см. `bot/main.py:handle_my_chat_member` и 403-fallback в `tasks/tools.py:TelegramTool.send_message`). Но у заблокированного юзера может оставаться открытая вкладка Mini App или старая ссылка с валидным `initData`. Если auth-путь автоматически реактивирует юзера при первом же API-запросе, scheduler снова начнёт дёргать Telegram API, ловить 403, снова выключать — пинг-понг, лишние Sentry-события, лишние Telegram calls.
-- **Где:** `data/db/user.py:get_or_create_from_telegram()`, вызывается из `api/deps.py:get_current_user` (initData), `api/routers/auth.py` (Login Widget) и `bot/main.py:start` (`/start` handler)
-- **Severity:** Medium (availability degradation + auth policy leak, не ведёт к data disclosure)
-- **Mitigation (реализовано):**
-  - `get_or_create_from_telegram` ищет юзера через `get_by_chat_id(..., include_inactive=True)` — предотвращает `IntegrityError` на UNIQUE `chat_id` если row существует как `is_active=False`. Но **реактивацию не делает**: возвращает юзера "как есть", auth-код дальше сам решает что с ним.
-  - Реактивация (`set_active_by_chat_id(..., True)`) происходит **только** в двух явных сигналах re-engagement:
-    1. `bot/main.py:start` — юзер явно пишет `/start`
-    2. `bot/main.py:handle_my_chat_member` — Telegram прислал `my_chat_member` с `status=MEMBER`
-  - Webapp auth (initData) и Login Widget **не реактивируют** — они читают `is_active` через существующий фильтр в `get_by_chat_id(chat_id)` (без `include_inactive`), т.е. заблокированный юзер для webapp просто "не найден" и получает anonymous flow.
-- **Семантика `users.is_active`:** флаг перегружен двумя смыслами — "админ-деактивация через CLI" ∪ "Telegram-канал недоступен". Оба состояния = полная потеря доступа (webapp, MCP, рассылки), потому что auth-запросы (`get_by_mcp_token`, `get_by_chat_id`) фильтруют по `is_active=True`. Это **намеренное решение**: блокировка бота = явный сигнал "не хочу пользоваться сервисом", и даёт юзеру единую kill-switch.
-- **Граничный случай:** юзер блокирует бота, но webapp-вкладка открыта. Первый API-запрос вернёт 401 (юзер не найден через `get_by_chat_id`). Frontend через `apiFetch` clear'ит JWT и редиректит на `/login`, где `<BotChatBanner/>` (см. T18 — реализован для widget-signup сценария, переиспользуется здесь) даёт deep-link на бота для re-engagement через `/start`.
+- **Что:** Подделка или реплей Login Widget payload → выпуск JWT на чужого юзера.
+- **Где:** `api/auth.py:verify_telegram_widget_auth`, `POST /api/auth/telegram-widget`.
+- **Severity:** High (auth path).
+- **Mitigation:**
+  - HMAC-SHA256 над data-check-string (поля кроме `hash`, sorted by key, `\n`-разделители), `secret_key = SHA256(bot_token)` — спека https://core.telegram.org/widgets/login.
+  - `hmac.compare_digest` constant-time.
+  - Replay window: `auth_date` старше 24ч → reject.
+  - Clock skew: `auth_date` в будущем >60s → reject.
+  - Empty `TELEGRAM_BOT_TOKEN` → reject (никакой fallback).
+  - **Auto-provisioning с default role `viewer`** — read-only access, upgrade до `athlete` ручной через CLI.
+- **Operator setup:** `/setdomain` в `@BotFather` → `bot.endurai.me`; `TELEGRAM_BOT_USERNAME` в `.env`.
+- **Tests:** `tests/api/test_telegram_widget_auth.py` (18 кейсов).
 
 #### T13. RPE Callback Cross-Tenant Write (Tampering)
 
-- **Что:** Подделка `callback_data` вида `rpe:{activity_id}:{value}` → запись RPE на чужую activity
-- **Где:** `bot/main.py:handle_rpe_callback()`, register через `CallbackQueryHandler(pattern=r"^rpe:")`
-- **Severity:** Low (callback_data приходит от Telegram-клиента, который авторизован как bot chat; forward/share inline-button между юзерами ограничен Telegram'ом; единственный реалистичный вектор — юзер руками собирает callback через API bot token'а, но тогда он уже контролирует свой собственный chat)
-- **Mitigation (реализовано):**
-  - `@athlete_required` декоратор резолвит `User` из `chat_id`
-  - Input validation: `parts = query.data.split(":"); len(parts) != 3` → silent ack; `int(raw_value)` в try/except; `1 <= value <= 10` range check
-  - **Atomic CAS UPDATE:** один `UPDATE activities SET rpe = :value WHERE id = :activity_id AND user_id = :user_id AND rpe IS NULL`. Три предиката коллапсируются в одно SQL-выражение — existence, tenant scope и single-shot check. Не нужен preceding `session.get` + Python-level check (устранены race conditions и защита от регресса при рефакторе). Если `rowcount == 0`, пользователь получает `answerCallbackQuery("Уже оценено")` — без раскрытия причины (non-ownership vs already-rated), чтобы не утекала информация о существовании чужих activity IDs.
-  - CHECK constraint на БД: `rpe IS NULL OR (rpe BETWEEN 1 AND 10)` — защита at rest даже при обходе handler
-  - Single-shot invariant enforced в том же UPDATE через `rpe IS NULL` predicate (см. `docs/RPE_SPEC.md` § Single-shot)
-- **RPE не принимается через MCP write tool** — `get_activity_details`, `get_training_log`, `get_workout_compliance`, `get_weekly_summary` read-only. Запись возможна только через Telegram callback. Это защищает от prompt-injection сценария "Claude записал RPE по интерпретации фразы юзера".
+- **Что:** Подделка `callback_data` `rpe:{activity_id}:{value}` → запись RPE на чужую activity.
+- **Где:** `bot/main.py:handle_rpe_callback`.
+- **Severity:** Low (callback_data приходит от Telegram-клиента, авторизованного как bot chat; forward/share inline-button между юзерами Telegram'ом ограничен).
+- **Mitigation:**
+  - `@athlete_required` резолвит `User` из `chat_id`.
+  - Input validation: parts length, int parse в try/except, `1 ≤ value ≤ 10`.
+  - **Atomic CAS UPDATE:** `UPDATE activities SET rpe=:value WHERE id=:activity_id AND user_id=:user_id AND rpe IS NULL`. Три предиката в одном SQL — existence, tenant scope, single-shot. `rowcount==0` → `answerCallbackQuery("Уже оценено")` без раскрытия причины.
+  - CHECK constraint `rpe IS NULL OR (rpe BETWEEN 1 AND 10)` на БД.
+- **RPE не пишется через MCP** — only Telegram callback. Защита от prompt-injection «Claude записал RPE по фразе юзера».
+
+#### T14. Silent Re-Activation of Blocked Users (Tampering / Availability)
+
+- **Что:** Юзер блокирует бота → `is_active=False`. Открытая webapp-вкладка может авто-реактивировать → пинг-понг scheduler ↔ Telegram 403.
+- **Где:** `data/db/user.py:get_or_create_from_telegram`.
+- **Severity:** Medium (availability + auth policy leak, не data disclosure).
+- **Mitigation:**
+  - `get_or_create_from_telegram` ищет через `include_inactive=True` (предотвращает `IntegrityError` на UNIQUE), но **реактивацию не делает**.
+  - Реактивация (`set_active_by_chat_id`) **только** в `bot/main.py:start` или `handle_my_chat_member` MEMBER-transition.
+  - Webapp/initData/Login Widget читают через `get_by_chat_id` без `include_inactive` → блокированный юзер «не найден», anonymous flow.
+- **Семантика `is_active`:** перегружена — «admin-deactivation» ∪ «Telegram-канал недоступен». Намеренное решение: блокировка бота = единый kill-switch.
+- **Edge:** webapp-вкладка после блокировки → 401 → `apiFetch` clear JWT + редирект на `/login` + `<BotChatBanner/>` deep-link на бота.
 
 #### T15. Intervals.icu OAuth — Account Mismatch via State Race (Tampering)
 
-- **Что:** OAuth callback проверяет `db_user.athlete_id == response.athlete.id` для защиты от подмены аккаунта, но state JWT не snapshot'ит `athlete_id` — только `user_id`. Между инициацией (`POST /auth/init`) и callback'ом (`GET /auth/callback`) `athlete_id` в БД может измениться (shell admin, parallel OAuth, migration), и guard пропустит чужой `athlete.id`.
-- **Где:** `api/routers/intervals/oauth.py:_validate_oauth_state` + `intervals_oauth_callback`
-- **Severity:** High (возможна cross-tenant data attribution после Phase 2 когда Bearer sync начнёт писать wellness/activities с чужого аккаунта)
-- **Реалистичность:** низкая на текущем этапе (2-юзерный dev, владелец shell'а = владелец OAuth). Становится реальной при public launch.
-- **Mitigation (Phase 2, follow-up issue):**
-  - В `_generate_oauth_state` добавить `athlete_id_snapshot` в payload
-  - В callback: reject если `db_user.athlete_id != state_snapshot.athlete_id` с error `oauth_state_stale`
-  - Защищает от ВСЕХ race-condition сценариев, не только shell-admin
-  - Плюс: добавить `aud='intervals_oauth_callback'` claim для PyJWT audience-level separation от session JWT (defence-in-depth поверх существующего `purpose` guard)
+- **Что:** OAuth callback проверяет `db_user.athlete_id == response.athlete.id`, но state JWT не snapshot'ит `athlete_id` — между init и callback `athlete_id` в БД может измениться (shell admin, parallel OAuth, migration) → guard пропустит чужой `athlete.id`.
+- **Где:** `api/routers/intervals/oauth.py:_validate_oauth_state` + `intervals_oauth_callback`.
+- **Severity:** High (cross-tenant data attribution после Phase 2 когда Bearer sync начнёт писать данные).
+- **Реалистичность:** низкая (2-юзерный dev). Реальна при public launch.
+- **Mitigation (Phase 2 follow-up):** `athlete_id_snapshot` в state payload, reject если `db_user.athlete_id != state_snapshot.athlete_id` → `oauth_state_stale`. Плюс `aud='intervals_oauth_callback'` claim для defence-in-depth.
 
 #### T16. Intervals.icu OAuth — Long-Lived Token Without Rotation (Information Disclosure)
 
-- **Что:** Intervals.icu OAuth не выдаёт `refresh_token` и не указывает `expires_in` — access_token живёт "вечно" до явного revoke через Intervals.icu UI. Украденный токен (XSS, DB leak, лог с token) даёт perpetual access к wellness/activities/calendar юзера.
-- **Где:** `data/db/user.py:intervals_access_token_encrypted` (Fernet at rest), Intervals.icu token response shape (§T15 cookbook confirmed)
-- **Severity:** Medium (impact = read wellness/calendar, не financial)
+- **Что:** Intervals.icu не выдаёт `refresh_token` / `expires_in` — access_token живёт «вечно» до явного revoke через Intervals UI. Украденный токен = perpetual read access.
+- **Где:** `users.intervals_access_token_encrypted`.
+- **Severity:** Medium (impact = read wellness/calendar, не financial).
 - **Mitigation:**
-  - Fernet encryption at rest (уже реализовано в Phase 1)
-  - **Нет rotation endpoint** — юзер может отозвать только через Intervals.icu UI. EndurAI detect'ит revoke через ленивую 401-проверку в `IntervalsClient` (Phase 2 §8)
-  - Callback логирует только structure, НЕ full token (`keys=sorted(data.keys())`, `body_len` вместо `body`). Полный token никогда не в логах, breadcrumbs, Sentry stack frames (через `data scrubbing` в `sentry_config.py`)
-  - Token exchange через POST body (не URL) — не в access logs Caddy/nginx
-  - **Phase 2 TODO:** rate limit `POST /api/intervals/auth/init` (5 req / 5 min per user), иначе злоумышленник с валидной session может flood'ить OAuth initiation (abuse → блок IP со стороны Intervals.icu)
+  - Fernet encryption at rest.
+  - **Нет rotation endpoint** — revoke только через Intervals UI. EndurAI detect'ит через lazy 401 в `IntervalsClient`.
+  - Callback логирует только structure (`keys=sorted(...)`, `body_len`) — never full token. Sentry data scrubbing.
+  - Token exchange через POST body (не URL) — не в access logs.
+- **Phase 2 TODO:** rate limit `POST /api/intervals/auth/init` (5 req / 5 min per user) против OAuth-init flood.
 
 #### T17. User Memory — Vendor-Side Retention of Prose PII (Information Disclosure)
 
-- **Что:** `user_facts` хранит свободно-текстовые свойства атлета, включая `topic='health'` (астма, аллергии, приём лекарств) и `topic='family'` (беременность, дети, семейные обстоятельства). `bot/prompts.py:render_athlete_block` инжектит активные факты в system prompt на каждом chat-запросе. System prompt уходит в Anthropic API и подпадает под их retention policy: по умолчанию Anthropic хранит prompts/completions до **30 дней** для abuse monitoring (ToS), zero-retention доступна только на Tier 3 / enterprise agreements.
-- **Где:** `bot/prompts.py:render_athlete_block` (reader) + `data/db/user_fact.py:UserFact` (storage). Body факта попадает в outbound API body (Anthropic Messages API, `system=[{"text": ..., ...}]` segment 2).
-- **Severity:** Low-Medium (impact = leak чувствительного текста на стороне vendor'а, не кредиты/PAN/health records в регулируемом смысле; recipient — Anthropic, с публичной privacy policy; retention bounded ≤30d)
+- **Что:** `user_facts` хранит свободно-текстовые свойства (астма, аллергии, беременность, семья). `render_athlete_block` инжектит в system prompt → уходит в Anthropic API → retention до 30 дней (default ToS).
+- **Где:** `bot/prompts.py:render_athlete_block` + `data/db/user_fact.py:UserFact`.
+- **Severity:** Low-Medium.
 - **Mitigation:**
-  - **Локально:** Sentry стримфрейм-скраббер (`sentry_config.py:SENSITIVE_KEYS`) включает `"fact"` с 2026-04 — исключение в `save_with_cap` / `save_fact` больше не опубликует body factа в captured event frames. См. USER_CONTEXT_SPEC §11.5.
-  - **Vendor retention:** осознанный trade-off, задокументирован в USER_CONTEXT_SPEC §11.6. Self-hosted LLM сравнимого качества стоит 10×+ и сейчас недоступен; миграция на enterprise-tier Anthropic contract возможна при первом non-owner athlete onboard, где контракт explicitly даёт zero-retention.
-  - **User control:** inline "🗑 Забудь это" кнопка даёт возможность отозвать факт в течение 10 мин + `/forget` Phase 3 webapp UI для phase-out старых.
-  - **Scope limit:** `save_fact` docstring запрещает сохранение транзиентных moods (→ `save_mood_checkin_tool` вместо факта) и данных уже присутствующих в `athlete_settings`/`athlete_goals`. Модель направляется избегать "case history" — только тренировочно-релевантные traits.
-  - **Phase 2 (async extractor) trigger controlled** per-user через `get_fact_metrics.tool_facts_per_100_msgs_30d`; extractor не включается по умолчанию и не расширяет retention surface для юзеров у которых tool-based подход работает.
+  - **Local:** Sentry scrubber (`sentry_config.py:SENSITIVE_KEYS` включает `"fact"`).
+  - **Vendor retention:** trade-off задокументирован в `USER_CONTEXT_SPEC` §11.6. Self-hosted LLM сравнимого качества — 10×+. Enterprise contract с zero-retention — opt-in на первом non-owner athlete.
+  - **User control:** inline «🗑 Забудь это» + Phase 3 webapp UI.
+  - **Scope limit:** `save_fact` docstring запрещает транзиентные moods и данные из `athlete_settings`/`athlete_goals`.
+  - **Phase 2 (async extractor) gated** per-user через `get_fact_metrics.tool_facts_per_100_msgs_30d < 3` ∧ `chat_msgs ≥ 100`.
 
 #### T18. Login Widget Signup Without Bot Chat (Availability / Operational Hygiene)
 
-- **Что:** Telegram Login Widget на `bot.endurai.me` создаёт `users` row из подписанного payload, но **не требует** чтобы у юзера существовал чат с ботом — Telegram-боты не могут писать первыми, и `sendMessage` для такого `chat_id` детерминированно возвращает `400 Bad Request: chat not found`. После OAuth-callback'а (промоут viewer→athlete) фан-аут актёров (`actor_sync_athlete_goals`, `_actor_send_goal_notification`, утренние отчёты, webhook-driven activity notifications) бесконечно генерит Sentry-события с одинаковой 400, плюс утечка bot-token'а в URL ловится Sentry GitHub-integration'ом и попадает в публичный issue-tracker (см. issues #266 / #267 / #268, удалены).
-- **Где:** `api/routers/auth.py:auth_telegram_widget` → `User.get_or_create_from_telegram(chat_id=tg_user_id)`; затем любой `tasks/tools.py:TelegramTool.send_message` для этого юзера.
-- **Severity:** Medium (impact = операционный шум + secret leakage в issue tracker; не cross-tenant и не data disclosure)
-- **Mitigation (реализовано):**
-  - **Колонка `users.bot_chat_initialized`** (миграция `t0a1b2c3d4e5`, default False для новых rows; backfill TRUE для существующих, известные widget-only signups сбрасываются вручную через operational runbook в docstring миграции).
-  - **Set `True`** в двух явных сигналах "чат существует": `bot/main.py:start` (юзер ввёл `/start`) и `handle_my_chat_member` MEMBER-transition (юзер тапнул "START" в клиенте). Симметрия с `is_active` re-engagement из T14.
-  - **OAuth-init gate** (`api/routers/intervals/oauth.py:intervals_oauth_init`) → 412 с `detail={error: "bot_chat_not_initialized", bot_username}`. Срабатывает **до** rate-limit'а, чтобы стучащий в дверь юзер не выжигал свой 5-req/5-min лимит.
-  - **Defensive suppress** в `TelegramTool._suppress` — любой `send_*` no-op'ит при `bot_chat_initialized=False`. Защищает от любых актёров, проскочивших мимо OAuth-gate'а (existing athletes, миграция, race conditions).
-  - **Self-healing** в `_post_with_retries` для уже-онбордженных юзеров, которые потом удалили чат: 400 с `description ∈ {chat not found, user is deactivated, peer_id_invalid}` → `set_bot_chat_initialized(chat_id, False)` + return None. Под guard'ом `self.user is not None and str(self.user.chat_id) == chat_id` — broadcast-путь с typo'нутым chat_id не может затереть флаг невинному юзеру.
-  - **Frontend banner** (`webapp/src/components/BotChatBanner.tsx`) — sticky-баннер сверху на всех страницах через `App.tsx`-gate, plus full-page `<OnboardingPrompt/>` с deep-link `https://t.me/<bot>?start=fromwidget` для юзеров без `athlete_id`, plus inline-блок в Settings. Покрывает все пути входа (новый widget signup, существующий athlete вроде user 39).
-  - **Sentry scrubbing** (`sentry_config.py`): regex `bot\d+:[A-Za-z0-9_-]{30,}` редактирует TG bot-токены в URL httpx-исключений до того, как Sentry-bot создаст GitHub issue. Defence-in-depth поверх ротации токена.
-- **Семантика `bot_chat_initialized` vs `is_active`:** разные сигналы.
-  - `is_active=False` = юзер заблокировал бота (явный opt-out из всего сервиса) — фильтруется в `get_by_chat_id`/`get_by_mcp_token`, юзер вообще не аутентифицируется.
-  - `bot_chat_initialized=False` = бот технически не может писать в этот чат, но юзер существует и аутентифицируется (webapp работает, MCP работает). Только Telegram-выходящие коммуникации заблокированы.
-- **Тесты:** `tests/test_tools.py:TestSendMessage400PermanentFailure` (7 кейсов) + `TestSendMessage400CrossTenantGuard` (3 кейса, защита от cross-tenant flag wipe) + `TestPermanent400AllowlistIsClassConstant` (anti-regression на `ClassVar`); `tests/api/test_intervals_oauth_init.py:TestBotChatGate` (3 кейса, включая "412 не выжигает rate-limit" + "demo > bot-chat priority"); `tests/api/test_auth_me.py:TestBotChatFieldsExposed` (4 кейса, exposure фронту).
+- **Что:** Login Widget создаёт `users` row из подписанного payload, но без `/start` Telegram-боты не могут писать первыми → 400 `chat not found` бесконечно (fan-out actors + утечка bot-token в URL в Sentry GH-integration).
+- **Где:** `api/routers/auth.py:auth_telegram_widget` → `User.get_or_create_from_telegram`.
+- **Severity:** Medium (op noise + secret leakage в issue tracker; не cross-tenant).
+- **Mitigation:**
+  - **Колонка `users.bot_chat_initialized`** (migration `t0a1b2c3d4e5`, default False для новых).
+  - **Set `True`** только в `bot/main.py:start` или `handle_my_chat_member` MEMBER-transition.
+  - **OAuth-init gate** → 412 `bot_chat_not_initialized` **до** rate-limit'а.
+  - **Defensive `_suppress`** в `TelegramTool` — `send_*` no-op при `bot_chat_initialized=False`.
+  - **Self-healing**: 400 `chat not found / user is deactivated / peer_id_invalid` → `set_bot_chat_initialized(chat_id, False)`. Под guard'ом `str(self.user.chat_id) == chat_id` — защита от cross-tenant flag wipe.
+  - **Frontend banner** (`<BotChatBanner/>` + `<OnboardingPrompt/>`) на всех путях.
+  - **Sentry scrubbing**: regex `bot\d+:[A-Za-z0-9_-]{30,}` редактирует TG bot-токены в httpx URLs до Sentry capture.
+- **Семантика vs `is_active`:**
+  - `is_active=False` = явный opt-out из сервиса (фильтруется в `get_by_chat_id`/`get_by_mcp_token`).
+  - `bot_chat_initialized=False` = TG-канал недоступен, но webapp/MCP работают.
 
 #### T19. Achievement Webhook — Cross-Tenant Write via Tampered `activity.id` (Tampering)
 
-- **Что:** `POST /api/intervals/webhook` с `type=ACTIVITY_ACHIEVEMENTS` резолвит tenant через `User.get_by_athlete_id(event.athlete_id)`, но `activity_id` берёт из `event.activity["id"]` — **без** проверки что эта activity принадлежит резолвнутому юзеру. Атакующий с валидным `INTERVALS_WEBHOOK_SECRET` (single shared secret across all tenants — см. T16-adjacent) может подсунуть `{athlete_id: "i_victim_A", activity: {id: "i_user_B_activity", icu_achievements: [{id: "ps0_5", type: "BEST_POWER", watts: 999, ...}]}}`. Без guard'а `ActivityAchievement.save_bulk(user_id=user_A.id, activity_id="i_user_B_activity", ...)` создаст row, и `get_for_activity(user_A.id, "i_user_B_activity")` в социал-share UI вернёт чужой PR под видом user_A.
-- **Где:** `api/routers/intervals/webhook.py:_dispatch_achievements` + `data/db/activity.py:ActivityAchievement.save_bulk`
-- **Severity:** High (impact = cross-tenant data attribution, surface area = social-share UI потенциально публикует чужие достижения; реалистичность зависит от сохранности `INTERVALS_WEBHOOK_SECRET`).
-- **Mitigation (реализовано):**
-  - **Tenant existence guard** перед `save_bulk`: `Activity.exists_for_user(user_id=user.id, activity_id=str(activity_id))` — `SELECT id FROM activities WHERE user_id = ? AND id = ? LIMIT 1` — отказывает в записи если activity не принадлежит резолвнутому юзеру.
-  - Параллельно решает race ACTIVITY_ACHIEVEMENTS-до-ACTIVITY_UPLOADED (legitimate edge: Strava-source activity отброшен в `actor_fetch_user_activities` → parent row отсутствует → guard просто пропускает persist без Sentry, нотификация всё равно идёт).
-  - Telegram-нотификация (`actor_send_achievement_notification`) **остаётся за guard'ом** — actor сам tenant-scoped через `TelegramTool(user=user_dto)` и `_suppress`-гейт (T18); даже если webhook tampered, ping не выйдет за пределы своего tenant'а.
-  - **Webhook-redelivery идемпотентность:** `UNIQUE(user_id, activity_id, achievement_id)` на `activity_achievements` + `ON CONFLICT DO NOTHING` в `save_bulk` — дубликат webhook не создаёт row, даже если guard пропустил его при первой доставке.
-- **Тесты:** `tests/api/test_webhook_dispatch.py:test_skips_persist_when_activity_unknown_to_user` (T19 regression-guard) + `test_persists_before_notify` (lock ordering save→notify через shared `call_log`).
-- **Что НЕ покрыто:** `INTERVALS_WEBHOOK_SECRET` остаётся single-tenant secret. Per-tenant signing — Phase 2 follow-up; пока T19 guard остаётся defense-in-depth.
+- **Что:** `ACTIVITY_ACHIEVEMENTS` webhook резолвит tenant через `athlete_id`, но `activity_id` берёт из payload без проверки ownership. Атакующий с `INTERVALS_WEBHOOK_SECRET` (single shared secret) может подсунуть `{athlete_id: i_victim_A, activity: {id: i_user_B_activity, icu_achievements: [...]}}`.
+- **Где:** `api/routers/intervals/webhook.py:_dispatch_achievements`.
+- **Severity:** High (cross-tenant data attribution; зависит от сохранности `INTERVALS_WEBHOOK_SECRET`).
+- **Mitigation:**
+  - **Tenant existence guard:** `Activity.exists_for_user(user_id=user.id, activity_id=str(activity_id))` перед `save_bulk`.
+  - **Telegram notification остаётся за guard'ом** — `TelegramTool(user=user_dto)` + `_suppress`-gate (T18) tenant-scoped.
+  - **Idempotency:** `UNIQUE(user_id, activity_id, achievement_id)` + `ON CONFLICT DO NOTHING`.
+- **Not covered:** per-tenant webhook signing — Phase 2 follow-up.
 
 ---
 
-## 3. Data Isolation Strategy
+## 3. Data Isolation Strategy (current state)
 
-### 3.1. Tenant Model
+**Tenant = User.** Один пользователь = один набор данных. Coach/team/organization model — out of scope.
 
-```
-users (новая таблица, #34) — реализовано в data/database.py User
-├── id: INTEGER (PK, autoincrement)
-├── chat_id: VARCHAR (unique)
-├── username: VARCHAR (nullable)
-├── display_name: VARCHAR (nullable)
-├── role: VARCHAR DEFAULT 'viewer'             — owner / coach / athlete / viewer
-├── athlete_id: VARCHAR (unique, nullable)
-├── api_key_encrypted: TEXT (nullable)         — Fernet-encrypted Intervals.icu API key
-├── mcp_token: VARCHAR(64) (unique, nullable)  — MCP Bearer token
-├── language: VARCHAR(5) DEFAULT 'ru'          — (#50) per-user language for UI and AI responses
-├── preferred_model: VARCHAR(30) DEFAULT NULL   — (#51) per-user LLM model override
-├── is_active: BOOLEAN DEFAULT true
-├── created_at: TIMESTAMP WITH TZ
-└── updated_at: TIMESTAMP WITH TZ
-```
+**Pattern:** middleware-level `user_id` filtering, **not** PostgreSQL RLS (RLS требует `SET LOCAL` per-connection — плохо с async pooling). Все CRUD методы требуют `user_id` параметр. ORM `@dual` + `@with_session` гарантируют consistent scoping. Schema details в `data/db/` (single source of truth); историческая migration list — `migrations/versions/268670b22cd7_*` + `f0d2f435b802_*`.
 
-**Tenant = User.** Не организация, не команда — один пользователь = один набор данных. Простая модель для начала. Coach/team модель — позже.
-
-**Регистрация:** Telegram bot `/start` автоматически создаёт `User` с `role=viewer`.
-
-### 3.2. Migration — user_id на все таблицы (РЕАЛИЗОВАНО)
-
-> Миграция: `268670b22cd7` (users table) + `f0d2f435b802` (user_id на все таблицы)
-> Все существующие данные backfill с `user_id=1` (owner placeholder).
-
-13 таблиц получили `user_id INTEGER NOT NULL REFERENCES users(id)`. `exercise_cards` — общая библиотека, без user_id.
-
-| Таблица              | Было                                            | Стало                                                                                | Индекс                          |
-| -------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------- |
-| `wellness`           | PK `id` (date string)                           | PK `id` (autoincrement), `date` VARCHAR, `UNIQUE(user_id, date)`                     | `ix_wellness_user_id`           |
-| `hrv_analysis`       | PK `(date, algorithm)`, FK → wellness           | PK `(user_id, date, algorithm)`, FK dropped                                          | implicit (leading PK column)    |
-| `rhr_analysis`       | PK `date`, FK → wellness                        | PK `(user_id, date)`, FK dropped                                                     | implicit (leading PK column)    |
-| `scheduled_workouts` | PK `event_id`                                   | PK `event_id` + `user_id` FK                                                         | `ix_scheduled_workouts_user_id` |
-| `activities`         | PK `activity_id`                                | PK `activity_id` + `user_id` FK                                                      | `ix_activities_user_id`         |
-| `activity_details`   | PK `activity_id` FK → activities                | Без изменений — tenant scope через JOIN с activities                                 | —                               |
-| `activity_hrv`       | PK `activity_id` FK → activities, `date` column | PK без изменений, **`date` column удалена** (JOIN через activities.start_date_local) | —                               |
-| `pa_baseline`        | PK autoincrement, `UNIQUE(activity_type, date)` | + `user_id` FK, `UNIQUE(user_id, activity_type, date)`                               | `ix_pa_baseline_user_id`        |
-| `ai_workouts`        | PK autoincrement                                | + `user_id` FK                                                                       | `ix_ai_workouts_user_id`        |
-| `training_log`       | PK autoincrement                                | + `user_id` FK                                                                       | `ix_training_log_user_id`       |
-| `mood_checkins`      | PK autoincrement                                | + `user_id` FK. **Owner-only**                                                       | `ix_mood_checkins_user_id`      |
-| `iqos_daily`         | PK `date`                                       | PK `id` (autoincrement), `UNIQUE(user_id, date)`. **Owner-only**                     | `ix_iqos_daily_user_id`         |
-| `exercise_cards`     | PK `id`                                         | **Без изменений** — общая библиотека, user_id не нужен                               | —                               |
-| `workout_cards`      | PK autoincrement                                | + `user_id` FK                                                                       | `ix_workout_cards_user_id`      |
-
-**Ключевые решения:**
-
-- `activity_details` и `activity_hrv` — user_id не добавлен, tenant scope через JOIN с `activities` (FK → activities.id, а activities уже имеет user_id)
-- `activity_hrv.date` удалена — дублировала `activities.start_date_local`, теперь все date-запросы через JOIN
-- `wellness` и `iqos_daily` — PK изменён с date-string на autoincrement (multi-tenant: два пользователя, одна дата)
-- `hrv_analysis` / `rhr_analysis` — FK к wellness удалены (не использовались в коде, связь логическая по user_id + date)
-- `exercise_cards` — общая библиотека, user_id не нужен
-- Все CRUD методы обновлены с `user_id` параметром, callers пока hardcoded `user_id=1` с `# TODO` комментариями
-
-### 3.3. Query Isolation Pattern
-
-**Подход: Middleware-level tenant injection, НЕ row-level security PostgreSQL.**
-
-Причина: RLS требует `SET LOCAL` per-connection что плохо работает с async connection pooling. Проще и надёжнее — фильтр на уровне приложения.
-
-```python
-# data/database.py — новый паттерн
-
-@asynccontextmanager
-async def get_tenant_session(user_id: UUID) -> AsyncGenerator[TenantSession, None]:
-    """Yield a session scoped to a specific tenant."""
-    factory = get_session_factory()
-    session = factory()
-    try:
-        yield TenantSession(session, user_id)
-    finally:
-        await session.close()
-
-class TenantSession:
-    """Wraps AsyncSession with automatic tenant_id filtering."""
-
-    def __init__(self, session: AsyncSession, user_id: UUID):
-        self._session = session
-        self.user_id = user_id
-
-    async def get_wellness(self, dt: date) -> WellnessRow | None:
-        stmt = select(WellnessRow).where(
-            WellnessRow.user_id == self.user_id,
-            WellnessRow.date == str(dt),
-        )
-        result = await self._session.execute(stmt)
-        return result.scalar_one_or_none()
-
-    # ... все CRUD методы принудительно фильтруют по user_id
-```
-
-**Правило:** Ни один запрос к данным не должен работать без `user_id`. Глобальные CRUD (типа `WellnessRow.get(date)`) — удалить или пометить `@deprecated`.
-
-### 3.4. Migration Strategy (РЕАЛИЗОВАНО)
-
-Выполнено в одной миграции `f0d2f435b802`:
-
-1. [x] Insert owner placeholder (id=1) в users table
-2. [x] Добавить `user_id` column (nullable) → backfill=1 → SET NOT NULL → FK + index
-3. [x] Обновить unique constraints для multi-tenant
-4. [x] Обновить все CRUD методы с `user_id` параметром
-5. [x] Обновить все callers с `user_id=1 # TODO`
-6. [x] Тесты обновлены и проходят (144/148, 4 pre-existing failures)
+**Запрещено:** глобальные CRUD без `user_id` (типа `WellnessRow.get(date)`). Audit catches их через test fixtures.
 
 ---
 
-## 4. Auth & Authorization Redesign
+## 4. Phase 2 — Auth Upgrade (deferred 2026-05-09)
 
-### 4.1. JWT Upgrade
+**Audit verdict:** текущий threat profile не оправдывает работу. Что есть vs spec:
 
-Текущий JWT — минимальный (`sub`, `iat`, `exp`). Для multi-tenant нужно:
-
-```json
-{
-  "sub": "telegram_chat_id",
-  "tenant_id": "uuid",
-  "role": "owner|athlete|viewer",
-  "scope": ["read", "write", "sync", "admin"],
-  "iss": "triathlon-agent",
-  "aud": "triathlon-api",
-  "iat": 1711900000,
-  "exp": 1712504800,
-  "jti": "unique-token-id"
-}
-```
-
-**Изменения:**
-
-- Добавить `tenant_id` (UUID пользователя) — основной идентификатор для data access
-- Добавить `role` и `scope` — вместо hardcoded проверки `chat_id == TELEGRAM_CHAT_ID`
-- Добавить `jti` — для token revocation (через Redis blacklist)
-- **Рассмотреть:** Миграция на `PyJWT` или `python-jose` вместо кастомного кода
-
-### 4.2. Role Matrix (Multi-Tenant)
-
-| Role          | Read own data          | Write own data     | Sync  | AI chat | MCP   | Admin |
-| ------------- | ---------------------- | ------------------ | ----- | ------- | ----- | ----- | --------------------------------------------------------------------- |
-| **owner**     | +                      | +                  | +     | +       | +     | +     |
-| **athlete**   | +                      | + (limited)        | +     | +       | +     | -     |
-| ~~**coach**~~ | ~~+ (their athletes)~~ | ~~+ (plans only)~~ | ~~-~~ | ~~+~~   | ~~+~~ | ~~-~~ | _Out of scope — coach→athlete binding не описан. См. "Что НЕ входит"_ |
-| **viewer**    | + (shared link)        | -                  | -     | -       | -     | -     |
-| **anonymous** | -                      | -                  | -     | -       | -     | -     |
-
-### 4.3. Telegram Bot — Multi-User Resolution
-
-```python
-# bot/middleware.py — новый файл
-
-async def resolve_tenant(update: Update) -> User | None:
-    """Resolve tenant from Telegram chat_id.
-
-    Returns User object or None if user not registered.
-    """
-    chat_id = str(update.effective_user.id)
-    user = await User.get_by_chat_id(chat_id)
-
-    if not user:
-        # Unregistered user — offer onboarding
-        return None
-
-    if not user.is_active:
-        return None
-
-    return user
-```
-
-**Каждый bot handler** получает `user` через middleware, а не проверяет `TELEGRAM_CHAT_ID`:
-
-```python
-async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = await resolve_tenant(update)
-    if not user:
-        await update.message.reply_text("Вы не зарегистрированы. /start для начала.")
-        return
-
-    # Все данные загружаются через tenant session
-    async with get_tenant_session(user.id) as ts:
-        wellness = await ts.get_wellness(today)
-        ...
-```
-
-### 4.4. MCP Auth — Per-Tenant Tokens
-
-**Реализовано:** Per-user `mcp_token` (random 32-byte hex, VARCHAR(64)), хранится plaintext в `users` таблице. Генерируется через `User.generate_mcp_token()`. Lookup через `User.get_by_mcp_token(token)`. Claude Desktop конфигурируется с user-specific токеном.
-
-### 4.5. API Endpoint Auth Flow (Updated)
-
-```
-Request → Authorization header
-  ├── "Bearer <jwt>" → verify_jwt() → extract tenant_id, role, scope
-  ├── Telegram initData → verify_hmac() → lookup user by chat_id → tenant_id, role
-  ├── "Bearer <api_key>" → lookup in users table → tenant_id, role
-  └── None → anonymous (landing only)
-
-→ Inject tenant_id into request state
-→ All data access via get_tenant_session(tenant_id)
-```
-
----
-
-## 5. Secrets Management
-
-### 5.1. Per-Tenant Credentials
-
-Каждый пользователь приносит свои:
-
-| Secret                          | Колонка в `users`                     | Хранение                    | Примечание                                                        |
-| ------------------------------- | ------------------------------------- | --------------------------- | ----------------------------------------------------------------- |
-| Intervals.icu API key (legacy)  | `api_key_encrypted`                   | Fernet-encrypted            | Legacy path, замещается OAuth для новых юзеров                    |
-| Intervals.icu OAuth access_token | `intervals_access_token_encrypted`   | Fernet-encrypted            | Долгоживущий (нет `refresh_token` / `expires_in`), см. §T15       |
-| Intervals.icu OAuth scope       | `intervals_oauth_scope`               | Plain (не секрет)           | `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE`        |
-| Intervals.icu auth method       | `intervals_auth_method`               | Plain (`api_key`/`oauth`/`none`) | Source of truth для `IntervalsClient.for_user()` dispatch    |
-| Intervals.icu athlete ID        | `athlete_id`                          | Plain (unique)              | Не секрет, но per-user                                            |
-| Telegram chat ID                | `chat_id`                             | Plain (unique)              | Идентификатор                                                     |
-| MCP Bearer token                | `mcp_token`                           | Plain (unique, VARCHAR(64)) | Per-user токен для MCP доступа                                    |
-
-Системные секреты (общие для сервиса):
-
-| Secret                             | Хранение         | Примечание                                            |
-| ---------------------------------- | ---------------- | ----------------------------------------------------- |
-| `ANTHROPIC_API_KEY`                | `.env` / Vault   | Один на сервис, usage per-tenant tracked              |
-| `TELEGRAM_BOT_TOKEN`               | `.env` / Vault   | Один бот на всех                                      |
-| `JWT_SECRET`                       | `.env` / Vault   | Подписание session + OAuth state JWT (разделены `purpose` claim) |
-| `DATABASE_URL`                     | `.env` / Vault   | Единая БД                                             |
-| `GITHUB_TOKEN`                     | `.env` / Vault   | CI/CD, не per-tenant                                  |
-| `INTERVALS_OAUTH_CLIENT_ID`        | `.env`           | Публичный client ID от Intervals.icu (plain)          |
-| `INTERVALS_OAUTH_CLIENT_SECRET`    | `.env` / Vault   | Секретный (в `SecretStr`), используется только в callback server-to-server |
-
-### 5.2. Encryption at Rest (РЕАЛИЗОВАНО)
-
-Реализовано в `data/crypto.py`:
-
-- `encrypt_field(value)` / `decrypt_field(encrypted)` — Fernet encryption
-- `generate_key()` — генерация нового ключа
-- `FIELD_ENCRYPTION_KEY` в `config.py` как `SecretStr`
-- `User.set_api_key()` / `get_api_key()` — хелперы для Intervals.icu API key (legacy)
-- `User.set_oauth_tokens()` / `intervals_access_token` property / `clear_oauth_tokens()` — OAuth access_token dual с тем же ключом (см. §T15)
-- Key rotation (`re_encrypt_all`) — TODO, не реализовано. При ротации `FIELD_ENCRYPTION_KEY` нужно перезаписать **оба** поля: `api_key_encrypted` и `intervals_access_token_encrypted`.
-
-### 5.3. New Env Vars
-
-```env
-# Security (new for multi-tenant)
-FIELD_ENCRYPTION_KEY=...          # Fernet key for encrypting per-user secrets in DB
-REGISTRATION_ENABLED=false        # Allow new user registration via bot
-REGISTRATION_CODE=                # Invite code: alphanumeric 12+ chars (NOT 6-digit — brute-force risk)
-MAX_USERS=10                      # Max registered users (safety limit)
-```
-
----
-
-## 6. API Security Hardening
-
-### 6.1. Rate Limiting (Global)
-
-Сейчас rate limiting только на verify-code. Нужно расширить:
-
-| Endpoint Group     | Limit         | Per       |
-| ------------------ | ------------- | --------- |
-| `POST /api/auth/*` | 5 req / 5 min | IP        |
-| `GET /api/*`       | 60 req / min  | tenant_id |
-| `POST /api/jobs/*` | 10 req / min  | tenant_id |
-| `POST /mcp`        | 30 req / min  | tenant_id |
-| Bot commands       | 20 msg / min  | chat_id   |
-
-**Реализация:** Redis-based sliding window (`data/redis_client.py` уже есть, #37).
-
-### 6.2. Input Validation
-
-Уже частично есть (Pydantic models). Дополнительно:
-
-- **Sanitize date params** — `date` query params проверять на диапазон (не больше ±2 лет)
-- **Limit week_offset** — не больше ±52
-- **Activity ID validation** — должен принадлежать tenant
-- **MCP tool params** — валидация через Pydantic перед выполнением
-
-### 6.3. CORS
-
-Текущий CORS — `allow_origins=["*"]` в dev. Для production:
-
-```python
-CORS_ORIGINS = [
-    settings.API_BASE_URL,
-    # Telegram Mini App работает с нескольких доменов
-    "https://web.telegram.org",
-    "https://webk.telegram.org",
-    "https://weba.telegram.org",
-    "https://webz.telegram.org",
-]
-```
-
-### 6.4. Background Job Tenancy
-
-Scheduler jobs (`bot/scheduler.py`) в multi-tenant должны работать per-tenant:
-
-```python
-# bot/scheduler.py — multi-tenant pattern
-
-async def sync_wellness_job():
-    """Sync wellness for ALL active users."""
-    users = await User.get_active_users()
-    for user in users:
-        try:
-            client = IntervalsClient(
-                api_key=decrypt_field(user.intervals_api_key),
-                athlete_id=user.intervals_athlete_id,
-            )
-            async with get_tenant_session(user.id) as ts:
-                await ts.sync_wellness(client, today)
-        except Exception as e:
-            logger.error(f"Wellness sync failed for user={user.id}: {e}")
-            # Ошибка одного пользователя не ломает остальных
-```
-
-**Правила:**
-
-- Каждый user обрабатывается в отдельном try/except — изоляция ошибок
-- IntervalsClient создаётся per-user с user-specific credentials
-- Job не кэширует данные между пользователями
-- Максимум N concurrent syncs (asyncio.Semaphore) чтобы не перегрузить Intervals.icu API
-
-### 6.5. MCP Tool Tenant Audit
-
-Все 32 MCP tools должны быть проверены на tenant isolation. Классификация:
-
-| Категория                    | Tools                                                                                                                                                                                                                                                                       | Tenant Filter                                                                                       |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **Read own data (direct)**   | get_wellness, get_hrv_analysis, get_rhr_analysis, get_training_load, get_recovery, get_activities, get_scheduled_workouts, get_wellness_range, get_efficiency_trend, get_training_log, get_personal_patterns, get_threshold_freshness, list_ai_workouts, list_workout_cards, get_weekly_summary | `WHERE user_id = ?` обязателен. `get_training_log` также делает tenant-scoped bulk fetch `activities.rpe` по `actual_activity_id` для RPE-enrichment (см. `docs/RPE_SPEC.md`). `get_weekly_summary.rpe` — null-aware aggregates. |
-| **Read own data (via JOIN)** | get_activity_details, get_activity_hrv, get_workout_compliance, get_thresholds_history, get_readiness_history                                                                                                                                                               | Tenant scope через JOIN с activities (user_id на parent table). `get_workout_compliance` содержит `activity.rpe` в `actual` блоке — read-only, **НЕ** принимает RPE как input параметр (T13). |
-| **Shared library**           | list_exercise_cards                                                                                                                                                                                                                                                         | Без user_id — общая библиотека                                                                      |
-| **Owner-only read**          | get_mood_checkins_tool, get_iqos_sticks                                                                                                                                                                                                                                     | Owner-only. `mood_checkins` и `iqos_daily` — personal tracking, не реплицируется для других атлетов |
-| **Write own data**           | suggest_workout, remove_ai_workout, create_ramp_test_tool, create_exercise_card, update_exercise_card, compose_workout, remove_workout_card                                                                                                                                 | `user_id` inject при создании                                                                       |
-| **Owner-only write**         | save_mood_checkin_tool                                                                                                                                                                                                                                                      | Owner-only. Mood check-in только для owner                                                          |
-| **Compute**                  | get_goal_progress                                                                                                                                                                                                                                                           | Берёт goal из users table, данные через tenant session                                              |
-| **External**                 | create_github_issue, get_github_issues                                                                                                                                                                                                                                      | Athlete-accessible. `create_github_issue` гейтится in-process sliding-window лимитом 5/24h на user, attribution в body содержит **только** `user_id` (без `@username` / `athlete_id` чтобы не светить PII в публичный repo). `title ≤ 200`, `body ≤ 8000` хардлимит на стороне tool'а. См. §13. |
-
-### 6.6. Security Headers
-
-```python
-@app.middleware("http")
-async def security_headers(request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    # CSP вместо deprecated X-XSS-Protection
-    # Mini App использует inline scripts — нужен nonce или 'unsafe-inline' на первом этапе
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self' https://telegram.org 'unsafe-inline'; "  # TODO: заменить unsafe-inline на nonce
-        "style-src 'self' 'unsafe-inline'; "
-        "connect-src 'self' https://api.telegram.org; "
-        "img-src 'self' data:; "
-        "frame-ancestors 'self' https://web.telegram.org https://webk.telegram.org https://weba.telegram.org"
-    )
-    return response
-```
-
-> **Note:** `X-XSS-Protection` убран — deprecated, современные браузеры его игнорируют. `Content-Security-Policy` заменяет его и даёт более надёжную защиту от XSS.
-
----
-
-## 7. Audit Log
-
-### 7.1. Audit Events
-
-```
-audit_log (новая таблица)
-├── id: UUID (PK)
-├── timestamp: TIMESTAMP WITH TZ
-├── user_id: UUID (nullable — anonymous actions)
-├── action: VARCHAR(50) — enum-like
-├── resource_type: VARCHAR(30) — "wellness", "workout", "activity", etc.
-├── resource_id: VARCHAR(100) — nullable
-├── details: JSONB — request params, changes
-├── ip_address: VARCHAR(45) — nullable
-└── user_agent: VARCHAR(200) — nullable
-```
-
-### 7.2. Actions to Log
-
-| Action              | Trigger                            | Priority |
-| ------------------- | ---------------------------------- | -------- |
-| `user.login`        | JWT issued (verify-code success)   | High     |
-| `user.login_failed` | verify-code failure                | High     |
-| `sync.wellness`     | Job trigger or manual sync         | Medium   |
-| `sync.workouts`     | Job trigger or manual sync         | Medium   |
-| `sync.activities`   | Job trigger or manual sync         | Medium   |
-| `workout.create`    | AI workout pushed to Intervals.icu | Medium   |
-| `workout.delete`    | remove_ai_workout                  | Medium   |
-| `mcp.tool_call`     | Any MCP tool invocation            | Low      |
-| `bot.command`       | Any bot command                    | Low      |
-| `user.register`     | New user created                   | High     |
-| `user.deactivate`   | User disabled                      | High     |
-
----
-
-## 8. AI Security
-
-### 8.1. Prompt Isolation
-
-**Правило:** Один Claude API call = один tenant. Никогда не смешивать данные разных пользователей.
-
-```python
-# ai/claude_agent.py — обязательные проверки
-
-async def analyze_morning(user_id: UUID, ...):
-    """Morning analysis — all data scoped to user_id."""
-    async with get_tenant_session(user_id) as ts:
-        wellness = await ts.get_wellness(today)
-        hrv = await ts.get_hrv_analysis(today)
-        # ... все данные через tenant session
-
-    # System prompt НЕ содержит данные других пользователей
-    # Athlete profile берётся из users table, не из .env
-```
-
-### 8.1a. Tool-Use Tenant Validation
-
-В tool-use mode (MCP Phase 2) Claude вызывает tools с параметрами. **Критическое правило:**
-
-- **Tool handler ВСЕГДА берёт `tenant_id` из auth context (JWT/session), НИКОГДА из tool arguments**
-- Если tool argument содержит `user_id` или `tenant_id` — игнорировать, использовать только из auth
-- Все tool handlers в `ai/tool_definitions.py` должны принимать `user_id` как inject-parameter, не как user input
-
-```python
-# ai/tool_definitions.py — правильный паттерн
-
-async def handle_get_wellness(params: dict, user_id: UUID) -> dict:
-    """user_id injected from auth, NOT from params."""
-    date = params.get("date", str(today))
-    async with get_tenant_session(user_id) as ts:
-        return await ts.get_wellness(date)
-```
-
-### 8.1b. Data Minimization в AI Prompts
-
-Не отправлять в Claude API больше данных чем нужно:
-
-- **Убрать PII:** Не включать telegram_username, display_name в system prompt
-- **Минимум health data:** Только агрегированные метрики (HRV status, recovery score), не raw значения где возможно
-- **Mood notes:** Если содержат чувствительный контент — не включать в morning analysis prompt, только по запросу через chat
-
-### 8.2. AI Cost Tracking
-
-В multi-tenant нужно трекать расход AI per-tenant:
-
-```
-ai_usage (новая таблица)
-├── id: autoincrement
-├── user_id: INTEGER FK
-├── timestamp: TIMESTAMP
-├── model: VARCHAR — "claude-sonnet-4-6", "gemini-2.5-flash"
-├── input_tokens: INT
-├── output_tokens: INT
-├── cost_usd: DECIMAL(10, 6)
-└── context: VARCHAR — "morning_report", "chat", "workout_generation"
-```
-
-### 8.3. Per-Tenant AI Limits
-
-| Tier    | Morning reports | Chat messages / day | Workout generations / day |
-| ------- | --------------- | ------------------- | ------------------------- |
-| Free    | 1 / day         | 5                   | 2                         |
-| Premium | 1 / day         | 50                  | 10                        |
-| Owner   | Unlimited       | Unlimited           | Unlimited                 |
-
----
-
-## 9. Implementation Order
-
-### Phase 1 — Users Table + Foundation
-
-> Цель: создать таблицу users, crypto module. Остальное продолжает работать как single-tenant.
-
-1. [x] `data/crypto.py` — Fernet encrypt/decrypt + `generate_key()`, `FIELD_ENCRYPTION_KEY` в config.py
-2. [x] Создать таблицу `users` (**#34**) — `User` ORM + Alembic migration (`268670b22cd7`)
-3. [x] Bot `/start` — автоматически создаёт `User` с `role=viewer` при первом вызове
-4. [ ] ~~`sync_athlete_settings()`~~ убрать из startup (done — thresholds managed in Intervals.icu)
-
-### Phase 1.1 — user_id на все таблицы (РЕАЛИЗОВАНО)
-
-> Одна миграция `f0d2f435b802`. Все 13 таблиц (кроме exercise_cards) получили user_id.
-
-5. [x] **wellness** — autoincrement PK, `user_id` FK + index, `UNIQUE(user_id, date)`, `id` renamed to `date`
-6. [x] **hrv_analysis** — composite PK `(user_id, date, algorithm)`, FK к wellness удалён
-7. [x] **rhr_analysis** — composite PK `(user_id, date)`, FK к wellness удалён
-8. [x] **scheduled_workouts** — `user_id` FK + index
-9. [x] **activities** — `user_id` FK + index
-10. [x] **activity_details** — без изменений (tenant scope через JOIN с activities)
-11. [x] **activity_hrv** — `date` column удалена (JOIN через activities.start_date_local)
-12. [x] **pa_baseline** — `user_id` FK + index, `UNIQUE(user_id, activity_type, date)`
-13. [x] **ai_workouts** — `user_id` FK + index
-14. [x] **training_log** — `user_id` FK + index
-15. [x] **mood_checkins** — `user_id` FK + index (owner-only)
-16. [x] **iqos_daily** — autoincrement PK, `user_id` FK + index, `UNIQUE(user_id, date)`
-17. [x] **exercise_cards** — без изменений (общая библиотека, user_id не нужен)
-18. [x] **workout_cards** — `user_id` FK + index
-19. [x] Все CRUD методы обновлены с `user_id` параметром
-20. [x] Все callers обновлены с `user_id=1 # TODO`
-21. [x] Тесты обновлены (conftest создаёт test user, 144/148 pass)
-
-### Phase 1.2 — Дополнительные улучшения (РЕАЛИЗОВАНО)
-
-22. [x] CLI `onboard <user_id> [--days 180]` — полный онбоардинг: wellness → activities → details → workouts
-23. [x] `IntervalsClient.for_user(api_key, athlete_id)` — non-singleton factory для per-user API доступа
-24. [x] `fill_training_log_actual` — direct type comparison (types normalized at DTO layer)
-25. [x] CLI `fix-training-log-actual` — одноразовый пересчёт actual data после фикса матчинга
-26. [x] Code review фиксы: race condition в /start, is_active проверка в lookups, Fernet caching, session.get→select, missing user_id filters
-
-### Phase 1.3 — Per-User Scheduler (следующий шаг)
-
-> Заменить hardcoded `user_id=1` на реальный user_id. Без этого user 2+ не получают автоматических обновлений.
-
-27. [ ] Scheduler jobs — per-user loop: get_active_users → для каждого IntervalsClient.for_user → execute job
-28. [ ] Перевести API/MCP callers с `user_id=1 # TODO` на реальный user_id из auth
-29. [ ] `TenantSession` wrapper — единый интерфейс для tenant-scoped queries
-30. [ ] AI tool handlers — tenant_id injection from auth, never from user input (8.1a)
-
-**Ограничение текущего состояния:** scheduler, утренний/вечерний отчёт, sync jobs работают только для user_id=1. User 2+ получает данные только через `python -m bot.cli onboard`.
-
-### Phase 2 — Auth Upgrade
-
-> **Status:** deferred 2026-05-09 — текущий threat profile не оправдывает работу. См. audit note ниже.
-
-**Audit (2026-05-09) — что есть в коде vs spec:**
-
-| # | Item | Status | Где / почему |
+| # | Item | Status | Reasoning |
 |---|---|---|---|
-| 23 | JWT claims (`tenant_id`/`role`/`scope`/`jti`/`iss`/`aud`) | DEFER | `api/auth.py:78-99` create_jwt сейчас несёт `{sub, iat, exp, purpose}`. Добавление `role`/`tenant_id` в payload **минус** для безопасности: stale-данные до 7 дней TTL. `tenant_id` ускоряет lookup на ~1ms — не bottleneck. `iss`/`aud` cargo cult для single-service |
-| 24 | PyJWT migration | DEFER | Кастомный HS256 рабочий, протестирован. `Рассмотреть` в spec — не блокер |
-| 25 | initData freshness < 15 min | DONE | `api/deps.py:99-106` (`time.time() - int(auth_date_str) > 900`). Widget flow: `api/auth.py:138-140` |
-| 26 | Bot middleware `resolve_tenant()` | DONE (different shape) | Decorators `@athlete_required` / `@user_required` в `bot/decorator.py:48-101` делают `User.get_by_chat_id` + `is_active` фильтр. Функционально эквивалентно §4.3, отдельный middleware-файл = churn |
-| 27 | API deps `get_current_user()` returning User | DONE | `api/deps.py:17-83`. Role guards `require_viewer` / `require_athlete` / `require_owner` в `api/deps.py:111-152` |
+| 23 | JWT claims (`tenant_id`/`role`/`scope`/`jti`/`iss`/`aud`) | DEFER | `api/auth.py:create_jwt` несёт `{sub, iat, exp, purpose}`. `role`/`tenant_id` в payload **минус** для безопасности: stale-данные до 7d TTL. `tenant_id` ускоряет lookup на ~1ms — не bottleneck. `iss`/`aud` cargo cult для single-service |
+| 24 | PyJWT migration | DEFER | Кастомный HS256 рабочий, протестирован. Не блокер |
+| 25 | initData freshness < 15 min | DONE | `api/deps.py:99-106`, widget flow `api/auth.py:138-140` |
+| 26 | Bot middleware `resolve_tenant()` | DONE (different shape) | `@athlete_required` / `@user_required` в `bot/decorator.py:48-101` функционально эквивалентны; отдельный middleware-файл = churn |
+| 27 | API deps `get_current_user()` | DONE | `api/deps.py:17-83` + role guards `:111-152` |
 | 28 | MCP per-tenant auth | DONE (different shape) | `api/server.py:35-83` `MCPAuthMiddleware` → `User.get_by_mcp_token`. Plain Bearer + DB lookup проще JWT для одной аудитории — токен сам = secret |
-| 29 | Token revocation (Redis blacklist для `jti`) | DEFER | Нет use case: единственный пользователь = self-data, нет deactivation/ban-flow, нет logout, утечка JWT ≠ cross-tenant breach. 7-day TTL автоматически закрывает. Когда появится ban-flow — ввести `users.token_epoch` (5 строк, проще blacklist'а) |
-| 30 | `created_by` на GitHub issue (**#48**) | DONE | `mcp_server/tools/github.py:122` пишет `_Reported via MCP by user_id={user_id}_` в body. Внешний resource, отдельной колонки не надо |
+| 29 | Token revocation (Redis blacklist для `jti`) | DEFER | Нет use case: single user = self-data, нет ban/logout, утечка JWT ≠ cross-tenant breach. 7d TTL автоматически. Появится ban — `users.token_epoch INT` (5 строк, проще blacklist'а) |
+| 30 | `created_by` на GitHub issue (#48) | DONE | `mcp_server/tools/github.py:122` пишет `_Reported via MCP by user_id={user_id}_` в body — внешний resource, отдельной колонки не надо |
 
-**Trigger для перезапуска Phase 2:** появление **любого** из:
-- ban / soft-delete flow (`User.deactivate()` начинают вызывать в проде)
-- утечка JWT в логах / Sentry / GitHub
-- multi-audience MCP (внешние клиенты = `external` audience claim становится осмысленным)
-- юридический mandate logout flow (GDPR Art. 17, при включении регистрации)
+### Phase 2 trigger conditions
 
-**При триггере** — реальный объём работы:
-- Item 29 (revocation) — добавить колонку `users.token_epoch INT NOT NULL DEFAULT extract(epoch from now())`, проверять `payload['iat'] >= user.token_epoch` в `verify_jwt`. На deactivate / ban / forced-logout: `UPDATE users SET token_epoch=now()`. Один запрос, без Redis-blacklist.
-- Item 23 — добавить только то, что реально используется в endpoint guards. На текущей архитектуре — ничего.
+Реактивируем при появлении **любого** из:
 
-### Phase 3 — Security Hardening
+- Ban / soft-delete flow (`User.deactivate()` начинают вызывать в проде).
+- Утечка JWT в логах / Sentry / GitHub.
+- Multi-audience MCP (внешние клиенты = `external` audience claim становится осмысленным).
+- Юридический mandate logout flow (GDPR Art. 17, при включении регистрации).
 
-> **Status:** deferred 2026-05-09 — мало пользователей, мало запросов, нет наблюдаемого abuse. Аудит ниже фиксирует точную точку старта когда trigger сработает.
+### Phase 2 punch-list (при триггере)
 
-**Audit (2026-05-09):**
+- **Item 29 (revocation):** колонка `users.token_epoch INT NOT NULL DEFAULT extract(epoch from now())`, проверка `payload['iat'] >= user.token_epoch` в `verify_jwt`. На deactivate / ban / forced-logout — `UPDATE users SET token_epoch=now()`. Один запрос, без Redis-blacklist.
+- **Item 23:** добавить только то, что реально используется в endpoint guards. На текущей архитектуре — ничего.
 
-| # | Item | Status | Где / план |
+---
+
+## 5. Phase 3 — Security Hardening (deferred 2026-05-09)
+
+**Audit:** мало пользователей, мало запросов, нет наблюдаемого abuse. Точка старта зафиксирована.
+
+| # | Item | Status | План |
 |---|---|---|---|
-| 32 | Redis rate limiting (**#37**) | DEFER | Redis client `data/redis_client.py:14-47` (get/init/close only, без rate-limit helper'ов). 5 in-process лимитеров уже защищают конкретные abuse-векторы — их надо мигрировать на Redis при появлении multi-worker uvicorn / рестартов под нагрузкой (см. punch-list ниже) |
-| 33 | CORS whitelist | DONE (partial) | `api/server.py:129-135` уже `allow_origins=[settings.API_BASE_URL]`, не `*`. Spec §6.3 хочет ещё `https://{web,webk,weba,webz}.telegram.org` — Mini App работает без них (WebView не шлёт Origin). Cosmetic, можно добавить когда понадобится |
-| 34 | Security headers middleware | TODO | `api/server.py` не выставляет `X-Frame-Options` / CSP / HSTS / `X-Content-Type-Options`. Готовый шаблон в §6.6. Сделать одним PR — мало кода, низкий риск. Триггер: production-grade hardening / security-audit |
-| 35 | Input validation (date ±2y, week_offset ±52, activity ownership) | TODO | Pydantic типы есть, диапазоны и cross-tenant ownership-проверки точечные. Делать per-endpoint при добавлении новых API |
-| 36 | MCP tool tenant isolation audit | TODO | 58 tools (CLAUDE.md, spec §6.5 пишет 32 — устарело). Read-only review через `security-reviewer` subagent. Триггер: до открытия публичной регистрации |
-| 37 | Fernet key rotation plan | DEFER | Ключ не компрометирован. `re_encrypt_all` script + runbook — gold-plating до момента ротации. Откладываем |
+| 32 | Redis rate limiting (#37) | DEFER | Redis client `data/redis_client.py:14-47` (get/init/close, без RL helpers). 5 in-process лимитеров защищают конкретные векторы — мигрировать на Redis при multi-worker uvicorn / restart-loss |
+| 33 | CORS whitelist | DONE (partial) | `api/server.py:129-135` уже `allow_origins=[settings.API_BASE_URL]`, не `*`. `https://{web,webk,weba,webz}.telegram.org` — cosmetic, WebView не шлёт Origin |
+| 34 | Security headers middleware | TODO | `api/server.py` не выставляет `X-Frame-Options` / CSP / HSTS / `X-Content-Type-Options`. Триггер: production-grade hardening / security audit |
+| 35 | Input validation (date ±2y, week_offset ±52, activity ownership) | TODO | Pydantic типы есть, range/ownership проверки точечные. Per-endpoint при добавлении новых API |
+| 36 | MCP tool tenant isolation audit | TODO | 59 tools. Read-only review через `security-reviewer` subagent. Триггер: до открытия публичной регистрации |
+| 37 | Fernet key rotation plan | DEFER | Ключ не компрометирован. `re_encrypt_all` script — gold-plating |
 
-**Item 32 punch-list (готов к реализации когда сработает trigger):**
+### Phase 3 punch-list (item 32 — Redis migration)
 
-5 in-process rate limiters, которые надо мигрировать на Redis:
+5 in-process rate limiters готовы к Redis-миграции:
 
 | File:line | Key | Limit | Назначение |
 |---|---|---|---|
 | `api/routers/auth.py:37-44` | `_demo_attempts[ip]` | 5 / 5 min | Demo password brute-force shield |
-| `api/routers/auth.py:38` | `_mcp_config_last_access[user.id]` | 1 / 60 s | MCP token disclosure endpoint anti-spam |
+| `api/routers/auth.py:38` | `_mcp_config_last_access[user.id]` | 1 / 60 s | MCP token disclosure anti-spam |
 | `api/routers/auth.py:64` | `_retry_backfill_last_success[user.id]` | 1 / 1 h | Bootstrap backfill retry button |
 | `api/routers/intervals/oauth.py:99` | OAuth init | (см. файл) | Anti-flood OAuth initiation |
 | `mcp_server/tools/github.py:38-56` | sliding-window per user.id | 5 / 24 h | GitHub issue creation cap |
 
-**Реализация (когда триггернет):**
+**Реализация при триггере:**
 
-1. `data/redis_client.py` — добавить sliding-window helper через ZADD/ZREMRANGEBYSCORE: `async def check_and_record_rate_limit(key, limit, window_sec) -> int | None` (returns `retry_after` секунд или `None` = allow). Если `get_redis() is None` — fail-open (None), in-process fallback опционально.
-2. Мигрировать 5 callsite'ов выше: ключи `rl:demo:{ip}`, `rl:mcp_token:{user_id}`, `rl:backfill:{user_id}`, `rl:oauth_init:{user_id}`, `rl:gh_issue:{user_id}`. На каждом — на 429 ответ с `Retry-After` header.
-3. Удалить in-process dicts + связанные lazy-prune'ы в `api/routers/auth.py`.
-4. Тесты: round-trip (1st passes / Nth blocks / window expires), Redis-down fallback, regression на каждом callsite'е.
+1. `data/redis_client.py` — sliding-window helper через ZADD/ZREMRANGEBYSCORE: `check_and_record_rate_limit(key, limit, window_sec) → retry_after | None`. Fail-open при Redis-down.
+2. Мигрировать 5 callsite'ов — ключи `rl:demo:{ip}`, `rl:mcp_token:{user_id}`, `rl:backfill:{user_id}`, `rl:oauth_init:{user_id}`, `rl:gh_issue:{user_id}`. 429 + `Retry-After` header.
+3. Удалить in-process dicts + lazy-prune'ы.
+4. Тесты: round-trip + Redis-down fallback + regression на каждом callsite.
 
-**Skip from spec §6.1:**
+**Skip from spec §6.1:** generic global limits (60 GET/min, 30 MCP/min, 20 bot msg/min) — не реализуем. Для текущего профиля ложноположительные 429 > выгода.
 
-Generic global limits из таблицы §6.1 (60 GET/min, 30 MCP/min, 20 bot msg/min) **не реализуем** — для текущего профиля (1-2 юзера, MCP свой, Telegram сам шейпит) ложноположительные 429 на нормальном usage > выгода. Делаем только реально существующие 5 точечных лимитеров.
+### Phase 3 trigger conditions
 
-**Trigger для запуска Phase 3:**
-- Multi-worker uvicorn (in-process dicts перестают шариться между процессами)
-- Frequent restarts под нагрузкой (теряем counters → demo brute-force resets)
-- Открытие регистрации (item 36 MCP audit становится обязательным до)
-- Любой security-audit / production hardening
-
-### Phase 4 — Observability
-
-38. [ ] Audit log table + middleware
-39. [ ] AI usage tracking table — `cost_usd: DECIMAL(10, 6)` (не 8,6 — запас для высокого usage)
-40. [ ] Structured logging с tenant_id в каждой строке
-41. [ ] Health data access logging (отдельный уровень для чувствительных данных)
-42. [ ] Job failure tracking (**#3**) + Sentry integration (**#40**)
-
-### Phase 5 — Registration & Multi-User
-
-43. [ ] Определить manual onboarding process (**#47**)
-44. [ ] Bot /start → onboarding flow (connect Intervals.icu)
-45. [ ] Registration gates — invite code: alphanumeric 12+ chars (не 6-digit numeric!), rate limit 3 attempts / 15 min per IP
-46. [ ] Per-tenant AI limits
-47. [ ] Data deletion endpoint (right to erasure) — `DELETE /api/account` удаляет все данные пользователя. Минимальный GDPR compliance для health data
-48. [ ] Data export endpoint — `GET /api/account/export` → JSON/ZIP со всеми данными пользователя
+- Multi-worker uvicorn (in-process dicts перестают шариться).
+- Frequent restarts под нагрузкой (counters resets → demo brute-force).
+- Открытие регистрации (item 36 MCP audit становится обязательным до).
+- Любой security audit / production hardening.
 
 ---
 
-## 10. Testing Checklist
+## 6. Phase 4 — Observability (not started)
 
-### Cross-Tenant Isolation Tests
-
-```python
-# tests/test_security.py
-
-async def test_user_a_cannot_see_user_b_wellness():
-    """User A's tenant session must not return User B's data."""
-
-async def test_user_a_cannot_trigger_user_b_sync():
-    """Sync jobs must use the requesting user's credentials."""
-
-async def test_jwt_from_user_a_rejected_for_user_b_data():
-    """JWT tenant_id must match requested resource."""
-
-async def test_mcp_scoped_to_tenant():
-    """MCP tools return only data for the authenticated tenant."""
-
-async def test_bot_handler_scopes_to_chat_id():
-    """Bot commands return data only for the messaging user."""
-
-async def test_unregistered_user_gets_onboarding():
-    """Unknown chat_id → registration prompt, not data."""
-
-async def test_deactivated_user_blocked():
-    """is_active=False → 403 on all endpoints."""
-
-async def test_rate_limit_per_tenant():
-    """Exceeding rate limit returns 429."""
-
-async def test_ai_prompt_contains_only_own_data():
-    """Claude API call includes only the requesting tenant's data."""
-```
+- Audit log table + middleware.
+- AI usage tracking — `cost_usd DECIMAL(10, 6)` (запас для высокого usage).
+- Structured logging с `tenant_id` в каждой строке.
+- Health data access — отдельный log level для чувствительных endpoints.
+- Job failure tracking (#3) + Sentry (#40 ✅ done).
 
 ---
 
-## 11. Что НЕ входит в эту спеку
+## 7. Phase 5 — Registration & Multi-User (not started)
 
-- **Team/organization model** — coach manages multiple athletes. Отдельная спека после базового multi-tenant
-- **OAuth2 / OIDC** — overkill для Telegram-first приложения. JWT + Telegram initData достаточно
-- **PostgreSQL Row-Level Security** — не совместимо с async pooling, используем application-level filtering
-- **Zero-trust / mTLS** — не нужно для single-VPS deployment
-- **GDPR / data export** — важно, но отдельная задача
-- **Penetration testing** — после реализации, не на этапе спеки
-
----
-
-## 12. Onboarding Flow (#47)
-
-### 12.1. Текущий процесс (полу-автоматический)
-
-Новый атлет подключается вручную owner-ом:
-
-1. User отправляет `/start` боту → `User` создаётся автоматически с `role=viewer`
-2. Owner через shell/SQL:
-   - Меняет `role` на `athlete` (или `owner` для себя)
-   - Прописывает `athlete_id` (Intervals.icu athlete ID)
-   - Прописывает `api_key_encrypted` через `user.set_api_key(plaintext)`
-   - Генерирует MCP токен через `user.generate_mcp_token()`
-3. Owner запускает CLI для заполнения БД нового пользователя:
-   ```bash
-   # Порядок важен:
-   python -m bot.cli backfill [period]        # 1. wellness + recovery pipeline (зависимости для activities)
-   python -m bot.cli sync-activities [days]    # 2. completed activities
-   python -m bot.cli backfill-details [days]   # 3. extended stats для activities
-   python -m bot.cli sync-workouts [days]      # 4. planned workouts
-   ```
-4. User готов — утренние отчёты, AI chat, MCP tools
-
-> **TODO:** CLI команды пока используют hardcoded `user_id=1`. Для онбоардинга второго пользователя нужна `--user-id` опция или отдельная CLI команда `onboard-user <chat_id>` которая выполнит все шаги автоматически.
-
-### 12.2. Будущий процесс (автоматический, Phase 5)
-
-1. User отправляет `/start` → User создаётся
-2. Бот запрашивает Intervals.icu credentials (API key + athlete ID)
-3. Credentials валидируются (тестовый API-запрос) и шифруются
-4. Автоматический backfill в фоне
-5. User готов
-
-**Критические проверки:**
-
-- Валидация Intervals.icu API key — тестовый запрос перед сохранением
-- `chat_id` уникален в таблице `users`
-- Лимит `MAX_USERS` не превышен
-- Если `REGISTRATION_CODE` задан — проверить invite code
-
-**Registration code security:**
-
-- Формат: alphanumeric, минимум 12 символов (36^12 = ~4.7×10^18 комбинаций)
-- Rate limit: 3 попытки / 15 мин per IP + per chat_id
-- После 10 неудачных попыток — блокировка chat_id на 24 часа
-- Не 6-digit numeric! (10^6 = 1M комбинаций, при 5 req/5 min = полный перебор за ~3.5 дня)
+- Manual onboarding process definition (#47) — текущий полу-автомат описан в `docs/OPERATIONS.md`.
+- Bot `/start` → onboarding flow (connect Intervals.icu — реализован для OAuth, см. `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md`).
+- Registration gates: invite code alphanumeric **12+ chars** (`36^12 ≈ 4.7×10^18`), rate limit 3 attempts / 15 min per IP + per chat_id, 10 неудач → 24h block. **Не 6-digit numeric** (`10^6 = 1M` комбинаций, при 5 req/5 min = полный перебор за ~3.5 дня).
+- Per-tenant AI limits.
+- Data deletion endpoint (right to erasure) — `DELETE /api/account` удаляет все данные (GDPR minimum).
+- Data export endpoint — `GET /api/account/export` → JSON/ZIP всех данных пользователя.
 
 ---
 
-## 13. Multi-Tenant Shared Resources (#48)
+## 8. Multi-Tenant Shared Resources (#48)
 
-Некоторые ресурсы общие для всех tenants. Правила:
+Некоторые ресурсы общие для всех tenants:
 
-| Resource                        | Ownership                | Multi-tenant rule                                                                                                                          |
-| ------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| GitHub issues                   | Общие (один repo, public) | `create_github_issue` доступен любому athlete с валидным `mcp_token`. Attribution в body — **только** `user_id=N` (Telegram `@username` и Intervals `athlete_id` НЕ публикуются — public repo, PII linkage avoidance). Per-user sliding-window cap 5 issues / 24h в `mcp_server/tools/github.py:_check_and_record_rate_limit` (in-process; до перехода на multi-worker). `title ≤ 200`, `body ≤ 8000` cap на боундари — анти-spam от prompt-injection в свободном чате. |
-| Exercise cards (shared library) | `user_id = NULL` = общие | User может создавать свои (`user_id` set), или использовать общие. Общие создаёт только owner                                              |
-| System prompts                  | Общие                    | Один набор промптов для всех. Athlete-specific данные из `users` table                                                                     |
-| Scheduler jobs                  | Per-tenant               | Каждый user обрабатывается отдельно (6.5). Ошибка одного не ломает других                                                                  |
+| Resource | Ownership | Rule |
+|---|---|---|
+| GitHub issues | Общие (один repo, public) | `create_github_issue` available любому athlete с валидным `mcp_token`. Attribution в body — **только** `user_id=N` (Telegram `@username` и Intervals `athlete_id` НЕ публикуются — public repo, PII linkage avoidance). Per-user sliding-window cap 5 issues / 24h (in-process до multi-worker). `title ≤ 200`, `body ≤ 8000` cap |
+| Exercise cards (shared library) | `user_id = NULL` = общие | User создаёт свои (`user_id` set) или использует общие. Общие создаёт только owner |
+| System prompts | Общие | Один набор промптов для всех. Athlete-specific данные из `users` table через `render_athlete_block` |
+| Scheduler jobs | Per-tenant | Каждый user обрабатывается отдельно. Ошибка одного не ломает других (Phase 1.3) |
+
+---
+
+## 9. Out of scope (explicitly)
+
+- **Team / organization model** — coach manages multiple athletes. Отдельная спека после базового multi-tenant.
+- **OAuth2 / OIDC** — overkill для Telegram-first. JWT + initData достаточно.
+- **PostgreSQL Row-Level Security** — не совместимо с async pooling.
+- **Zero-trust / mTLS** — не нужно для single-VPS deployment.
+- **Penetration testing** — после реализации, не на этапе спеки.
