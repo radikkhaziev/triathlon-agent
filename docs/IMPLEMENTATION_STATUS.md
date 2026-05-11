@@ -11,6 +11,26 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## Editable athlete age (2026-05-11)
+
+`users.age` had zero writers in app code — was set manually via `psql` / `cli shell`. Made editable from Settings → Athlete Profile, mirroring the CTL-target editing pattern.
+
+- **Backend:**
+  - `User.update_age(user_id, age)` — new `@dual` classmethod on `data/db/user.py`. Mirrors `User.update_sports` structure (commit-inside, no refresh).
+  - `AthleteProfilePatchRequest` (`api/dto.py`) — `age: int | None = Field(ge=18, le=90)`. Bounds chosen to cover the realistic triathlete population (incl. masters) without blocking either end.
+  - `PATCH /api/athlete/profile` (`api/routers/athlete.py`) — `require_athlete` (demo → 403), `model_fields_set` semantics so omitting a field never silently clears it, `logger.info` audit (`"PATCH /api/athlete/profile by user_id=%d: fields=%s"`). Response echoes the validated input (`{"age": body.age}`) — `update_age` is a straight column write with no transform/trigger, so the round-trip refetch was dropped after Copilot flagged the `None`-on-refetch ambiguity; revisit if a future field needs DB-side normalization.
+  - Multi-tenant safety: `user_id` always derived from `get_data_user_id(user)`. Request body has no `user_id` field; pydantic ignores unknowns by default.
+- **Frontend:** `webapp/src/pages/Settings.tsx`
+  - `EditableNumberRow` gained optional `min`/`max` props (defaults `0`/`200` preserve all existing CTL-target callers exactly — no behavior change).
+  - New `patchProfile({age})` helper — optimistic update + rollback on error. No monotonic-seq guard (unlike `patchGoal`) — single editable field, accept rare desync if two PATCHes race; revisit if more profile fields land here.
+  - `<Row label="Age">` replaced with `<EditableNumberRow min={18} max={90} disabled={isDemo}>`.
+- **i18n:** `settings.profile.{age_edit_hint, save_failed}` + `settings.editable_number.{error_invalid, error_out_of_range}` (interpolates `{{min}}`/`{{max}}` so the component stays bound-agnostic) ru/en. `EditableNumberRow` calls `useTranslation()` directly — hook is safe in a sibling function component.
+- **Tests:** `tests/api/test_athlete_profile.py` — 8 tests: empty body 400, age set, explicit null, bounds ×2 (DTO-level `ValidationError`), audit log format, **+ TestClient integration tests** pinning the endpoint to `require_athlete` (demo → 403, athlete → 200). The TestClient gate is the regression guard against future swaps to `require_viewer` (the unit tests bypass `Depends` so they'd miss that).
+- **Cache invalidation:** `bot/prompts.py` two-segment caching invalidates only the dynamic tail (`render_athlete_block`) — `athlete_age` lives there, not in the static prefix. Other readers (`/api/auth/me`, MCP tools/resources, `AthleteThresholdsDTO`) hit DB on each call. No extra wiring needed.
+- **No migration** — `users.age` column already exists.
+
+---
+
 ## Race-goal cleanup (issue #323) — all 4 strands complete (2026-05-09)
 
 End-to-end cleanup of `athlete_goals` after the table accumulated a mix of orphan fields (`disciplines` JSON column, never read), hardcoded defaults (`sport_type="triathlon"` set unconditionally on Intervals webhook sync), and a single-anchor UX where Settings showed only one goal even though athletes routinely have multiple A/B/C in a season.

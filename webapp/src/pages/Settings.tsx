@@ -230,6 +230,28 @@ export default function Settings() {
     }
   }
 
+  // Profile PATCH (age today). No monotonic-seq guard like patchGoal — concurrent
+  // PATCHes on the same field from a human spam-editing one number are unlikely
+  // enough we accept a rare visible/DB desync if request₁ fails *after* request₂
+  // succeeds. Revisit if we add more profile fields here.
+  const [profileSaveError, setProfileSaveError] = useState<string | null>(null)
+  const patchProfile = async (patch: { age?: number | null }) => {
+    const prev = profile
+    setProfile(curr => (curr ? { ...curr, ...patch } : curr))
+    setProfileSaveError(null)
+    try {
+      await apiFetch('/api/athlete/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+    } catch (e) {
+      setProfile(prev)
+      const msg = e instanceof Error ? e.message : String(e)
+      setProfileSaveError(msg || t('settings.profile.save_failed'))
+    }
+  }
+
   // Toggle one sport in the user's selection. Optimistic + monotonic-seq
   // rollback (mirrors patchGoal) — without the seq guard a late PUT₁ failure
   // could clobber a successful PUT₂ on rapid double-clicks. Empty selection
@@ -498,7 +520,16 @@ export default function Settings() {
       {/* Athlete Profile */}
       {profile && (
         <Section title="Athlete Profile" icon="🏊‍♂️">
-          {profile.age && <Row label="Age" value={String(profile.age)} />}
+          <EditableNumberRow
+            label="Age"
+            value={profile.age ?? null}
+            editHint={t('settings.profile.age_edit_hint')}
+            disabled={isDemo}
+            min={18}
+            max={90}
+            onCommit={next => patchProfile({ age: next })}
+          />
+          {profileSaveError && <div className="py-1 text-[12px] text-red">{profileSaveError}</div>}
           {profile.lthr_run && <Row label="LTHR Run" value={`${profile.lthr_run} bpm`} />}
           {profile.lthr_bike && <Row label="LTHR Bike" value={`${profile.lthr_bike} bpm`} />}
           {profile.ftp && <Row label="FTP" value={`${profile.ftp}W`} />}
@@ -685,31 +716,35 @@ function Row({ label, value }: { label: string; value: string }) {
   )
 }
 
-// Click-to-edit row for local-only numeric fields (CTL target, per-sport CTL).
+// Click-to-edit row for numeric fields (CTL target, per-sport CTL, athlete age).
 // Optimistic commit: value is pushed upstream via `onCommit(next)`; on error
 // the parent rolls back its state and renders an inline error message so the
 // row re-mounts with the original value.
 //
-// Input constraints (must match server DTO bounds at api/dto.py:
-// `ge=0, le=200`). Out-of-range or non-numeric input is caught in `commit()`
-// BEFORE the PATCH fires — we keep the editor open and show an inline
-// message so the user can correct without a round-trip + rollback flicker.
-const EDITABLE_MIN = 0
-const EDITABLE_MAX = 200
-
+// Input constraints come from the caller (must match the server DTO bounds in
+// api/dto.py). Defaults 0/200 match the original CTL-target bounds for
+// backward compatibility with existing callers. Out-of-range or non-numeric
+// input is caught in `commit()` BEFORE the PATCH fires — we keep the editor
+// open and show an inline message so the user can correct without a
+// round-trip + rollback flicker.
 function EditableNumberRow({
   label,
   value,
   onCommit,
   editHint,
   disabled,
+  min = 0,
+  max = 200,
 }: {
   label: string
   value: number | null | undefined
   onCommit: (next: number | null) => Promise<void>
   editHint: string
   disabled?: boolean
+  min?: number
+  max?: number
 }) {
+  const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<string>(value != null ? String(value) : '')
   const [busy, setBusy] = useState(false)
@@ -727,11 +762,11 @@ function EditableNumberRow({
     const next = trimmed === '' ? null : Number(trimmed)
 
     if (next !== null && Number.isNaN(next)) {
-      setError(`Enter a number between ${EDITABLE_MIN} and ${EDITABLE_MAX}.`)
+      setError(t('settings.editable_number.error_invalid', { min, max }))
       return
     }
-    if (next !== null && (next < EDITABLE_MIN || next > EDITABLE_MAX)) {
-      setError(`Value must be between ${EDITABLE_MIN} and ${EDITABLE_MAX}.`)
+    if (next !== null && (next < min || next > max)) {
+      setError(t('settings.editable_number.error_out_of_range', { min, max }))
       return
     }
     if (next === value) {
@@ -756,8 +791,8 @@ function EditableNumberRow({
         <div className="flex flex-col items-end">
           <input
             type="number"
-            min={EDITABLE_MIN}
-            max={EDITABLE_MAX}
+            min={min}
+            max={max}
             step={1}
             autoFocus
             value={draft}

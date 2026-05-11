@@ -351,6 +351,13 @@ class User(Base):
 
     @classmethod
     @dual
+    def update_age(cls, user_id: int, age: int | None, *, session: Session) -> None:
+        """Persist athlete age. API-layer DTO enforces the 18-90 range."""
+        session.execute(update(cls).where(cls.id == user_id).values(age=age))
+        session.commit()
+
+    @classmethod
+    @dual
     def set_bot_chat_initialized(cls, chat_id: int | str, value: bool, *, session: Session) -> None:
         """Toggle ``bot_chat_initialized`` for the given chat.
 

@@ -117,6 +117,18 @@ class AthleteGoalPatchRequest(BaseModel):
     sport_type: Literal["triathlon", "duathlon", "aquathlon", "run", "ride", "swim", "fitness"] | None = None
 
 
+class AthleteProfilePatchRequest(BaseModel):
+    """Body for `PATCH /api/athlete/profile` — overlay fields on ``users``.
+
+    Mirrors :class:`AthleteGoalPatchRequest` semantics: missing fields are
+    left untouched (router uses ``model_fields_set``), bounds enforced here
+    so we 422 obvious garbage before touching the DB. Age range 18-90 covers
+    realistic triathlete population without blocking masters athletes.
+    """
+
+    age: int | None = Field(default=None, ge=18, le=90)
+
+
 # ---------------------------------------------------------------------------
 # Intervals.icu (api/routers/intervals/)
 # ---------------------------------------------------------------------------

@@ -168,6 +168,14 @@
       "start_bot_open": "Открыть бота в Telegram",
       "start_bot_no_username": "Бот пока не настроен — обратитесь к владельцу инстанса."
     },
+    "profile": {
+      "age_edit_hint": "Нажмите, чтобы изменить (18-90)",
+      "save_failed": "Не удалось сохранить"
+    },
+    "editable_number": {
+      "error_invalid": "Введите число между {{min}} и {{max}}.",
+      "error_out_of_range": "Значение должно быть от {{min}} до {{max}}."
+    },
     "goal": {
       "title": "Гонки",
       "category": {

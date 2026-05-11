@@ -16,7 +16,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.deps import get_data_user_id, require_athlete, require_viewer
-from api.dto import AthleteGoalPatchRequest
+from api.dto import AthleteGoalPatchRequest, AthleteProfilePatchRequest
 from data.db import AthleteGoal, User
 from tasks.dto import local_today
 
@@ -116,3 +116,30 @@ async def patch_athlete_goal(
         "per_sport_targets": goal.per_sport_targets,
         "sport_type": goal.sport_type,
     }
+
+
+@router.patch("/api/athlete/profile")
+async def patch_athlete_profile(
+    body: AthleteProfilePatchRequest,
+    user: User = Depends(require_athlete),
+) -> dict:
+    """Update overlay fields on the ``users`` row (age for now).
+
+    Uses ``model_fields_set`` so a body omitting a field leaves it
+    untouched. Multi-tenant safe — ``user_id`` always derived from the
+    authenticated principal, never trusted from the request body.
+    """
+    fields_set = body.model_fields_set
+    if not fields_set:
+        raise HTTPException(status_code=400, detail="Request body must contain at least one field.")
+
+    data_uid = get_data_user_id(user)
+    if "age" in fields_set:
+        await User.update_age(data_uid, body.age)
+
+    logger.info(
+        "PATCH /api/athlete/profile by user_id=%d: fields=%s",
+        data_uid,
+        sorted(fields_set),
+    )
+    return {"age": body.age if "age" in fields_set else user.age}
