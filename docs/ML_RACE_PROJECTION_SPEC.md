@@ -657,8 +657,7 @@ CREATE TABLE race_projections (
 - **Chart в webapp — Phase 1 или 2?** Issue #64 явно просит visualization. В
   спеке я вынес в Phase 2. **Аргумент:** MVP в чате + MCP tool доказывает модель;
   chart — UX-слой поверх стабильного API. Но если «visualization» — must-have
-  для issue closure, берём в Phase 1 и делаем минимальный static PNG (как
-  workout card) через matplotlib.
+  для issue closure, берём в Phase 1 и делаем минимальный static PNG через matplotlib.
 - **Historical race weather в train data.** ACTIVITY_UPLOADED webhook приносит
   `average_weather_temp`, `feels_like`, `wind_speed`, `rain/snow` для outdoor-активностей (see `docs/INTERVALS_WEBHOOKS_RESEARCH.md` §ACTIVITY_UPLOADED — Run sample). Если обучающие race activities имеют weather-поля, можно добавить их как фичи (`race_temp_c`, `race_heat_stress = max(0, temp-20) × distance_km`) — поможет откалибровать предсказания на белградскую сентябрьскую погоду (20-28°C). Weather на race day 2026-09-15 — неизвестен, но можно взять median из исторических races на той же неделе года (если в `races` есть хотя бы одна September race) или climate normals из внешнего API. **Предлагаю:** Phase 1 — игнорируем, Phase 2 — добавляем в Run-модель (19 race activities), для Ride/Swim ждём накопления race data.
 - **Webhook data availability для бэкфилла.** `ctl_run`/`ctl_ride`/`ctl_swim`

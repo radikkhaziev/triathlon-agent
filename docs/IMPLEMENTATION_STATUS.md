@@ -98,11 +98,7 @@ End-to-end cleanup of `athlete_goals` after the table accumulated a mix of orpha
 
 ### Strava signature (`actor_rename_activity`)
 
-Behind two gates: global kill-switch `STRAVA_SIGNATURE_ENABLED` (in actor) + per-user allowlist `STRAVA_SIGNATURE_USER_IDS` (CSV in env, default `{1}`, checked at dispatch in `_dispatch_activity_uploaded`). Allowlist keeps the queue clean — non-allowlisted tenants don't enqueue 5-min-delayed no-ops every upload. Renames Intervals.icu activities on `ACTIVITY_UPLOADED` with `{sport_emoji} {descriptor}` title (e.g. `🏃 Easy Run 10k`) and a 2-3 sentence AI description (Instagram-card tone) ending with `→ endurai.me`; idempotent via `_SIGNATURE_MARKERS` (`"endurai.me"`, legacy `"Readiness"`).
-
-### Workout card PNG generator
-
-Pillow-based renderer with GPS polyline, AI text via Claude, sport-specific metrics (Run = pace, Ride = power, Swim = pace/100m), endurai.me branding. Triggered via inline button in activity notification; sent via `sendDocument` (not `sendPhoto`) so Telegram preserves PNG transparency.
+Behind two gates: global kill-switch `STRAVA_SIGNATURE_ENABLED` (in actor) + per-user allowlist `STRAVA_SIGNATURE_USER_IDS` (CSV in env, default `{1}`, checked at dispatch in `_dispatch_activity_uploaded`). Allowlist keeps the queue clean — non-allowlisted tenants don't enqueue 5-min-delayed no-ops every upload. Renames Intervals.icu activities on `ACTIVITY_UPLOADED` with `{sport_emoji} {descriptor}` title (e.g. `🏃 Easy Run 10k`) and a 2-3 sentence AI description ending with `→ endurai.me`; idempotent via `_SIGNATURE_MARKERS` (`"endurai.me"`, legacy `"Readiness"`).
 
 ---
 
