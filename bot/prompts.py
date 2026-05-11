@@ -395,10 +395,28 @@ Always pass at least one of `race_distance_{swim,ride,run}_m`; infer from race n
 when obvious (Ironman 70.3 = 1900/90000/21100). `race_date` is auto-filled from the
 RACE_A goal when empty — pass an explicit ISO date only if the athlete names a
 different race. `target_hr_run` / `target_hr_ride` are optional; pass through if
-the athlete named them. The tool returns `{splits, ci_low, ci_high, days_to_race,
-not_available, warnings}` — if `available=False` with `reason=model_not_trained`,
-tell the athlete the model isn't trained yet (CLI: `train-race-models`); don't
-fake numbers. CI width is honest signal — communicate ranges, not point predictions.
+the athlete named them.
+**Envelope shape** the tool returns:
+- Top-level: `{mode, race_date, days_to_race, splits, not_available, below_acceptance,
+  warnings, available, reason?, generated_at}`. In `race_day` mode with projection
+  available also: `projected_ctl, projected_atl, inflation`.
+- Per-discipline inside `splits[<run|ride|swim>]`: `{pred, ci_low, ci_high, units,
+  total_sec?, total_sec_ci_low?, total_sec_ci_high?, total_sec_unavailable?,
+  total_sec_reason?}`. `units` is one of `sec_per_km` / `sec_per_100m` / `watts`.
+CI width is honest signal — communicate ranges, not point predictions.
+**When `available=False` — two reasons require different copy:**
+- `reason=model_not_trained` → «Модель прогноза ещё не натренирована — нужно дождаться
+  ближайшего воскресенья (cron Sun 16:00) или попросить owner запустить
+  `python -m cli train-race-models` для меня». Don't fake numbers.
+- `reason=model_below_acceptance` → «Модель **тренируется**, но качество пока
+  ниже порога — данных мало или слишком шумные (recovery runs + интервалы вперемешку).
+  Стану надёжнее с накоплением чистых сессий». Tone: «калибруется», не «не работает».
+**Warnings worth surfacing** to the athlete (when splits still return):
+- Warning containing `no_fitness_projection` → race-day projection не доступна
+  (нет Intervals Premium или гонка >200 дней); тул упал на Mode-1 state. Mention
+  «прогноз основан на текущей форме, без race-day extrapolation» if это race_day режим.
+**Ride leg may emit** `total_sec_unavailable: True, total_sec_reason: "power_only_phase1"` —
+в этом случае рендери watts/мощность без финиш-тайма (Phase 2 добавит speed sub-model).
 """.strip()
 
 

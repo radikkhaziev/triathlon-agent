@@ -74,7 +74,7 @@ async def get_race_projection(
             "hint": "Provide at least one of race_distance_{swim,ride,run}_m.",
         }
 
-    envelope = predict_splits_with_ci(
+    envelope = await predict_splits_with_ci(
         user_id=user_id,
         mode=mode,
         race_date=_race_iso,
@@ -85,9 +85,18 @@ async def get_race_projection(
         target_hr_ride=target_hr_ride,
     )
 
-    if not envelope.get("splits") and envelope.get("not_available"):
+    if not envelope.get("splits"):
         envelope["available"] = False
-        envelope["reason"] = "model_not_trained"
+        # Pick the most informative reason from the buckets we filled. When
+        # the call had mixed outcomes (one discipline trained but quality-gated,
+        # another simply absent) we still emit the gate reason — Claude can
+        # explain «calibrating» более точно чем «not trained».
+        if envelope.get("below_acceptance"):
+            envelope["reason"] = "model_below_acceptance"
+        elif envelope.get("not_available"):
+            envelope["reason"] = "model_not_trained"
+        else:
+            envelope["reason"] = "no_splits"
     else:
         envelope["available"] = True
     return envelope

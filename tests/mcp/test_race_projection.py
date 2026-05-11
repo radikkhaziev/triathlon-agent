@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -67,7 +67,7 @@ class TestAutoFillRaceDate:
             ),
             patch(
                 "mcp_server.tools.race_projection.predict_splits_with_ci",
-                MagicMock(return_value=envelope),
+                AsyncMock(return_value=envelope),
             ) as predict_mock,
         ):
             result = await get_race_projection(mode="today", race_distance_run_m=21000)
@@ -94,7 +94,7 @@ class TestSuccessPath:
             _mock_user_context(),
             patch(
                 "mcp_server.tools.race_projection.predict_splits_with_ci",
-                MagicMock(return_value=envelope),
+                AsyncMock(return_value=envelope),
             ),
         ):
             result = await get_race_projection(
@@ -112,15 +112,39 @@ class TestSuccessPath:
         envelope = {
             "splits": {},
             "not_available": ["run"],
+            "below_acceptance": [],
             "warnings": ["race_run model not trained"],
         }
         with (
             _mock_user_context(),
             patch(
                 "mcp_server.tools.race_projection.predict_splits_with_ci",
-                MagicMock(return_value=envelope),
+                AsyncMock(return_value=envelope),
             ),
         ):
             result = await get_race_projection(race_date=future, race_distance_run_m=21000)
         assert result["available"] is False
         assert result["reason"] == "model_not_trained"
+
+    @pytest.mark.asyncio
+    async def test_below_acceptance_returns_distinct_reason(self):
+        """Quality-gated models surface as `model_below_acceptance`, not
+        `model_not_trained` — Claude can communicate «модель калибруется»
+        instead of «не существует»."""
+        future = (date.today() + timedelta(days=60)).isoformat()
+        envelope = {
+            "splits": {},
+            "not_available": [],
+            "below_acceptance": ["run"],
+            "warnings": ["race_run model below acceptance floor"],
+        }
+        with (
+            _mock_user_context(),
+            patch(
+                "mcp_server.tools.race_projection.predict_splits_with_ci",
+                AsyncMock(return_value=envelope),
+            ),
+        ):
+            result = await get_race_projection(race_date=future, race_distance_run_m=21000)
+        assert result["available"] is False
+        assert result["reason"] == "model_below_acceptance"
