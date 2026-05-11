@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -107,16 +107,18 @@ class TestPredictOne:
 
 
 class TestPredictSplitsWithCi:
-    def test_no_distance_returns_empty_splits(self):
-        envelope = race_predict.predict_splits_with_ci(
+    @pytest.mark.asyncio
+    async def test_no_distance_returns_empty_splits(self):
+        envelope = await race_predict.predict_splits_with_ci(
             user_id=1, mode="today", race_date=(date.today() + timedelta(days=30)).isoformat()
         )
         assert envelope["splits"] == {}
         assert envelope["not_available"] == []
 
-    def test_model_not_trained_lands_in_not_available(self):
+    @pytest.mark.asyncio
+    async def test_model_not_trained_lands_in_not_available(self):
         with patch.object(race_predict, "_load_model", side_effect=race_predict.ModelNotTrained):
-            envelope = race_predict.predict_splits_with_ci(
+            envelope = await race_predict.predict_splits_with_ci(
                 user_id=1,
                 mode="today",
                 race_date=(date.today() + timedelta(days=30)).isoformat(),
@@ -126,13 +128,14 @@ class TestPredictSplitsWithCi:
         assert envelope["splits"] == {}
         assert any("not trained" in w for w in envelope["warnings"])
 
-    def test_mode_today_inflation_is_one(self):
+    @pytest.mark.asyncio
+    async def test_mode_today_inflation_is_one(self):
         bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
         with (
             patch.object(race_predict, "_load_model", return_value=bundle),
             patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
         ):
-            envelope = race_predict.predict_splits_with_ci(
+            envelope = await race_predict.predict_splits_with_ci(
                 user_id=1,
                 mode="today",
                 race_date=(date.today() + timedelta(days=30)).isoformat(),
@@ -143,14 +146,16 @@ class TestPredictSplitsWithCi:
         # inflation field is only emitted in race_day mode with overrides
         assert "inflation" not in envelope
 
-    def test_mode_race_day_falls_back_when_no_projection(self):
+    @pytest.mark.asyncio
+    async def test_mode_race_day_falls_back_when_no_projection(self):
         bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        # `_mode2_overrides` is async (awaits @dual ORM methods) — needs AsyncMock.
         with (
             patch.object(race_predict, "_load_model", return_value=bundle),
             patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
-            patch.object(race_predict, "_mode2_overrides", return_value=None),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=None)),
         ):
-            envelope = race_predict.predict_splits_with_ci(
+            envelope = await race_predict.predict_splits_with_ci(
                 user_id=1,
                 mode="race_day",
                 race_date=(date.today() + timedelta(days=120)).isoformat(),
@@ -161,15 +166,16 @@ class TestPredictSplitsWithCi:
         # Mode-1 fallback still produces splits
         assert "run" in envelope["splits"]
 
-    def test_mode_race_day_with_overrides_emits_projection_fields(self):
+    @pytest.mark.asyncio
+    async def test_mode_race_day_with_overrides_emits_projection_fields(self):
         bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
         overrides = {"ctl": 75.0, "atl": 70.0, "current_eftp": 230.0}
         with (
             patch.object(race_predict, "_load_model", return_value=bundle),
             patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
-            patch.object(race_predict, "_mode2_overrides", return_value=overrides),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
         ):
-            envelope = race_predict.predict_splits_with_ci(
+            envelope = await race_predict.predict_splits_with_ci(
                 user_id=1,
                 mode="race_day",
                 race_date=(date.today() + timedelta(days=120)).isoformat(),
@@ -180,3 +186,73 @@ class TestPredictSplitsWithCi:
         assert envelope["projected_atl"] == 70.0
         assert envelope["inflation"] > 1.0  # 120 days → sqrt(4)=2
         assert envelope["inflation"] == pytest.approx(math.sqrt(120 / 30), abs=1e-3)
+
+
+class TestQualityGate:
+    """Per-discipline acceptance floor blocks catastrophic models from output.
+
+    `_enforce_quality_gate` reads `bundle["metrics"]` and raises
+    :class:`ModelBelowAcceptance` when `r2` or `mae` fall below the
+    discipline-specific floor.
+    """
+
+    def test_passes_when_metrics_above_floor(self):
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        bundle["metrics"] = {"r2": 0.35, "mae": 30.0}  # Run floor: r2≥0.20, mae≤40
+        # No exception
+        race_predict._enforce_quality_gate(bundle, "run", user_id=1)
+
+    def test_rejects_negative_r2(self):
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        bundle["metrics"] = {"r2": -0.5, "mae": 30.0, "n_examples": 100}
+        bundle["user_id"] = 1
+        with pytest.raises(race_predict.ModelBelowAcceptance):
+            race_predict._enforce_quality_gate(bundle, "run", user_id=1)
+
+    def test_rejects_mae_above_cap(self):
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        bundle["metrics"] = {"r2": 0.40, "mae": 100.0, "n_examples": 100}  # mae > 40
+        bundle["user_id"] = 1
+        with pytest.raises(race_predict.ModelBelowAcceptance):
+            race_predict._enforce_quality_gate(bundle, "run", user_id=1)
+
+    def test_swim_has_lower_r2_floor(self):
+        """Swim's floor is 0.05 (spec §12.3 acknowledges Swim is weakest)."""
+        bundle = _fake_bundle(predict_value=120.0, residuals=[-5, 5])
+        bundle["metrics"] = {"r2": 0.08, "mae": 7.0}  # would fail Run/Ride floor of 0.20
+        race_predict._enforce_quality_gate(bundle, "swim", user_id=1)  # no raise
+
+    def test_legacy_bundle_without_metrics_passes(self):
+        """Backwards-compat: bundles trained before the gate landed don't have
+        a ``metrics`` field. We trust them rather than refuse silently."""
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        # no metrics key
+        race_predict._enforce_quality_gate(bundle, "run", user_id=1)  # no raise
+
+    @pytest.mark.asyncio
+    async def test_below_acceptance_lands_in_envelope(self):
+        """Full integration: a low-quality model surfaces as `model_below_acceptance`."""
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        bundle["metrics"] = {"r2": -75.0, "mae": 164.0, "n_examples": 159}
+        bundle["user_id"] = 14
+
+        # End-to-end wiring: exercise the real _load_model → _enforce_quality_gate
+        # → raise path by patching joblib.load and Path.exists at the lowest layer.
+        # An earlier draft mocked `_load_model` directly with side_effect; that
+        # short-circuited the wire-up under test and would still pass even if
+        # _load_model stopped calling _enforce_quality_gate in a regression.
+        with (
+            patch("joblib.load", return_value=bundle),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=14,
+                mode="today",
+                race_date=(date.today() + timedelta(days=30)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert "run" in envelope["below_acceptance"]
+        assert "run" not in envelope["not_available"]
+        assert envelope["splits"] == {}
+        assert any("below acceptance" in w for w in envelope["warnings"])
