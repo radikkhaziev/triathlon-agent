@@ -12,7 +12,7 @@ from tasks.dto import local_today
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from data.db import Activity, ActivityHrv, Race, Wellness
+    from data.db import Activity, ActivityAchievement, ActivityDetail, ActivityHrv, ActivityWeather, Race, Wellness
 
 # ---------------------------------------------------------------------------
 # Shared constants (language-aware via _())
@@ -136,10 +136,17 @@ def sport_emoji(activity_type: str | None) -> str:
 
 
 def format_pace(sec_per_km: float | None) -> str | None:
-    """Render integer s/km value as ``M:SS/km``. Returns ``None`` on invalid input."""
+    """Render s/km value as ``M:SS/km``. Returns ``None`` on invalid input.
+
+    Uses ``round`` (not truncate) so 290.6 → 4:51, not 4:50. This matters for
+    derived paces (``moving_time / distance``) where a .5s rounding choice
+    accumulates across the activity. Ramp-test messages call this with an
+    already-int value from ``parse_pace_to_sec``, so the rounding is a no-op
+    on that path.
+    """
     if not sec_per_km or sec_per_km <= 0:
         return None
-    m, s = divmod(int(sec_per_km), 60)
+    m, s = divmod(int(round(sec_per_km)), 60)
     return f"{m}:{s:02d}/km"
 
 
@@ -151,20 +158,332 @@ def _format_hms(seconds: int | None) -> str | None:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+_ZONE_LABELS = ("Z1", "Z2", "Z3", "Z4", "Z5", "Z6", "Z7")
+
+
+def _format_pace_sec_per_100m(sec_per_km: float | None) -> str | None:
+    """Render swim pace ``M:SS/100m`` from sec/km (≠ /km — same divmod template)."""
+    if not sec_per_km or sec_per_km <= 0:
+        return None
+    sec_per_100m = sec_per_km / 10
+    m, s = divmod(int(round(sec_per_100m)), 60)
+    return f"{m}:{s:02d}/100m"
+
+
+def _build_header_line(activity: Activity, detail: ActivityDetail | None) -> str:
+    """First line: emoji + sport + duration + distance + elevation + TSS."""
+    emoji = sport_emoji(activity.type)
+    dur = format_duration(activity.moving_time)
+    parts: list[str] = [f"{emoji} {activity.type or '?'} {dur}"]
+
+    if detail and detail.distance and detail.distance > 0:
+        km = detail.distance / 1000
+        # Sub-km activities (warm-up jogs, pool sessions logged in m): use meters
+        parts.append(f"{km:.2f} km" if km >= 1 else f"{int(detail.distance)} m")
+
+    if detail and detail.elevation_gain and detail.elevation_gain >= 10:
+        parts.append(f"↑{int(round(detail.elevation_gain))} m")
+
+    header = " · ".join(parts)
+    if activity.icu_training_load:
+        header += f" | TSS {activity.icu_training_load:.0f}"
+    return header
+
+
+def _build_summary_line(activity: Activity, detail: ActivityDetail | None) -> str | None:
+    """HR / pace / power summary line. Sport-specific."""
+    sport = activity.type
+    bits: list[str] = []
+
+    if activity.average_hr:
+        hr_part = f"💓 {activity.average_hr:.0f}"
+        if detail and detail.max_hr:
+            hr_part += f"–{detail.max_hr}"
+        bits.append(hr_part)
+
+    if sport == "Ride" and detail:
+        if detail.avg_power and detail.normalized_power and detail.normalized_power != detail.avg_power:
+            bits.append(f"⚡ {detail.avg_power}W (NP {detail.normalized_power}W)")
+        elif detail.normalized_power:
+            bits.append(f"⚡ {detail.normalized_power}W")
+        elif detail.avg_power:
+            bits.append(f"⚡ {detail.avg_power}W")
+
+    if sport == "Run" and detail and detail.distance and activity.moving_time:
+        # Derive pace from moving_time/distance — same logic as webapp Activity page.
+        pace_sec_per_km = activity.moving_time / (detail.distance / 1000)
+        formatted = format_pace(pace_sec_per_km)
+        if formatted:
+            bits.append(f"🏃 {formatted}")
+
+    if sport == "Swim" and detail and detail.distance and activity.moving_time:
+        pace_sec_per_km = activity.moving_time / (detail.distance / 1000)
+        formatted = _format_pace_sec_per_100m(pace_sec_per_km)
+        if formatted:
+            bits.append(f"🏊 {formatted}")
+
+    return " · ".join(bits) if bits else None
+
+
+def _build_efficiency_line(detail: ActivityDetail | None) -> str | None:
+    """EF / Decoupling / VI — classic durability metrics."""
+    if not detail:
+        return None
+    bits: list[str] = []
+    if detail.efficiency_factor:
+        bits.append(f"EF {detail.efficiency_factor:.2f}")
+    if detail.decoupling is not None:
+        # Green ≤5%, yellow 5-10%, red >10% — see docs/knowledge/decoupling.md.
+        abs_drift = abs(detail.decoupling)
+        if abs_drift > 10:
+            drift_emoji = "🔴"
+        elif abs_drift >= 5:
+            drift_emoji = "🟡"
+        else:
+            drift_emoji = "🟢"
+        bits.append(f"Drift {detail.decoupling:.1f}% {drift_emoji}")
+    if detail.variability_index:
+        bits.append(f"VI {detail.variability_index:.2f}")
+    return " · ".join(bits) if bits else None
+
+
+def _build_fitness_snapshot_line(detail: ActivityDetail | None) -> str | None:
+    """CTL / ATL / TSB snapshot at the moment of the activity."""
+    if not detail or detail.ctl_snapshot is None or detail.atl_snapshot is None:
+        return None
+    ctl = detail.ctl_snapshot
+    atl = detail.atl_snapshot
+    tsb = ctl - atl
+    return f"📊 CTL {ctl:.0f} · ATL {atl:.0f} · TSB {tsb:+.0f}"
+
+
+# Compass octants — 8-way wind direction. Source matches Intervals.icu prevailing_wind_deg
+# convention (0° = North, clockwise).
+_WIND_OCTANTS_RU = ("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
+_WIND_OCTANTS_EN = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def _wind_direction(deg: int | None) -> str | None:
+    if deg is None:
+        return None
+    table = _WIND_OCTANTS_EN if get_language() == "en" else _WIND_OCTANTS_RU
+    idx = int(round((deg % 360) / 45)) % 8
+    return table[idx]
+
+
+def _build_weather_line(weather: ActivityWeather | None) -> str | None:
+    """Weather block — temperature, feels-like, wind, precipitation."""
+    if not weather:
+        return None
+    bits: list[str] = []
+
+    if weather.avg_temp_c is not None:
+        temp = f"🌡 {weather.avg_temp_c:.0f}°C"
+        if weather.avg_feels_like_c is not None and abs(weather.avg_feels_like_c - weather.avg_temp_c) >= 1:
+            temp += f" ({_('ощущается')} {weather.avg_feels_like_c:.0f})"
+        bits.append(temp)
+
+    if weather.avg_wind_speed_mps is not None and weather.avg_wind_speed_mps >= 0.5:
+        # Intervals.icu stores wind in m/s; convert to km/h for legibility.
+        wind_kmh = weather.avg_wind_speed_mps * 3.6
+        wind = f"💨 {wind_kmh:.0f} km/h"
+        direction = _wind_direction(weather.prevailing_wind_deg)
+        if direction:
+            wind += f" {direction}"
+        # Headwind % from Intervals.icu — share of activity spent into the wind.
+        if weather.headwind_pct is not None and weather.headwind_pct >= 25:
+            wind += f" ({_('встречный')} {weather.headwind_pct:.0f}%)"
+        bits.append(wind)
+
+    if weather.max_rain_mm and weather.max_rain_mm > 0:
+        bits.append(f"🌧 {weather.max_rain_mm:.1f} mm")
+    if weather.max_snow_mm and weather.max_snow_mm > 0:
+        bits.append(f"❄️ {weather.max_snow_mm:.1f} mm")
+
+    return " · ".join(bits) if bits else None
+
+
+def _build_polarization_line(activity: Activity, detail: ActivityDetail | None) -> str | None:
+    """Polarization index — useful for workouts ≥60 min."""
+    if not detail or detail.polarization_index is None:
+        return None
+    if not activity.moving_time or activity.moving_time < 3600:
+        return None
+    return f"PI {detail.polarization_index:.2f}"
+
+
+def _format_achievement(ach: ActivityAchievement) -> str | None:
+    """Render one ActivityAchievement row as a short string. None to skip."""
+    if ach.type == "FTP_CHANGE":
+        # extra={"delta": int}. Synthesised by ActivityAchievement.save_bulk.
+        delta = (ach.extra or {}).get("delta")
+        ftp = ach.ftp_at_time
+        if delta is None or ftp is None:
+            return None
+        sign = "+" if delta > 0 else ""
+        return f"⚡ FTP {sign}{delta} W → {ftp} W"
+
+    if ach.type == "BEST_POWER":
+        # 5s/10s/30s/60s/5min/etc. — value=watts, secs=window length.
+        if not ach.value or not ach.secs:
+            return None
+        secs = int(ach.secs)
+        if secs < 60:
+            window = f"{secs}s"
+        elif secs % 60 == 0:
+            window = f"{secs // 60}m"
+        else:
+            window = f"{secs}s"
+        return f"🏆 {window} PR {int(round(ach.value))} W"
+
+    return None
+
+
+def _build_achievements_block(achievements: list[ActivityAchievement] | None) -> list[str]:
+    """Returns 0+ lines — one per significant achievement, capped at 4.
+
+    Sort priority (instead of DB insertion order which has same-tick ``created_at``
+    on bulk-inserts → tie broken by ``id``, arbitrary): FTP_CHANGE first
+    (semantically big news, sometimes drowned by power PRs), then BEST_POWER by
+    watts descending so the headline number leads. Cap is intentional — Telegram
+    notification, not an audit log.
+    """
+    if not achievements:
+        return []
+
+    def _priority(ach: ActivityAchievement) -> tuple[int, float]:
+        # FTP_CHANGE → group 0 (top); BEST_POWER → group 1; everything else → group 2.
+        # Within a group, sort by watts desc (negate for ascending sort).
+        if ach.type == "FTP_CHANGE":
+            return (0, -(ach.value or 0))
+        if ach.type == "BEST_POWER":
+            return (1, -(ach.value or 0))
+        return (2, -(ach.value or 0))
+
+    ordered = sorted(achievements, key=_priority)
+    lines: list[str] = []
+    for ach in ordered:
+        rendered = _format_achievement(ach)
+        if rendered:
+            lines.append(rendered)
+        if len(lines) >= 4:
+            break
+    return lines
+
+
+_BAR_WIDTH = 18  # block-bar width in chars; fits 3-line group on mobile Telegram
+
+
+def _format_zone_bar(times_sec: list[int] | None, label: str) -> list[str]:
+    """Two-line zone block: visual bar (proportional) + per-zone minutes.
+
+    Returns ``[]`` when no time data, otherwise two lines:
+        Label  ████████░░░░░░░░░░
+               Z1 32m · Z2 14m · Z3 8m
+
+    Bar uses 1/8-block characters so a zone gets a sliver of width even when
+    it would round to 0 whole chars (e.g. 4% of 18 chars = 0.72 chars → 6
+    eighths → ``▋``). Floor-division accumulates rounding loss per zone, so the
+    summed bar can be slightly shorter than ``_BAR_WIDTH * 8`` eighths — the
+    post-loop ``░`` padding handles that and also addresses the user-visible
+    "не во всю длину" complaint.
+    """
+    if not times_sec or not any(t and t > 0 for t in times_sec):
+        return []
+
+    total = sum(t or 0 for t in times_sec)
+    if total <= 0:
+        return []
+
+    fill_blocks = ("░", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█")
+
+    # Each zone's width in eighths-of-a-char; floor-divide loses at most 7
+    # eighths per zone, bounded by the post-loop slice + pad below.
+    eighths = [(t or 0) * _BAR_WIDTH * 8 // total for t in times_sec]
+    bar_chars: list[str] = []
+    for e in eighths:
+        full, rem = divmod(e, 8)
+        bar_chars.append("█" * full)
+        if rem:
+            bar_chars.append(fill_blocks[rem])
+
+    bar = "".join(bar_chars)
+    # Pad to full width — addresses user's «не во всю длину» complaint.
+    if len(bar) < _BAR_WIDTH:
+        bar = bar + "░" * (_BAR_WIDTH - len(bar))
+    else:
+        bar = bar[:_BAR_WIDTH]
+
+    label_bits: list[str] = []
+    for i, t in enumerate(times_sec):
+        if not t or t <= 0:
+            continue
+        zone_label = _ZONE_LABELS[i] if i < len(_ZONE_LABELS) else f"Z{i + 1}"
+        mins = int(round(t / 60))
+        label_bits.append(f"{zone_label} {mins}m")
+
+    return [f"{label}  {bar}", "       " + " · ".join(label_bits)]
+
+
+def _build_zone_bars(activity: Activity, detail: ActivityDetail | None) -> list[str]:
+    """Per-sport zone bar group. Empty when no zone data."""
+    if not detail:
+        return []
+
+    sport = activity.type
+    lines: list[str] = []
+
+    hr_label = "HR  "
+    hr_lines = _format_zone_bar(detail.hr_zone_times, hr_label)
+    if hr_lines:
+        lines.extend(hr_lines)
+
+    if sport == "Ride":
+        pwr_lines = _format_zone_bar(detail.power_zone_times, "Pwr ")
+        if pwr_lines:
+            lines.extend(pwr_lines)
+    elif sport == "Run":
+        pace_lines = _format_zone_bar(detail.pace_zone_times, "Pace")
+        if pace_lines:
+            lines.extend(pace_lines)
+
+    return lines
+
+
 def build_post_activity_message(
     activity: Activity,
     hrv: ActivityHrv,
     race: Race | None = None,
+    *,
+    detail: ActivityDetail | None = None,
+    weather: ActivityWeather | None = None,
+    achievements: list[ActivityAchievement] | None = None,
 ) -> str:
-    """Build short post-activity notification. Race-specific format when `race` is given."""
+    """Build post-activity notification.
+
+    Layered rendering — each block self-gates on data presence. Minimal inputs
+    (Activity + empty ActivityHrv sentinel) still produce a usable header line
+    so non-HRV-eligible sports (Swim, Walk, ...) never get a blank message.
+
+    Race-specific format when ``race`` is given.
+
+    Optional ``detail`` / ``weather`` / ``achievements`` extend the message with
+    distance, EF/decoupling, weather, CTL/TSB snapshot, zone bars, and PRs. All
+    optional — kept defaultable so callers that don't load those rows (legacy
+    tests, simple synthesis paths) keep working without a refactor.
+    """
     if race is not None:
         return _build_post_race_message(activity, race)
 
-    emoji = sport_emoji(activity.type)
-    dur = format_duration(activity.moving_time)
-    tss = f" | TSS {activity.icu_training_load:.0f}" if activity.icu_training_load else ""
+    lines: list[str] = [_build_header_line(activity, detail)]
 
-    lines: list[str] = [f"{emoji} {activity.type or '?'} {dur}{tss}"]
+    summary = _build_summary_line(activity, detail)
+    if summary:
+        lines.append(summary)
+
+    efficiency = _build_efficiency_line(detail)
+    if efficiency:
+        lines.append(efficiency)
 
     if hrv.dfa_a1_warmup is not None or hrv.dfa_a1_mean is not None:
         parts = []
@@ -188,6 +507,28 @@ def build_post_activity_message(
 
     if hrv.da_pct is not None and activity.moving_time and activity.moving_time >= 2400:
         lines.append(f"Da: {hrv.da_pct:+.1f}%")
+
+    weather_line = _build_weather_line(weather)
+    if weather_line:
+        lines.append(weather_line)
+
+    polarization = _build_polarization_line(activity, detail)
+    if polarization:
+        lines.append(polarization)
+
+    snapshot = _build_fitness_snapshot_line(detail)
+    if snapshot:
+        lines.append(snapshot)
+
+    achievement_lines = _build_achievements_block(achievements)
+    if achievement_lines:
+        lines.append("")  # visual separator before PRs
+        lines.extend(achievement_lines)
+
+    zone_lines = _build_zone_bars(activity, detail)
+    if zone_lines:
+        lines.append("")  # separator before zone bars
+        lines.extend(zone_lines)
 
     return "\n".join(lines)
 

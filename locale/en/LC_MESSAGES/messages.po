@@ -342,3 +342,9 @@ msgstr "📊 Open full report"
 
 msgid "📊 Недельный отчёт готов"
 msgstr "📊 Weekly report is ready"
+
+msgid "ощущается"
+msgstr "feels"
+
+msgid "встречный"
+msgstr "headwind"

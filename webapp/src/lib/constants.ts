@@ -10,8 +10,13 @@ export const MONTHS: Record<string, string[]> = {
   en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
 }
 
-export const ZONE_COLORS = ['#6b7280', '#22c55e', '#f59e0b', '#f97316', '#ef4444']
-export const ZONE_LABELS = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5']
+// 7-zone palette: blue (recovery) → green (aerobic) → amber (tempo) → orange
+// (threshold) → red (VO2/anaerobic) → magenta (anaerobic capacity) → purple
+// (neuromuscular). Ride power_zone_times comes in 7 zones; HR is usually 5
+// but can be 7 on user-configured profiles, so ZoneBar walks all 7 and
+// ZoneBar's modulo fallback keeps cycling colors if a future profile adds more.
+export const ZONE_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#8b5cf6']
+export const ZONE_LABELS = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5', 'Z6', 'Z7']
 
 export const CATEGORY_COLORS: Record<string, string> = {
   excellent: '#22c55e',

@@ -21,8 +21,10 @@ from bot.i18n import _, set_language
 from config import settings
 from data.db import (
     Activity,
+    ActivityAchievement,
     ActivityDetail,
     ActivityHrv,
+    ActivityWeather,
     AiWorkout,
     AthleteSettings,
     PaBaseline,
@@ -458,8 +460,39 @@ def _actor_send_activity_notification(
     with get_sync_session() as session:
         activity_row: Activity | None = session.get(Activity, activity_id)
         hrv_row: ActivityHrv | None = session.get(ActivityHrv, activity_id)
+        detail_row: ActivityDetail | None = session.get(ActivityDetail, activity_id)
+        weather_row: ActivityWeather | None = session.get(ActivityWeather, activity_id)
+        # Achievements: pulled inside the same session to avoid a round-trip.
+        # The ACTIVITY_ACHIEVEMENTS webhook usually arrives ~60s after upload —
+        # by the time this notification fires (post-FIT pipeline, often >60s)
+        # rows are commonly available. When they're not, the list is empty and
+        # the message degrades cleanly.
+        achievements_rows: list[ActivityAchievement] = list(
+            session.execute(
+                select(ActivityAchievement)
+                .where(
+                    ActivityAchievement.user_id == user.id,
+                    ActivityAchievement.activity_id == activity_id,
+                )
+                .order_by(ActivityAchievement.created_at.asc(), ActivityAchievement.id.asc())
+            ).scalars()
+        )
 
     if activity_row is None:
+        return
+    # Explicit tenant binding (security review §Medium). ``ActivityDetail`` and
+    # ``ActivityWeather`` are PK-keyed by ``activity_id`` with no ``user_id``
+    # column — tenant scoping is transitive via the Activity FK. A stray
+    # webhook / replayed Dramatiq message carrying a foreign tenant's
+    # ``activity_id`` would otherwise render that tenant's detail+weather into
+    # THIS user's Telegram chat. Single guard codifies the assumption.
+    if activity_row.user_id != user.id:
+        logger.warning(
+            "Activity notification: tenant mismatch (activity %s owner=%d dispatched_for=%d) — skip",
+            activity_id,
+            activity_row.user_id,
+            user.id,
+        )
         return
     # FIT pipeline skips non-Run/Ride types (HRV_ELIGIBLE_TYPES), so swim /
     # walk / strength activities reach us with ``resultDTO=None`` and no
@@ -526,7 +559,14 @@ def _actor_send_activity_notification(
         return
 
     race_row = Race.get_by_activity(user.id, activity_id) if activity_row.is_race else None
-    summary = build_post_activity_message(activity_row, hrv_row, race=race_row)
+    summary = build_post_activity_message(
+        activity_row,
+        hrv_row,
+        race=race_row,
+        detail=detail_row,
+        weather=weather_row,
+        achievements=achievements_rows,
+    )
     reply_markup = build_rpe_keyboard(activity_id) if activity_row.rpe is None else None
 
     tg.send_message(text=summary, reply_markup=reply_markup)
