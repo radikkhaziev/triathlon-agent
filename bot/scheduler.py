@@ -17,6 +17,7 @@ from tasks.actors import (
     actor_fetch_user_activities,
     actor_publish_weekly_changelog,
     actor_retrain_progression_model,
+    actor_retrain_race_models,
     actor_send_onboarding_hey,
     actor_send_pre_race_plan_push,
     actor_sync_athlete_goals,
@@ -91,13 +92,22 @@ async def scheduler_activities_job(athletes: list[UserDTO]) -> None:
 
 @with_athletes
 async def scheduler_progression_model_job(athletes: list[UserDTO]) -> None:
-    """Retrain progression models weekly for all athletes with enough data."""
+    """Retrain weekly ML models (progression + race-projection) for all athletes.
+
+    Race retrain shares the slot but has its own actor — `InsufficientDataError`
+    in race-train doesn't poison progression's run (and vice versa). Race actor
+    is offset by 15s to avoid burst-spike on Anthropic / GPU contention.
+    """
     for i, a in enumerate(athletes):
         actor_retrain_progression_model.send_with_options(
             kwargs={"user": a, "sport": "Ride"},
             delay=i * 30_000,
         )
-    logger.info("Dispatched progression model retraining for %d athletes", len(athletes))
+        actor_retrain_race_models.send_with_options(
+            kwargs={"user": a},
+            delay=i * 30_000 + 15_000,
+        )
+    logger.info("Dispatched progression + race-model retraining for %d athletes", len(athletes))
 
 
 @with_legacy_athletes

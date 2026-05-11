@@ -209,7 +209,7 @@ static/models/
 Из `wellness` на день активности (или для предикции — на `target_date`):
 
 - `ctl`, `atl`, `tsb` — глобальные (по всем видам спорта).
-- **`ctl_run`, `ctl_ride`, `ctl_swim` — per-sport load split.** ⚠ **Не** из `wellness.sport_info` — webhook `sportInfo` содержит только `{type, eftp, wPrime, pMax}`, **без per-sport CTL** (подтверждено в `INTERVALS_WEBHOOKS_RESEARCH.md` §WELLNESS_UPDATED payload sample). Intervals.icu показывает per-sport CTL в своём UI, но через webhook/REST API не отдаёт. **Считаем сами:** helper `Activity.compute_sport_ctl(user_id, sport, target_date, tau=42)` — EMA над `activity.icu_training_load` с фильтром `type=sport`. Вызывается при построении train-set и inference-row. Для **per-discipline predict**'а per-sport CTL важнее глобального: Run pace зависит от run-specific нагрузки, не от того что атлет много плавал.
+- **`ctl_run`, `ctl_ride`, `ctl_swim` — per-sport load split.** ⚠ **Не** из `wellness.sport_info` — webhook `sportInfo` содержит только `{type, eftp, wPrime, pMax}`, **без per-sport CTL** (подтверждено в `INTERVALS_WEBHOOKS_RESEARCH.md` §WELLNESS_UPDATED payload sample). Intervals.icu показывает per-sport CTL в своём UI, но через webhook/REST API не отдаёт. **Считаем сами:** helper `data/ml/race_features.py:_compute_sport_ctl_series(activities_df, sport, tau=42)` — pandas-batch EMA над `icu_training_load` с фильтром `type=sport`, возвращает date-indexed series. Вызывается один раз при построении dataset / inference row над предварительно загруженной DataFrame всех активностей (избегаем N+1 SQL для каждой исторической строки). Для **per-discipline predict**'а per-sport CTL важнее глобального: Run pace зависит от run-specific нагрузки, не от того что атлет много плавал.
 - `hrv_ln_rmssd`, `rhr`
 - `sleep_score_7d_mean`, `stress_avg_7d_mean` (из Garmin)
 - `recovery_score`
@@ -559,21 +559,29 @@ CREATE TABLE race_projections (
 
 ## 14. Acceptance criteria
 
-### Phase 1 (MVP, user 1)
+### Phase 1 (MVP, user 1) — ✅ shipped 2026-05-11
 
-- [ ] `ml/race_features.py` — per-discipline feature builders, unit-тесты.
-- [ ] `ml/race_predict.py` — `predict_splits_with_ci()` возвращает структуру §9.2.
-- [ ] Три обученных `.joblib` (Run/Ride/Swim) с метриками в §12.3.
-- [ ] MCP tool `get_race_projection` — оба режима + cold-start fallback.
-- [ ] Bootstrap residuals → CI в ответе, inflation для Mode 2.
-- [ ] Weekly retrain actor расширен (из HRV spec).
-- [ ] Claude в чате корректно зовёт тулзу по запросам типа «прогноз на гонку»
-      (обновить `SYSTEM_PROMPT_CHAT` — добавить раздел `## Race projection`).
-- [ ] Документация: этот файл + короткая секция в CLAUDE.md.
+- [x] `data/ml/race_features.py` — per-discipline feature builders, unit-тесты (17 cases).
+- [x] `data/ml/race_predict.py` — `predict_splits_with_ci()` возвращает структуру §9.2 (10 cases).
+- [x] `data/ml/race_train.py` — XGBRegressor per discipline + bootstrap residuals (500 resamples) → `static/models/race_{user}_{discipline}.joblib`.
+- [x] MCP tool `get_race_projection` — оба режима + cold-start fallback + all error envelopes §9.3 (7 cases).
+- [x] Bootstrap residuals → CI в ответе, inflation `sqrt(days/30)` для Mode 2.
+- [x] **Weekly retrain actor** — `actor_retrain_race_models` (separate actor от progression), shared `scheduler_progression_model_job` Sun 16:00 Belgrade slot с 15s offset; `time_limit=600s, max_retries=0`. Skip via `InsufficientDataError`.
+- [x] **Chat:** Claude корректно зовёт тулзу — `_STATIC_PROMPT_CHAT` секция `## Race projection` с триггерами в `bot/tool_filter.py:analysis` group.
+- [x] **Weekly report:** `SYSTEM_PROMPT_WEEKLY` step 8 + `WEEKLY_TOOL_NAMES` — one-line «🏁 Race-day прогноз» в 📈 Прогресс gated на `goal_event_date ∈ [30, 200]` дней.
+- [x] **Schema deps:** `fitness_projection.sport_info JSONB` (migration `b8c9d0e1f2a3`) + `FitnessProjection.{get, sport_info_by_type}`. Per-sport CTL helper lives inline at `data/ml/race_features.py:_compute_sport_ctl_series` (pandas-batch, ORM-method form turned out zero-caller and was removed).
+- [x] CLI `train-race-models <user_id>`.
+- [x] Документация: этот файл + секция в CLAUDE.md + развёрнутая секция в `docs/IMPLEMENTATION_STATUS.md`.
 
-### Phase 2
+### Phase 1 runtime acceptance (pending)
 
-Отложено до явного запроса или накопления race-data для Ride/Swim.
+- [ ] Запустить `python -m cli train-race-models 1` — обучить три модели на user 1.
+- [ ] Run MAE ≤ 10 sec/km / R² ≥ 0.50, Ride MAE ≤ 15W / R² ≥ 0.40, Swim MAE ≤ 8 sec/100m / R² ≥ 0.30 (§12.3). Below — block deploy.
+- [ ] Прогнать утренний / weekly один цикл, убедиться что Claude вызывает тул и форматирует строку.
+
+### Phase 2 — deferred
+
+Scenario engine ("miss 2 weeks" / "+10% volume" / custom CTL target), webapp `/race-projection` chart (CTL trajectory + per-leg CI bars), race-specific Ride/Swim calibration (await ≥10 non-Run race events), cross-athlete pool model. Spec §2 unchanged.
 
 ---
 
@@ -583,7 +591,7 @@ CREATE TABLE race_projections (
 2. **`ml/train.py` extension** — `--target=race_run|race_ride|race_swim` в CLI.
 3. **`ml/race_predict.py`** — load + predict + bootstrap CI.
 4. **MCP tool `get_race_projection`** — Phase 1 режимы, cold-start, все error cases §9.3.
-5. **Prompt update**: `bot/prompts.py:SYSTEM_PROMPT_CHAT` — раздел
+5. **Prompt update**: `bot/prompts.py:_STATIC_PROMPT_CHAT` — раздел
    «Race projection» с триггерами и правилами вызова.
 6. **Weekly retrain actor** — объединение с HRV.
 7. **Tests** — unit (features, predict, CI), integration (MCP tool end-to-end

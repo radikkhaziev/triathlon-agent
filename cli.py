@@ -125,6 +125,15 @@ def main() -> None:
         help="Override weekly idempotency — publish a second Discussion this week.",
     )
 
+    p_trm = sub.add_parser(
+        "train-race-models",
+        help="Train race-projection models (Run/Ride/Swim) for one user. "
+        "Saves joblib bundles to static/models/race_{user_id}_{discipline}.joblib. "
+        "Logs MAE/R² per discipline; disciplines with <30 examples are skipped. "
+        "See docs/ML_RACE_PROJECTION_SPEC.md §12.",
+    )
+    p_trm.add_argument("user_id", type=int)
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -151,6 +160,8 @@ def main() -> None:
         _create_weekly_report_all()
     elif args.command == "publish-changelog":
         _publish_changelog(force=args.force)
+    elif args.command == "train-race-models":
+        _train_race_models(args.user_id)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -769,6 +780,24 @@ def _publish_changelog(*, force: bool = False) -> None:
 
     result = publish_weekly_changelog(force=force)
     print(f"publish_weekly_changelog(force={force}) → {result}")
+
+
+def _train_race_models(user_id: int) -> None:
+    """Train race-projection models for one user — three disciplines sequentially."""
+    from data.ml.race_features import InsufficientDataError
+    from data.ml.race_train import train_user_model
+
+    for discipline in ("run", "ride", "swim"):
+        try:
+            result = train_user_model(user_id, discipline)
+            print(
+                f"  {discipline:5s}: n={result['n_examples']:4d}  "
+                f"MAE={result['mae']:.3f}  R²={result['r2']:+.3f}  → {result['model_path']}"
+            )
+        except InsufficientDataError as e:
+            print(f"  {discipline:5s}: skip — {e}")
+        except Exception as e:
+            print(f"  {discipline:5s}: FAILED — {type(e).__name__}: {e}")
 
 
 def _shell() -> None:

@@ -127,7 +127,19 @@ Athlete profile:
 4. get_efficiency_trend(days_back=30) — аэробный тренд
 5. get_goal_progress() — прогресс к цели
 6. get_scheduled_workouts(days_ahead=7) — план следующей недели
-7. get_polarization_index(sport='{primary_sport}') — распределение зон (28d pattern + signals){progression_step}
+7. get_polarization_index(sport='{primary_sport}') — распределение зон (28d pattern + signals)
+8. **Race-day прогноз (опционально):** если у атлета есть RACE_A goal и до неё 30-200 дней —
+   вызови get_race_projection(mode="race_day"). Дистанции **строго из категории гонки** (sport_type
+   на goal). Для триатлона: Sprint 750/20000/5000, Olympic 1500/40000/10000, 70.3 1900/90000/21100,
+   IM 3800/180000/42200 — передавай race_distance_{swim,ride,run}_m. Для бега (sport_type=run):
+   5K=5000, 10K=10000, Half=21100, Marathon=42195 — передавай **только** race_distance_run_m.
+   Для ride/swim single-sport — аналогично только соответствующая дистанция. Если в названии гонки
+   («Drina Trail», «Belgrade Marathon») дистанция не угадывается явно — пропусти шаг, не выдумывай.
+   Получив envelope, добавь ОДНУ строку в секцию 📈 Прогресс:
+   «🏁 Race-day прогноз ({event_date}): Swim {swim} · Bike {bike} · Run {run} → ~{total} (±{ci_minutes} мин)»
+   (для single-sport — только соответствующий сплит без точек-разделителей).
+   Если available=False (cold-start: model_not_trained / no_fitness_projection / распределение
+   ещё нестабильно) — **молча пропусти**, не упоминай. Не раздувай — одна строка максимум.{progression_step}
 
 ## Формат ответа (300-400 words)
 
@@ -330,16 +342,16 @@ Important:
 - If the question doesn't require data (e.g. general training advice), answer directly without tools.
 - Keep answers short: 2-5 sentences for simple questions, up to 10 for analysis.
 - Format for Telegram: use Markdown (bold, italic), no headers, no long lists.
-- Никаких markdown-таблиц (`|...|`) — Telegram их не рендерит. Используй списки `- ` или построчно.
+- No markdown tables (`|...|`) — Telegram doesn't render them. Use `- ` bullet lists or line-by-line instead.
 - Garmin tools (`get_garmin_*`) return a `freshness_warning` + `days_stale` —
   GDPR export lags 7+ days. Never present Garmin data as current state; use
   `get_wellness` / `get_recovery` for today. Garmin is for trends and history.
 
 ## Races
-If the athlete mentions completing a race (финиш, соревнование, гонка, старт), use `tag_race`
-to mark the activity and capture distance, finish time, placement, notes. Ask only for details
-you cannot infer from context. Use `get_races` for questions about past race performance,
-progression, or race-day fitness context.
+When the athlete mentions completing a race (any language — finish, competition, race, start),
+use `tag_race` to mark the activity and capture distance, finish time, placement, notes. Ask
+only for details you cannot infer from context. Use `get_races` for questions about past race
+performance, progression, or race-day fitness context.
 
 ## Mood tracking
 If the athlete's message contains emotional signals (fatigue, stress, excitement),
@@ -365,13 +377,28 @@ run the step without beeping and the athlete runs blind.
   - For repeat groups (`reps` + sub-`steps`), the target goes on each sub-step, not the wrapper.
 
 ## Race creation & deletion
-For FUTURE races («добавь/перенеси гонку», «race A на X мая»), use `suggest_race`.
+For FUTURE races (add/reschedule a race, "race A on May X", etc.), use `suggest_race`.
 Required: name, category (A/B/C — ask if unclear), dt (ISO, resolve relative dates).
 Optional: sport, distance_m, ctl_target (pass through if named, don't invent), description.
 Flow: always call with dry_run=True first — bot shows a confirm button and replays with
 dry_run=False itself. Never call dry_run=False yourself. Use `tag_race` only for PAST activities.
-To remove a future race («удали RACE_A», «отмени гонку»), use `delete_race_goal(category)` —
+To remove a future race ("delete RACE_A", "cancel race"), use `delete_race_goal(category)` —
 confirm intent with the athlete first, it's irreversible from the bot.
+
+## Race projection
+When the athlete asks for a race forecast ("how will I do", "what would I show",
+"if I raced today", any language), call `get_race_projection`. Two modes:
+- `mode="today"` — predict splits for current form (test races, check-ins).
+- `mode="race_day"` — forecast for the actual A-race date using `fitness_projection`
+  decay curve. Use this when the athlete asks about an upcoming race.
+Always pass at least one of `race_distance_{swim,ride,run}_m`; infer from race name
+when obvious (Ironman 70.3 = 1900/90000/21100). `race_date` is auto-filled from the
+RACE_A goal when empty — pass an explicit ISO date only if the athlete names a
+different race. `target_hr_run` / `target_hr_ride` are optional; pass through if
+the athlete named them. The tool returns `{splits, ci_low, ci_high, days_to_race,
+not_available, warnings}` — if `available=False` with `reason=model_not_trained`,
+tell the athlete the model isn't trained yet (CLI: `train-race-models`); don't
+fake numbers. CI width is honest signal — communicate ranges, not point predictions.
 """.strip()
 
 
@@ -389,13 +416,6 @@ Athlete profile:
 {zones_block}
 {facts_block}{personal_patterns_block}
 Respond in {response_language}."""
-
-
-# Back-compat alias so existing imports still resolve to a non-empty template
-# (some callers concat it for logging / tests patch the full prompt path).
-# The live chat path uses the split pair above — this constant is no longer
-# .format()-ed anywhere in the live code path.
-SYSTEM_PROMPT_CHAT = _STATIC_PROMPT_CHAT + "\n\n" + _ATHLETE_BLOCK_TEMPLATE
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +479,7 @@ def _zones_block(
     t: AthleteThresholdsDTO,
     sports: list[str] | None = None,
 ) -> str:
-    """Render the Run/Ride/Swim zone block for SYSTEM_PROMPT_CHAT.
+    """Render the Run/Ride/Swim zone block for the chat athlete-block template.
 
     Uses real per-sport boundaries from ``athlete_settings`` (synced from
     Intervals.icu) when available; falls back to a Friel-like 5-zone model

@@ -210,7 +210,7 @@ async def reactivate_fact(fact_id: int) -> dict   # not in docstrings, only via 
 
 `bot/prompts.py` разбит на два строительных блока:
 
-- `get_static_system_prompt() -> str` — константа, всё что в статической части `SYSTEM_PROMPT_CHAT`.
+- `get_static_system_prompt() -> str` — публичный аксессор приватной `_STATIC_PROMPT_CHAT` (cache segment #1).
 - `render_athlete_block(user_id, language, *, include_facts=True) -> str` — динамический хвост: athlete profile + goal + (опционально) facts. **Единственный reader** активных фактов в codebase'е.
 
 `get_system_prompt_chat(user)` остаётся public API бота и склеивает их. Morning report / evening report / любой другой код, которому в будущем захочется подмешать факты, импортирует `render_athlete_block` напрямую — не дублирует SQL в `tasks/actors/reports.py`.
@@ -257,7 +257,7 @@ async def reactivate_fact(fact_id: int) -> dict   # not in docstrings, only via 
 `bot/agent.py` ставит **два** `cache_control: ephemeral` маркера на system prompt:
 
 ```python
-static_prompt = get_static_system_prompt()           # ~весь текущий SYSTEM_PROMPT_CHAT (~780 tok)
+static_prompt = get_static_system_prompt()           # _STATIC_PROMPT_CHAT (~780 tok)
 dynamic_tail  = render_athlete_block(user)           # goal + facts + профиль (~240 tok)
 
 cached_system = [

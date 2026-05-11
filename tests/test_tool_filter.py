@@ -122,9 +122,10 @@ class TestToolGroupIntegrity:
         all_names: set[str] = set()
         for tools in TOOL_GROUPS.values():
             all_names.update(tools)
-        # 55 tools total (7 core + 6 garmin + 10 workouts + 7 tracking + 20 analysis + 5 admin)
+        # 56 tools total (7 core + 6 garmin + 10 workouts + 7 tracking + 21 analysis + 5 admin)
+        # +1 vs 55: `get_race_projection` added to analysis (ML race-day splits MCP tool).
         expected = sum(len(t) for t in TOOL_GROUPS.values())
-        assert len(all_names) == expected == 55
+        assert len(all_names) == expected == 56
 
     def test_core_has_essential_tools(self):
         core = set(TOOL_GROUPS["core"])

@@ -11,6 +11,72 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## ML race projection — Phase 1 (2026-05-11)
+
+Per-discipline regression model (Run/Ride/Swim) that turns current/projected wellness state into race-day splits with 90% confidence intervals. Spec: `docs/ML_RACE_PROJECTION_SPEC.md`.
+
+- **Schema:** migration `b8c9d0e1f2a3` adds `fitness_projection.sport_info JSONB NULL`. Webhook FITNESS_UPDATED ships `sportInfo` array with future-projected per-sport `{eftp, wPrime, pMax}` — Mode 2 reads `current_eftp` at race date from this column. Pre-migration rows stay NULL; refresh-driven backfill via webhook cadence (no actor needed).
+- **ORM helpers:**
+  - `FitnessProjection.get(user_id, race_date)` — single-row lookup for Mode 2.
+  - `FitnessProjection.sport_info_by_type(sport_type, key)` — typed reader for the sportInfo blob.
+  - `data/ml/race_features.py:_compute_sport_ctl_series(activities_df, sport, tau=42)` — pandas-batch EMA over `icu_training_load` with sport filter (per-sport CTL not in webhook payload, computed locally). Batch-only (one pass over all activities, returns date-indexed series) — efficient for training-set construction where it would otherwise re-fetch SQL per row. Kept inline in the feature module since the ORM-method form turned out to have zero callers (training/inference both work off the same pre-fetched DataFrame).
+- **Feature engineering** (`data/ml/race_features.py`):
+  - `build_dataset(user_id, discipline)` — walks all qualifying activities (`moving_time ≥ 25min`, sport-filtered), builds feature rows + target. Target: `sec/km` for Run, `watts` (NP preferred over avg_power) for Ride, `sec/100m` for Swim.
+  - `build_inference_features(user_id, discipline, target_date, target_hr, distance_m, overrides=...)` — state row at target_date + discipline-specific features. `overrides` allow Mode 2 to inject projected CTL/ATL/eFTP + scaling factor for per-sport CTL.
+  - State features (§6.1): CTL/ATL/TSB, per-sport CTL trio (Run/Ride/Swim), HRV, RHR, recovery_score, 7d sleep/stress means, 28d compliance mean.
+  - Discipline features (§6.2): target_hr, distance, elevation_per_km, is_race, cumulative_90d, recent_high_intensity_14d. Ride adds: current_eftp, critical_power, w_prime, p_max, is_indoor. Swim adds: is_pool. XGBoost handles missing values natively — sparse Garmin / pre-2026-04-11 wellness rows pass through as NaN.
+  - `MIN_EXAMPLES=30` per discipline before training is attempted.
+- **Training** (`data/ml/race_train.py`):
+  - `train_user_model(user_id, discipline)` — XGBRegressor (n=200, depth=4, lr=0.05) + walk-forward `TimeSeriesSplit` CV for out-of-sample MAE/R². Bootstrap residuals (500 resamples, OOB on each) → empirical 90% prediction interval.
+  - Artefact: `joblib.dump({model, residuals, feature_names, discipline, user_id, trained_at, metrics})` → `static/models/race_{user_id}_{discipline}.joblib`.
+  - Heavy imports (xgboost / sklearn / joblib) deferred to function body — API/bot processes don't pay import cost.
+  - Raises `InsufficientDataError` (caller logs+skips) when sample count below `MIN_EXAMPLES`.
+- **Inference** (`data/ml/race_predict.py`):
+  - `predict_splits_with_ci(user_id, mode, race_date, race_distance_*_m, target_hr_*)` returns §9.2 envelope: `{mode, race_date, days_to_race, splits, not_available, warnings, generated_at}`.
+  - Mode 2 reads `FitnessProjection.get(race_date)` for `ctl/atl/eftp` overrides; if today's wellness has CTL, computes ratio for proportional per-sport CTL scaling (per-sport CTL not in webhook). CI inflated by `sqrt(days_to_race / 30)` — bounded at 1.0 minimum.
+  - Cold-start: `_load_model` raises `ModelNotTrained`, discipline lands in `not_available[]` + warning. Mode 2 with no `FitnessProjection` row falls back to Mode 1 state + emits `no_fitness_projection` warning.
+  - Per-leg duration: Run `pred × distance/1000`, Swim `pred × distance/100`, Ride omitted (power-only — duration not derivable, Phase 2 will add an avg_speed sub-model).
+- **MCP tool** (`mcp_server/tools/race_projection.py:get_race_projection`):
+  - Auto-fills `race_date` from `AthleteGoal.get_by_category(RACE_A)` when empty.
+  - Error envelopes (§9.3): `no_race_date` / `invalid_race_date` / `race_date_in_past` / `no_distance` / `model_not_trained`.
+  - Registered in `mcp_server/server.py`. Tool count: 59 → 60.
+- **CLI:** `python -m cli train-race-models <user_id>` trains all three disciplines sequentially, prints MAE/R² + `InsufficientDataError` skips per-line.
+- **Actor + scheduler:** `actor_retrain_race_models(user)` co-tenant of `actor_retrain_progression_model` in `scheduler_progression_model_job` (Sun 16:00 Belgrade), offset by 15s to avoid Anthropic/GPU contention. `time_limit=600s, max_retries=0` — same retry semantics as progression actor (skip to next Sunday rather than mid-week retry on stale data).
+- **Prompt (chat):** `bot/prompts.py:_STATIC_PROMPT_CHAT` (cache segment #1) gained `## Race projection` section with triggers ("прогноз", "как пойду гонку", "if I raced today", "что покажу"). Instructs Claude to use Mode 1 for hypothetical/check-in queries vs Mode 2 for upcoming A-race, communicates CI ranges as honest signal, and warns against faking output when `available=False`.
+- **Prompt (weekly):** `SYSTEM_PROMPT_WEEKLY` step 8 instructs the weekly actor to call `get_race_projection(mode="race_day")` IFF the athlete has a RACE_A goal in 30-200 days, render a single line «🏁 Race-day прогноз ({event_date}): Swim … · Bike … · Run … → ~total (±N мин)» inside the 📈 Прогресс section, and skip silently on `available=False` (cold-start). Distance hints provided inline (Sprint 750/20000/5000, Olympic 1500/40000/10000, 70.3 1900/90000/21100, IM 3800/180000/42200). One extra Claude tool call per Sunday cron, ≈+$0.005/user/week.
+- **Tool whitelist:** `tasks/tools.py:WEEKLY_TOOL_NAMES` and `bot/tool_filter.py` `analysis` group both include `get_race_projection` (chat path keyword filter would otherwise drop it under "race"/"гонка" matches). `tests/test_tool_filter.py` total-count assertion bumped 55 → 56.
+- **Tests:** `tests/ml/test_race_features.py` (17 cases — target construction, sport-filtered CTL EMA, state row composition, inference overrides), `tests/ml/test_race_predict.py` (10 cases — CI shape, inflation widening, Mode 2 fallback, cold-start), `tests/mcp/test_race_projection.py` (7 cases — error envelopes, auto-fill from RACE_A goal, success envelope). All hermetic via `unittest.mock.patch`.
+- **Acceptance bar (user 1, spec §12.3):** Run MAE ≤ 10 sec/km / R² ≥ 0.50, Ride MAE ≤ 15W / R² ≥ 0.40, Swim MAE ≤ 8 sec/100m / R² ≥ 0.30. Below — block deploy, raise feature quality.
+- **Phase 2 deferred:** scenario engine («miss 2 weeks», «+10% volume», custom CTL target), webapp CTL trajectory chart, race-specific Ride/Swim calibration (await ≥10 non-Run race events), cross-athlete pool model.
+
+### Skipped from spec (audit-driven)
+
+- **`ml/` root directory** — used existing `data/ml/` convention (alongside `progression.py`).
+- **`race_projections` audit table (§13.2)** — Phase 2, post-race calibration manual until accumulated race events justify auto-trigger.
+- **Weather features (§17)** — Phase 2; race-day weather unknown for forecast.
+- **Backfill `wellness.sport_info` for pre-2026-04-11 dates** — one-off operation, run only if Ride MAE > 15W threshold; not blocking Phase 1.
+- **`athlete_settings.mmp_model` JSON column** — data already in atomic columns (`critical_power` / `w_prime` / `p_max`), no JSON wrapper needed.
+
+---
+
+## CTL projection consolidation (2026-05-11)
+
+Project had three near-duplicate CTL "when will I hit target" projectors drifting apart over time. Consolidated to one math source.
+
+- **Problem:** `predict_ctl` MCP tool (used by morning report) calculated `ramp_per_week` via **endpoint-difference** `(newest − oldest) / span × 7`; the webapp Dashboard Goal-tab (`/api/dashboard/goal-progress`) calculated the same thing via **numpy.polyfit linear regression** on 14d. Same athlete, same target, slightly different ETA depending on surface — classic drift. (Note: Intervals.icu's own `fitness_projection` table is the canonical Banister-impulse-response curve; orthogonal — answers "what CTL will I have in N days?" not "when will I hit X CTL?")
+- **Fix:** `mcp_server/tools/ctl_prediction.py:predict_ctl` rewritten as a thin wrapper over `data.metrics.project_ctl_target`. Both surfaces now share one polyfit-based projector.
+  - Response shape preserved 1-to-1 (`current_ctl/target_ctl/sport/ramp_rate_per_week/data_days/estimated_weeks/estimated_date/confidence/note/error`) — Claude's morning prompt formats the dict directly into «достигнешь 75 CTL к 12 июня», changing keys would silently break the rendered line.
+  - Sport filter preserved (per-sport CTL from `wellness.sport_info`).
+  - Reason mapping: `insufficient_data → {error}`, `already_at_target → {note: "Target already reached!"}`, `flat/declining → {note: "CTL is declining or flat..."}`, success → full envelope with `estimated_date` + confidence heuristic (`high` ≥14d span, `low` ramp > 7, else `medium`).
+- **Tests:** new `tests/mcp/test_ctl_prediction.py` (9 cases — error envelopes, reason mapping ×4, confidence heuristic ×2). Underlying `tests/metrics/test_ctl_projection.py` (18 cases) still covers the math.
+
+### What's NOT consolidated
+
+- **`get_race_projection`** is a separate, ML-based race-day **splits** projection (not CTL ETA). Different question, different model. Kept distinct on purpose — see `docs/ML_RACE_PROJECTION_SPEC.md` and the section above.
+- **`fitness_projection` table** (Intervals.icu webhook) is the upstream Banister curve consumed by `get_race_projection` Mode 2. Not a competing projector — it ships future CTL/ATL/eFTP that our ML uses as input.
+
+---
+
 ## Post-activity card enrichment + zone bars (2026-05-11)
 
 Post-activity Telegram notification (`tasks/formatter.py:build_post_activity_message`) rewritten from a HRV-only summary (6-10 lines, no Swim content) to a layered, signal-gated card that surfaces every data class already in the DB. Webapp Activity detail page (`/activity/:id`) regained full-width labelled zone bars (`ZoneChart` chart.js wrapper → `ZoneBar` with new `size="detail"` variant).

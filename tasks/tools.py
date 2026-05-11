@@ -870,6 +870,10 @@ class MCPTool:
         "get_recovery",
         "get_polarization_index",
         "get_progression_analysis",
+        # One-line race-day forecast in 📈 Прогресс when goal in 30-200d + models trained;
+        # the tool itself returns `{available: False, reason: ...}` for cold-start, so
+        # the prompt instruction is the only place we gate inclusion (Claude skips silently).
+        "get_race_projection",
     }
 
     def _list_mcp_tools(self, *, _retry: bool = True) -> list[dict]:
