@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
-import ZoneChart from '../components/ZoneChart'
+import ZoneBar from '../components/ZoneBar'
 import { useApi } from '../hooks/useApi'
 import {
   fmtDateShort,
@@ -127,10 +127,14 @@ export default function Activity() {
             })()}
           </div>
 
-          {/* Zone Charts */}
-          {hrZones && hrZones.some(v => v > 0) && <ZoneChart zones={hrZones} label="HR Zones" />}
-          {powerZones && powerZones.some(v => v > 0) && <ZoneChart zones={powerZones} label="Power Zones" />}
-          {paceZones && paceZones.some(v => v > 0) && <ZoneChart zones={paceZones} label="Pace Zones" />}
+          {/* Zone bars — full-width labelled, replaces the old narrow chart.js card */}
+          {(hrZones?.some(v => v > 0) || powerZones?.some(v => v > 0) || paceZones?.some(v => v > 0)) && (
+            <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-4">
+              {hrZones && hrZones.some(v => v > 0) && <ZoneBar zones={hrZones} label="HR Zones" size="detail" />}
+              {powerZones && powerZones.some(v => v > 0) && <ZoneBar zones={powerZones} label="Power Zones" size="detail" />}
+              {paceZones && paceZones.some(v => v > 0) && <ZoneBar zones={paceZones} label="Pace Zones" size="detail" />}
+            </div>
+          )}
 
           {/* Intervals */}
           {d.intervals && d.intervals.length > 0 && (

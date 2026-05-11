@@ -1009,3 +1009,56 @@ class TestRampAutoUpdateWiring:
             _actor_send_activity_notification(None, _user(), "i999")
 
         mock_actor.send.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tenant-guard regression — `_actor_send_activity_notification` must refuse to
+# render foreign-tenant data even if a stray webhook / replayed Dramatiq
+# message arrives with an activity_id whose owner differs from `user.id`.
+# Mirrors security review §Medium, 2026-05-11.
+# ---------------------------------------------------------------------------
+
+
+class TestActivityNotificationTenantGuard:
+    """If `activity_row.user_id != user.id`, the actor returns early without
+    sending the Telegram message. Defence-in-depth on top of the FK chain.
+    """
+
+    def test_tenant_mismatch_skips_send(self):
+        from data.db import Activity, ActivityHrv
+        from tasks.actors.activities import _actor_send_activity_notification
+
+        foreign_activity = MagicMock(spec=Activity)
+        foreign_activity.id = "i999"
+        foreign_activity.type = "Run"
+        foreign_activity.start_date_local = str(date.today())
+        foreign_activity.user_id = 42  # owned by user 42, not the dispatcher's user.id=1
+        foreign_activity.is_race = False
+        foreign_activity.rpe = None
+
+        hrv = MagicMock(spec=ActivityHrv)
+
+        def _session_get(model, _id):
+            if model is Activity:
+                return foreign_activity
+            if model is ActivityHrv:
+                return hrv
+            return None
+
+        session = MagicMock(
+            get=_session_get, execute=MagicMock(return_value=MagicMock(scalars=MagicMock(return_value=iter([]))))
+        )
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = MagicMock(return_value=session)
+        session_ctx.__exit__ = MagicMock(return_value=False)
+
+        tg_mock = MagicMock()
+        with (
+            patch("tasks.actors.activities.get_sync_session", return_value=session_ctx),
+            patch("tasks.actors.activities.TelegramTool", return_value=tg_mock),
+            patch("tasks.actors.activities.set_language"),
+        ):
+            _actor_send_activity_notification(None, _user(id=1), "i999")
+
+        # Cross-tenant data must NOT be rendered into this user's chat.
+        tg_mock.send_message.assert_not_called()

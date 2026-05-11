@@ -184,7 +184,12 @@ class TestBuildPostActivityMessage:
         assert "TSS" not in msg
 
     def test_minimal_data(self):
-        """HRV with only mean DFA, no warmup/ra/hrvt1/da."""
+        """HRV with only mean DFA, no warmup/ra/hrvt1/da.
+
+        Activity carries ``average_hr=138.0`` (default fixture) → adds a 💓 summary
+        line on top of the legacy header + DFA. ``detail=None`` so distance / EF /
+        CTL / zone-bar blocks stay out of the minimal path.
+        """
         hrv = _make_hrv(
             dfa_a1_warmup=None,
             ra_pct=None,
@@ -195,7 +200,286 @@ class TestBuildPostActivityMessage:
         )
         msg = build_post_activity_message(_make_activity(), hrv)
         lines = msg.strip().split("\n")
-        assert len(lines) == 2  # header + DFA a1 line
+        assert len(lines) == 3  # header + 💓 summary + DFA a1
+        assert "💓 138" in msg
+        assert "DFA a1: 0.68 (avg)" in msg
+
+
+def _make_detail(**overrides):
+    """Shared ActivityDetail sentinel — defaults model an indoor Ride.
+
+    ``hr_zone_times`` / ``power_zone_times`` are short non-empty lists so zone
+    bars render. EF / decoupling / VI are populated; weather + CTL/ATL are
+    overridable per test.
+    """
+    defaults = {
+        "distance": 28500.0,
+        "elevation_gain": 0.0,
+        "max_hr": 150,
+        "avg_power": 131,
+        "normalized_power": 139,
+        "efficiency_factor": 1.05,
+        "decoupling": 4.5,
+        "variability_index": 1.06,
+        "avg_cadence": 93.0,
+        "avg_stride": None,
+        "pace": None,
+        "ctl_snapshot": 18.9,
+        "atl_snapshot": 38.3,
+        "polarization_index": None,
+        "hr_zone_times": [1054, 2253, 0, 0, 0, 0, 0],
+        "power_zone_times": [1619, 556, 1027, 92, 4, 1, 8],
+        "pace_zone_times": None,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _make_weather(**overrides):
+    defaults = {
+        "avg_temp_c": 18.0,
+        "avg_feels_like_c": 17.0,
+        "avg_wind_speed_mps": 3.3,
+        "avg_wind_gust_mps": 5.0,
+        "prevailing_wind_deg": 67,
+        "headwind_pct": 35.0,
+        "tailwind_pct": 20.0,
+        "max_rain_mm": 0.0,
+        "max_snow_mm": 0.0,
+        "avg_clouds": 0.0,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _make_achievement(**overrides):
+    defaults = {
+        "type": "BEST_POWER",
+        "value": 500.0,
+        "secs": 5,
+        "ftp_at_time": 215,
+        "ctl_at_time": 18.9,
+        "extra": None,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestPostActivityEnrichment:
+    """New blocks: distance/elevation, EF/decoupling, weather, CTL snapshot, achievements, zones."""
+
+    def test_distance_and_elevation_in_header(self):
+        activity = _make_activity(type="Run", moving_time=2700)  # 45m
+        detail = _make_detail(distance=8500.0, elevation_gain=120.0, hr_zone_times=None, power_zone_times=None)
+        msg = build_post_activity_message(activity, _make_hrv(activity_type="Run"), detail=detail)
+        assert "8.50 km" in msg
+        assert "↑120 m" in msg
+
+    def test_sub_km_distance_shown_in_meters(self):
+        """Pool sessions / warm-up jogs: distance < 1 km → meters, no decimal."""
+        activity = _make_activity(type="Swim", moving_time=1800)
+        detail = _make_detail(distance=750.0, elevation_gain=None, hr_zone_times=None, power_zone_times=None)
+        msg = build_post_activity_message(activity, _make_hrv(), detail=detail)
+        assert "750 m" in msg
+        assert ".75 km" not in msg  # decimal form would be wrong for sub-km
+
+    def test_ride_summary_uses_normalized_power(self):
+        msg = build_post_activity_message(_make_activity(type="Ride"), _make_hrv(), detail=_make_detail())
+        # NP differs from avg → both shown.
+        assert "131W (NP 139W)" in msg
+        assert "💓 138" in msg
+        assert "150" in msg  # max_hr
+
+    def test_run_summary_derives_pace(self):
+        """Pace = moving_time / (distance_m/1000) — derived, not stored."""
+        activity = _make_activity(type="Run", moving_time=2700)  # 45m
+        detail = _make_detail(distance=8500.0, hr_zone_times=None, power_zone_times=None)
+        msg = build_post_activity_message(activity, _make_hrv(activity_type="Run"), detail=detail)
+        # 2700 / 8.5 = 317.6 sec/km = 5:18
+        assert "5:18/km" in msg
+
+    def test_swim_pace_per_100m(self):
+        activity = _make_activity(type="Swim", moving_time=1800)
+        detail = _make_detail(distance=1500.0, hr_zone_times=None, power_zone_times=None)
+        msg = build_post_activity_message(activity, _make_hrv(), detail=detail)
+        # 1800/15 = 120 sec/km = 12 sec/100m = wait, 1800/1.5km = 1200 sec/km, /10 = 2:00/100m
+        assert "2:00/100m" in msg
+
+    def test_efficiency_block(self):
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=_make_detail())
+        assert "EF 1.05" in msg
+        assert "Drift 4.5%" in msg
+        assert "🟢" in msg  # decoupling <5% → green
+        assert "VI 1.06" in msg
+
+    def test_decoupling_red_threshold(self):
+        detail = _make_detail(decoupling=12.5)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
+        assert "12.5%" in msg
+        assert "🔴" in msg
+
+    def test_decoupling_yellow_threshold(self):
+        detail = _make_detail(decoupling=7.5)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
+        assert "7.5%" in msg
+        assert "🟡" in msg
+
+    def test_fitness_snapshot(self):
+        detail = _make_detail(ctl_snapshot=18.9, atl_snapshot=38.3)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
+        # TSB = 18.9 - 38.3 = -19.4 → -19
+        assert "CTL 19" in msg
+        assert "ATL 38" in msg
+        assert "TSB -19" in msg
+
+    def test_fitness_snapshot_hidden_without_data(self):
+        detail = _make_detail(ctl_snapshot=None, atl_snapshot=None)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
+        assert "CTL" not in msg
+        assert "ATL" not in msg
+
+    def test_weather_outdoor(self):
+        weather = _make_weather()
+        msg = build_post_activity_message(_make_activity(type="Run"), _make_hrv(activity_type="Run"), weather=weather)
+        assert "🌡 18°C" in msg
+        # Default test locale is RU (no set_language called) → Russian source strings render as-is.
+        assert "ощущается" in msg  # avg_feels_like differs from avg_temp by 1
+        assert "💨 12 km/h" in msg  # 3.3 m/s * 3.6 = 11.88 → 12
+        assert "встречный" in msg  # 35% > 25% threshold
+
+    def test_weather_skipped_when_none(self):
+        msg = build_post_activity_message(_make_activity(), _make_hrv())
+        assert "🌡" not in msg
+        assert "💨" not in msg
+
+    def test_weather_rain(self):
+        weather = _make_weather(max_rain_mm=2.5)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), weather=weather)
+        assert "🌧 2.5 mm" in msg
+
+    def test_polarization_long_workout(self):
+        activity = _make_activity(moving_time=4800)  # 80 min ≥60
+        detail = _make_detail(polarization_index=1.85)
+        msg = build_post_activity_message(activity, _make_hrv(), detail=detail)
+        assert "PI 1.85" in msg
+
+    def test_polarization_hidden_short_workout(self):
+        """PI only meaningful for endurance sessions ≥60 min."""
+        activity = _make_activity(moving_time=1800)  # 30 min
+        detail = _make_detail(polarization_index=1.85)
+        msg = build_post_activity_message(activity, _make_hrv(), detail=detail)
+        assert "PI " not in msg
+
+    def test_achievement_power_pr(self):
+        ach = _make_achievement(type="BEST_POWER", value=500.0, secs=5)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=[ach])
+        assert "🏆" in msg
+        assert "5s PR 500 W" in msg
+
+    def test_achievement_ftp_change(self):
+        ach = _make_achievement(
+            type="FTP_CHANGE",
+            value=215.0,
+            secs=None,
+            ftp_at_time=215,
+            extra={"delta": 5},
+        )
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=[ach])
+        assert "⚡ FTP" in msg
+        assert "+5" in msg
+        assert "215" in msg
+
+    def test_achievement_5min_pr(self):
+        ach = _make_achievement(value=320.0, secs=300)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=[ach])
+        assert "5m PR 320 W" in msg
+
+    def test_achievements_capped_at_four(self):
+        many = [_make_achievement(value=float(100 + i), secs=5) for i in range(8)]
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=many)
+        assert msg.count("🏆") == 4
+
+    def test_achievement_ftp_change_promoted_above_power_prs(self):
+        """FTP_CHANGE leads the block even if a flood of power PRs precedes it in DB order.
+
+        Bulk-insert under one webhook gives every row the same ``created_at`` —
+        the DB-default sort can drown a big FTP bump under 4 small power PRs.
+        Priority sort fixes this without touching ``ActivityAchievement.save_bulk``.
+        """
+        ftp = _make_achievement(type="FTP_CHANGE", value=215.0, secs=None, ftp_at_time=215, extra={"delta": 5})
+        prs = [_make_achievement(value=float(200 + i), secs=5) for i in range(5)]
+        # FTP last in input order → must be first in output thanks to the priority sort.
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=prs + [ftp])
+        first_ach_line = next(line for line in msg.split("\n") if "🏆" in line or "⚡ FTP" in line)
+        assert first_ach_line.startswith("⚡ FTP")
+
+    def test_achievement_power_prs_sorted_by_watts_desc(self):
+        """Within BEST_POWER group: highest-watts PR first (headline number leads)."""
+        prs = [
+            _make_achievement(value=250.0, secs=300),  # 5min @ 250W
+            _make_achievement(value=500.0, secs=5),  # 5s @ 500W — should lead
+            _make_achievement(value=350.0, secs=60),  # 1min @ 350W
+        ]
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), achievements=prs)
+        achievement_lines = [line for line in msg.split("\n") if "🏆" in line]
+        assert achievement_lines[0].endswith("500 W")  # 5s/500W headline
+        assert achievement_lines[1].endswith("350 W")
+        assert achievement_lines[2].endswith("250 W")
+
+    def test_hr_zone_bar_for_ride(self):
+        msg = build_post_activity_message(_make_activity(type="Ride"), _make_hrv(), detail=_make_detail())
+        assert "HR  " in msg
+        assert "Pwr " in msg
+        # Hard zones (Z3-Z7) have 0 time in the HR zones → skipped in label row;
+        # Z1 and Z2 surface.
+        assert "Z1" in msg
+        assert "Z2" in msg
+
+    def test_pace_zone_bar_for_run(self):
+        detail = _make_detail(
+            pace_zone_times=[1200, 600, 300, 60, 0],
+            power_zone_times=None,
+            hr_zone_times=[800, 700, 300, 60, 0],
+        )
+        msg = build_post_activity_message(_make_activity(type="Run"), _make_hrv(activity_type="Run"), detail=detail)
+        assert "HR  " in msg
+        assert "Pace" in msg
+
+    def test_zone_bar_full_width_padded(self):
+        """Bar always renders at _BAR_WIDTH chars — no gaps left at the right edge."""
+        from tasks.formatter import _BAR_WIDTH, _format_zone_bar
+
+        # One zone with all the time → bar fills with █ all the way.
+        bars = _format_zone_bar([3600, 0, 0, 0, 0], "HR  ")
+        assert len(bars) == 2
+        bar_line = bars[0]
+        # Strip the leading "HR  " label + spaces, then check the bar width.
+        bar = bar_line[len("HR  ") + 2 :]  # "  " separator
+        assert len(bar) == _BAR_WIDTH
+
+    def test_zone_bar_proportional_segments(self):
+        """Mixed zones → bar shows █ (full) for the dominant zone, slivers for small ones."""
+        from tasks.formatter import _format_zone_bar
+
+        # 75% / 20% / 5% split.
+        bars = _format_zone_bar([2700, 720, 180, 0, 0], "Pwr ")
+        bar = bars[0].split("  ", 1)[1]
+        # Dominant zone gets a long run of solid blocks; minor zones add partial blocks.
+        assert "█" in bar
+        # Padding shouldn't be needed for high totals but trailing chars must exist.
+        assert len(bar) >= 18
+
+    def test_zone_bar_skipped_when_empty(self):
+        detail = _make_detail(hr_zone_times=[0, 0, 0, 0, 0], power_zone_times=None)
+        msg = build_post_activity_message(_make_activity(), _make_hrv(), detail=detail)
+        assert "HR  " not in msg
+        assert "Pwr " not in msg
+
+    def test_legacy_signature_still_works(self):
+        """Old callers that pass only (activity, hrv) keep working — back-compat."""
+        msg = build_post_activity_message(_make_activity(), _make_hrv())
+        assert "🚴 Ride 1h20m" in msg
+        assert "TSS 85" in msg
 
 
 # ---------------------------------------------------------------------------
