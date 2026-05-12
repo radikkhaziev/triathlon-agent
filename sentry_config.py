@@ -224,4 +224,5 @@ def init_sentry():
         ],
         send_default_pii=False,
         traces_sample_rate=0.01,
+        auto_session_tracking=False,
     )

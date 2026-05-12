@@ -31,6 +31,15 @@ CI_LOW_PCT = 5
 CI_HIGH_PCT = 95
 # Mode 2 inflation reference window (§10.2) — 30 days = scale factor 1.0.
 INFLATION_DAYS_BASE = 30
+# Issue #350 — cap inflation past the horizon where `sqrt(days/30)` produces
+# CI bands too wide to be actionable. INFLATION_MAX=1.8 corresponds to ~97
+# days; past that we say "uncertainty stops growing as fast as the sqrt
+# formula predicts — we just don't know" instead of returning ±67-min CI
+# on a half-marathon. At MIN_RACE_DAYS_FOR_FORECAST or below, Mode 2 falls
+# back to Mode 1 inflation (1.0) — within 2 weeks of the race the projected
+# CTL is essentially today's CTL (taper), so wider band misleads.
+INFLATION_MAX = 1.8
+MIN_RACE_DAYS_FOR_FORECAST = 14
 
 # Mode 2 CTL ratio ceiling — caps `projected_ctl / current_ctl` to keep the
 # per-sport CTL scaling (applied at `_predict_one`) inside the training-data
@@ -286,6 +295,22 @@ def _predict_one(
             if key in features and not (features[key] is None or math.isnan(features[key])):
                 features[key] = features[key] * ratio
 
+    # Issue #359 (b): out-of-sample CTL warning. After Mode 2 scaling, if the
+    # discipline's own ctl_<disc> feature exceeds p90 of train-set distribution,
+    # the XGBoost tree clips to nearest observed leaf — prediction is held
+    # conservative (model can't extrapolate fitness beyond what it saw). Warning
+    # tells Claude to communicate this honestly to the athlete instead of
+    # rendering the conservative output as confident future-state.
+    ctl_oos: dict[str, Any] | None = None
+    ctl_p90 = bundle.get("metrics", {}).get("ctl_feature_p90")
+    ctl_key = f"ctl_{discipline.lower()}"
+    cur_ctl = features.get(ctl_key)
+    if ctl_p90 is not None and cur_ctl is not None and not math.isnan(cur_ctl) and cur_ctl > ctl_p90:
+        ctl_oos = {
+            "projected": round(float(cur_ctl), 1),
+            "train_p90": round(float(ctl_p90), 1),
+        }
+
     # Build single-row DataFrame in the exact feature order used at training
     row = {col: features.get(col, float("nan")) for col in feature_names}
     X_row = pd.DataFrame([row], columns=feature_names)
@@ -329,6 +354,8 @@ def _predict_one(
         # silently render an empty card.
         out["total_sec_unavailable"] = True
         out["total_sec_reason"] = "power_only_phase1"
+    if ctl_oos is not None:
+        out["_ctl_out_of_sample"] = ctl_oos
     return out
 
 
@@ -416,7 +443,13 @@ async def predict_splits_with_ci(
     inflation = 1.0
     if mode == "race_day":
         overrides = await _mode2_overrides(user_id, _race_iso)
-        inflation = max(1.0, math.sqrt(max(days_to_race, 0) / INFLATION_DAYS_BASE))
+        if days_to_race > MIN_RACE_DAYS_FOR_FORECAST:
+            inflation = min(
+                INFLATION_MAX,
+                max(1.0, math.sqrt(days_to_race / INFLATION_DAYS_BASE)),
+            )
+        # else: keep inflation=1.0 — within 2 weeks the projection essentially
+        # equals current state (taper-CTL ≈ today-CTL), so wider band misleads.
 
     splits: dict[str, Any] = {}
     not_available: list[str] = []
@@ -453,6 +486,17 @@ async def predict_splits_with_ci(
 
     if mode == "race_day" and overrides is None:
         warnings.append("no_fitness_projection for race_date — Mode 2 fell back to Mode 1 state")
+
+    # Issue #359 (b): surface per-leg out-of-sample CTL warnings to the caller.
+    # Strip the private `_ctl_out_of_sample` key (under_score prefix = internal)
+    # and emit a one-line warning that Claude can render in chat.
+    for disc, leg in splits.items():
+        oos = leg.pop("_ctl_out_of_sample", None)
+        if oos is not None:
+            warnings.append(
+                f"{disc}: projected ctl_{disc}={oos['projected']} > train p90={oos['train_p90']} — "
+                f"out-of-sample, model held conservative (no training data above this CTL)"
+            )
 
     envelope: dict[str, Any] = {
         "mode": mode,

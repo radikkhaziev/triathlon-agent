@@ -242,6 +242,10 @@ class Activity(Base):
         Tenant guard via WHERE user_id; foreign activity_id under our user
         gets 0 rows updated (silent no-op, safe).
 
+        Does NOT commit — callers manage transaction boundaries themselves so
+        the backfill CLI can batch updates per user and the webhook actor can
+        commit once at the end of its session block.
+
         Returns True iff a row was updated.
         """
         result = session.execute(
@@ -249,7 +253,6 @@ class Activity(Base):
             .where(cls.user_id == user_id, cls.id == activity_id)
             .values(noise_reason=reason, noise_scored_at=scored_at)
         )
-        session.commit()
         return result.rowcount > 0
 
 

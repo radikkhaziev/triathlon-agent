@@ -638,19 +638,37 @@ def actor_update_activity_details(
 
         activity_row: Activity = session.get(Activity, result.row.activity_id)
 
+        # Defense-in-depth tenant guard — same pattern as `_actor_send_activity_notification`
+        # below (~line 488). `session.get(Activity, ...)` is a PK-only lookup, so a forged /
+        # replayed Dramatiq message with another tenant's activity_id would land us reading
+        # the wrong tenant's thresholds + computing classification under their context.
+        # `set_noise_classification`'s WHERE-clause guard prevents the WRITE, but the work
+        # leading up to it would still leak. Bail out early instead.
+        if activity_row is None or activity_row.user_id != user.id:
+            logger.warning(
+                "noise classify: tenant mismatch or missing row "
+                "(activity_id=%s dispatched_for_user=%d activity_owner=%s) — skip",
+                activity_id,
+                user.id,
+                getattr(activity_row, "user_id", None),
+            )
+            return
+
         # Webhook-time noise classification (Phase 1.6, ML_RACE_PROJECTION_SPEC §6.4).
         # Persisted reason replaces train-time live-check in race_features.py. Always
         # stamp scored_at — None reason means "checked, signal kept" (distinct from
-        # NULL+NULL "not classified yet").
-        thresholds = AthleteSettings.get_thresholds(activity_row.user_id, session=session)
+        # NULL+NULL "not classified yet"). Use user.id (dispatched tenant) consistently —
+        # invariant is enforced by the guard above.
+        thresholds = AthleteSettings.get_thresholds(user.id, session=session)
         reason = classify_activity_row(activity_row, result.row, thresholds)
         Activity.set_noise_classification(
-            activity_row.user_id,
+            user.id,
             activity_row.id,
             reason=reason,
             scored_at=datetime.now(timezone.utc),
             session=session,
         )
+        session.commit()
 
     pipeline(
         [

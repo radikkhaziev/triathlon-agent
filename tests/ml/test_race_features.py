@@ -186,10 +186,10 @@ class TestBuildDataset:
         assert df.empty
 
     def test_z1_filter_engages_in_pipeline(self):
-        """Regression guard: confirm `_is_z1_dominated` actually fires
-        inside the `build_dataset` loop, not just in isolation. Without this
-        coverage, a refactor that drops the call site (or moves the check
-        below where rows are counted) would slip through.
+        """Regression guard: confirm `is_run_recovery_jog` (legacy fallback
+        path) actually fires inside the `build_dataset` loop, not just in
+        isolation. Without this coverage, a refactor that drops the call site
+        (or moves the check below where rows are counted) would slip through.
         """
         # 3 Run activities — 2 normal Z2-base + 1 recovery jog (85% Z1).
         # All have enough moving_time, distance, and HR to pass other gates;
@@ -326,7 +326,7 @@ class TestBuildDataset:
     def test_z1_filter_missing_tss_keeps_activity(self):
         """End-to-end coverage of the lenient missing-TSS path: a Z1-dominated
         row with `tss=None` must NOT be filtered. The helper-level test
-        `test_missing_tss_keeps_activity` covers `_is_recovery_jog` directly;
+        `test_missing_tss_keeps_activity` covers `is_run_recovery_jog` directly;
         this integration test guards against a `build_dataset`-level regression
         where `act.get("tss")` might be coerced to NaN by pandas or the
         call-site stops passing it.

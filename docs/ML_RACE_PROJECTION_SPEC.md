@@ -252,7 +252,7 @@ static/models/
 - Exclude warmup/cooldown: use `activity_details.intervals` если есть, иначе
   берём avg по всей activity но только если `moving_time >= 25 min` (короткие
   не репрезентативны).
-- Exclude low-intensity recovery via combined helper `_is_recovery_jog(zones, tss)`
+- Exclude low-intensity recovery via combined helper `is_run_recovery_jog(zones, tss)`
   — Z1 ≥ 70% **AND** TSS < 40. Zone-only filter ломал pro-атлетов со
   структурным 80/20 base; TSS gate отличает 25-min recovery jog от 90-min
   base session. Server-side фильтр: Phase 1.5 reality calibration в
@@ -286,9 +286,13 @@ noise_reason: Mapped[str | None]        # nullable, no DB-level CHECK
 noise_scored_at: Mapped[datetime | None]  # disambiguator для not-yet-classified
 ```
 
-Composite index `(user_id, type, noise_reason)` — main query
-`WHERE user_id=X AND type='Run' AND noise_reason IS NULL` для retrain'а; secondary
-`WHERE user_id=X AND noise_reason IS NOT NULL` для chat/UI surface.
+Composite index `(user_id, type, noise_reason)` — third column оптимизирован
+под Phase 2 поверхности (chat/UI с `WHERE noise_reason IS NOT NULL`), а не под
+текущий retrain query (он не WHERE-фильтрует на noise_reason — пулит всё,
+фильтрует в Python). **TODO** перед Phase 2 surface ship'ом: либо рерайтить
+filter в SQL чтобы воспользоваться третьей колонкой (`AND noise_reason IS NULL`),
+либо менять index на `(user_id, type, start_date_local)` если Phase 2 surface
+так и не материализуется и retrain хочет O(log) на cutoff lookup.
 
 **Three-state semantics:**
 
@@ -405,23 +409,42 @@ with get_sync_session() as session:
         return
     activity_row: Activity = session.get(Activity, result.row.activity_id)
 
+    # Defense-in-depth tenant guard — `session.get(Activity, ...)` is a PK-only
+    # lookup, so a forged / replayed Dramatiq message with another tenant's
+    # activity_id would land us reading the wrong tenant's thresholds. Same
+    # pattern as `_actor_send_activity_notification` (~line 488 in the file).
+    if activity_row is None or activity_row.user_id != user.id:
+        logger.warning("noise classify: tenant mismatch — skip"); return
+
     # Noise classification — runs only when ActivityDetail actually changed.
-    thresholds = AthleteSettings.get_thresholds(activity_row.user_id, session=session)
+    # Always pass `user.id` (the dispatched tenant), never `activity_row.user_id` —
+    # invariant enforced by the guard above. `set_noise_classification` doesn't
+    # commit internally; caller (this block) commits at the end.
+    thresholds = AthleteSettings.get_thresholds(user.id, session=session)
     reason = classify_activity_row(activity_row, result.row, thresholds)
     Activity.set_noise_classification(
-        activity_row.user_id, activity_row.id,
+        user.id, activity_row.id,
         reason=reason, scored_at=datetime.now(timezone.utc), session=session,
     )
+    session.commit()
 ```
 
 `classify_activity_row(activity, detail, thresholds)` — convenience-обёртка над
 `classify_noise(...)` в `data/ml/noise_classifier.py`. Derives `avg_pace_sec_per_km`
 из `moving_time / (distance / 1000)` — та же формула что в `race_features.py:486`.
 
-**Tenant guard:** `Activity.set_noise_classification` принимает `user_id` первым
-параметром + WHERE clause включает его — стандартный pattern из CLAUDE.md
-«MT Phase 1.3». Foreign activity_id под нашим user_id → 0 rows updated (silent
-no-op).
+**Tenant guard — defense-in-depth.** Two layers: (1) explicit equality check
+`activity_row.user_id != user.id → return` (above), (2) WHERE-clause scoping
+in `Activity.set_noise_classification` (foreign activity_id under our user_id
+→ 0 rows updated, silent no-op). Both fire for the same threat (replayed
+Dramatiq message with foreign activity_id), but the first one prevents the
+preceding work (thresholds fetch + classify call) from running with cross-tenant
+context. Standard pattern из CLAUDE.md «MT Phase 1.3» + `_actor_send_activity_notification`.
+
+**Commit ownership.** `set_noise_classification` is sync-only (`@with_sync_session`),
+doesn't commit internally — caller decides transaction boundary. Actor commits
+once per activity here; backfill CLI (§6.4.7) commits once per athlete (batched
+across N activities → 1 round-trip instead of N).
 
 **Idempotent:** force-rerun actor'а пересчитает reason с теми же входами →
 тот же результат. `noise_scored_at` обновляется каждый раз — это disambiguator
@@ -437,21 +460,22 @@ no-op).
 `data/ml/race_features.py:build_dataset` приоритезирует persisted tag:
 
 ```python
-# Drop activities flagged as noise
-if act["noise_reason"] is not None:
+# Simplified — actual impl handles NaN/empty-string defensively:
+# `isinstance(noise_reason, str) and noise_reason.strip()` (see race_features.py)
+if act["noise_reason"]:
+    continue                                          # persisted noise → drop
+
+# Legacy fallback for rows scored before Phase 1.6
+if pd.isna(act["noise_scored_at"]) and is_run_recovery_jog(zones, tss):
     continue
 
-# Legacy fallback for activities scored before Phase 1.6
-if act["noise_scored_at"] is None and _is_recovery_jog(zones, tss):
-    continue
-
-# Otherwise: classified clean, keep
+# Otherwise: classified clean (or unscored non-Run), keep
 ```
 
 После backfill'а (см. §6.4.7) fallback ветка не должна срабатывать в normal flow.
 Оставляем как safety net + для disaster recovery (если backfill упал на каком-то юзере).
 
-Также экспортируем `_is_recovery_jog` из `noise_classifier.py` — единый source of
+Также экспортируем `is_run_recovery_jog` из `noise_classifier.py` — единый source of
 truth, `race_features.py` импортирует, не дублирует.
 
 #### 6.4.7. Backfill
@@ -671,13 +695,65 @@ ci_high = pred + np.percentile(residuals, 95)
 ### 10.2. Inflation для Mode 2
 
 5+ месяцев forecast → шире CI. Множитель `sqrt(days_to_race / 30)` на residuals
-(эвристика — проверим на hold-out race 2026-09-15 постфактум):
+(эвристика — проверим на hold-out race 2026-09-15 постфактум). С двумя
+ограничениями (issue #350, 2026-05-12):
 
 ```python
-inflation = max(1.0, sqrt(days_to_race / 30))
+INFLATION_MAX = 1.8                # cap past ~97 days
+MIN_RACE_DAYS_FOR_FORECAST = 14    # within taper window — fall back to Mode 1
+
+if days_to_race > MIN_RACE_DAYS_FOR_FORECAST:
+    inflation = min(INFLATION_MAX, max(1.0, sqrt(days_to_race / 30)))
+else:
+    inflation = 1.0  # taper-CTL ≈ today, wider band misleads
 ci_low  = pred + np.percentile(residuals, 5)  * inflation
 ci_high = pred + np.percentile(residuals, 95) * inflation
 ```
+
+**Why the cap.** Empirical: at 126 days out, raw `sqrt(126/30)=2.05` gave Run CI
+±34 minutes on a half-marathon — unreadable for race planning. `INFLATION_MAX=1.8`
+corresponds to ~97 days; past that the formula says «I don't know how much
+uncertainty grows here» rather than pretending we do.
+
+**Why the taper threshold.** Within 14 days of the race, `projected_ctl` ≈ `current_ctl`
+(taper window, ATL drops but CTL barely moves). Inflating CI past Mode 1's width
+implies more uncertainty about the future than the present, which is false.
+
+### 10.4. Out-of-sample CTL warning
+
+Issue #359 surfaced that for user 1 (training CTL distribution 15-45), Mode 2 race-day
+projection at CTL=66 produces only ~4 sec/km Run improvement because **XGBoost trees
+don't extrapolate** — they clip to nearest observed leaf. Output is correct (the model
+shouldn't fabricate fitness gains it hasn't seen) but consumer needs to know.
+
+Mechanism (2026-05-12):
+
+1. **Train time** (`race_train.py`): record `metrics.ctl_feature_p90 = df["ctl_<discipline>"].quantile(0.90)` in the saved bundle.
+2. **Predict time** (`race_predict.py:_predict_one`): after applying Mode 2 `_ctl_ratio` scaling, if `features["ctl_<discipline>"] > ctl_feature_p90`, attach private `_ctl_out_of_sample = {projected, train_p90}` to the leg output.
+3. **Envelope aggregation** (`predict_splits_with_ci`): strip private key, emit one-line warning per affected leg:
+   ```
+   run: projected ctl_run=66.0 > train p90=30.0 — out-of-sample, model held conservative
+   (no training data above this CTL)
+   ```
+
+Caller (Claude prompt) renders this honestly to the athlete: «на CTL 66 модель видела мало данных,
+прогноз держу осторожно — реальный темп при достижении CTL 66 может быть быстрее».
+
+Backwards-compat: legacy bundles without `metrics.ctl_feature_p90` skip the check entirely.
+
+### 10.5. Future expansion (Phase 2 / deferred)
+
+- **Formula-anchored baseline blend.** For Run, Jack Daniels equivalent-pace formula
+  computed from `threshold_pace × (1 + bias)` (or pace-at-VO2max scaling) extrapolates
+  cleanly even outside ML training distribution. Blend with ML prediction weighted by
+  `days_to_race`: closer to race → more ML (modeled state vs base physiology); farther →
+  more formula (XGBoost can't extrapolate; formula can). Same for Ride (FTP-anchored)
+  and Swim (CSS-anchored). Mitigates OOS issue at root rather than just warning.
+
+- **Cross-athlete pool model.** Train shared model on all `is_active=True` athletes,
+  warm-start per-user. User with no CTL=66 examples gets context from athletes who do.
+  Risk: per-athlete bias propagation if dataset isn't clean → Phase 1.6 noise tag becomes
+  a **prerequisite** (don't pool dirty data). Trigger: 5+ athletes with n≥200 each.
 
 ### 10.3. Calibration check
 
@@ -811,7 +887,7 @@ CREATE TABLE race_projections (
 - [ ] `data/ml/noise_classifier.py` — `classify_noise(act_dto, thresholds) -> NoiseReason | None`, `is_run_walk()`, `is_run_recovery_jog()` (relocated from race_features). Module constants `WALK_PACE_MULT=1.6`, `WALK_HR_MULT=0.65`. Typed `NoiseReason = Literal["run_walk", "run_recovery_jog"]`.
 - [ ] `data/db/activity.py` — `Activity.noise_reason` + `noise_scored_at` columns + `Activity.set_noise_classification(user_id, activity_id, *, reason, scored_at)` (`@dual`, tenant guard via WHERE user_id).
 - [ ] `tasks/actors/activities.py:actor_update_activity_details` — после `ActivityDetail.save()`: fetch `athlete_settings`, call `classify_activity_row()`, `Activity.set_noise_classification()` в той же session. Runs only when `is_changed or force` (gated by existing early-return). Idempotent.
-- [ ] `data/ml/race_features.py:build_dataset` — приоритет `noise_reason IS NOT NULL` drop; fallback на live `_is_recovery_jog` для `noise_scored_at IS NULL` legacy строк. Import `_is_recovery_jog` из `noise_classifier`, не дублировать.
+- [ ] `data/ml/race_features.py:build_dataset` — приоритет `noise_reason` drop (truthy-string check); fallback на live `is_run_recovery_jog` для `noise_scored_at IS NULL` legacy строк. Import `is_run_recovery_jog` из `noise_classifier`, не дублировать.
 - [ ] CLI `python -m cli classify-noise` — `--since-days=365`, `--user-id`, `--dry-run`. Per-user `try/except` + `sentry_sdk.capture_exception`.
 - [ ] Tests `tests/ml/test_noise_classifier.py` — `TestIsRunWalk` (3 athlete cohorts × walk/jog/threshold/no-thresholds = 12 cases), `TestIsRunRecoveryJog` (8 cases — Z1/TSS boundaries), `TestClassifyNoise` (priority order + non-Run pass-through).
 - [ ] Tests `tests/api/test_intervals_webhook.py` — dispatcher вызывает classifier + sets reason; idempotent re-fire; tenant guard regression.
@@ -944,10 +1020,11 @@ Scenario engine ("miss 2 weeks" / "+10% volume" / custom CTL target), webapp `/r
   - **Impact:** Mode 2 race_day выдаёт мусорные сплиты (Run 2:38 вместо 2:05 на 70.3) — quality gate не ловит т.к. метрики модели хорошие, ломается inference-side `projected_ctl`.
   - **Effort:** ~30 строк в `_mode2_overrides` + 2-3 unit-теста.
 
-### 🟡 UX polish — second-order
+### ✅ UX polish — shipped 2026-05-12
 
-- **[#350](https://github.com/radikkhaziev/triathlon-agent/issues/350) — CI inflation cap + min-days threshold.**
-  `inflation = sqrt(days_to_race / 30)` → на 200 днях даёт 2.6×, делая CI неинформативно широким. Плюс на <14 днях имеет смысл fallback на Mode 1 (taper-CTL ≈ current). Cap `INFLATION_MAX = 1.8` + min-threshold `MIN_RACE_DAYS_FOR_FORECAST = 14`. Depends on #349 — после fix decay'а CI станет вменяемым, потом можно тюнить.
+- **[#350](https://github.com/radikkhaziev/triathlon-agent/issues/350) — CI inflation cap + min-days threshold.** ✅ Shipped 2026-05-12. `INFLATION_MAX = 1.8` + `MIN_RACE_DAYS_FOR_FORECAST = 14` в `data/ml/race_predict.py`. CI на 200d остановился на 1.8× вместо 2.6× — Run CI на 21k шрнк с ±34min до ~±24min. См. §10.2.
+- **[#359](https://github.com/radikkhaziev/triathlon-agent/issues/359) Q2 — duplicate of #350**, закрыт вместе.
+- **[#359](https://github.com/radikkhaziev/triathlon-agent/issues/359) Q1 (a) — out-of-sample CTL warning.** ✅ Shipped 2026-05-12. `metrics.ctl_feature_p90` в bundle (`race_train.py`), check + private flag в `_predict_one`, aggregated в warnings в `predict_splits_with_ci`. См. §10.4. Phase 2 fix (formula-anchored blend) — deferred ниже.
 
 ### 🟢 In-flight (Phase 1.6)
 
@@ -966,7 +1043,8 @@ Scenario engine ("miss 2 weeks" / "+10% volume" / custom CTL target), webapp `/r
 - **Scenario engine** («miss 2 weeks» / «+10% volume» / custom CTL target) — требует hypothetical-CTL поверх existing projection. Spec §2.
 - **Webapp `/race-projection` page** — CTL trajectory chart + per-leg CI bars. Backend готов, нужен UI-спринт. Spec §11.2.
 - **Race-specific Ride/Swim calibration** — ждём ≥10 non-Run race events (сейчас Ride 2 / Swim 1 у user 1). Spec §2 Phase 2.
-- **Cross-athlete pool model** — общая регрессия + warm-start per-user. После накопления данных по 5+ атлетам. Spec §2 Phase 2.
+- **Cross-athlete pool model** — общая регрессия + warm-start per-user. После накопления данных по 5+ атлетам. Spec §2 Phase 2. **Trigger from #359 Q1:** user 1's training-set CTL distribution (15-45) makes Mode 2 race-day projection at CTL=66 out-of-sample → tree clipping → only 4 sec/km improvement (см. §10.4). Pool model gives user 1 access to higher-CTL examples seen by other athletes. **Prerequisite: Phase 1.6 noise tag backfill** must be complete на всех атлетах — pooling грязные данные шумит сильнее, чем помогает (walks-as-Run у одного атлета испортят сигнал для всех).
+- **Formula-anchored baseline blend (issue #359 Q1, root fix).** XGBoost не extrapolat'ит — на out-of-sample CTL модель выдаёт conservative output. Решение: blend ML prediction с physiology-based formula (Run: Jack Daniels equivalent-pace из `threshold_pace`; Ride: FTP-anchored from `eFTP × race-intensity-target` per distance; Swim: CSS-anchored). Weight by `days_to_race` — close to race → ML wins (modeled state), far → formula wins (clean extrapolation). Mitigates the issue described в §10.4 (currently surfaced only as warning, not corrected). Effort: ~150 LoC + per-discipline calibration constants from training literature.
 - **Phase 1.5+ feature improvements** — surface filter for Run (`type=Run` strictly), duration condition для recovery-jog filter (если атлет ведёт длинные walks-as-Run, см. user 1 calibration в §6.3). По запросу.
 - **Phase 2 Ride noise classifiers** — `ride_recovery_spin` / `ride_commute` / `ride_indoor_test` (§6.4.2). Требует empirical calibration на 5 атлетах (как Run в Phase 1.5 calibration story). Schema + classifier infrastructure уже стоит после Phase 1.6 — добавление = одна строка в Literal type + три helpers + retest.
 - **Optical-HR noise detection** — `optical_hr_noisy` requires device-strap metadata parsing из FIT files (не реализовано). Defer пока чек не приоритет.

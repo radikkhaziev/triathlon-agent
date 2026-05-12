@@ -368,8 +368,12 @@ def build_dataset(user_id: int, discipline: str) -> pd.DataFrame:
         # noise_reason='run_*' → drop unconditionally (already classified).
         # noise_scored_at IS NOT NULL with NULL reason → checked clean, keep.
         # noise_scored_at IS NULL → legacy row, fall back to live check.
+        # Empty/whitespace strings DON'T count as noise — column is TEXT without
+        # CHECK constraint, so a future accidental empty-string write must not
+        # silently drop legitimate rows from training.
         noise_reason = act.get("noise_reason")
-        if noise_reason is not None and (isinstance(noise_reason, str) or not pd.isna(noise_reason)):
+        is_classified_noise = bool(isinstance(noise_reason, str) and noise_reason.strip())
+        if is_classified_noise:
             n_filtered_persisted += 1
             continue
         scored_at = act.get("noise_scored_at")

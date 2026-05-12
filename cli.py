@@ -3,17 +3,18 @@ import code
 import re
 import time
 from calendar import monthrange
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import sentry_sdk
 from sqlalchemy import select
 
 from config import settings
-from data.db import User, Wellness, get_session, get_sync_session
+from data.db import Activity, ActivityDetail, AthleteSettings, User, Wellness, get_session, get_sync_session
 from data.db.dto import UserDTO
 from data.garmin import importer as garmin_importer
 from data.garmin.parser import GarminExportParser
+from data.ml.noise_classifier import classify_activity_row
 from tasks.actors.activities import actor_fetch_user_activities
 from tasks.actors.wellness import actor_user_wellness
 from tasks.tools import TelegramTool
@@ -867,13 +868,6 @@ def _classify_noise(*, user_id: int | None, since_days: int, dry_run: bool) -> N
 
 def _classify_noise_for_user(user_id: int, *, cutoff_iso: str, dry_run: bool) -> dict[str, int]:
     """Walk an athlete's Run activities ≥ cutoff_iso, write noise_reason changes."""
-    from datetime import datetime, timezone
-
-    from sqlalchemy import select
-
-    from data.db import Activity, ActivityDetail, AthleteSettings, get_sync_session
-    from data.ml.noise_classifier import classify_activity_row
-
     stats = {"scanned": 0, "changed": 0, "unchanged": 0, "walk": 0, "jog": 0, "clean": 0}
 
     with get_sync_session() as session:
@@ -911,6 +905,13 @@ def _classify_noise_for_user(user_id: int, *, cutoff_iso: str, dry_run: bool) ->
             stats["changed"] += 1
             if not dry_run:
                 Activity.set_noise_classification(user_id, activity.id, reason=reason, scored_at=now, session=session)
+
+        # Single commit per user — set_noise_classification doesn't commit
+        # internally (Copilot #360 #3 fix), so on a 500-activity user this is
+        # 1 round-trip vs 500. dry_run skips the writes entirely so commit is
+        # a no-op there.
+        if not dry_run:
+            session.commit()
 
     return stats
 

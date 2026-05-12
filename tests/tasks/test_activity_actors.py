@@ -332,6 +332,153 @@ class TestActorFetchActivityDetails:
 
 
 # ---------------------------------------------------------------------------
+# actor_update_activity_details — Phase 1.6 noise classification
+# ---------------------------------------------------------------------------
+
+
+class TestNoiseClassificationWiring:
+    """Verify the Phase 1.6 noise-classification block in
+    `actor_update_activity_details` (ML_RACE_PROJECTION_SPEC §6.4):
+
+    1. Runs only when `is_changed=True` (gated by existing early-return).
+    2. Calls `AthleteSettings.get_thresholds` + `Activity.set_noise_classification`
+       with the **dispatched user.id**, never `activity_row.user_id`.
+    3. Tenant guard: foreign `activity_row.user_id` triggers early return,
+       no thresholds fetch, no classification write — same defense-in-depth
+       as `_actor_send_activity_notification` (see TestActivityNotificationTenantGuard).
+    """
+
+    @staticmethod
+    def _changed_save_result(activity_id: str = "i12345"):
+        """ORMDTO with is_changed=True so actor proceeds past early-return."""
+        from tasks.dto import ORMDTO
+
+        detail_row = MagicMock()
+        detail_row.activity_id = activity_id
+        detail_row.distance = 10000.0
+        detail_row.hr_zone_times = [600, 4500, 720, 180, 0]
+        return ORMDTO(is_new=False, is_changed=True, row=detail_row)
+
+    def test_classifier_called_with_dispatched_user_id_on_change(self):
+        """is_changed=True → fetch thresholds + classify + write, all keyed
+        on `user.id` (the dispatched tenant), not on activity_row.user_id."""
+        from tasks.actors.activities import actor_update_activity_details
+
+        user = _user(id=42)
+        mock_client = _mock_client()
+        mock_client.get_activity_detail.return_value = {"max_heartrate": 175}
+        mock_client.get_activity_intervals.return_value = []
+
+        activity_row = MagicMock()
+        activity_row.user_id = 42  # matches dispatched user — tenant guard passes
+        activity_row.id = "i12345"
+        activity_row.type = "Run"
+        activity_row.average_hr = 140.0
+        activity_row.icu_training_load = 60.0
+        activity_row.moving_time = 3600
+
+        mock_thresholds = MagicMock(lthr_run=170, threshold_pace_run=270)
+
+        with (
+            patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
+            patch("tasks.actors.activities.ActivityDetail.save", return_value=self._changed_save_result()),
+            patch("tasks.actors.activities.AthleteSettings.get_thresholds", return_value=mock_thresholds) as mock_thr,
+            patch("tasks.actors.activities.Activity.set_noise_classification") as mock_set,
+            patch("tasks.actors.activities.pipeline") as mock_pipeline,
+            patch("tasks.actors.activities.actor_after_activity_update") as mock_after,
+        ):
+            # Make session.get return our activity_row
+            with patch("tasks.actors.activities.get_sync_session") as mock_session_cm:
+                session_inst = MagicMock()
+                session_inst.get.return_value = activity_row
+                mock_session_cm.return_value.__enter__.return_value = session_inst
+                mock_session_cm.return_value.__exit__.return_value = False
+
+                actor_update_activity_details(user.model_dump(), activity_id="i12345")
+
+        # Thresholds keyed on dispatched user.id, not activity_row.user_id
+        thr_args, thr_kwargs = mock_thr.call_args
+        assert thr_args[0] == 42
+
+        # set_noise_classification keyed on dispatched user.id (positional arg 0)
+        set_args, set_kwargs = mock_set.call_args
+        assert set_args[0] == 42
+        assert set_args[1] == "i12345"
+        assert "reason" in set_kwargs
+        assert "scored_at" in set_kwargs
+
+        # Downstream pipeline still ran (we didn't break the actor flow)
+        mock_pipeline.assert_called_once()
+        mock_after.send.assert_called_once()
+
+    def test_tenant_guard_blocks_foreign_activity_id(self):
+        """Forged / replayed Dramatiq message points at another tenant's
+        activity_id (PK lookup succeeds, but user_id mismatches dispatched
+        user). Early return — no thresholds fetch, no classification write,
+        no downstream pipeline."""
+        from tasks.actors.activities import actor_update_activity_details
+
+        user = _user(id=42)  # dispatched for user 42
+        mock_client = _mock_client()
+        mock_client.get_activity_detail.return_value = {"max_heartrate": 175}
+        mock_client.get_activity_intervals.return_value = []
+
+        # Activity belongs to user 99, not 42 — foreign tenant
+        activity_row = MagicMock()
+        activity_row.user_id = 99
+        activity_row.id = "i_other"
+
+        with (
+            patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
+            patch("tasks.actors.activities.ActivityDetail.save", return_value=self._changed_save_result("i_other")),
+            patch("tasks.actors.activities.AthleteSettings.get_thresholds") as mock_thr,
+            patch("tasks.actors.activities.Activity.set_noise_classification") as mock_set,
+            patch("tasks.actors.activities.pipeline") as mock_pipeline,
+            patch("tasks.actors.activities.actor_after_activity_update"),
+        ):
+            with patch("tasks.actors.activities.get_sync_session") as mock_session_cm:
+                session_inst = MagicMock()
+                session_inst.get.return_value = activity_row
+                mock_session_cm.return_value.__enter__.return_value = session_inst
+                mock_session_cm.return_value.__exit__.return_value = False
+
+                actor_update_activity_details(user.model_dump(), activity_id="i_other")
+
+        # Tenant guard fired — no work done with foreign tenant context
+        mock_thr.assert_not_called()
+        mock_set.assert_not_called()
+        # Pipeline also blocked (early return preceded it)
+        mock_pipeline.assert_not_called()
+
+    def test_tenant_guard_handles_missing_activity_row(self):
+        """session.get returning None (race condition: row deleted between
+        ActivityDetail.save commit and the get call) — guard still fires."""
+        from tasks.actors.activities import actor_update_activity_details
+
+        user = _user(id=42)
+        mock_client = _mock_client()
+        mock_client.get_activity_detail.return_value = {"max_heartrate": 175}
+        mock_client.get_activity_intervals.return_value = []
+
+        with (
+            patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=mock_client),
+            patch("tasks.actors.activities.ActivityDetail.save", return_value=self._changed_save_result()),
+            patch("tasks.actors.activities.AthleteSettings.get_thresholds") as mock_thr,
+            patch("tasks.actors.activities.Activity.set_noise_classification") as mock_set,
+        ):
+            with patch("tasks.actors.activities.get_sync_session") as mock_session_cm:
+                session_inst = MagicMock()
+                session_inst.get.return_value = None
+                mock_session_cm.return_value.__enter__.return_value = session_inst
+                mock_session_cm.return_value.__exit__.return_value = False
+
+                actor_update_activity_details(user.model_dump(), activity_id="i12345")
+
+        mock_thr.assert_not_called()
+        mock_set.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # actor_download_fit_file
 # ---------------------------------------------------------------------------
 

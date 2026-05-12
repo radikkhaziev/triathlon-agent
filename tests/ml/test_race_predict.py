@@ -17,15 +17,18 @@ import pytest
 from data.ml import race_predict
 
 
-def _fake_bundle(predict_value: float, residuals: list[float]):
+def _fake_bundle(predict_value: float, residuals: list[float], ctl_feature_p90: float | None = None):
     """Build a bundle mimicking joblib.dump shape from race_train."""
     model = MagicMock()
     model.predict.return_value = np.array([predict_value])
-    return {
+    bundle = {
         "model": model,
         "residuals": np.array(residuals),
-        "feature_names": ["ctl", "atl", "tsb", "hrv", "target_hr", "distance_m"],
+        "feature_names": ["ctl", "atl", "tsb", "hrv", "target_hr", "distance_m", "ctl_run"],
     }
+    if ctl_feature_p90 is not None:
+        bundle["metrics"] = {"mae": 8.0, "r2": 0.5, "n_examples": 200, "ctl_feature_p90": ctl_feature_p90}
+    return bundle
 
 
 def _fake_features(**overrides):
@@ -184,8 +187,189 @@ class TestPredictSplitsWithCi:
             )
         assert envelope["projected_ctl"] == 75.0
         assert envelope["projected_atl"] == 70.0
-        assert envelope["inflation"] > 1.0  # 120 days → sqrt(4)=2
-        assert envelope["inflation"] == pytest.approx(math.sqrt(120 / 30), abs=1e-3)
+        # Issue #350 cap engaged — raw sqrt(120/30)=2.0 > INFLATION_MAX=1.8.
+        assert envelope["inflation"] == pytest.approx(race_predict.INFLATION_MAX, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_inflation_capped_at_long_horizon(self):
+        """Issue #350: beyond ~97 days, raw sqrt(days/30) exceeds INFLATION_MAX=1.8.
+        Cap engages so CI doesn't blow out to ±67 min on a half-marathon prediction
+        (current_state observed at 126 days out). 200 days → raw 2.58 → capped 1.8.
+        """
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 75.0, "atl": 70.0, "current_eftp": 230.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=200)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["inflation"] == pytest.approx(race_predict.INFLATION_MAX, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_inflation_below_min_days_threshold(self):
+        """Issue #350: within MIN_RACE_DAYS_FOR_FORECAST=14, Mode 2 fall back to
+        inflation=1.0 (Mode 1 width). Within 2 weeks projected_ctl ≈ current_ctl
+        (taper window), so wider band misleads. Race in 10 days → inflation 1.0.
+        """
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 32.0, "atl": 28.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=10)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["inflation"] == pytest.approx(1.0, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_inflation_within_sqrt_window(self):
+        """Mid-horizon (60 days): raw sqrt(60/30)=1.414 — below cap, above floor."""
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 50.0, "atl": 45.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=60)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["inflation"] == pytest.approx(math.sqrt(60 / 30), abs=1e-3)
+
+
+class TestOutOfSampleCtl:
+    """Issue #359 (b): warn when Mode 2 projects CTL above the discipline's
+    training-set p90. XGBoost trees clip to nearest observed leaf → output is
+    held conservative + we tell the caller honestly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_within_train_distribution(self):
+        # ctl_run feature = 30 (from _fake_features below), ratio = 35/30 = 1.17
+        # → scaled ctl_run = 35. p90 = 45 → within sample, no warning.
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10], ctl_feature_p90=45.0)
+        overrides = {"ctl": 35.0, "atl": 32.0, "_ctl_ratio": 35.0 / 30.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(
+                race_predict,
+                "build_inference_features",
+                return_value=_fake_features(ctl_run=30.0),
+            ),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=60)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        # No OOS warning emitted
+        assert not any("out-of-sample" in w for w in envelope["warnings"])
+        # Private key stripped from leg before envelope returned
+        assert "_ctl_out_of_sample" not in envelope["splits"]["run"]
+
+    @pytest.mark.asyncio
+    async def test_warning_emitted_when_projected_above_train_p90(self):
+        # User-1 reproduction: training distribution ctl_run p90 = 30
+        # (n=300, distribution 15-30), but Mode 2 projects to 66 via ratio 2.2.
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10], ctl_feature_p90=30.0)
+        overrides = {"ctl": 66.0, "atl": 60.0, "_ctl_ratio": 66.0 / 30.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(
+                race_predict,
+                "build_inference_features",
+                return_value=_fake_features(ctl_run=30.0),
+            ),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=120)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        # OOS warning surfaces with both values
+        oos_warnings = [w for w in envelope["warnings"] if "out-of-sample" in w]
+        assert len(oos_warnings) == 1
+        assert "run" in oos_warnings[0]
+        assert "66" in oos_warnings[0]  # projected
+        assert "30" in oos_warnings[0]  # train_p90
+        # Private key stripped from public envelope
+        assert "_ctl_out_of_sample" not in envelope["splits"]["run"]
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_bundle_lacks_p90_metric(self):
+        # Legacy bundle without `metrics.ctl_feature_p90` — backwards compat,
+        # don't false-positive on missing data, just stay silent.
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])  # no p90
+        overrides = {"ctl": 66.0, "atl": 60.0, "_ctl_ratio": 2.2}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(
+                race_predict,
+                "build_inference_features",
+                return_value=_fake_features(ctl_run=30.0),
+            ),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=120)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert not any("out-of-sample" in w for w in envelope["warnings"])
+
+    def test_predict_one_attaches_private_oos_key_for_aggregation(self):
+        """Lower-level `_predict_one` should attach `_ctl_out_of_sample` for the
+        envelope aggregator to strip & translate into a public warning. Without
+        this contract, the envelope can't tell which leg triggered OOS.
+        """
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10], ctl_feature_p90=30.0)
+        overrides = {"ctl": 66.0, "atl": 60.0, "_ctl_ratio": 2.2}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(
+                race_predict,
+                "build_inference_features",
+                return_value=_fake_features(ctl_run=30.0),
+            ),
+        ):
+            out = race_predict._predict_one(
+                user_id=1,
+                discipline="run",
+                target_date=date(2026, 9, 15),
+                target_hr=150,
+                distance_m=21000.0,
+                overrides=overrides,
+                inflation=1.5,
+            )
+        assert "_ctl_out_of_sample" in out
+        assert out["_ctl_out_of_sample"]["train_p90"] == 30.0
+        # Projected = 30 × 2.2 = 66
+        assert out["_ctl_out_of_sample"]["projected"] == pytest.approx(66.0, abs=0.1)
 
 
 class TestQualityGate:

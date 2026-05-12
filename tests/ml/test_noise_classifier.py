@@ -336,9 +336,10 @@ class TestClassifyActivityRow:
         )
         assert result == "run_recovery_jog"
 
-    def test_missing_distance_returns_none_on_walk_check(self):
-        # No distance → can't derive pace → walk rule disabled.
-        # But recovery jog rule still fires from zones+TSS independently.
+    def test_missing_distance_returns_none(self):
+        # No distance → can't derive pace → walk rule disabled. Recovery-jog
+        # rule needs Z1≥70% AND TSS<40 — default fixture has balanced zones
+        # AND TSS=60, so neither rule fires → None.
         result = nc.classify_activity_row(
             self._activity(average_hr=95.0, icu_training_load=60.0),
             self._detail(distance=None),

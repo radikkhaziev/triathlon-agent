@@ -1,7 +1,7 @@
 """add noise_reason + noise_scored_at to activities
 
 Revision ID: aab8c9d0e1f2
-Revises: z6a7b8c9d0e1
+Revises: b8c9d0e1f2a3
 Create Date: 2026-05-12
 
 Webhook-time noise classification — see `docs/ML_RACE_PROJECTION_SPEC.md` §6.4.
