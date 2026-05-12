@@ -5,7 +5,16 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from data.intervals.dto import PlannedWorkoutDTO, WorkoutStepDTO
+from data.intervals.dto import (
+    PlannedWorkoutDTO,
+    WorkoutStepDTO,
+    _render_distance,
+    _render_duration,
+    _render_native_description,
+    _render_step,
+    _render_target,
+    _sanitize_label,
+)
 
 # ---------------------------------------------------------------------------
 # WorkoutStep
@@ -124,36 +133,55 @@ class TestPlannedWorkout:
         assert interval["reps"] == 4
         assert len(interval["steps"]) == 2
 
-    def test_no_top_level_description(self):
-        """Top-level description is omitted entirely. Intervals.icu silently drops
-        workout_doc.steps for Swim events whenever any top-level description is
-        present (regression observed ~2026-04-30); rationale lives in
-        workout_doc.description instead."""
-        w = self._make_workout()
+    def test_top_level_description_renders_native_format(self):
+        """For sports with intensity targets, top-level description carries the
+        native-format step list so Intervals.icu UI can render the structure.
+        See docs/INTERVALS_NATIVE_WORKOUT_FORMAT.md for the grammar."""
+        w = self._make_workout()  # Ride, 1×60min Z2 @ 75% FTP
         event = w.to_intervals_event()
-        assert event.description is None
+        assert event.description == "- Main 1h 75%\n"
 
     def test_rationale_lands_in_workout_doc(self):
+        """Rationale stays in `workout_doc.description` (rendered by Garmin
+        Connect as the workout note); top-level description is the native
+        step render, not the rationale."""
         w = self._make_workout(rationale="recovery day, easy aerobic")
         event = w.to_intervals_event()
-        assert event.description is None
         assert event.workout_doc["description"] == "recovery day, easy aerobic"
+        assert event.description is not None
+        assert "recovery day" not in event.description  # rationale must not leak into native render
 
     def test_empty_rationale_omits_workout_doc_description(self):
-        """Empty string in workout_doc.description would also trip the Swim drop —
-        the key must be absent, not present-but-empty."""
+        """Empty rationale → key absent from workout_doc (Garmin Connect note empty)."""
         w = self._make_workout(rationale="")
         event = w.to_intervals_event()
         assert "description" not in event.workout_doc
 
-    def test_payload_has_no_top_level_description(self):
-        """Wire payload (model_dump exclude_none) must omit top-level description
-        for every sport — regression guard for the Swim workout_doc.steps drop."""
-        for sport in ("Swim", "Run", "Ride", "WeightTraining"):
-            steps = [WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 70})]
-            w = self._make_workout(sport=sport, steps=steps, duration_minutes=10, rationale="x")
+    def test_other_sport_skips_native_description(self):
+        """`Other` (yoga/mobility/strength) steps don't have intensity targets;
+        native grammar can't represent them. Top-level description stays None
+        so workout_cards.py can set its own URL prefix."""
+        w = self._make_workout(
+            sport="Other",
+            steps=[WorkoutStepDTO(text="Stretch", duration=30)],
+            duration_minutes=1,
+        )
+        event = w.to_intervals_event()
+        assert event.description is None
+
+    def test_payload_has_native_description_for_intensity_sports(self):
+        """Wire payload (model_dump exclude_none) carries top-level description
+        for every sport except Other — regression guard against silently
+        dropping it back to None."""
+        cases = [
+            ("Swim", WorkoutStepDTO(text="Main", distance=200.0, pace={"units": "%pace", "value": 70, "end": 80})),
+            ("Run", WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 70})),
+            ("Ride", WorkoutStepDTO(text="Main", duration=600, power={"units": "%ftp", "value": 70})),
+        ]
+        for sport, step in cases:
+            w = self._make_workout(sport=sport, steps=[step], duration_minutes=10, rationale="x")
             payload = w.to_intervals_event().model_dump(exclude_none=True)
-            assert "description" not in payload, f"{sport} leaked top-level description"
+            assert "description" in payload, f"{sport} dropped top-level description"
             assert payload["workout_doc"]["description"] == "x"
 
     def test_rejects_step_without_target(self):
@@ -202,6 +230,159 @@ class TestPlannedWorkout:
             duration_minutes=20,
         )
         assert w.target_date == date.today()
+
+
+# ---------------------------------------------------------------------------
+# Native-format description renderer
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeLabel:
+    def test_strips_leading_digits(self):
+        """`Drill: 50 fingertip drag` → `fingertip drag` (parser would catch
+        leading `50` as duration). Real label from prod (id 109762368)."""
+        assert _sanitize_label("50 fingertip drag", "Swim") == "fingertip drag"
+        assert _sanitize_label("4x cadence build", "Ride") == "cadence build"
+
+    def test_strips_z_pattern_for_run_swim(self):
+        assert _sanitize_label("Z2 freestyle DPS focus", "Swim") == "freestyle DPS focus"
+        assert _sanitize_label("Z2 main aerobic", "Run") == "main aerobic"
+
+    def test_keeps_z_pattern_for_ride(self):
+        """For Ride, `Z\\d+` resolves to power zones — valid target. Keep it."""
+        assert _sanitize_label("Z2 endurance", "Ride") == "Z2 endurance"
+
+    def test_handles_none_and_empty(self):
+        assert _sanitize_label(None, "Run") == ""
+        assert _sanitize_label("", "Run") == ""
+
+    def test_collapses_whitespace(self):
+        assert _sanitize_label("Z2  drill   focus", "Run") == "drill focus"
+
+
+class TestRenderDuration:
+    def test_seconds_only(self):
+        assert _render_duration(30) == "30s"
+
+    def test_minutes_only(self):
+        assert _render_duration(600) == "10m"
+
+    def test_hours_only(self):
+        assert _render_duration(7200) == "2h"
+
+    def test_combined(self):
+        assert _render_duration(5400) == "1h30m"
+        assert _render_duration(330) == "5m30s"
+        assert _render_duration(3725) == "1h2m5s"
+
+    def test_zero(self):
+        assert _render_duration(0) == "0s"
+
+
+class TestRenderDistance:
+    def test_meters_under_1km(self):
+        assert _render_distance(200.0) == "200mtr"
+        assert _render_distance(150.5) == "150mtr"  # rounded
+
+    def test_exact_km(self):
+        assert _render_distance(1000.0) == "1km"
+        assert _render_distance(5000.0) == "5km"
+
+    def test_fractional_km(self):
+        assert _render_distance(1500.0) == "1.5km"
+
+
+class TestRenderTarget:
+    def test_hr_lthr_range(self):
+        step = WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 75, "end": 82})
+        assert _render_target(step, "Run") == "75-82% LTHR"
+
+    def test_hr_lthr_single(self):
+        step = WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 75})
+        assert _render_target(step, "Run") == "75% LTHR"
+
+    def test_power_ftp_range(self):
+        """Bare `%` for Ride power — FTP implied by native grammar."""
+        step = WorkoutStepDTO(text="Main", duration=600, power={"units": "%ftp", "value": 88, "end": 94})
+        assert _render_target(step, "Ride") == "88-94%"
+
+    def test_pace_range(self):
+        step = WorkoutStepDTO(text="Main", distance=200.0, pace={"units": "%pace", "value": 80, "end": 90})
+        assert _render_target(step, "Swim") == "80-90% Pace"
+
+    def test_target_none_when_step_has_no_intensity(self):
+        step = WorkoutStepDTO(text="Stretch", duration=30)  # Other-only shape
+        assert _render_target(step, "Other") is None
+
+
+class TestRenderStep:
+    def test_label_distance_target(self):
+        step = WorkoutStepDTO(
+            text="Drill freestyle",
+            distance=100.0,
+            pace={"units": "%pace", "value": 80, "end": 90},
+        )
+        assert _render_step(step, "Swim") == "- Drill freestyle 100mtr 80-90% Pace"
+
+    def test_empty_label_omitted(self):
+        step = WorkoutStepDTO(duration=300, hr={"units": "%lthr", "value": 70})
+        assert _render_step(step, "Run") == "- 5m 70% LTHR"
+
+
+class TestRenderNativeDescription:
+    def test_blank_lines_between_top_level_entities(self):
+        steps = [
+            WorkoutStepDTO(text="WU", duration=600, hr={"units": "%lthr", "value": 70}),
+            WorkoutStepDTO(text="Main", duration=1800, hr={"units": "%lthr", "value": 85}),
+            WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "value": 60}),
+        ]
+        rendered = _render_native_description(steps, "Run")
+        assert rendered == "- WU 10m 70% LTHR\n\n- Main 30m 85% LTHR\n\n- CD 5m 60% LTHR\n"
+
+    def test_repeat_block_inline_substeps_and_surrounding_blanks(self):
+        """Repeat blocks must have blank lines around them and sub-steps
+        flush-left without indentation — see syntax guide §«Repeat Group»."""
+        steps = [
+            WorkoutStepDTO(text="WU", duration=600, hr={"units": "%lthr", "value": 70}),
+            WorkoutStepDTO(
+                text="Intervals",
+                reps=4,
+                steps=[
+                    WorkoutStepDTO(text="On", duration=300, hr={"units": "%lthr", "value": 90}),
+                    WorkoutStepDTO(text="Off", duration=120, hr={"units": "%lthr", "value": 60}),
+                ],
+            ),
+            WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "value": 60}),
+        ]
+        rendered = _render_native_description(steps, "Run")
+        assert rendered == (
+            "- WU 10m 70% LTHR\n" "\n" "4x\n" "- On 5m 90% LTHR\n" "- Off 2m 60% LTHR\n" "\n" "- CD 5m 60% LTHR\n"
+        )
+
+    def test_swim_full_mirror(self):
+        """Mirror of the working Swim probe 109771472 — distance steps,
+        pace targets, sanitised labels, two adjacent repeat blocks."""
+        steps = [
+            WorkoutStepDTO(text="Warm-up easy mix", distance=300.0, pace={"units": "%pace", "value": 65, "end": 78}),
+            WorkoutStepDTO(
+                text="Drill set",
+                reps=4,
+                steps=[
+                    WorkoutStepDTO(
+                        text="50 fingertip drag",  # leading digit — must be stripped
+                        distance=100.0,
+                        pace={"units": "%pace", "value": 80, "end": 90},
+                    ),
+                    WorkoutStepDTO(text="Rest", duration=15, pace={"units": "%pace", "value": 40, "end": 50}),
+                ],
+            ),
+            WorkoutStepDTO(text="Cool-down", distance=100.0, pace={"units": "%pace", "value": 60, "end": 75}),
+        ]
+        rendered = _render_native_description(steps, "Swim")
+        assert "- 50" not in rendered  # leading digit stripped
+        assert "fingertip drag" in rendered
+        assert "4x\n" in rendered
+        assert "- Rest 15s 40-50% Pace" in rendered
 
 
 # ---------------------------------------------------------------------------

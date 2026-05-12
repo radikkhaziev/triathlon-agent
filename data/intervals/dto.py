@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -295,6 +296,123 @@ class WorkoutStepDTO(BaseModel):
 # Sports where intensity targets are not applicable (yoga, stretching, mobility)
 _NO_TARGET_SPORTS = frozenset({"Other"})
 
+# ---------------------------------------------------------------------------
+# Native-format description renderer (Intervals.icu structured-workout text).
+# Grammar + parser quirks: docs/INTERVALS_NATIVE_WORKOUT_FORMAT.md.
+# Without a top-level `description`, Intervals.icu web/mobile UI shows only the
+# workout's name and length — steps stay invisible. Rendering matching native
+# text into `event.description` makes the structure visible; FIT export to
+# watches still rides on `workout_doc.steps`.
+# ---------------------------------------------------------------------------
+
+# Sports whose step labels must have `Z\d+` substrings stripped: without a
+# qualifier, Intervals' parser resolves `Z1`-`Z5` as POWER zones. For Ride
+# that's the correct default; for Run/Swim it produces 0-0w targets.
+_STRIP_Z_LABEL_SPORTS = frozenset({"Run", "Swim"})
+
+# Any digit-led token (`50`, `100m`, `4x`, `2km`). Stripped wholesale from
+# labels — Intervals' parser would otherwise grab the first numeric token as
+# the step's duration. Real prod label that motivated this: `Drill: 50
+# fingertip drag + 50 free` (event 109762368).
+_DIGIT_TOKEN_RE = re.compile(r"\b\d+\w*\b")
+_ZONE_LABEL_RE = re.compile(r"\bZ\d+\b")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _sanitize_label(text: str | None, sport: str) -> str:
+    """Strip parser-conflict patterns from a step's cue text."""
+    if not text:
+        return ""
+    cleaned = _DIGIT_TOKEN_RE.sub("", text)
+    if sport in _STRIP_Z_LABEL_SPORTS:
+        cleaned = _ZONE_LABEL_RE.sub("", cleaned)
+    return _WHITESPACE_RE.sub(" ", cleaned).strip()
+
+
+def _render_duration(seconds: int) -> str:
+    """Render seconds as `NhNmNs` combo (omitting zero components)."""
+    if seconds <= 0:
+        return "0s"
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
+    if s:
+        parts.append(f"{s}s")
+    return "".join(parts)
+
+
+def _render_distance(meters: float) -> str:
+    """Render meters as `Nmtr` (<1km) or `Nkm` / `N.Nkm` (>=1km)."""
+    if meters >= 1000:
+        km = meters / 1000
+        if km == int(km):
+            return f"{int(km)}km"
+        return f"{km:g}km"
+    return f"{int(round(meters))}mtr"
+
+
+def _render_target(step: "WorkoutStepDTO", sport: str) -> str | None:
+    """Render the step's intensity target in Intervals' native target syntax.
+
+    Returns None when the step has no target — caller decides whether that's
+    acceptable (it is for `Other`; everywhere else the validator rejects it).
+    """
+
+    def _fmt(value: int | float, end: int | float | None, suffix: str) -> str:
+        if end is not None and end != value:
+            return f"{int(value)}-{int(end)}{suffix}"
+        return f"{int(value)}{suffix}"
+
+    if step.hr:
+        units = (step.hr.get("units") or "").lower()
+        if units == "%lthr":
+            return _fmt(step.hr["value"], step.hr.get("end"), "% LTHR")
+    if step.power:
+        units = (step.power.get("units") or "").lower()
+        if units == "%ftp":
+            # Bare `%` resolves to %FTP for Ride — matches the syntax guide.
+            return _fmt(step.power["value"], step.power.get("end"), "%")
+    if step.pace:
+        units = (step.pace.get("units") or "").lower()
+        if units == "%pace":
+            return _fmt(step.pace["value"], step.pace.get("end"), "% Pace")
+    return None
+
+
+def _render_step(step: "WorkoutStepDTO", sport: str) -> str:
+    """Render a single (non-repeat) step as a `- label dur target` bullet."""
+    label = _sanitize_label(step.text, sport)
+    measure = _render_distance(step.distance) if step.distance else _render_duration(step.duration)
+    target = _render_target(step, sport)
+    parts = [p for p in (label, measure, target) if p]
+    return "- " + " ".join(parts)
+
+
+def _render_native_description(steps: list["WorkoutStepDTO"], sport: str) -> str:
+    """Render a workout's steps as Intervals.icu native-format description.
+
+    Top-level entities (single steps and repeat blocks) are separated by blank
+    lines — the parser requires a blank line before/after every repeat block,
+    and tolerates them between adjacent plain steps. Single-pass `\\n\\n`.join
+    keeps the rule satisfied without branching.
+
+    Nested repeat groups aren't supported by the native grammar; if any appear
+    the inner reps are flattened (label kept, sub-sub-steps inlined). No
+    callers currently produce nested groups.
+    """
+    chunks: list[str] = []
+    for step in steps:
+        if step.reps and step.steps:
+            sub_lines = [_render_step(sub, sport) for sub in step.steps]
+            chunks.append(f"{step.reps}x\n" + "\n".join(sub_lines))
+        else:
+            chunks.append(_render_step(step, sport))
+    return "\n\n".join(chunks) + "\n"
+
 
 class PlannedWorkoutDTO(BaseModel):
     """AI-generated workout to push to Intervals.icu (Phase 1: Adaptive Training Plan)."""
@@ -415,16 +533,33 @@ class PlannedWorkoutDTO(BaseModel):
     def to_intervals_event(self) -> "EventExDTO":
         """Convert to Intervals.icu POST /events DTO.
 
-        Always uses workout_doc — works for both time-based and distance-based steps.
-        Verified: Intervals.icu parses workout_doc distance correctly (Этап 0 tests).
-        Plain text description does NOT parse distance steps.
+        Two parallel representations are sent on every push:
 
-        Rationale is nested inside ``workout_doc.description`` rather than the
-        top-level ``description`` field. Intervals.icu silently drops
-        ``workout_doc.steps`` for Swim events whenever any top-level
-        ``description`` is present (verified live, regression appeared
-        ~2026-04-30). Routing through workout_doc preserves steps for every
-        sport and keeps a single code path.
+        - ``workout_doc.steps`` (JSON) drives Garmin/Wahoo via FIT export and
+          our local ``ScheduledWorkout`` mirror — both have worked since day 1.
+        - Top-level ``description`` (native-format text) is what Intervals.icu
+          web/mobile UI parses to render the structured workout view. Without
+          it the UI shows only the workout's name and total duration — steps
+          stay invisible. See ``docs/INTERVALS_NATIVE_WORKOUT_FORMAT.md`` for
+          the grammar; the renderer lives in ``_render_native_description``.
+
+        ``workout_doc.description`` carries the AI rationale (Garmin Connect
+        shows it as the workout note on the phone). The top-level
+        ``description`` is the structured form for Intervals' UI — different
+        slots, different consumers.
+
+        Sports listed in ``_NO_TARGET_SPORTS`` (currently just ``Other``) skip
+        the native renderer: native grammar requires an intensity target on
+        every step and yoga/mobility steps don't have one. Workout cards
+        (``compose_workout``) set their own top-level description with the
+        HTML link, which Intervals stores as plain text.
+
+        Historical note: a 2026-04-30 regression caused Intervals to silently
+        drop ``workout_doc.steps`` for Swim events when top-level description
+        was present. Probes on 2026-05-12 showed the drop only happens when
+        Intervals' parser fails to recognise the description as native
+        format — successful parses preserve steps for every sport. Passing a
+        validated native render through is safe.
         """
         # Top-level event target. Default `None` → Intervals.icu maps to `AUTO`
         # which Garmin then resolves to HR for Run / power for Ride. We must
@@ -440,6 +575,10 @@ class PlannedWorkoutDTO(BaseModel):
         if self.rationale:
             workout_doc["description"] = self.rationale
 
+        description: str | None = None
+        if self.sport not in _NO_TARGET_SPORTS:
+            description = _render_native_description(self.steps, self.sport)
+
         return EventExDTO(
             category="WORKOUT",
             type=self.sport,
@@ -449,4 +588,5 @@ class PlannedWorkoutDTO(BaseModel):
             external_id=self.external_id,
             workout_doc=workout_doc,
             target=target,
+            description=description,
         )

@@ -144,6 +144,8 @@ Stateless. Each message: `agent.chat(text, mcp_token=user.mcp_token)` → Claude
 
 **Intensity target mandate:** `PlannedWorkoutDTO._check_steps_have_targets` rejects any terminal (non-repeat-group) step without `hr` / `power` / `pace`. Garmin/Wahoo watches only alert on the target corridor when a numeric target is present, so text-only steps (`"Z2" label + duration`) are forbidden. **Exception:** sport `Other` (yoga, stretching, mobility) skips this validation — watches don't need intensity targets for these activities. Per-sport convention: Run → `hr` with `%lthr` units, Ride → `power` with `%ftp`, Swim → `pace` with `%pace`. Use `value` (low) + `end` (high) for a corridor. The `suggest_workout` MCP tool docstring and `_STATIC_PROMPT_CHAT` workout-generation section both enforce this contract — the validator is the backstop if the model forgets.
 
+**Native-format description for Intervals UI (2026-05-12):** `PlannedWorkoutDTO.to_intervals_event` now renders the step list into Intervals.icu's structured-workout text grammar and sets it as the event's top-level `description`. Without this the web/mobile UI shows only the workout's name and total duration — steps stay invisible (FIT export to watches always worked via `workout_doc.steps`). The renderer lives in `data/intervals/dto.py` (`_render_native_description`, `_sanitize_label`, etc.) and skips sports in `_NO_TARGET_SPORTS` (currently `Other` — `workout_cards.py` sets its own URL-bearing description for those). Grammar + parser quirks (`m` means minutes, distance must be `mtr`/`km`, `Z\d+` resolves to power zones, leading digits in labels confuse the parser) documented in `docs/INTERVALS_NATIVE_WORKOUT_FORMAT.md`. AI rationale stays in `workout_doc.description` (Garmin Connect surfaces it as the workout note). Backfill of pre-existing events: `scripts/repush_ai_workouts_with_native_desc.py`.
+
 **Strava source filter:** Intervals.icu returns 422 `Cannot read Strava activities via the API` for `source == STRAVA` activities (licensing). `actor_fetch_user_activities` drops them **before** `Activity.save_bulk` so they never enter the DB or trigger downstream pipelines. `ActivityDTO.source` carries `GARMIN_CONNECT` / `OAUTH_CLIENT` / `STRAVA` / etc. from Intervals.icu.
 
 ---
@@ -246,7 +248,7 @@ Specs and plans in `docs/`. Key references:
 
 - **`IMPLEMENTATION_STATUS.md`** — feature-by-feature changelog, what's done / pending.
 - **`OPERATIONS.md`** — bot commands, API endpoints, webapp routes, CLI, migrations, onboarding, Docker.
-- **`ADAPTIVE_TRAINING_PLAN_SPEC.md`**, **`MULTI_TENANT_SECURITY_SPEC.md`**, **`INTERVALS_WEBHOOKS_RESEARCH.md`** (10 event-type payload samples), **`OAUTH_BOOTSTRAP_SYNC_SPEC.md`**, **`USER_CONTEXT_SPEC.md`**, **`WEBHOOK_DATA_CAPTURE_SPEC.md`**, **`RACE_PLAN_SPEC.md`**, **`TRAINING_PROGRESSION_SPEC.md`**, **`ML_HRV_PREDICTION_SPEC.md`**, **`ML_RACE_PROJECTION_SPEC.md`** — feature specs.
+- **`ADAPTIVE_TRAINING_PLAN_SPEC.md`**, **`MULTI_TENANT_SECURITY_SPEC.md`**, **`INTERVALS_WEBHOOKS_RESEARCH.md`** (10 event-type payload samples), **`INTERVALS_NATIVE_WORKOUT_FORMAT.md`** (description-field grammar + parser quirks), **`OAUTH_BOOTSTRAP_SYNC_SPEC.md`**, **`USER_CONTEXT_SPEC.md`**, **`WEBHOOK_DATA_CAPTURE_SPEC.md`**, **`RACE_PLAN_SPEC.md`**, **`TRAINING_PROGRESSION_SPEC.md`**, **`ML_HRV_PREDICTION_SPEC.md`**, **`ML_RACE_PROJECTION_SPEC.md`** — feature specs.
 - **`intervals_icu_openapi.json`** — Intervals.icu API reference. **`knowledge/`** — training methodology.
 
 ---
