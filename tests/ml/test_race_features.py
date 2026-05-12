@@ -32,6 +32,7 @@ def _activities_df(rows: list[dict]) -> pd.DataFrame:
         "avg_power",
         "normalized_power",
         "pace_mps",
+        "hr_zone_times",
     ]
     return pd.DataFrame(rows, columns=cols)
 
@@ -182,6 +183,85 @@ class TestBuildDataset:
             df = race_features.build_dataset(1, "run")
         assert df.empty
 
+    def test_z1_filter_engages_in_pipeline(self):
+        """Regression guard: confirm `_is_recovery_dominated` actually fires
+        inside the `build_dataset` loop, not just in isolation. Without this
+        coverage, a refactor that drops the call site (or moves the check
+        below where rows are counted) would slip through.
+        """
+        # 3 Run activities — 2 normal Z2-base + 1 recovery jog (85% Z1).
+        # All have enough moving_time, distance, and HR to pass other gates;
+        # only the z1-filter should remove the recovery row.
+        run_rows = [
+            {
+                "activity_id": "i1",
+                "date": "2026-04-01",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 3600,
+                "tss": 50.0,
+                "avg_hr": 140.0,
+                "is_race": False,
+                "distance": 10000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [600, 2400, 480, 120, 0],  # Z2 base — keep
+            },
+            {
+                "activity_id": "i2",
+                "date": "2026-04-08",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 3600,
+                "tss": 45.0,
+                "avg_hr": 138.0,
+                "is_race": False,
+                "distance": 10000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [3060, 540, 0, 0, 0],  # 85% Z1 — recovery, drop
+            },
+            {
+                "activity_id": "i3",
+                "date": "2026-04-15",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 3600,
+                "tss": 55.0,
+                "avg_hr": 145.0,
+                "is_race": False,
+                "distance": 10000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [400, 2200, 700, 300, 0],  # Z2 base — keep
+            },
+        ]
+        with (
+            patch.object(race_features, "_fetch_activities", return_value=_activities_df(run_rows)),
+            patch.object(
+                race_features,
+                "_fetch_all_sports_activities",
+                return_value=pd.DataFrame(
+                    columns=["date", "sport", "tss"],
+                ),
+            ),
+            patch.object(race_features, "_fetch_wellness", return_value=_wellness_df([])),
+            patch.object(race_features, "_fetch_garmin_daily", return_value=_garmin_df()),
+            patch.object(race_features, "_fetch_training_log", return_value=_training_log_df()),
+            patch.object(race_features, "_fetch_athlete_state", return_value={}),
+        ):
+            df = race_features.build_dataset(1, "run")
+        # Recovery row (i2) dropped — only 2 of 3 survive
+        assert len(df) == 2
+        assert set(df["activity_id"]) == {"i1", "i3"}
+        assert "i2" not in df["activity_id"].values
+
 
 # ---------------------------------------------------------------------------
 # Inference feature builder + Mode 2 overrides
@@ -259,3 +339,83 @@ class TestBuildInferenceFeatures:
         assert f["atl"] == 75.0
         assert f["tsb"] == pytest.approx(5.0)  # recomputed from overrides
         assert f["current_eftp"] == 230.0
+
+
+class TestZ1RecoveryFilter:
+    """Phase 1.5 z1-filter (§6.3) drops recovery-dominated Run activities so
+    the model doesn't learn «athlete in OK form ran 6:30/km» from a recovery
+    jog.
+    """
+
+    def test_recovery_dominated_returns_true(self):
+        # 80% Z1 + 15% Z2 + 5% Z3 → recovery jog
+        zones = [4800, 900, 300, 0, 0]  # secs per zone
+        assert race_features._is_recovery_dominated(zones) is True
+
+    def test_base_aerobic_run_returns_false(self):
+        # 10% Z1 + 75% Z2 + 12% Z3 + 3% Z4 → standard Z2 base — keep it
+        zones = [600, 4500, 720, 180, 0]
+        assert race_features._is_recovery_dominated(zones) is False
+
+    def test_threshold_workout_returns_false(self):
+        # WU/CD Z1+Z2 + main set Z4-Z5 → intervals, definitely not recovery
+        zones = [600, 1200, 800, 1800, 1200]
+        assert race_features._is_recovery_dominated(zones) is False
+
+    def test_missing_zones_returns_false(self):
+        """Older activities w/o synced details → don't filter what we can't measure."""
+        assert race_features._is_recovery_dominated(None) is False
+        assert race_features._is_recovery_dominated([]) is False
+        assert race_features._is_recovery_dominated([0, 0, 0, 0, 0]) is False
+
+    def test_threshold_boundary(self):
+        """Exactly 70% Z1 → drop (inclusive — `>=`)."""
+        zones = [7000, 3000, 0, 0, 0]  # 70% / 30%
+        assert race_features._is_recovery_dominated(zones) is True
+        # 69% Z1 → keep
+        zones = [6900, 3100, 0, 0, 0]
+        assert race_features._is_recovery_dominated(zones) is False
+
+    def test_threshold_constant(self):
+        """Floor value tracked in constant — anyone tuning the filter must
+        update both the constant and the conservative-defaults narrative."""
+        assert race_features.Z1_RECOVERY_THRESHOLD == 0.70
+
+    def test_tuple_input_works(self):
+        """SQLAlchemy/pandas may return tuple instead of list — accept both."""
+        zones = (4800, 900, 300, 0, 0)  # 80% Z1 — recovery
+        assert race_features._is_recovery_dominated(zones) is True
+
+    def test_ndarray_input_works(self):
+        """numpy arrays are returned by some pandas paths — should work too."""
+        import numpy as np
+
+        zones = np.array([4800, 900, 300, 0, 0])
+        assert race_features._is_recovery_dominated(zones) is True
+
+    def test_string_input_rejected(self):
+        """Strings are technically iterable; reject so we don't iterate chars."""
+        # Wouldn't be a real use case (JSON wouldn't return string) but defensive.
+        assert race_features._is_recovery_dominated("invalid") is False
+        assert race_features._is_recovery_dominated(b"invalid") is False
+
+    def test_nan_values_neutralized(self):
+        """NaN poison check — `bool(float('nan')) is True` so `z or 0`
+        wouldn't have neutralized it. Coercion must treat NaN as zero, else
+        sum becomes NaN and `nan >= 0.70` returns False, silently disabling
+        the filter on a real recovery activity.
+        """
+        # 80% Z1 + NaN garbage in higher zones — should still flag as recovery.
+        zones = [4800, 900, float("nan"), None, 0]
+        assert race_features._is_recovery_dominated(zones) is True
+
+    def test_all_nan_returns_false(self):
+        """If every entry is NaN the sum coerces to 0 → can't classify."""
+        zones = [float("nan")] * 5
+        assert race_features._is_recovery_dominated(zones) is False
+
+    def test_negative_seconds_clamped(self):
+        """Defensive — negative time has no physical meaning, treat as 0."""
+        zones = [4800, -100, 200, 0, 0]
+        # Z1=4800, total=4800+0+200=5000 → 96% Z1 → recovery
+        assert race_features._is_recovery_dominated(zones) is True
