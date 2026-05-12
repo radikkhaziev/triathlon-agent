@@ -256,3 +256,218 @@ class TestQualityGate:
         assert "run" not in envelope["not_available"]
         assert envelope["splits"] == {}
         assert any("below acceptance" in w for w in envelope["warnings"])
+
+
+class TestMode2LinearInterpolation:
+    """`_mode2_overrides` projects current_CTL → goal.ctl_target linearly.
+
+    Replaces the old Intervals `fitness_projection.ctl` lookup that returned a
+    decay curve («what happens if you stop training») — wrong semantics for
+    athletes who don't write future workouts into Intervals calendar (issue
+    #349). The linear extrapolation matches spec §8.3 Phase 2 fallback.
+    """
+
+    def _wellness(self, ctl: float | None = 30.0, atl: float | None = 28.0):
+        w = MagicMock()
+        w.ctl = ctl
+        w.atl = atl
+        return w
+
+    def _goal(self, event_date: date, ctl_target: float | None = 68.0):
+        g = MagicMock()
+        g.event_date = event_date
+        g.ctl_target = ctl_target
+        return g
+
+    def _patch_deps(self, *, wellness, goal, projection=None):
+        """Mock all 3 ORM/data dependencies."""
+        return [
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=wellness)),
+            patch.object(race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=goal)),
+            patch.object(race_predict.FitnessProjection, "get", AsyncMock(return_value=projection)),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_race_at_goal_date_hits_target(self):
+        """Race on the same date as the goal → projected_ctl == ctl_target.
+
+        Uses a realistic ramp (current=40, target=68, ratio=1.7) to avoid the
+        CTL_PROJECTION_RATIO_CAP=2.0 ceiling. The cap-engagement case is
+        covered separately by `test_aggressive_target_engages_cap`.
+        """
+        today = date(2026, 5, 11)
+        goal_dt = date(2026, 9, 15)  # 127 days out
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness(ctl=40.0))),
+            patch.object(
+                race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(goal_dt, 68.0))
+            ),
+            patch.object(race_predict.FitnessProjection, "get", AsyncMock(return_value=None)),
+        ):
+            overrides = await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15")
+        assert overrides is not None
+        assert overrides["ctl"] == pytest.approx(68.0)
+        # Per-sport CTL ratio = projected / current = 68/40 = 1.7 (below cap 2.0)
+        assert overrides["_ctl_ratio"] == pytest.approx(68.0 / 40.0)
+        assert "_ctl_target_unrealistic" not in overrides
+
+    @pytest.mark.asyncio
+    async def test_aggressive_target_engages_cap(self):
+        """Target requires ratio > 2.0 → cap engages, projected = current × 2,
+        `_ctl_target_unrealistic` flag set so caller can warn the athlete.
+
+        This is the canonical user-1 case (current=30, target=68 → ratio=2.27)
+        — without the cap, scaling per-sport CTL features by 2.27× pushes them
+        out-of-distribution for the XGBoost model.
+        """
+        today = date(2026, 5, 11)
+        goal_dt = date(2026, 9, 15)
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness(ctl=30.0))),
+            patch.object(
+                race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(goal_dt, 68.0))
+            ),
+            patch.object(race_predict.FitnessProjection, "get", AsyncMock(return_value=None)),
+        ):
+            overrides = await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15")
+        # Cap engages: projected_ctl = 30 × 2.0 = 60 (not 68)
+        assert overrides["ctl"] == pytest.approx(30.0 * race_predict.CTL_PROJECTION_RATIO_CAP)
+        assert overrides["_ctl_ratio"] == pytest.approx(race_predict.CTL_PROJECTION_RATIO_CAP)
+        assert overrides["_ctl_target_unrealistic"] is True
+
+    @pytest.mark.asyncio
+    async def test_race_at_half_horizon_gets_halfway(self):
+        """Race 50% of the way to the goal date → projected CTL halfway."""
+        today = date(2026, 5, 11)
+        race_dt = date(2026, 7, 12)  # 62 days out
+        goal_dt = date(2026, 9, 12)  # 124 days out — race at ~50%
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness(ctl=30.0))),
+            patch.object(
+                race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(goal_dt, 68.0))
+            ),
+            patch.object(race_predict.FitnessProjection, "get", AsyncMock(return_value=None)),
+        ):
+            overrides = await race_predict._mode2_overrides(user_id=1, race_date=race_dt.isoformat())
+        # 50% along linear path: 30 + 0.5×(68−30) = 49
+        ratio = 62 / 124
+        expected = 30.0 + (68.0 - 30.0) * ratio
+        assert overrides["ctl"] == pytest.approx(expected, abs=0.5)
+
+    @pytest.mark.asyncio
+    async def test_race_beyond_goal_caps_at_target(self):
+        """Race AFTER the planned goal date → ratio clamped at 1.0 → projected
+        approaches target (subject to CTL_PROJECTION_RATIO_CAP if aggressive).
+
+        Realistic ramp here (current=40, target=68) to isolate ratio-clamp
+        behavior from the cap-engagement test above.
+        """
+        today = date(2026, 5, 11)
+        race_dt = date(2026, 10, 31)  # 173 days out
+        goal_dt = date(2026, 9, 12)  # 124 days — race past goal
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness(ctl=40.0))),
+            patch.object(
+                race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(goal_dt, 68.0))
+            ),
+            patch.object(race_predict.FitnessProjection, "get", AsyncMock(return_value=None)),
+        ):
+            overrides = await race_predict._mode2_overrides(user_id=1, race_date=race_dt.isoformat())
+        # Ratio capped at 1.0 → projected = ctl_target exactly (68/40 = 1.7 < cap)
+        assert overrides["ctl"] == pytest.approx(68.0)
+
+    @pytest.mark.asyncio
+    async def test_no_wellness_returns_none(self):
+        """No current Wellness row → can't anchor → cold-start (None)."""
+        today = date(2026, 5, 11)
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=None)),
+            patch.object(
+                race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(date(2026, 9, 15)))
+            ),
+        ):
+            assert await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15") is None
+
+    @pytest.mark.asyncio
+    async def test_no_goal_returns_none(self):
+        """No RACE_A goal → no target to extrapolate to → cold-start."""
+        today = date(2026, 5, 11)
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness())),
+            patch.object(race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=None)),
+        ):
+            assert await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15") is None
+
+    @pytest.mark.asyncio
+    async def test_goal_without_ctl_target_returns_none(self):
+        """Goal exists but no ctl_target set → can't extrapolate."""
+        today = date(2026, 5, 11)
+        goal_dt = date(2026, 9, 15)
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness())),
+            patch.object(
+                race_predict.AthleteGoal,
+                "get_by_category",
+                AsyncMock(return_value=self._goal(goal_dt, ctl_target=None)),
+            ),
+        ):
+            assert await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15") is None
+
+    @pytest.mark.asyncio
+    async def test_goal_in_past_returns_none(self):
+        """Goal date already passed → no positive ratio possible → cold-start."""
+        today = date(2026, 5, 11)
+        past_goal = date(2026, 4, 1)  # already passed
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness())),
+            patch.object(race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(past_goal))),
+        ):
+            assert await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15") is None
+
+    @pytest.mark.asyncio
+    async def test_eftp_from_projection_when_available(self):
+        """If FitnessProjection has eFTP data → include in overrides.
+
+        eFTP-from-Intervals stays trustworthy even when ctl-decay is wrong:
+        Intervals computes eFTP independently of training-load decay.
+        """
+        today = date(2026, 5, 11)
+        goal_dt = date(2026, 9, 15)
+        projection = MagicMock()
+        projection.sport_info_by_type = MagicMock(return_value=225.0)  # eftp for Ride
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness())),
+            patch.object(race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(goal_dt))),
+            patch.object(race_predict.FitnessProjection, "get", AsyncMock(return_value=projection)),
+        ):
+            overrides = await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15")
+        assert overrides["current_eftp"] == 225.0
+
+    @pytest.mark.asyncio
+    async def test_no_projection_still_returns_overrides(self):
+        """FitnessProjection.get returns None → eFTP absent but ctl/atl/_ctl_ratio still set.
+
+        Regression guard: prior version returned None entirely if projection missing.
+        Now the linear extrapolation drives the result independently.
+        """
+        today = date(2026, 5, 11)
+        goal_dt = date(2026, 9, 15)
+        with (
+            patch.object(race_predict, "local_today", return_value=today),
+            patch.object(race_predict.Wellness, "get", AsyncMock(return_value=self._wellness())),
+            patch.object(race_predict.AthleteGoal, "get_by_category", AsyncMock(return_value=self._goal(goal_dt))),
+            patch.object(race_predict.FitnessProjection, "get", AsyncMock(return_value=None)),
+        ):
+            overrides = await race_predict._mode2_overrides(user_id=1, race_date="2026-09-15")
+        assert overrides is not None
+        assert "current_eftp" not in overrides
+        assert overrides["ctl"] > 0  # linear extrapolation still produces ctl
