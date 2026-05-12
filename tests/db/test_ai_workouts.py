@@ -194,6 +194,30 @@ class TestPlannedWorkout:
                 duration_minutes=20,
             )
 
+    def test_rejects_unknown_units(self):
+        """Native description renderer expects `%lthr`/`%ftp`/`%pace`. Unknown
+        units (e.g. raw bpm, %hrr) → renderer would emit a target-less line →
+        Intervals' parser drops `workout_doc.steps`. Fail at DTO construction
+        instead."""
+        with pytest.raises(ValidationError, match="expected '%lthr'"):
+            PlannedWorkoutDTO(
+                sport="Run",
+                name="Test",
+                steps=[WorkoutStepDTO(text="Main", duration=600, hr={"units": "bpm", "value": 150})],
+                duration_minutes=10,
+            )
+
+    def test_rejects_missing_value(self):
+        """Target dict must carry a numeric `value` — otherwise renderer would
+        emit a malformed line."""
+        with pytest.raises(ValidationError, match="missing numeric 'value'"):
+            PlannedWorkoutDTO(
+                sport="Run",
+                name="Test",
+                steps=[WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr"})],
+                duration_minutes=10,
+            )
+
     def test_rejects_repeat_substep_without_target(self):
         """Sub-steps of a repeat group must also carry targets."""
         with pytest.raises(ValidationError, match="no intensity target"):
@@ -282,7 +306,13 @@ class TestRenderDuration:
 class TestRenderDistance:
     def test_meters_under_1km(self):
         assert _render_distance(200.0) == "200mtr"
-        assert _render_distance(150.5) == "150mtr"  # rounded
+
+    def test_meters_rounded_to_nearest_int(self):
+        # `int(round(...))` uses banker's rounding (half-to-even).
+        # 150.4 → 150 (truncates down); 150.6 → 151 (rounds up).
+        # 150.5 → 150 (half-to-even, rounds to nearest even integer).
+        assert _render_distance(150.4) == "150mtr"
+        assert _render_distance(150.6) == "151mtr"
 
     def test_exact_km(self):
         assert _render_distance(1000.0) == "1km"

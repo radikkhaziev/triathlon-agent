@@ -355,31 +355,35 @@ def _render_distance(meters: float) -> str:
     return f"{int(round(meters))}mtr"
 
 
+# Mapping target-kind → (units string accepted by validator, suffix for native render).
+# Adding a new units string also requires extending `_check_target_shape` validator
+# on PlannedWorkoutDTO so bad input fails at DTO construction rather than render time.
+_TARGET_SUFFIX = {
+    "hr": ("%lthr", "% LTHR"),
+    "power": ("%ftp", "%"),  # bare % → FTP-implied per native grammar
+    "pace": ("%pace", "% Pace"),
+}
+
+
 def _render_target(step: "WorkoutStepDTO", sport: str) -> str | None:
     """Render the step's intensity target in Intervals' native target syntax.
 
-    Returns None when the step has no target — caller decides whether that's
-    acceptable (it is for `Other`; everywhere else the validator rejects it).
+    Returns ``None`` only when the step has no target at all (acceptable for
+    ``Other``; rejected by the validator everywhere else). Bad-shape targets
+    (unknown units, non-numeric value) cannot reach this function — they fail
+    in ``PlannedWorkoutDTO._check_target_shape`` at DTO construction.
     """
 
-    def _fmt(value: int | float, end: int | float | None, suffix: str) -> str:
+    def _fmt(value: float, end: float | None, suffix: str) -> str:
+        v = int(round(value))
         if end is not None and end != value:
-            return f"{int(value)}-{int(end)}{suffix}"
-        return f"{int(value)}{suffix}"
+            return f"{v}-{int(round(end))}{suffix}"
+        return f"{v}{suffix}"
 
-    if step.hr:
-        units = (step.hr.get("units") or "").lower()
-        if units == "%lthr":
-            return _fmt(step.hr["value"], step.hr.get("end"), "% LTHR")
-    if step.power:
-        units = (step.power.get("units") or "").lower()
-        if units == "%ftp":
-            # Bare `%` resolves to %FTP for Ride — matches the syntax guide.
-            return _fmt(step.power["value"], step.power.get("end"), "%")
-    if step.pace:
-        units = (step.pace.get("units") or "").lower()
-        if units == "%pace":
-            return _fmt(step.pace["value"], step.pace.get("end"), "% Pace")
+    for attr, (_units, suffix) in _TARGET_SUFFIX.items():
+        target = getattr(step, attr)
+        if target:
+            return _fmt(target["value"], target.get("end"), suffix)
     return None
 
 
@@ -429,12 +433,15 @@ class PlannedWorkoutDTO(BaseModel):
 
     @model_validator(mode="after")
     def _check_steps_have_targets(self) -> "PlannedWorkoutDTO":
-        """Every terminal step must carry at least one intensity target.
+        """Every terminal step must carry at least one well-formed intensity target.
 
-        Garmin/Wahoo watches alert on HR/power/pace corridors only when the step
-        defines them. Text-only steps ('Z2' label + duration) leave the athlete
-        running blind, so we reject them here rather than silently pushing a
-        useless workout to Intervals.icu.
+        Two failure modes both rejected here:
+        1. Text-only steps (`Z2` label + duration, no hr/power/pace dict) leave
+           Garmin/Wahoo unable to alert the athlete on a corridor.
+        2. Targets with unknown `units` or missing/non-numeric `value` — these
+           survive past basic presence checks but break the native-format
+           description renderer, which would emit a target-less line and
+           trigger Intervals' parse-failure-induced `workout_doc.steps` drop.
 
         Exception: ``Other`` sport (yoga, stretching, mobility) — no watch alerts needed.
         """
@@ -458,6 +465,27 @@ class PlannedWorkoutDTO(BaseModel):
                         f"step must include hr/power/pace so watches can alert the "
                         f"athlete on the target corridor."
                     )
+                # Native-format description renderer needs a known units string
+                # and a numeric value. Catching bad shape here fails the push
+                # at DTO construction; a renderer-side fallback would silently
+                # emit a target-less line, which Intervals' parser drops along
+                # with the whole `workout_doc.steps` payload.
+                for attr, (expected_units, _suffix) in _TARGET_SUFFIX.items():
+                    target = getattr(s, attr)
+                    if not target:
+                        continue
+                    units = (target.get("units") or "").lower()
+                    if units != expected_units:
+                        raise ValueError(
+                            f"Step {label!r} has {attr} target with units "
+                            f"{target.get('units')!r}; expected {expected_units!r}."
+                        )
+                    value = target.get("value")
+                    end = target.get("end")
+                    if not isinstance(value, (int, float)):
+                        raise ValueError(f"Step {label!r} {attr} target missing numeric 'value' " f"(got {value!r}).")
+                    if end is not None and not isinstance(end, (int, float)):
+                        raise ValueError(f"Step {label!r} {attr} target has non-numeric 'end' " f"(got {end!r}).")
 
         _walk(self.steps, "steps")
         return self
