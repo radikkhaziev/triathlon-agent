@@ -8,7 +8,7 @@ from pydantic import validate_call
 
 from bot.i18n import _, set_language
 from data.db import AthleteGoal, AthleteSettings, User, UserDTO
-from data.intervals.client import IntervalsSyncClient
+from data.intervals.client import IntervalsScopeError, IntervalsSyncClient
 from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
 from data.sport_map import resolve_race_sport_type
 from tasks.dto import DateDTO, local_today
@@ -44,7 +44,12 @@ def actor_sync_athlete_settings(
     """
     if sport_settings is None:
         with IntervalsSyncClient.for_user(user) as client:
-            all_settings = client.list_sport_settings()
+            try:
+                all_settings = client.list_sport_settings()
+            except IntervalsScopeError:
+                # User revoked the SETTINGS scope on Intervals.icu. Nothing to
+                # sync; abort cleanly so Dramatiq doesn't retry-loop on a 403.
+                return
     else:
         all_settings = sport_settings
 
@@ -122,7 +127,11 @@ def actor_sync_athlete_goals(user: UserDTO):
 
     with IntervalsSyncClient.for_user(user) as client:
         for category in ("RACE_A", "RACE_B", "RACE_C"):
-            events: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, newest=newest, category=category)
+            try:
+                events: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, newest=newest, category=category)
+            except IntervalsScopeError:
+                # CALENDAR scope revoked — no goals visible, skip the whole sync.
+                return
             for event in events:
                 if event.id not in existing_ids:
                     new_events.append((category, event))
@@ -188,33 +197,40 @@ def actor_update_zones(user: UserDTO):
                 )
                 continue
 
-            if alert.metric == "LTHR":
-                client.update_sport_settings(sport, {"lthr": new_value})
-                AthleteSettings.upsert(user_id=user.id, sport=sport, lthr=new_value)
-                updated.append(f"LTHR {sport}: {old_value} → {new_value} bpm")
-                logger.info("Updated LTHR %s for user %d: %d → %d", sport, user.id, old_value, new_value)
-            elif alert.metric == "FTP":
-                client.update_sport_settings(sport, {"ftp": new_value})
-                AthleteSettings.upsert(user_id=user.id, sport=sport, ftp=new_value)
-                updated.append(f"FTP {sport}: {old_value} → {new_value} W")
-                logger.info("Updated FTP %s for user %d: %d → %d", sport, user.id, old_value, new_value)
-            elif alert.metric == "THRESHOLD_PACE":
-                # DB stores sec/km; Intervals.icu API expects m/s velocity.
-                m_per_s = round(1000 / new_value, 3)
-                client.update_sport_settings(sport, {"threshold_pace": m_per_s})
-                AthleteSettings.upsert(user_id=user.id, sport=sport, threshold_pace=float(new_value))
-                old_pace = format_pace(old_value) or f"{old_value} s/km"
-                new_pace = format_pace(new_value) or f"{new_value} s/km"
-                updated.append(f"Threshold pace {sport}: {old_pace} → {new_pace}")
-                logger.info(
-                    "Updated threshold_pace %s for user %d: %d → %d s/km (%.3f m/s)",
-                    sport,
-                    user.id,
-                    old_value,
-                    new_value,
-                    m_per_s,
-                )
-            else:
-                logger.warning("Unknown drift metric %s for user %d, skipping", alert.metric, user.id)
+            try:
+                if alert.metric == "LTHR":
+                    client.update_sport_settings(sport, {"lthr": new_value})
+                    AthleteSettings.upsert(user_id=user.id, sport=sport, lthr=new_value)
+                    updated.append(f"LTHR {sport}: {old_value} → {new_value} bpm")
+                    logger.info("Updated LTHR %s for user %d: %d → %d", sport, user.id, old_value, new_value)
+                elif alert.metric == "FTP":
+                    client.update_sport_settings(sport, {"ftp": new_value})
+                    AthleteSettings.upsert(user_id=user.id, sport=sport, ftp=new_value)
+                    updated.append(f"FTP {sport}: {old_value} → {new_value} W")
+                    logger.info("Updated FTP %s for user %d: %d → %d", sport, user.id, old_value, new_value)
+                elif alert.metric == "THRESHOLD_PACE":
+                    # DB stores sec/km; Intervals.icu API expects m/s velocity.
+                    m_per_s = round(1000 / new_value, 3)
+                    client.update_sport_settings(sport, {"threshold_pace": m_per_s})
+                    AthleteSettings.upsert(user_id=user.id, sport=sport, threshold_pace=float(new_value))
+                    old_pace = format_pace(old_value) or f"{old_value} s/km"
+                    new_pace = format_pace(new_value) or f"{new_value} s/km"
+                    updated.append(f"Threshold pace {sport}: {old_pace} → {new_pace}")
+                    logger.info(
+                        "Updated threshold_pace %s for user %d: %d → %d s/km (%.3f m/s)",
+                        sport,
+                        user.id,
+                        old_value,
+                        new_value,
+                        m_per_s,
+                    )
+                else:
+                    logger.warning("Unknown drift metric %s for user %d, skipping", alert.metric, user.id)
+            except IntervalsScopeError:
+                # SETTINGS:WRITE scope revoked — drift remains in our DB but
+                # we can't push to Intervals.icu. Bail out of the whole loop:
+                # the user has to reconnect with the right scope to recover.
+                logger.info("SETTINGS:WRITE revoked for user %d — aborting zone push", user.id)
+                return
 
     _actor_send_zones_notification.send(user, updated)

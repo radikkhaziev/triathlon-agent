@@ -41,6 +41,22 @@ class IntervalsAuthError(Exception):
         super().__init__(f"Intervals.icu OAuth token revoked for user {user_id}")
 
 
+class IntervalsScopeError(Exception):
+    """Raised when Intervals.icu returns 403 (scope revoked / insufficient).
+
+    The token is still valid for other scopes — we do NOT clear it.
+    Callers (typically Dramatiq actors) catch this and skip the operation
+    gracefully so Dramatiq doesn't retry-loop on a permanent user-action denial.
+    """
+
+    def __init__(self, user_id: int | None, method: str, path: str):
+        self.user_id = user_id
+        self.method = method
+        self.path = path
+        suffix = f" for user {user_id}" if user_id is not None else ""
+        super().__init__(f"Intervals.icu 403 on {method} {path}{suffix}")
+
+
 def to_snake(name: str) -> str:
     """Convert camelCase to snake_case: 'restingHR' → 'resting_hr'."""
     result: list[str] = []
@@ -438,6 +454,14 @@ class IntervalsAsyncClient(IntervalsClientBase):
                         db_user.clear_oauth_tokens()
                         await session.commit()
                 raise IntervalsAuthError(self._user_id) from e
+            if e.response.status_code == 403:
+                logger.info(
+                    "Intervals.icu 403 on %s %s for user %s — scope revoked, skipping",
+                    spec.method,
+                    spec.path,
+                    self._user_id,
+                )
+                raise IntervalsScopeError(self._user_id, spec.method, spec.path) from e
             raise
 
     # -- Endpoints (one-liners) ----------------------------------------
@@ -579,6 +603,14 @@ class IntervalsSyncClient(IntervalsClientBase):
                         db_user.clear_oauth_tokens()
                         session.commit()
                 raise IntervalsAuthError(self._user_id) from e
+            if e.response.status_code == 403:
+                logger.info(
+                    "Intervals.icu 403 on %s %s for user %s — scope revoked, skipping",
+                    spec.method,
+                    spec.path,
+                    self._user_id,
+                )
+                raise IntervalsScopeError(self._user_id, spec.method, spec.path) from e
             raise
 
     # -- Endpoints (one-liners) ----------------------------------------
