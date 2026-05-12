@@ -971,30 +971,52 @@ in envelope as `bias_correction_applied` and `bias_fit_method`.
   - `bias_fit_method: str | None` — `"per_athlete_linear"` / `"pool_fallback"`
     / `"out_of_scope"` / `None`
 
-**Concrete user 1 example (Ironman 70.3 Belgrade, race_date 2026-09-15, 126 days out):**
+**Production verification (user 1, Ironman 70.3 Belgrade, race_date 2026-09-15, 126 days out):**
 
-- Pre-Phase-2.0β2 race_day prediction: ~5:51/km Run
-- Bias @ 126d = 6.178 + 0.126 × 126 = **22.05 sec/km**
-- Post-correction: 5:51 − 22.05 = **~5:29/km Run** (≈ 1h55m on 21.1km)
+After deploy + retrain on prod 2026-05-12, `get_race_projection` returned:
 
-Matches plan target range (race plan calls for 2:05-2:15 — corrected prediction
-is at upper edge / slightly aggressive, consistent with «model + bias correction
-slightly optimistic» which we'll calibrate further in β2.1 with multi-athlete pool).
+| Mode | Pre-Phase-2.0β2 | Post-deploy | Δ |
+|---|---|---|---|
+| today pred | 355.4 sec/km (5:55/km) | **337.0 sec/km (5:37/km)** | −18.4 sec/km |
+| race_day pred | 351.3 sec/km (5:51/km) | **332.9 sec/km (5:33/km)** | −18.4 sec/km |
+| race_day total (21.1k) | 2:03:31 | **1:57:03** | −6:28 |
+| bias_correction_applied | n/a | **18.39 sec/km** | — |
+| bias_fit_method | n/a | **per_athlete_linear** | — |
+| bias_n_races_fit | n/a | **18** (≥5 → per-athlete path) | — |
 
-**Closes #359 Q1.** Formula blend approach (§10.5.5) deprecated — see #362
-closing comment + #363 (Phase 2 pivot tracker).
+Same shift magnitude on both modes — correction is `days_to_race`-driven, not
+mode-driven (✓ matches design).
 
-**Followups (not blocking ship, tracked in #363):**
+Prod per-athlete fit для user 1: `intercept ≈ 6.8, slope ≈ 0.125 sec/km/day`.
+Очень близко к pool defaults (6.178 / 0.126 — derived from same user 1 simulation
+during dev), но не identical: walk-forward CV даёт чуть более consistent
+intercept чем full-data simulation. Bias 18.39 vs simulation-predicted 22.05 —
+~3.6 sec/km разница, slightly conservative. Within acceptable range, validates
+pool defaults для cold-start athletes (~6 sec/km сравнимо с per-athlete
+intercepts типичных runners).
 
-- **β2.1:** Retune pool constants after multi-athlete race data accumulates
-  (target: ≥3 athletes with ≥10 races each).
-- **β1:** Race-feature enrichment (`is_trail` / `weather_temp_c` /
-  `elevation_per_km`). Oracle MAE 42.5 vs ML 55 ⇒ 12.5 sec/km headroom from
-  per-race context, not addressed by horizon-only bias correction.
-- **β3:** Cross-athlete pool model — requires multi-tenant race data.
+**Closes #359 Q1** (run model insensitivity to projected CTL). Formula blend
+approach (§10.5.5) deprecated — see #362 closing comment.
+
+**Followup tracking (split out from #363 after ship):**
+
+- **[#365](https://github.com/radikkhaziev/triathlon-agent/issues/365) — β1 race-feature enrichment.**
+  Oracle MAE 42.5 vs ML 55 ⇒ 12.5 sec/km headroom from per-race context, not
+  addressed by horizon-only bias correction. Features: `is_trail` / `surface` /
+  `elevation_per_km` / `weather_temp_c` / `race_type`. Deferred 2-4 weeks for
+  prod baseline.
+- **[#366](https://github.com/radikkhaziev/triathlon-agent/issues/366) — β2.1 pool constants retune.**
+  Current `POOL_BIAS_INTERCEPT=6.178, POOL_BIAS_SLOPE=0.126` derived from
+  single-athlete (user 1) simulation. Risk: user-1-shaped bias for athletes
+  with different race-type distributions. Trigger: ≥3 athletes × ≥10 races
+  each in `races` table.
+- **β3 cross-athlete pool model.** Train shared ML on athlete pool, warm-start
+  per-user. Deferred without dedicated issue — revisit after #366 establishes
+  multi-athlete data baseline.
 
 **Кросс-discipline expansion (Phase 2.5)** — Ride/Swim bias models. Те же
-mini-simulation harness + per-athlete fit, после успешного Run ship'а на проде.
+mini-simulation harness + per-athlete fit, после накопления race data на Ride/Swim
+(currently у user 1: 2 Ride races, 1 Swim race — недостаточно для отдельного fit'а).
 
 ### 10.6. Cross-athlete pool model (Phase 2 deferred, prerequisite gate)
 
@@ -1043,23 +1065,37 @@ python -m cli train-race-models <user_id>
 Обучает три модели (Run/Ride/Swim), сохраняет `.joblib` файлы. Логирует per-model
 MAE/R² в stdout + Sentry.
 
-### 12.2. Weekly cron
+### 12.2. Weekly cron — isolated ml-worker (issue #348, 2026-05-12)
 
-Точка расширения — существующий `actor_retrain_progression_model` (`bot/scheduler.py:19,96`, Sun 16:00 Belgrade, `misfire_grace_time=7200, coalesce=True`), shipped с TRAINING_PROGRESSION 2026-04-19. Добавляем race-цикл в тот же actor (или, чтобы не раздувать одну функцию, отдельный `actor_retrain_race_models` со своим scheduler slot — решение по месту, оба варианта приемлемы). Зависимость от HRV spec — необязательная: когда HRV spec стартует, она встанет тем же расширением.
+`scheduler_ml_retrain_job` (`bot/scheduler.py`, Sun **03:00** Belgrade — moved
+from 16:00 by #348, `misfire_grace_time=7200, coalesce=True`). Both
+`actor_retrain_progression_model` + `actor_retrain_race_models` declare
+`queue_name="ml_retrain"` and run on a dedicated `ml-worker` container
+(`docker-compose.yml`):
 
-```python
-# Эскиз — adapt to existing actor's pattern in bot/scheduler.py
-@dramatiq.actor(max_retries=0)
-def actor_retrain_race_models(user_id: int):
-    from data.ml import race_train
-    for discipline in ("Run", "Ride", "Swim"):
-        try:
-            race_train.train_user_model(user_id, discipline=discipline)
-        except race_train.InsufficientDataError:
-            logger.info("skip race_%s — need 100+ activities", discipline)
+```yaml
+ml-worker:
+  command: dramatiq tasks.actors --queues ml_retrain --threads 1 --processes 1
 ```
 
-Запускается тем же scheduler-slot'ом что и progression retrain (Sun 16:00), либо отдельным slot'ом если время выполнения совокупно вырастает.
+**Why isolated:** XGBoost training is CPU-heavy (bootstrap 500 rounds × 3
+disciplines × N athletes ≈ 30-60 min total). Running on the default worker
+pool spiked CPU and contended with Telegram / wellness / webhook handlers.
+Dedicated single-threaded worker means jobs process **one-by-one** by
+construction — no parallel XGBoost trains, predictable load. Night slot
+(03:00) puts the spike outside user activity window.
+
+**Scheduler dispatches per-user** plain `.send()` — no `delay` (vestigial from
+old default-queue design; under `--threads 1 --processes 1` ml-worker pulls
+FIFO sequentially, so any delay would just defer message visibility without
+parallelism benefit). Queue depth still observable any time:
+
+```bash
+redis-cli LLEN dramatiq:ml_retrain
+```
+
+Default worker `--queues default` — explicitly scoped so it doesn't race
+ml-worker on the ml_retrain queue.
 
 ### 12.3. Acceptance bar per discipline (user 1)
 
@@ -1114,7 +1150,7 @@ CREATE TABLE race_projections (
 - [x] `data/ml/race_train.py` — XGBRegressor per discipline + bootstrap residuals (500 resamples) → `static/models/race_{user}_{discipline}.joblib`.
 - [x] MCP tool `get_race_projection` — оба режима + cold-start fallback + all error envelopes §9.3 (7 cases).
 - [x] Bootstrap residuals → CI в ответе, inflation `sqrt(days/30)` для Mode 2.
-- [x] **Weekly retrain actor** — `actor_retrain_race_models` (separate actor от progression), shared `scheduler_progression_model_job` Sun 16:00 Belgrade slot с 15s offset; `time_limit=600s, max_retries=0`. Skip via `InsufficientDataError`.
+- [x] **Weekly retrain actor** — `actor_retrain_race_models` (separate actor от progression), shared `scheduler_ml_retrain_job` Sun 03:00 Belgrade slot; `queue_name="ml_retrain"`, `time_limit=600s, max_retries=0`. Isolated `ml-worker` container (`--threads 1 --processes 1`) — see §12.2 / issue #348. Skip via `InsufficientDataError`.
 - [x] **Chat:** Claude корректно зовёт тулзу — `_STATIC_PROMPT_CHAT` секция `## Race projection` с триггерами в `bot/tool_filter.py:analysis` group.
 - [x] **Weekly report:** `SYSTEM_PROMPT_WEEKLY` step 8 + `WEEKLY_TOOL_NAMES` — one-line «🏁 Race-day прогноз» в 📈 Прогресс gated на `goal_event_date ∈ [30, 200]` дней.
 - [x] **Schema deps:** `fitness_projection.sport_info JSONB` (migration `b8c9d0e1f2a3`) + `FitnessProjection.{get, sport_info_by_type}`. Per-sport CTL helper lives inline at `data/ml/race_features.py:_compute_sport_ctl_series` (pandas-batch, ORM-method form turned out zero-caller and was removed).
@@ -1304,33 +1340,53 @@ Rationale documented in §14 «Phase 1 runtime acceptance — фактическ
 
 (none — все blocker'ы 2026-05 ship'нуты, см. ниже)
 
-### ✅ Shipped 2026-05-12 (Phase 1.6 + 1.7 + #349 fix)
+### ✅ Shipped 2026-05-12 (Phase 1.6 + 1.7 + Phase 2.0β2 + #349 fix)
 
-- **[#349](https://github.com/radikkhaziev/triathlon-agent/issues/349) — `fitness_projection` decay вместо плана.** ✅ Shipped 2026-05-12. `_mode2_overrides` переписан на линейную экстраполяцию `current_CTL → goal.ctl_target` с `CTL_PROJECTION_RATIO_CAP=2.0` для предотвращения out-of-distribution feature scaling. `_ctl_target_unrealistic` flag когда cap engages. Mode 2 race_day более не выдаёт мусорные сплиты на отдалённых датах с пустым Intervals calendar projection'ом.
+**Schema / behavior fixes:**
+
+- **[#349](https://github.com/radikkhaziev/triathlon-agent/issues/349) — `fitness_projection` decay вместо плана.** ✅ Shipped. `_mode2_overrides` переписан на линейную экстраполяцию `current_CTL → goal.ctl_target` с `CTL_PROJECTION_RATIO_CAP=2.0` для предотвращения out-of-distribution feature scaling. `_ctl_target_unrealistic` flag когда cap engages. Mode 2 race_day более не выдаёт мусорные сплиты на отдалённых датах с пустым Intervals calendar projection'ом.
 - **[#350](https://github.com/radikkhaziev/triathlon-agent/issues/350) — CI inflation cap + min-days threshold.** ✅ Shipped. `INFLATION_MAX = 1.8` + `MIN_RACE_DAYS_FOR_FORECAST = 14` в `data/ml/race_predict.py`. CI на 200d остановился на 1.8× вместо 2.6× — Run CI на 21k сжалось с ±34min до ~±24min. См. §10.2.
-- **[#359](https://github.com/radikkhaziev/triathlon-agent/issues/359) Q2 — duplicate of #350**, закрыт вместе.
-- **[#359](https://github.com/radikkhaziev/triathlon-agent/issues/359) Q1 (warning surface) — out-of-sample CTL warning.** ✅ Shipped. `metrics.ctl_feature_p90` в bundle, check + private flag в `_predict_one`, aggregated в warnings в `predict_splits_with_ci`. См. §10.4. Phase 2 root fix (formula-anchored blend) — deferred ниже.
-- **Phase 1.6 webhook-time noise classification — hybrid.** ✅ Shipped. Persisted `activities.noise_reason` tag (migration `aab8c9d0e1f2`), классифицируется в `actor_update_activity_details` (после `ActivityDetail.save`); live-check как fallback для `noise_scored_at IS NULL` legacy rows. Phase 1.6 enum: `run_recovery_jog` + `run_walk` (personalized via LTHR + threshold_pace × global multipliers). Full design: §6.4. Production validation §14.
 
-  **Validation findings:** на user 1 + user 62 walk=0 (нет walks-as-Run) — Phase 1.6 для них no-op, но non-regressive. Quality gate валидирован (user 1 Ride/Swim blocked, user 62 all three pass). Run R² ceiling для clean athletes ~0.22-0.45 — это **не noise-driven**, а model-architecture-driven (XGBoost не extrapolat'ит CTL вне train distribution). Phase 2 work (§10.5) — единственный путь дальше.
+**#359 (closed):**
+
+- **[#359](https://github.com/radikkhaziev/triathlon-agent/issues/359) Q1 + Q2 → resolved через #361 + #363.** Q2 (CI inflation usability) ушёл в #361, Q1 (run model insensitivity) ушёл в #363 β2. Parent #359 closed как obsolete-by-children.
+
+**[#361](https://github.com/radikkhaziev/triathlon-agent/issues/361) (closed) — CI envelope metadata polish.**
+✅ Shipped. Envelope получил 4 поля в обоих режимах: `ci_level=0.90`, `inflation`, `inflation_raw`, `inflation_capped`. Schema parity, callers не branch'атся на mode. См. §10.2 «Envelope metadata fields» + §10.4. Production verified: `inflation_capped=true` на race_day с d>97, `false` на today.
+
+**[#362](https://github.com/radikkhaziev/triathlon-agent/issues/362) (closed, not viable) — Phase 2.0a formula blend.**
+🔴 RED по decision gate (§10.5.5). Simulation MAE drop 0.69 sec/km, z=1.13 — below noise floor. Closed not-planned. Replaced by #363 pivot.
+
+**[#363](https://github.com/radikkhaziev/triathlon-agent/issues/363) (closed) — Phase 2.0β2 ML residual bias correction.**
+✅ Shipped + production verified 2026-05-12. Per-athlete linear bias fit `bias(d) = a + b * d` via mini-simulation на исторических races × horizons. Cold-start (`n_races < 5`) → pool constants `POOL_BIAS_INTERCEPT=6.178, POOL_BIAS_SLOPE=0.126` из `data/ml/bias_constants.py`. Applied uniformly across today + race_day modes. Envelope surface: `bias_correction_applied: float` + `bias_fit_method: str|null`. Full design + production verification table: §10.5.6.
+
+**Phase 1.6 webhook-time noise classification — hybrid.**
+✅ Shipped. Persisted `activities.noise_reason` tag (migration `aab8c9d0e1f2`), классифицируется в `actor_update_activity_details` (после `ActivityDetail.save`); live-check как fallback для `noise_scored_at IS NULL` legacy rows. Phase 1.6 enum: `run_recovery_jog` + `run_walk` (personalized via LTHR + threshold_pace × global multipliers). Full design: §6.4.
+
+**Validation findings:** на user 1 + user 62 walk=0 (нет walks-as-Run) — Phase 1.6 для них no-op, но non-regressive. Quality gate валидирован (user 1 Ride/Swim blocked, user 62 all three pass). Run R² ceiling для clean athletes ~0.22-0.45 — это **не noise-driven**, а model-architecture-driven (XGBoost не extrapolat'ит CTL вне train distribution). Phase 2.0β2 bias correction (§10.5.6) shipped 2026-05-12 как root fix — production verified.
+
+**[#348](https://github.com/radikkhaziev/triathlon-agent/issues/348) (shipped 2026-05-12) — ML retrain queue isolation + night cron.**
+✅ Shipped. `actor_retrain_progression_model` + `actor_retrain_race_models` теперь declare `queue_name="ml_retrain"`. Новый `ml-worker` сервис в `docker-compose.yml` (`--queues ml_retrain --threads 1 --processes 1`) — single-threaded sequential consumer для CPU-heavy XGBoost. Default worker scoped к `--queues default` чтобы не race'ить ml-worker. Cron сдвинут Sun 16:00 → **Sun 03:00 Belgrade**. Также fix latent bug: default worker получил `static_data:/app/static` volume mount (FIT files + Telegram avatars писались в container-local path, не видны api). Tests: `tests/tasks/test_ml_retrain_queue.py` (4 cases). See §12.2.
 
 ### 🟡 Infrastructure (не блокирует функциональность)
 
-- **[#348](https://github.com/radikkhaziev/triathlon-agent/issues/348) — ML retrain в отдельной Dramatiq очереди + ночной cron.**
-  Sun 16:00 → Sun 03:00, `queue_name="ml_retrain"`, отдельный worker с `--threads 1`. Изолирует CPU spike (XGBoost bootstrap) от Telegram/wellness/webhook workers. ~10 строк правок + 1 service в `docker-compose.yml`.
-
-- **[#346](https://github.com/radikkhaziev/triathlon-agent/issues/346) — Sentry alerts не приходят.**
-  Не специфично для ML. Spike protection / rate limit / отсутствующее alert rule. Race-projection capture'ы тоже не видны → если что-то сломается в production retrain'е, узнаем по логам, не Sentry.
+(none — #346 closed by user, #348 shipped above)
 
 ### 🟢 Phase 2 — deferred (по запросу или накоплению данных)
+
+**Active follow-ups (split out from #363 after Phase 2.0β2 ship):**
+
+- **[#365](https://github.com/radikkhaziev/triathlon-agent/issues/365) — β1 race-feature enrichment.** Oracle MAE 42.5 vs ML 55 ⇒ 12.5 sec/km headroom from per-race context. Features: `is_trail` / `surface` / `elevation_per_km` / `weather_temp_c` / `race_type`. Bias correction (§10.5.6) captured ~5 sec/km of that headroom; remaining ~7.5 sec/km lives in race-specific features. **Don't start until #363 β2 has 2-4 weeks of prod baseline** so feature lift is measurable against settled bias-correction MAE.
+- **[#366](https://github.com/radikkhaziev/triathlon-agent/issues/366) — β2.1 pool constants retune.** Current `POOL_BIAS_INTERCEPT=6.178, POOL_BIAS_SLOPE=0.126` derived from single-athlete user 1 simulation — risk: user-1-shaped bias for athletes with different race-type distribution. **Trigger: ≥3 athletes × ≥10 races each** in `races` table. Currently user 1 has 22 races, others have 0 — strictly deferred.
+
+**Existing Phase 2 deferred items:**
 
 - **Scenario engine** («miss 2 weeks» / «+10% volume» / custom CTL target) — требует hypothetical-CTL поверх existing projection. Spec §2.
 - **Webapp `/race-projection` page** — CTL trajectory chart + per-leg CI bars. Backend готов, нужен UI-спринт. Spec §11.2.
 - **Race-specific Ride/Swim calibration** — ждём ≥10 non-Run race events (сейчас Ride 2 / Swim 1 у user 1). Spec §2 Phase 2.
-- **Cross-athlete pool model** — общая регрессия + warm-start per-user. После накопления данных по 5+ атлетам. Spec §2 Phase 2. **Trigger from #359 Q1:** user 1's training-set CTL distribution (15-45) makes Mode 2 race-day projection at CTL=66 out-of-sample → tree clipping → only 4 sec/km improvement (см. §10.4). Pool model gives user 1 access to higher-CTL examples seen by other athletes. **Prerequisite: Phase 1.6 noise tag backfill** must be complete на всех атлетах — pooling грязные данные шумит сильнее, чем помогает (walks-as-Run у одного атлета испортят сигнал для всех).
-- **Formula-anchored baseline blend (issue #359 Q1, root fix).** XGBoost не extrapolat'ит — на out-of-sample CTL модель выдаёт conservative output. Решение: blend ML prediction с physiology-based formula (Run: Jack Daniels equivalent-pace из `threshold_pace`; Ride: FTP-anchored from `eFTP × race-intensity-target` per distance; Swim: CSS-anchored). Weight by `days_to_race` — close to race → ML wins (modeled state), far → formula wins (clean extrapolation). Mitigates the issue described в §10.4 (currently surfaced only as warning, not corrected). Effort: ~150 LoC + per-discipline calibration constants from training literature.
+- **Cross-athlete pool model (β3)** — общая регрессия + warm-start per-user. После накопления данных по 5+ атлетам. Spec §2 Phase 2. **Prerequisite: Phase 1.6 noise tag backfill** must be complete на всех атлетах — pooling грязные данные шумит сильнее, чем помогает. Сейчас implicit-deferred под #366 — revisit after #366 establishes multi-athlete baseline.
 - **Phase 1.5+ feature improvements** — surface filter for Run (`type=Run` strictly), duration condition для recovery-jog filter (если атлет ведёт длинные walks-as-Run, см. user 1 calibration в §6.3). По запросу.
-- **Phase 2 Ride noise classifiers** — `ride_recovery_spin` / `ride_commute` / `ride_indoor_test` (§6.4.2). Требует empirical calibration на 5 атлетах (как Run в Phase 1.5 calibration story). Schema + classifier infrastructure уже стоит после Phase 1.6 — добавление = одна строка в Literal type + три helpers + retest.
+- **Phase 2 Ride noise classifiers** — `ride_recovery_spin` / `ride_commute` / `ride_indoor_test` (§6.4.2). Требует empirical calibration на 5 атлетах. Schema + classifier infrastructure уже стоит после Phase 1.6 — добавление = одна строка в Literal type + три helpers + retest.
 - **Optical-HR noise detection** — `optical_hr_noisy` requires device-strap metadata parsing из FIT files (не реализовано). Defer пока чек не приоритет.
 
 ### 🟡 Cross-spec deps
@@ -1344,15 +1400,26 @@ Rationale documented in §14 «Phase 1 runtime acceptance — фактическ
 
 - Quality gate (§14 «Quality gate» секция) автоматически блокирует модели ниже R²=0.20 (Run/Ride) / R²=0.05 (Swim).
 - Атлет получает либо реальный прогноз с честным CI диапазоном, либо `reason=model_below_acceptance` сообщение — никогда мусор.
-- Acceptance bar §12.3 целевой для **зрелой системы** (3-6 месяцев чистых данных), а не для Phase 1 MVP с n=300-400.
+- Acceptance bar §12.3 целевой для **зрелой системы** (3-6 месяцев чистых данных + Phase 2 architecture (§10.5.6 bias correction shipped, §10.6 pool model pending)), а не для Phase 1 MVP с n=300-400.
 
 Решение зафиксировано 2026-05-12 после retrain across 5 атлетов. Бар может быть пересмотрен в Phase 2 если накопится evidence что MAE 10 sec/km нереалистичен на real-world data hygiene даже у дисциплинированных атлетов.
 
-**Post-Phase-1.6 retrain validation (2026-05-12):**
+**Post-Phase-1.6 retrain validation (2026-05-12, model-level):**
 
 | User | Run | Ride | Swim | walk/jog/clean | Verdict |
 |---|---|---|---|---|---|
 | 1 | R²=+0.22 MAE=35.9 | R²=−0.09 (gated) | R²=−682 (gated) | 0/9/72 | Run serves as ranking signal; Ride/Swim quality-gate blocked correctly. Phase 1.6 walk-filter was no-op (clean tagging). |
 | 62 | R²=**+0.45** MAE=19.4 | R²=**+0.32** MAE=15.7 | R²=**+0.12** MAE=7.2 | 0/1/166 | **First full-triathlon athlete** — все три pass through quality gate. Swim MAE 7.2 ниже spec target ≤8. |
 
-Phase 1.6 noise classification доказала что (а) не регрессирует на clean athletes, (б) infrastructure ready для атлетов с walks-as-Run проблемой. Дальнейший рост Run R² для clean athletes — Phase 2 work (formula blend + pool model), не noise filter.
+Phase 1.6 noise classification доказала что (а) не регрессирует на clean athletes, (б) infrastructure ready для атлетов с walks-as-Run проблемой.
+
+**Post-Phase-2.0β2 deploy verification (2026-05-12, inference-level on user 1, IM 70.3 Belgrade, d=126):**
+
+| Mode | Pre-deploy pred | Post-deploy pred | Δ | bias_correction_applied | bias_fit_method |
+|---|---|---|---|---|---|
+| today | 5:55/km | **5:37/km** | −18.4 sec/km | 18.39 | per_athlete_linear |
+| race_day | 5:51/km (2:03:31 total) | **5:33/km (1:57:03 total)** | −18.4 sec/km, −6:28 | 18.39 | per_athlete_linear |
+
+Per-athlete fit на prod: `intercept ≈ 6.8, slope ≈ 0.125`, n_races_fit=18. Близко к pool defaults (6.178 / 0.126), validates единый shape для cold-start. Run pred shift достаточно large чтобы заметно affect chat output без overcorrecting (race plan target 2:05-2:15 на 70.3 Run — 1:57 на upper aggressive edge, consistent с «slightly optimistic, multi-athlete pool retune in #366 will calibrate»).
+
+Phase 2.0β2 признан successful root fix для #359 Q1. Дальнейший рост Run R² для clean athletes — #365 race-feature enrichment (Oracle MAE 42.5 vs ML 55, остаётся 7.5 sec/km headroom за пределами bias correction).

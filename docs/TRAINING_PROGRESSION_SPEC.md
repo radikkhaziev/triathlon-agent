@@ -12,7 +12,7 @@ Target: Δ EF (weekly efficiency factor change) — отвечает на «ка
 |---|---|
 | Feature extraction + training + SHAP | `data/ml/progression.py` |
 | State table | `progression_model_runs` (run metadata, SHAP global JSON, model path, MAE/R²) |
-| Weekly retrain cron | `actor_retrain_progression_model` (Sunday 16:00 Belgrade, `misfire_grace_time=7200, coalesce=True`) |
+| Weekly retrain cron | `actor_retrain_progression_model` (Sunday 03:00 Belgrade via `scheduler_ml_retrain_job`, `misfire_grace_time=7200, coalesce=True`, isolated `ml_retrain` Dramatiq queue — see issue #348) |
 | MCP tool | `get_progression_analysis(sport='Ride')` |
 | Weekly report enrichment | «ML insights» секция |
 | Webapp | `ProgressionWidget` на `/progress` + `GET /api/progression` |

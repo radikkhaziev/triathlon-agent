@@ -121,7 +121,7 @@ Mark off what's currently true; the more boxes, the better the model's predictio
 
 ## When to expect improvements
 
-Models retrain weekly (Sun 16:00 Belgrade, migrating to Sun 03:00 — see `docs/ML_RACE_PROJECTION_SPEC.md` §12.2). Cleaner data starts feeding next Sunday's retrain. A 4-6 week window of disciplined logging typically shows up as:
+Models retrain weekly (Sun 03:00 Belgrade — see `docs/ML_RACE_PROJECTION_SPEC.md` §12.2). Cleaner data starts feeding next Sunday's retrain. A 4-6 week window of disciplined logging typically shows up as:
 
 - Run MAE: 30+ sec/km → 15-20 sec/km
 - R² on Run: ~0.3 → 0.5+
