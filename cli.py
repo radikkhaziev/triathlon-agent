@@ -134,6 +134,22 @@ def main() -> None:
     )
     p_trm.add_argument("user_id", type=int)
 
+    p_cn = sub.add_parser(
+        "classify-noise",
+        help="Backfill activities.noise_reason for Run activities — Phase 1.6 "
+        "(see docs/ML_RACE_PROJECTION_SPEC.md §6.4). Idempotent: re-running "
+        "updates noise_scored_at + reason; rows untouched if classifier output "
+        "matches existing reason. Without --user-id: iterates active athletes.",
+    )
+    p_cn.add_argument("--user-id", type=int, default=None, help="Specific user; default: all active athletes")
+    p_cn.add_argument(
+        "--since-days",
+        type=int,
+        default=365,
+        help="Window in days (default: 365, matches RACE_FEATURE_WINDOW_DAYS)",
+    )
+    p_cn.add_argument("--dry-run", action="store_true", help="Count without writing")
+
     args = parser.parse_args()
 
     if args.command == "shell":
@@ -162,6 +178,8 @@ def main() -> None:
         _publish_changelog(force=args.force)
     elif args.command == "train-race-models":
         _train_race_models(args.user_id)
+    elif args.command == "classify-noise":
+        _classify_noise(user_id=args.user_id, since_days=args.since_days, dry_run=args.dry_run)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -798,6 +816,103 @@ def _train_race_models(user_id: int) -> None:
             print(f"  {discipline:5s}: skip — {e}")
         except Exception as e:
             print(f"  {discipline:5s}: FAILED — {type(e).__name__}: {e}")
+
+
+def _classify_noise(*, user_id: int | None, since_days: int, dry_run: bool) -> None:
+    """Backfill `activities.noise_reason` over a window — Phase 1.6 (§6.4).
+
+    Idempotent: re-running over the same window with the same rules is a no-op
+    on rows whose classification didn't change. Per-user errors → sentry +
+    continue (don't fail the batch on one bad user).
+    """
+    cutoff_iso = (date.today() - timedelta(days=since_days)).isoformat()
+
+    with get_sync_session() as session:
+        if user_id is not None:
+            user_ids = [user_id]
+        else:
+            user_ids = [
+                row[0] for row in session.execute(select(User.id).where(User.is_active.is_(True)).order_by(User.id))
+            ]
+
+    if not user_ids:
+        print("No active athletes found")
+        return
+
+    grand_total = {"changed": 0, "unchanged": 0, "walk": 0, "jog": 0, "clean": 0}
+
+    for uid in user_ids:
+        try:
+            stats = _classify_noise_for_user(uid, cutoff_iso=cutoff_iso, dry_run=dry_run)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            print(f"user {uid:>4}: FAILED — {type(e).__name__}: {e}")
+            continue
+
+        print(
+            f"user {uid:>4}: scanned={stats['scanned']:>4}  "
+            f"changed={stats['changed']:>3}  unchanged={stats['unchanged']:>3}  "
+            f"walk={stats['walk']:>3}  jog={stats['jog']:>3}  clean={stats['clean']:>4}"
+        )
+        for key in grand_total:
+            grand_total[key] += stats.get(key, 0)
+
+    if len(user_ids) > 1:
+        suffix = " (dry-run, no writes)" if dry_run else ""
+        print(
+            f"\ntotal: changed={grand_total['changed']}  unchanged={grand_total['unchanged']}  "
+            f"walk={grand_total['walk']}  jog={grand_total['jog']}  clean={grand_total['clean']}{suffix}"
+        )
+
+
+def _classify_noise_for_user(user_id: int, *, cutoff_iso: str, dry_run: bool) -> dict[str, int]:
+    """Walk an athlete's Run activities ≥ cutoff_iso, write noise_reason changes."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from data.db import Activity, ActivityDetail, AthleteSettings, get_sync_session
+    from data.ml.noise_classifier import classify_activity_row
+
+    stats = {"scanned": 0, "changed": 0, "unchanged": 0, "walk": 0, "jog": 0, "clean": 0}
+
+    with get_sync_session() as session:
+        thresholds = AthleteSettings.get_thresholds(user_id, session=session)
+        # Phase 1.6 scope: Run only. Other types pass-through but we don't
+        # bother loading them — minimizes I/O on Ride-heavy datasets.
+        rows = session.execute(
+            select(Activity, ActivityDetail)
+            .join(ActivityDetail, ActivityDetail.activity_id == Activity.id, isouter=True)
+            .where(
+                Activity.user_id == user_id,
+                Activity.type == "Run",
+                Activity.start_date_local >= cutoff_iso,
+            )
+            .order_by(Activity.start_date_local)
+        ).all()
+
+        now = datetime.now(timezone.utc)
+        for activity, detail in rows:
+            stats["scanned"] += 1
+            if detail is None:
+                # No activity_details synced — can't classify (zones/distance missing).
+                continue
+            reason = classify_activity_row(activity, detail, thresholds)
+            if reason == "run_walk":
+                stats["walk"] += 1
+            elif reason == "run_recovery_jog":
+                stats["jog"] += 1
+            else:
+                stats["clean"] += 1
+
+            if reason == activity.noise_reason and activity.noise_scored_at is not None:
+                stats["unchanged"] += 1
+                continue
+            stats["changed"] += 1
+            if not dry_run:
+                Activity.set_noise_classification(user_id, activity.id, reason=reason, scored_at=now, session=session)
+
+    return stats
 
 
 def _shell() -> None:

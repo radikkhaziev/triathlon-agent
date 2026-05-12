@@ -21,6 +21,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     select,
+    update,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +62,11 @@ class Activity(Base):
     source: Mapped[str | None] = mapped_column(String, nullable=True)  # GARMIN_CONNECT, OAUTH_CLIENT, STRAVA, ...
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fit_file_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Webhook-time noise classification (Phase 1.6, ML_RACE_PROJECTION_SPEC §6.4).
+    # NULL+NULL → not classified; NULL+<dt> → checked clean; '<reason>'+<dt> → noise.
+    # Validated by `data.ml.noise_classifier.NoiseReason` Literal — no DB CHECK.
+    noise_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    noise_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # --- CRUD ---
 
@@ -217,6 +223,34 @@ class Activity(Base):
         """
         result = await session.execute(select(cls.id).where(cls.user_id == user_id, cls.id == activity_id).limit(1))
         return result.scalar_one_or_none() is not None
+
+    @classmethod
+    @dual
+    def set_noise_classification(
+        cls,
+        user_id: int,
+        activity_id: str,
+        *,
+        reason: str | None,
+        scored_at: datetime,
+        session: Session,
+    ) -> bool:
+        """Stamp noise_reason + noise_scored_at on (user_id, activity_id).
+
+        ``reason=None`` means "checked, signal kept" — scored_at still set so
+        race_features.py knows to skip the legacy live-check fallback.
+        Tenant guard via WHERE user_id; foreign activity_id under our user
+        gets 0 rows updated (silent no-op, safe).
+
+        Returns True iff a row was updated.
+        """
+        result = session.execute(
+            update(cls)
+            .where(cls.user_id == user_id, cls.id == activity_id)
+            .values(noise_reason=reason, noise_scored_at=scored_at)
+        )
+        session.commit()
+        return result.rowcount > 0
 
 
 class ActivityAchievement(Base):

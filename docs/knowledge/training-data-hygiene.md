@@ -57,6 +57,42 @@ The project trains three model families that all eat the same `activities` table
 
 The same data that makes the model better makes the **AI training generator** (chat path) better too — Claude sees the same `get_activities` output and reasons about it. Clean data → cleaner workout suggestions.
 
+### Persisted noise tag — Phase 1.6 (2026-05-12)
+
+The server-side noise check now persists its verdict on each Run activity as
+`activities.noise_reason` — set once by the webhook pipeline immediately after
+zone/pace data arrives from Intervals.icu, not re-evaluated on every retrain.
+See `docs/ML_RACE_PROJECTION_SPEC.md` §6.4.
+
+| `noise_reason` | Meaning |
+|---|---|
+| `NULL` (with `noise_scored_at` set) | Checked at webhook time, signal kept |
+| `'run_walk'` | Walk-paced low-HR Run — `pace > threshold_pace × 1.6 AND avg_hr < lthr × 0.65` |
+| `'run_recovery_jog'` | Z1 ≥ 70% AND TSS < 40 — fluff recovery session |
+| `NULL` (with `noise_scored_at = NULL`) | Legacy row before Phase 1.6 — falls back to live check |
+
+Two consequences for the athlete:
+
+1. **The chat assistant can talk about it.** Claude reads the `noise_reason`
+   on each activity, so it can say «I see 3 of your last 7 Runs are tagged as
+   recovery jogs — they're excluded from race-projection retrain. If you want
+   them counted, switch to `Walk` type in Intervals for casual walks and keep
+   `Run` only for actual running». This wasn't possible when the filter lived
+   only in the retrain pipeline.
+
+2. **Tag is sticky.** Once webhook classifies a row, retrain reuses that verdict.
+   If you re-edit an activity in Intervals (rename, change RPE), the noise tag
+   doesn't get re-evaluated — zone times and pace don't change on rename, so
+   the classification stays valid. Force re-classification only via the manual
+   backfill CLI: `python -m cli classify-noise --user-id=N --since-days=365`.
+
+**Thresholds are personalized.** The walk-vs-jog gate uses YOUR LTHR and
+threshold_pace from Intervals.icu — not a global constant. A sub-3 marathoner's
+recovery jog at 6:00/km @ HR 130 is fine (above their 5:36/km × 0.65×LTHR floor);
+a 60yo athlete's 7:30/km recovery jog at HR 120 is also fine (above their 8:00/km
+× 0.65×LTHR floor). Walks below these floors get tagged automatically — the
+system adapts to your physiology.
+
 ---
 
 ## Practical checklist per athlete
