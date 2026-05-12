@@ -29,14 +29,25 @@ MIN_DURATION_SEC = 25 * 60
 # Min training set size before XGBoost actually has a chance.
 MIN_EXAMPLES = 30
 
-# Phase 1.5 z1-filter (§6.3): drop activities where ≥70% of moving_time was in
-# Zone 1 (pure recovery). The training target (pace/power) on a recovery jog is
-# uncorrelated with the athlete's actual race-grade capacity, so including such
-# rows injects high-variance noise that the model interprets as «athlete is in
-# weak form at this CTL/HRV». Threshold is conservative — true Z2-base runs
-# (Z1 ~10-15%, Z2 ~75%) stay in. Applies to Run; Ride uses `is_indoor`/power
-# corridor instead. Swim has no zone splits in `activity_details` worth using.
+# Phase 1.5 z1-filter (§6.3): drop activities where ≥70% of recorded HR zone
+# time was in Zone 1 (pure recovery) **AND** TSS < RECOVERY_TSS_CEILING. The
+# TSS gate is essential — Z1% alone doesn't distinguish a 30-min recovery jog
+# (TSS ~25, fluff noise) from a 90-min structured Z1-base session (TSS 70+,
+# real signal that the athlete chose disciplined aerobic work). Filtering both
+# breaks pro athletes who run 80/20 base; filtering only the jogs keeps signal.
+#
+# Empirical calibration on 2026-05-12 retrain across 5 athletes:
+# - Athlete A (60% Z1-dominated runs, jogs avg TSS~25): zone-only filter
+#   improved R² from -75 → -0.06 (filter correctly removed recovery noise).
+# - Athlete B (pro, 80/20 base; 58% Z1-dominated, base avg TSS~70): zone-only
+#   filter regressed R² from +0.44 → +0.04 (filter dropped structured base
+#   sessions as if recovery — that was the signal, not the noise).
+# Adding TSS<40 condition: jog case unchanged (still drops), base case kept.
+#
+# Applies to Run; Ride uses `is_indoor`/power corridor instead. Swim has no
+# zone splits in `activity_details` worth using.
 Z1_RECOVERY_THRESHOLD = 0.70
+RECOVERY_TSS_CEILING = 40.0  # below this AND z1-dominated → recovery jog, drop
 
 
 class InsufficientDataError(Exception):
@@ -102,11 +113,14 @@ def _coerce_zone_seconds(value) -> float:
     return v
 
 
-def _is_recovery_dominated(hr_zone_times) -> bool:
-    """True iff Z1 (pure recovery) ≥ ``Z1_RECOVERY_THRESHOLD`` of **recorded
-    HR zone time** (not the activity's full ``moving_time`` — those can differ
-    when the chest strap drops out or the watch pauses; we only judge the
-    fraction we can actually see).
+def _is_z1_dominated(hr_zone_times) -> bool:
+    """True iff Z1 ≥ ``Z1_RECOVERY_THRESHOLD`` of **recorded HR zone time**
+    (not the activity's full ``moving_time`` — those can differ when the
+    chest strap drops out or the watch pauses; we only judge the fraction
+    we can actually see).
+
+    Zone-composition primitive — does NOT distinguish recovery jog from
+    structured Z1-base. Use :func:`_is_recovery_jog` for the filter decision.
 
     Accepts any non-string sequence (list / tuple / numpy.ndarray) since
     SQLAlchemy / pandas may return either depending on the JSON loader path.
@@ -130,6 +144,35 @@ def _is_recovery_dominated(hr_zone_times) -> bool:
     if total <= 0:
         return False
     return (seconds[0] / total) >= Z1_RECOVERY_THRESHOLD
+
+
+def _is_recovery_jog(hr_zone_times, tss) -> bool:
+    """True iff activity is a **recovery jog** worth dropping from train-set.
+
+    Combines two signals:
+    1. ``_is_z1_dominated`` — ≥70% recorded HR time in Z1.
+    2. ``tss < RECOVERY_TSS_CEILING`` — short / low-load.
+
+    Both required. A 90-min structured Z1-base session (80/20 method) is
+    also Z1-dominated but has TSS 60+ and carries real aerobic signal —
+    those stay in. A 25-min recovery jog has Z1≥70% AND TSS<40 — those go.
+
+    Missing TSS → keep the activity (can't safely classify without it).
+    Missing zones → also keep (``_is_z1_dominated`` returns False on None/
+    empty, so the combined check short-circuits to False). Symmetric lenient
+    default: don't filter what we can't measure.
+    """
+    if not _is_z1_dominated(hr_zone_times):
+        return False
+    if tss is None:
+        return False
+    try:
+        tss_value = float(tss)
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(tss_value):
+        return False
+    return tss_value < RECOVERY_TSS_CEILING
 
 
 def _fetch_wellness(user_id: int) -> pd.DataFrame:
@@ -411,11 +454,13 @@ def build_dataset(user_id: int, discipline: str) -> pd.DataFrame:
             continue
         if pd.isna(act["avg_hr"]):
             continue  # need HR for target_hr feature
-        # Phase 1.5 z1-filter (§6.3): drop pure-recovery activities so the
-        # model doesn't learn «athlete in OK form ran 6:30/km» from a recovery
-        # jog. Activities without zone data pass through (XGBoost ignores via
-        # NaN on derived features), so we don't shrink n on unsynced details.
-        if sport == "Run" and _is_recovery_dominated(act.get("hr_zone_times")):
+        # Phase 1.5 z1-filter (§6.3): drop recovery-jog activities so the
+        # model doesn't learn «athlete in OK form ran 6:30/km» from a fluff
+        # easy run. Combined check: Z1≥70% **AND** TSS<40 — structured Z1-base
+        # sessions (long, disciplined, TSS 60+) survive because they carry
+        # real aerobic signal. Missing TSS or zones → keep the activity (don't
+        # filter what we can't safely classify).
+        if sport == "Run" and _is_recovery_jog(act.get("hr_zone_times"), act.get("tss")):
             n_filtered_recovery += 1
             continue
 
@@ -460,11 +505,16 @@ def build_dataset(user_id: int, discipline: str) -> pd.DataFrame:
         rows.append(f)
 
     if n_filtered_recovery:
+        # Mention both gates explicitly so ops can tell whether retrain is
+        # losing rows to the zone-composition signal or the TSS load signal.
+        # Missing TSS / missing zones rows are kept by lenient default (not
+        # counted here).
         logger.info(
-            "z1-filter: dropped %d recovery-dominated %s activities (≥%.0f%% Z1) for user_id=%d",
+            "recovery-jog filter: dropped %d %s activities (Z1≥%.0f%% AND TSS<%.0f) for user_id=%d",
             n_filtered_recovery,
             sport,
             Z1_RECOVERY_THRESHOLD * 100,
+            RECOVERY_TSS_CEILING,
             user_id,
         )
 

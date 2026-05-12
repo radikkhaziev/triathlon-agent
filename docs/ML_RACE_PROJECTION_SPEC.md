@@ -561,7 +561,7 @@ CREATE TABLE race_projections (
 
 ### Phase 1 (MVP, user 1) — ✅ shipped 2026-05-11
 
-- [x] `data/ml/race_features.py` — per-discipline feature builders, unit-тесты (24 cases incl. z1-filter unit + pipeline-integration).
+- [x] `data/ml/race_features.py` — per-discipline feature builders, unit-тесты (31 cases incl. z1-dominated primitive ×13, recovery-jog combined ×9, pipeline-integration guards ×2).
 - [x] `data/ml/race_predict.py` — `predict_splits_with_ci()` возвращает структуру §9.2 (16 cases incl. physiological floor clamp + quality gate).
 - [x] `data/ml/race_train.py` — XGBRegressor per discipline + bootstrap residuals (500 resamples) → `static/models/race_{user}_{discipline}.joblib`.
 - [x] MCP tool `get_race_projection` — оба режима + cold-start fallback + all error envelopes §9.3 (7 cases).
@@ -573,13 +573,14 @@ CREATE TABLE race_projections (
 - [x] CLI `train-race-models <user_id>`.
 - [x] Документация: этот файл + секция в CLAUDE.md + развёрнутая секция в `docs/IMPLEMENTATION_STATUS.md`.
 
-### Phase 1.5 — z1 recovery filter (✅ shipped 2026-05-11)
+### Phase 1.5 — recovery-jog filter (✅ shipped 2026-05-11, TSS gate added 2026-05-12)
 
-- [x] `_is_recovery_dominated(hr_zone_times)` + `Z1_RECOVERY_THRESHOLD = 0.70` constant (§6.3).
+- [x] `_is_z1_dominated(hr_zone_times)` zone-composition primitive + `Z1_RECOVERY_THRESHOLD = 0.70` (§6.3).
+- [x] `_is_recovery_jog(hr_zone_times, tss)` combined check + `RECOVERY_TSS_CEILING = 40.0`. Both conditions required (Z1≥70% AND TSS<40). Refined 2026-05-12 — zone-only filter broke pro athletes who do structured 80/20 base (one cohort regressed R² 0.44 → 0.04 before TSS gate). TSS gate distinguishes 25-min recovery jog (TSS ~25) from 90-min Z1-base session (TSS ~70).
 - [x] Filter applied in `build_dataset` loop for Run sport only (Ride uses `is_indoor` + power corridor, Swim has no zone splits).
-- [x] Missing zone data passes through unchanged (don't shrink n on sparse details).
+- [x] Missing zone data OR missing TSS → activity passes through (don't filter what we can't safely classify).
 - [x] Log line per training run reports `n_filtered_recovery` count for debugging.
-- [x] Tests: unit helper (6 cases) + pipeline-integration regression guard (1 case) — fixture with 3 Run rows, 1 recovery, returned DataFrame has 2 rows.
+- [x] Tests: zone-only primitive (13 cases incl. type-strictness, NaN coercion, negative clamping) + recovery-jog combined (9 cases incl. long-Z1-base kept, TSS missing/NaN paths, boundary at TSS_CEILING) + pipeline-integration regression guards (2 cases — short jog dropped, long Z1-base kept).
 
 ### Quality gate (✅ shipped 2026-05-11)
 
