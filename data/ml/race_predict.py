@@ -441,13 +441,17 @@ async def predict_splits_with_ci(
 
     overrides: dict | None = None
     inflation = 1.0
+    # Raw sqrt(days/30) — what the formula wanted before the cap (§10.2). Tracked
+    # separately so envelope can surface both `inflation` (applied) and
+    # `inflation_raw` (formula-wanted), letting Claude tell the athlete honestly
+    # «model wanted ±34min, we capped to ±24min — uncertainty stopped growing as
+    # fast as sqrt predicted».
+    inflation_raw = 1.0
     if mode == "race_day":
         overrides = await _mode2_overrides(user_id, _race_iso)
         if days_to_race > MIN_RACE_DAYS_FOR_FORECAST:
-            inflation = min(
-                INFLATION_MAX,
-                max(1.0, math.sqrt(days_to_race / INFLATION_DAYS_BASE)),
-            )
+            inflation_raw = max(1.0, math.sqrt(days_to_race / INFLATION_DAYS_BASE))
+            inflation = min(INFLATION_MAX, inflation_raw)
         # else: keep inflation=1.0 — within 2 weeks the projection essentially
         # equals current state (taper-CTL ≈ today-CTL), so wider band misleads.
 
@@ -507,9 +511,22 @@ async def predict_splits_with_ci(
         "below_acceptance": below_acceptance,
         "warnings": warnings,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        # CI envelope metadata (issue #361) — emitted in BOTH modes so callers
+        # know which prediction interval they're getting without branching on
+        # `mode`. In today mode inflation logic is no-op (inflation=1.0,
+        # inflation_raw=1.0, inflation_capped=False) — schema parity with
+        # race_day mode for consumer simplicity. `ci_level=0.90` derived from
+        # `CI_LOW_PCT=5` + `CI_HIGH_PCT=95` percentiles on bootstrap residuals
+        # (§10.1); the inflation cap is a multiplier on those bounds, NOT a
+        # switch to a narrower CI level. So `ci_level` stays 0.90 whether
+        # `inflation_capped` is True or False — same 90% PI semantics, just
+        # with capped horizon scaling.
+        "ci_level": (CI_HIGH_PCT - CI_LOW_PCT) / 100.0,
+        "inflation": round(inflation, 3),
+        "inflation_raw": round(inflation_raw, 3),
+        "inflation_capped": inflation < inflation_raw,
     }
     if mode == "race_day" and overrides:
         envelope["projected_ctl"] = overrides.get("ctl")
         envelope["projected_atl"] = overrides.get("atl")
-        envelope["inflation"] = round(inflation, 3)
     return envelope

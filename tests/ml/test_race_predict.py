@@ -146,8 +146,11 @@ class TestPredictSplitsWithCi:
                 target_hr_run=150,
             )
         assert "run" in envelope["splits"]
-        # inflation field is only emitted in race_day mode with overrides
-        assert "inflation" not in envelope
+        # Issue #361: inflation fields emit in both modes for schema parity.
+        # In today mode inflation is trivially 1.0 (no horizon to extrapolate).
+        assert envelope["inflation"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_raw"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_capped"] is False
 
     @pytest.mark.asyncio
     async def test_mode_race_day_falls_back_when_no_projection(self):
@@ -252,6 +255,111 @@ class TestPredictSplitsWithCi:
                 target_hr_run=150,
             )
         assert envelope["inflation"] == pytest.approx(math.sqrt(60 / 30), abs=1e-3)
+
+
+class TestCiEnvelopeMetadata:
+    """Issue #359 follow-up: envelope surfaces `ci_level` (always), plus
+    `inflation_raw` + `inflation_capped` in race_day mode. Lets callers
+    (Claude prompt) distinguish «capped 1.8× from raw 2.6×» vs «honest 1.4×».
+    """
+
+    @pytest.mark.asyncio
+    async def test_envelope_metadata_emitted_in_both_modes_today(self):
+        """Issue #361 acceptance: all four fields on BOTH today and race_day modes
+        for schema consistency. In today mode inflation logic is no-op so values
+        are trivial (1.0 / 1.0 / False) but the keys must be present so the
+        caller doesn't need to branch on `mode`."""
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="today",
+                race_date=(date.today() + timedelta(days=60)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        # 90% PI semantics regardless of mode — derived from CI_LOW_PCT=5/CI_HIGH_PCT=95
+        assert envelope["ci_level"] == pytest.approx(0.90, abs=1e-6)
+        # Mode 1: inflation fields still present, just trivial values
+        assert envelope["inflation"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_raw"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_capped"] is False
+
+    @pytest.mark.asyncio
+    async def test_inflation_raw_and_capped_emitted_in_race_day_below_cap(self):
+        """60d → raw 1.414, applied 1.414 → capped=False."""
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 50.0, "atl": 45.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=60)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        raw = math.sqrt(60 / 30)
+        assert envelope["ci_level"] == pytest.approx(0.90, abs=1e-6)
+        assert envelope["inflation"] == pytest.approx(raw, abs=1e-3)
+        assert envelope["inflation_raw"] == pytest.approx(raw, abs=1e-3)
+        assert envelope["inflation_capped"] is False
+
+    @pytest.mark.asyncio
+    async def test_inflation_raw_diverges_from_inflation_when_capped(self):
+        """200d → raw sqrt(200/30)≈2.58, applied 1.8 → capped=True. Raw value
+        preserved so caller (Claude prompt) can render «model wanted 2.58×, we
+        capped at 1.8× — uncertainty stopped growing at horizon»."""
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 70.0, "atl": 65.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=200)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        raw_expected = math.sqrt(200 / 30)
+        assert envelope["inflation"] == pytest.approx(race_predict.INFLATION_MAX, abs=1e-3)
+        assert envelope["inflation_raw"] == pytest.approx(raw_expected, abs=1e-3)
+        assert envelope["inflation_raw"] > envelope["inflation"]
+        assert envelope["inflation_capped"] is True
+        # ci_level UNCHANGED — cap is on multiplier, not on percentile choice
+        assert envelope["ci_level"] == pytest.approx(0.90, abs=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_inflation_within_taper_window_emits_raw_one(self):
+        """Inside MIN_RACE_DAYS_FOR_FORECAST=14: inflation=1.0 (Mode-1 fallback).
+        `inflation_raw` stays 1.0 too (no sqrt computation performed). Capped is
+        False (no cap engaged, just no inflation needed)."""
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 32.0, "atl": 28.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=10)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["inflation"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_raw"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_capped"] is False
 
 
 class TestOutOfSampleCtl:
