@@ -10,13 +10,13 @@ that may be sparse are passed through as NaN rather than imputed.
 
 import logging
 import math
-from collections.abc import Sequence
 from datetime import date, timedelta
 
 import pandas as pd
 from sqlalchemy import text
 
 from data.db.common import get_sync_session
+from data.ml.noise_classifier import RECOVERY_TSS_CEILING, Z1_RECOVERY_THRESHOLD, is_run_recovery_jog
 
 logger = logging.getLogger(__name__)
 
@@ -29,25 +29,12 @@ MIN_DURATION_SEC = 25 * 60
 # Min training set size before XGBoost actually has a chance.
 MIN_EXAMPLES = 30
 
-# Phase 1.5 z1-filter (§6.3): drop activities where ≥70% of recorded HR zone
-# time was in Zone 1 (pure recovery) **AND** TSS < RECOVERY_TSS_CEILING. The
-# TSS gate is essential — Z1% alone doesn't distinguish a 30-min recovery jog
-# (TSS ~25, fluff noise) from a 90-min structured Z1-base session (TSS 70+,
-# real signal that the athlete chose disciplined aerobic work). Filtering both
-# breaks pro athletes who run 80/20 base; filtering only the jogs keeps signal.
-#
-# Empirical calibration on 2026-05-12 retrain across 5 athletes:
-# - Athlete A (60% Z1-dominated runs, jogs avg TSS~25): zone-only filter
-#   improved R² from -75 → -0.06 (filter correctly removed recovery noise).
-# - Athlete B (pro, 80/20 base; 58% Z1-dominated, base avg TSS~70): zone-only
-#   filter regressed R² from +0.44 → +0.04 (filter dropped structured base
-#   sessions as if recovery — that was the signal, not the noise).
-# Adding TSS<40 condition: jog case unchanged (still drops), base case kept.
-#
-# Applies to Run; Ride uses `is_indoor`/power corridor instead. Swim has no
-# zone splits in `activity_details` worth using.
-Z1_RECOVERY_THRESHOLD = 0.70
-RECOVERY_TSS_CEILING = 40.0  # below this AND z1-dominated → recovery jog, drop
+# Phase 1.5 z1-filter + Phase 1.6 webhook tag (§6.3 / §6.4): helpers and
+# constants live in `data.ml.noise_classifier` (single source of truth for the
+# rule). Phase 1.6 promotes the train-time filter to a persisted
+# `activities.noise_reason` tag written from `actor_update_activity_details` —
+# read-side here prefers the persisted tag, falls back to the live check only
+# for legacy rows where `noise_scored_at IS NULL`.
 
 
 class InsufficientDataError(Exception):
@@ -74,6 +61,8 @@ def _fetch_activities(user_id: int, sport: str) -> pd.DataFrame:
                     a.icu_training_load AS tss,
                     a.average_hr      AS avg_hr,
                     a.is_race         AS is_race,
+                    a.noise_reason    AS noise_reason,
+                    a.noise_scored_at AS noise_scored_at,
                     ad.distance       AS distance,
                     ad.elevation_gain AS elevation_gain,
                     ad.avg_power      AS avg_power,
@@ -92,87 +81,6 @@ def _fetch_activities(user_id: int, sport: str) -> pd.DataFrame:
         )
     df["date"] = df["date"].astype(str)
     return df
-
-
-def _coerce_zone_seconds(value) -> float:
-    """Normalize a single zone-time entry to a non-negative finite float.
-
-    None / NaN / non-numeric → 0.0 (treat as «no time recorded in this zone»).
-    Truthiness shortcuts (`x or 0`) don't work here — `bool(float('nan')) is True`,
-    so a NaN slip through silently and poisons the sum to NaN, which makes the
-    `>= threshold` comparison return False and disables the filter.
-    """
-    if value is None:
-        return 0.0
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if math.isnan(v) or v < 0:
-        return 0.0
-    return v
-
-
-def _is_z1_dominated(hr_zone_times) -> bool:
-    """True iff Z1 ≥ ``Z1_RECOVERY_THRESHOLD`` of **recorded HR zone time**
-    (not the activity's full ``moving_time`` — those can differ when the
-    chest strap drops out or the watch pauses; we only judge the fraction
-    we can actually see).
-
-    Zone-composition primitive — does NOT distinguish recovery jog from
-    structured Z1-base. Use :func:`_is_recovery_jog` for the filter decision.
-
-    Accepts any non-string sequence (list / tuple / numpy.ndarray) since
-    SQLAlchemy / pandas may return either depending on the JSON loader path.
-    Strings/bytes are rejected to avoid iterating characters.
-
-    Unknown zones (None or empty array) → False — don't filter what we can't
-    measure. NaN entries are coerced to 0 so they don't poison the sum.
-    """
-    if hr_zone_times is None or isinstance(hr_zone_times, (str, bytes)):
-        return False
-    if not isinstance(hr_zone_times, Sequence):
-        # Numpy arrays etc. — try iterating; bail out if not iterable.
-        try:
-            hr_zone_times = list(hr_zone_times)
-        except TypeError:
-            return False
-    if len(hr_zone_times) == 0:
-        return False
-    seconds = [_coerce_zone_seconds(z) for z in hr_zone_times]
-    total = sum(seconds)
-    if total <= 0:
-        return False
-    return (seconds[0] / total) >= Z1_RECOVERY_THRESHOLD
-
-
-def _is_recovery_jog(hr_zone_times, tss) -> bool:
-    """True iff activity is a **recovery jog** worth dropping from train-set.
-
-    Combines two signals:
-    1. ``_is_z1_dominated`` — ≥70% recorded HR time in Z1.
-    2. ``tss < RECOVERY_TSS_CEILING`` — short / low-load.
-
-    Both required. A 90-min structured Z1-base session (80/20 method) is
-    also Z1-dominated but has TSS 60+ and carries real aerobic signal —
-    those stay in. A 25-min recovery jog has Z1≥70% AND TSS<40 — those go.
-
-    Missing TSS → keep the activity (can't safely classify without it).
-    Missing zones → also keep (``_is_z1_dominated`` returns False on None/
-    empty, so the combined check short-circuits to False). Symmetric lenient
-    default: don't filter what we can't measure.
-    """
-    if not _is_z1_dominated(hr_zone_times):
-        return False
-    if tss is None:
-        return False
-    try:
-        tss_value = float(tss)
-    except (TypeError, ValueError):
-        return False
-    if math.isnan(tss_value):
-        return False
-    return tss_value < RECOVERY_TSS_CEILING
 
 
 def _fetch_wellness(user_id: int) -> pd.DataFrame:
@@ -447,21 +355,31 @@ def build_dataset(user_id: int, discipline: str) -> pd.DataFrame:
     }
 
     rows: list[dict] = []
-    n_filtered_recovery = 0
+    n_filtered_persisted = 0  # dropped via persisted activities.noise_reason (Phase 1.6)
+    n_filtered_legacy = 0  # dropped via live fallback for un-backfilled rows
     for _, act in activities.iterrows():
         target = _target_value(act, sport)
         if target is None:
             continue
         if pd.isna(act["avg_hr"]):
             continue  # need HR for target_hr feature
-        # Phase 1.5 z1-filter (§6.3): drop recovery-jog activities so the
-        # model doesn't learn «athlete in OK form ran 6:30/km» from a fluff
-        # easy run. Combined check: Z1≥70% **AND** TSS<40 — structured Z1-base
-        # sessions (long, disciplined, TSS 60+) survive because they carry
-        # real aerobic signal. Missing TSS or zones → keep the activity (don't
-        # filter what we can't safely classify).
-        if sport == "Run" and _is_recovery_jog(act.get("hr_zone_times"), act.get("tss")):
-            n_filtered_recovery += 1
+
+        # Phase 1.6 (§6.4): prefer persisted webhook-time classification.
+        # noise_reason='run_*' → drop unconditionally (already classified).
+        # noise_scored_at IS NOT NULL with NULL reason → checked clean, keep.
+        # noise_scored_at IS NULL → legacy row, fall back to live check.
+        # Empty/whitespace strings DON'T count as noise — column is TEXT without
+        # CHECK constraint, so a future accidental empty-string write must not
+        # silently drop legitimate rows from training.
+        noise_reason = act.get("noise_reason")
+        is_classified_noise = bool(isinstance(noise_reason, str) and noise_reason.strip())
+        if is_classified_noise:
+            n_filtered_persisted += 1
+            continue
+        scored_at = act.get("noise_scored_at")
+        is_legacy = scored_at is None or pd.isna(scored_at)
+        if is_legacy and sport == "Run" and is_run_recovery_jog(act.get("hr_zone_times"), act.get("tss")):
+            n_filtered_legacy += 1
             continue
 
         dt_str = act["date"]
@@ -504,18 +422,23 @@ def build_dataset(user_id: int, discipline: str) -> pd.DataFrame:
         f["date"] = dt_str
         rows.append(f)
 
-    if n_filtered_recovery:
-        # Mention both gates explicitly so ops can tell whether retrain is
-        # losing rows to the zone-composition signal or the TSS load signal.
-        # Missing TSS / missing zones rows are kept by lenient default (not
-        # counted here).
+    if n_filtered_persisted or n_filtered_legacy:
+        # Persisted path = `actor_update_activity_details` set noise_reason at
+        # webhook time. Legacy path = no scored_at yet, fell back to live check
+        # (`is_run_recovery_jog` — Z1≥70% AND TSS<40). Legacy count >0 means
+        # backfill hasn't been run (or hit only the rows that were already
+        # noise on the live rule); after `python -m cli classify-noise` it
+        # should drop to ~0 for the 365d window.
         logger.info(
-            "recovery-jog filter: dropped %d %s activities (Z1≥%.0f%% AND TSS<%.0f) for user_id=%d",
-            n_filtered_recovery,
+            "noise filter: dropped %d %s activities (persisted=%d, legacy_fallback=%d) "
+            "for user_id=%d. Live rule: Z1≥%.0f%% AND TSS<%.0f",
+            n_filtered_persisted + n_filtered_legacy,
             sport,
+            n_filtered_persisted,
+            n_filtered_legacy,
+            user_id,
             Z1_RECOVERY_THRESHOLD * 100,
             RECOVERY_TSS_CEILING,
-            user_id,
         )
 
     if not rows:

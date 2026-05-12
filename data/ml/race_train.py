@@ -78,6 +78,19 @@ def train_user_model(user_id: int, discipline: str) -> dict:
     mae = float(mean_absolute_error(y[valid_mask], predictions[valid_mask]))
     r2 = float(r2_score(y[valid_mask], predictions[valid_mask]))
 
+    # Phase 1 issue #359 (b): record p90 of the discipline's CTL feature in the
+    # training set. At predict-time, Mode 2 scales `ctl_<disc>` by the global
+    # CTL ratio (projected / current); if the scaled value exceeds p90, the
+    # XGBoost tree leaf becomes extrapolation territory (trees clip to nearest
+    # observed leaf). Warning surfaces to the caller so Claude can tell the
+    # athlete «model n=400 saw ctl_run 15-45, projecting to 66 is out of sample».
+    ctl_key = f"ctl_{discipline.lower()}"
+    ctl_feature_p90: float | None = None
+    if ctl_key in df.columns:
+        q = df[ctl_key].dropna().quantile(0.90)
+        if pd.notna(q):
+            ctl_feature_p90 = float(q)
+
     # Final model on all data
     final_model = XGBRegressor(
         n_estimators=200,
@@ -124,7 +137,12 @@ def train_user_model(user_id: int, discipline: str) -> dict:
             "discipline": discipline.lower(),
             "user_id": user_id,
             "trained_at": datetime.now(timezone.utc).isoformat(),
-            "metrics": {"mae": mae, "r2": r2, "n_examples": int(len(df))},
+            "metrics": {
+                "mae": mae,
+                "r2": r2,
+                "n_examples": int(len(df)),
+                "ctl_feature_p90": ctl_feature_p90,
+            },
         },
         model_path,
     )
