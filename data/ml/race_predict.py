@@ -316,6 +316,36 @@ def _predict_one(
     X_row = pd.DataFrame([row], columns=feature_names)
     pred = float(model.predict(X_row)[0])
 
+    # Phase 2.0β2 — post-hoc bias correction (spec §10.5.6, issue #363 β2).
+    # Linear fit `bias(d) = a + b * d` derived per-athlete at train time (or
+    # pool constants for cold-start). Applied to BOTH today and race_day modes:
+    # at days_to_race=0 only the intercept fires (~6 sec/km — model's intrinsic
+    # bias), at far horizons slope dominates (~25 sec/km @ 150d). Subtracted
+    # from pred because residual = pred - actual is positive (model overestimates
+    # slower-than-real pace). Backwards-compat: bundles без bias_intercept/slope
+    # silently skip correction.
+    #
+    # **Out-of-scope gate** (Phase 2.0β2 is Run-only): Ride/Swim bundles get
+    # `bias_fit_method='out_of_scope'` with pool constants saved for backwards-
+    # compat schema. Do NOT apply Run-calibrated bias to Ride/Swim predictions —
+    # constants are wrong sign of magnitude (Ride bias in watts ≠ Run bias in
+    # sec/km). Skip subtraction for those disciplines; surface remains 0.0 +
+    # method tag so caller can distinguish from legacy "no bias data" path.
+    bundle_metrics = bundle.get("metrics", {})
+    bias_a = bundle_metrics.get("bias_intercept")
+    bias_b = bundle_metrics.get("bias_slope")
+    method = bundle_metrics.get("bias_fit_method")
+    bias_applied = 0.0
+    bias_fit_method: str | None = None
+    if bias_a is not None and bias_b is not None and method != "out_of_scope":
+        days_to_race = max((target_date - local_today()).days, 0)
+        bias_applied = float(bias_a) + float(bias_b) * float(days_to_race)
+        pred = pred - bias_applied
+        bias_fit_method = method
+    elif method == "out_of_scope":
+        # Surface the tag (still useful signal for Claude) but skip subtraction.
+        bias_fit_method = method
+
     ci_low_raw = float(np.percentile(residuals, CI_LOW_PCT)) * inflation
     ci_high_raw = float(np.percentile(residuals, CI_HIGH_PCT)) * inflation
     ci_low = pred + ci_low_raw
@@ -356,6 +386,11 @@ def _predict_one(
         out["total_sec_reason"] = "power_only_phase1"
     if ctl_oos is not None:
         out["_ctl_out_of_sample"] = ctl_oos
+    # Private fields — envelope aggregator surfaces these at top-level (Run-only
+    # for Phase 2.0β2; will become per-leg in Phase 2.0β2.1 if Ride/Swim get
+    # their own bias fits).
+    out["_bias_applied"] = round(bias_applied, 2)
+    out["_bias_fit_method"] = bias_fit_method
     return out
 
 
@@ -393,7 +428,7 @@ async def predict_splits_with_ci(
 
     ``mode``: ``"today"`` (uses current state) or ``"race_day"`` (overrides
     CTL/ATL + per-sport eFTP from FitnessProjection on race_date and inflates
-    residuals by sqrt(days_to_race / 30)).
+    residuals by ``min(sqrt(days_to_race / 30), INFLATION_MAX)``).
 
     Returns an envelope shaped as:
 
@@ -421,8 +456,17 @@ async def predict_splits_with_ci(
           "below_acceptance": ["<discipline>", ...],  # CV metrics under floor
           "warnings": [str, ...],                     # incl. "no_fitness_projection"
           "generated_at": ISO timestamp,
+          # CI metadata (always present in both modes — issue #361):
+          "ci_level": 0.90,
+          "inflation": float,         # applied multiplier (1.0 in today)
+          "inflation_raw": float,     # what sqrt(days/30) wanted before cap
+          "inflation_capped": bool,   # True iff cap engaged
+          # Bias correction (always present — issue #363 β2):
+          "bias_correction_applied": float,  # sec/km Run-only shift on pred
+          "bias_fit_method": str | None,     # per_athlete_linear | pool_fallback
+                                             # | out_of_scope | None (legacy)
           # race_day mode with projection available adds:
-          "projected_ctl": float, "projected_atl": float, "inflation": float,
+          "projected_ctl": float, "projected_atl": float,
         }
 
     ``available`` / ``reason`` are added by the MCP wrapper layer
@@ -441,13 +485,18 @@ async def predict_splits_with_ci(
 
     overrides: dict | None = None
     inflation = 1.0
+    # Raw sqrt(days/30) — what the cap formula wanted before clamping (§10.2).
+    # In Mode 1 (today) inflation logic is no-op so this stays at the trivial
+    # 1.0; surfaced in envelope for schema parity (issue #361) regardless. In
+    # Mode 2 with days_to_race > MIN_RACE_DAYS_FOR_FORECAST it diverges from
+    # `inflation` once raw exceeds INFLATION_MAX (~d>97), enabling Claude to
+    # tell the athlete honestly «model wanted ±34min, we capped to ±24min».
+    inflation_raw = 1.0
     if mode == "race_day":
         overrides = await _mode2_overrides(user_id, _race_iso)
         if days_to_race > MIN_RACE_DAYS_FOR_FORECAST:
-            inflation = min(
-                INFLATION_MAX,
-                max(1.0, math.sqrt(days_to_race / INFLATION_DAYS_BASE)),
-            )
+            inflation_raw = max(1.0, math.sqrt(days_to_race / INFLATION_DAYS_BASE))
+            inflation = min(INFLATION_MAX, inflation_raw)
         # else: keep inflation=1.0 — within 2 weeks the projection essentially
         # equals current state (taper-CTL ≈ today-CTL), so wider band misleads.
 
@@ -498,6 +547,21 @@ async def predict_splits_with_ci(
                 f"out-of-sample, model held conservative (no training data above this CTL)"
             )
 
+    # Phase 2.0β2 — surface Run bias correction at envelope level (issue #363).
+    # Run-only for this phase; Ride/Swim out_of_scope returns 0.0 silently.
+    # `bias_correction_applied` is the actual sec/km shift subtracted from
+    # ml_pred. `bias_fit_method` lets the caller distinguish principled fits
+    # from cold-start pool fallback for UX surfacing.
+    run_leg = splits.get("run", {})
+    bias_correction_applied = run_leg.pop("_bias_applied", 0.0)
+    bias_fit_method = run_leg.pop("_bias_fit_method", None)
+    # Also strip from other legs (they got out_of_scope from pool fallback,
+    # but envelope-level surface is Run-specific for Phase 2.0β2).
+    for disc in ("ride", "swim"):
+        leg = splits.get(disc, {})
+        leg.pop("_bias_applied", None)
+        leg.pop("_bias_fit_method", None)
+
     envelope: dict[str, Any] = {
         "mode": mode,
         "race_date": _race_iso,
@@ -507,9 +571,29 @@ async def predict_splits_with_ci(
         "below_acceptance": below_acceptance,
         "warnings": warnings,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        # CI envelope metadata (issue #361) — emitted in BOTH modes so callers
+        # know which prediction interval they're getting without branching on
+        # `mode`. In today mode inflation logic is no-op (inflation=1.0,
+        # inflation_raw=1.0, inflation_capped=False) — schema parity with
+        # race_day mode for consumer simplicity. `ci_level=0.90` derived from
+        # `CI_LOW_PCT=5` + `CI_HIGH_PCT=95` percentiles on bootstrap residuals
+        # (§10.1); the inflation cap is a multiplier on those bounds, NOT a
+        # switch to a narrower CI level. So `ci_level` stays 0.90 whether
+        # `inflation_capped` is True or False — same 90% PI semantics, just
+        # with capped horizon scaling.
+        "ci_level": (CI_HIGH_PCT - CI_LOW_PCT) / 100.0,
+        "inflation": round(inflation, 3),
+        "inflation_raw": round(inflation_raw, 3),
+        # Compare on rounded values so display-precision matches boolean: avoids
+        # cosmetic mismatch at the boundary (~d=97.2) where unrounded floats
+        # diverge but both display as "1.800".
+        "inflation_capped": round(inflation, 3) < round(inflation_raw, 3),
+        # Phase 2.0β2 — bias correction surface (issue #363 β2).
+        # Run-only currently; if Run not requested, applied=0.0 + method=None.
+        "bias_correction_applied": bias_correction_applied,
+        "bias_fit_method": bias_fit_method,
     }
     if mode == "race_day" and overrides:
         envelope["projected_ctl"] = overrides.get("ctl")
         envelope["projected_atl"] = overrides.get("atl")
-        envelope["inflation"] = round(inflation, 3)
     return envelope
