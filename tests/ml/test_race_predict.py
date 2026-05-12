@@ -15,9 +15,18 @@ import numpy as np
 import pytest
 
 from data.ml import race_predict
+from data.ml.bias_constants import POOL_BIAS_INTERCEPT, POOL_BIAS_SLOPE
 
 
-def _fake_bundle(predict_value: float, residuals: list[float], ctl_feature_p90: float | None = None):
+def _fake_bundle(
+    predict_value: float,
+    residuals: list[float],
+    ctl_feature_p90: float | None = None,
+    bias_intercept: float | None = None,
+    bias_slope: float | None = None,
+    bias_fit_method: str | None = None,
+    bias_n_races_fit: int | None = None,
+):
     """Build a bundle mimicking joblib.dump shape from race_train."""
     model = MagicMock()
     model.predict.return_value = np.array([predict_value])
@@ -26,8 +35,19 @@ def _fake_bundle(predict_value: float, residuals: list[float], ctl_feature_p90: 
         "residuals": np.array(residuals),
         "feature_names": ["ctl", "atl", "tsb", "hrv", "target_hr", "distance_m", "ctl_run"],
     }
+    metrics: dict = {}
     if ctl_feature_p90 is not None:
-        bundle["metrics"] = {"mae": 8.0, "r2": 0.5, "n_examples": 200, "ctl_feature_p90": ctl_feature_p90}
+        metrics.update({"mae": 8.0, "r2": 0.5, "n_examples": 200, "ctl_feature_p90": ctl_feature_p90})
+    if bias_intercept is not None:
+        metrics["bias_intercept"] = bias_intercept
+    if bias_slope is not None:
+        metrics["bias_slope"] = bias_slope
+    if bias_fit_method is not None:
+        metrics["bias_fit_method"] = bias_fit_method
+    if bias_n_races_fit is not None:
+        metrics["bias_n_races_fit"] = bias_n_races_fit
+    if metrics:
+        bundle["metrics"] = metrics
     return bundle
 
 
@@ -198,6 +218,7 @@ class TestPredictSplitsWithCi:
         """Issue #350: beyond ~97 days, raw sqrt(days/30) exceeds INFLATION_MAX=1.8.
         Cap engages so CI doesn't blow out to ±67 min on a half-marathon prediction
         (current_state observed at 126 days out). 200 days → raw 2.58 → capped 1.8.
+        Asserts all 4 envelope metadata fields (issue #361) at the cap regime.
         """
         bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
         overrides = {"ctl": 75.0, "atl": 70.0, "current_eftp": 230.0}
@@ -213,13 +234,19 @@ class TestPredictSplitsWithCi:
                 race_distance_run_m=21000,
                 target_hr_run=150,
             )
+        raw_expected = math.sqrt(200 / 30)
         assert envelope["inflation"] == pytest.approx(race_predict.INFLATION_MAX, abs=1e-3)
+        assert envelope["inflation_raw"] == pytest.approx(raw_expected, abs=1e-3)
+        assert envelope["inflation_capped"] is True
+        # ci_level UNCHANGED — cap is on multiplier, not on percentile choice
+        assert envelope["ci_level"] == pytest.approx(0.90, abs=1e-6)
 
     @pytest.mark.asyncio
     async def test_inflation_below_min_days_threshold(self):
         """Issue #350: within MIN_RACE_DAYS_FOR_FORECAST=14, Mode 2 fall back to
         inflation=1.0 (Mode 1 width). Within 2 weeks projected_ctl ≈ current_ctl
         (taper window), so wider band misleads. Race in 10 days → inflation 1.0.
+        Inflation_raw also 1.0 (no sqrt computation performed); capped=False.
         """
         bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
         overrides = {"ctl": 32.0, "atl": 28.0}
@@ -236,10 +263,13 @@ class TestPredictSplitsWithCi:
                 target_hr_run=150,
             )
         assert envelope["inflation"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_raw"] == pytest.approx(1.0, abs=1e-3)
+        assert envelope["inflation_capped"] is False
 
     @pytest.mark.asyncio
     async def test_inflation_within_sqrt_window(self):
-        """Mid-horizon (60 days): raw sqrt(60/30)=1.414 — below cap, above floor."""
+        """Mid-horizon (60 days): raw sqrt(60/30)=1.414 — below cap, above floor.
+        Inflation_raw equals applied inflation; capped=False."""
         bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
         overrides = {"ctl": 50.0, "atl": 45.0}
         with (
@@ -254,13 +284,18 @@ class TestPredictSplitsWithCi:
                 race_distance_run_m=21000,
                 target_hr_run=150,
             )
+        raw = math.sqrt(60 / 30)
+        assert envelope["inflation_raw"] == pytest.approx(raw, abs=1e-3)
+        assert envelope["inflation_capped"] is False
         assert envelope["inflation"] == pytest.approx(math.sqrt(60 / 30), abs=1e-3)
 
 
 class TestCiEnvelopeMetadata:
-    """Issue #359 follow-up: envelope surfaces `ci_level` (always), plus
-    `inflation_raw` + `inflation_capped` in race_day mode. Lets callers
-    (Claude prompt) distinguish «capped 1.8× from raw 2.6×» vs «honest 1.4×».
+    """Issue #361: envelope surfaces `ci_level`, `inflation`, `inflation_raw`,
+    and `inflation_capped` in BOTH today and race_day modes (schema parity, so
+    Claude prompt doesn't branch on `mode`). In today mode all three inflation
+    fields are trivially 1.0/1.0/False. Lets callers (Claude prompt) distinguish
+    «capped 1.8× from raw 2.6×» vs «honest 1.4×» without inspecting `mode`.
     """
 
     @pytest.mark.asyncio
@@ -289,10 +324,13 @@ class TestCiEnvelopeMetadata:
         assert envelope["inflation_capped"] is False
 
     @pytest.mark.asyncio
-    async def test_inflation_raw_and_capped_emitted_in_race_day_below_cap(self):
-        """60d → raw 1.414, applied 1.414 → capped=False."""
+    async def test_taper_boundary_at_14_days(self):
+        """Boundary check: gate is `days_to_race > MIN_RACE_DAYS_FOR_FORECAST=14`.
+        At exactly d=14, inflation stays 1.0 (taper fallback wins). Pins the
+        strict-greater vs greater-equal contract.
+        """
         bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
-        overrides = {"ctl": 50.0, "atl": 45.0}
+        overrides = {"ctl": 33.0, "atl": 30.0}
         with (
             patch.object(race_predict, "_load_model", return_value=bundle),
             patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
@@ -301,65 +339,59 @@ class TestCiEnvelopeMetadata:
             envelope = await race_predict.predict_splits_with_ci(
                 user_id=1,
                 mode="race_day",
-                race_date=(date.today() + timedelta(days=60)).isoformat(),
-                race_distance_run_m=21000,
-                target_hr_run=150,
-            )
-        raw = math.sqrt(60 / 30)
-        assert envelope["ci_level"] == pytest.approx(0.90, abs=1e-6)
-        assert envelope["inflation"] == pytest.approx(raw, abs=1e-3)
-        assert envelope["inflation_raw"] == pytest.approx(raw, abs=1e-3)
-        assert envelope["inflation_capped"] is False
-
-    @pytest.mark.asyncio
-    async def test_inflation_raw_diverges_from_inflation_when_capped(self):
-        """200d → raw sqrt(200/30)≈2.58, applied 1.8 → capped=True. Raw value
-        preserved so caller (Claude prompt) can render «model wanted 2.58×, we
-        capped at 1.8× — uncertainty stopped growing at horizon»."""
-        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
-        overrides = {"ctl": 70.0, "atl": 65.0}
-        with (
-            patch.object(race_predict, "_load_model", return_value=bundle),
-            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
-            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
-        ):
-            envelope = await race_predict.predict_splits_with_ci(
-                user_id=1,
-                mode="race_day",
-                race_date=(date.today() + timedelta(days=200)).isoformat(),
-                race_distance_run_m=21000,
-                target_hr_run=150,
-            )
-        raw_expected = math.sqrt(200 / 30)
-        assert envelope["inflation"] == pytest.approx(race_predict.INFLATION_MAX, abs=1e-3)
-        assert envelope["inflation_raw"] == pytest.approx(raw_expected, abs=1e-3)
-        assert envelope["inflation_raw"] > envelope["inflation"]
-        assert envelope["inflation_capped"] is True
-        # ci_level UNCHANGED — cap is on multiplier, not on percentile choice
-        assert envelope["ci_level"] == pytest.approx(0.90, abs=1e-6)
-
-    @pytest.mark.asyncio
-    async def test_inflation_within_taper_window_emits_raw_one(self):
-        """Inside MIN_RACE_DAYS_FOR_FORECAST=14: inflation=1.0 (Mode-1 fallback).
-        `inflation_raw` stays 1.0 too (no sqrt computation performed). Capped is
-        False (no cap engaged, just no inflation needed)."""
-        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
-        overrides = {"ctl": 32.0, "atl": 28.0}
-        with (
-            patch.object(race_predict, "_load_model", return_value=bundle),
-            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
-            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
-        ):
-            envelope = await race_predict.predict_splits_with_ci(
-                user_id=1,
-                mode="race_day",
-                race_date=(date.today() + timedelta(days=10)).isoformat(),
+                race_date=(date.today() + timedelta(days=14)).isoformat(),
                 race_distance_run_m=21000,
                 target_hr_run=150,
             )
         assert envelope["inflation"] == pytest.approx(1.0, abs=1e-3)
         assert envelope["inflation_raw"] == pytest.approx(1.0, abs=1e-3)
         assert envelope["inflation_capped"] is False
+
+    @pytest.mark.asyncio
+    async def test_cap_boundary_just_below_engagement(self):
+        """Boundary check: cap engages when sqrt(d/30) > 1.8 → d > 97.2.
+        At d=97, raw sqrt(97/30) ≈ 1.7984 → just below cap; `inflation_capped`
+        must be False. Pins the strict-less-than contract.
+        """
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 55.0, "atl": 50.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=97)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["inflation_capped"] is False
+        assert envelope["inflation_raw"] < race_predict.INFLATION_MAX
+
+    @pytest.mark.asyncio
+    async def test_cap_boundary_just_after_engagement(self):
+        """Boundary check: at d=98, raw sqrt(98/30) ≈ 1.808 > INFLATION_MAX → cap
+        engages. `inflation_capped` flips to True at this exact transition.
+        """
+        bundle = _fake_bundle(predict_value=300.0, residuals=[-10, 10])
+        overrides = {"ctl": 55.0, "atl": 50.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=98)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["inflation_capped"] is True
+        assert envelope["inflation"] == pytest.approx(race_predict.INFLATION_MAX, abs=1e-3)
+        assert envelope["inflation_raw"] > race_predict.INFLATION_MAX
 
 
 class TestOutOfSampleCtl:
@@ -478,6 +510,184 @@ class TestOutOfSampleCtl:
         assert out["_ctl_out_of_sample"]["train_p90"] == 30.0
         # Projected = 30 × 2.2 = 66
         assert out["_ctl_out_of_sample"]["projected"] == pytest.approx(66.0, abs=0.1)
+
+
+class TestBiasCorrection:
+    """Phase 2.0β2 — post-hoc bias correction (issue #363 β2, spec §10.5.6).
+
+    Simulation result: linear `bias(d) = a + b * d` reduces ML MAE from 55.04
+    to 50.04 sec/km on user 1 (z=2.63). Production applies via bundle metrics
+    `bias_intercept` + `bias_slope` (per-athlete fit at train time) with pool
+    fallback for cold-start. Applied in BOTH today and race_day modes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bias_correction_applies_on_race_day_mode(self):
+        """Bundle with bias keys → correction subtracted from pred. Envelope
+        surfaces both `bias_correction_applied` (numeric sec/km) and method tag.
+        """
+        bundle = _fake_bundle(
+            predict_value=355.0,
+            residuals=[-10, 10],
+            bias_intercept=POOL_BIAS_INTERCEPT,
+            bias_slope=POOL_BIAS_SLOPE,
+            bias_fit_method="per_athlete_linear",
+            bias_n_races_fit=18,
+        )
+        overrides = {"ctl": 66.0, "atl": 60.0}
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+            patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="race_day",
+                race_date=(date.today() + timedelta(days=126)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        # Expected bias: POOL_BIAS_INTERCEPT + POOL_BIAS_SLOPE × 126 ≈ 22.05 sec/km
+        expected_bias = POOL_BIAS_INTERCEPT + POOL_BIAS_SLOPE * 126
+        assert envelope["bias_correction_applied"] == pytest.approx(expected_bias, abs=0.02)
+        assert envelope["bias_fit_method"] == "per_athlete_linear"
+        # Pred shifted: 355 - 22.05 ≈ 332.95 sec/km
+        assert envelope["splits"]["run"]["pred"] == pytest.approx(355.0 - expected_bias, abs=0.05)
+
+    @pytest.mark.asyncio
+    async def test_bias_correction_applies_on_today_mode(self):
+        """today mode + race_date → bias_correction_applied scaled by days_to_race.
+        Same formula on both modes — schema parity (user directive)."""
+        bundle = _fake_bundle(
+            predict_value=355.0,
+            residuals=[-10, 10],
+            bias_intercept=POOL_BIAS_INTERCEPT,
+            bias_slope=POOL_BIAS_SLOPE,
+            bias_fit_method="per_athlete_linear",
+        )
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="today",
+                race_date=(date.today() + timedelta(days=60)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        # In today mode bias still applies — symmetric semantics
+        expected_bias = POOL_BIAS_INTERCEPT + POOL_BIAS_SLOPE * 60
+        assert envelope["bias_correction_applied"] == pytest.approx(expected_bias, abs=0.02)
+        assert envelope["bias_fit_method"] == "per_athlete_linear"
+
+    @pytest.mark.asyncio
+    async def test_bias_correction_intercept_only_at_zero_days(self):
+        """days_to_race=0 → bias = intercept only (≠ 0). Race-today still gets
+        the model's intrinsic offset removed (~6 sec/km), not skipped entirely.
+        """
+        bundle = _fake_bundle(
+            predict_value=300.0,
+            residuals=[-10, 10],
+            bias_intercept=POOL_BIAS_INTERCEPT,
+            bias_slope=POOL_BIAS_SLOPE,
+            bias_fit_method="per_athlete_linear",
+        )
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="today",
+                race_date=date.today().isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        # bias = intercept + slope × 0 = intercept only
+        assert envelope["bias_correction_applied"] == pytest.approx(POOL_BIAS_INTERCEPT, abs=0.02)
+
+    @pytest.mark.asyncio
+    async def test_bias_correction_monotonic_with_days_to_race(self):
+        """Same bundle + features, varying days_to_race: applied bias grows
+        monotonically (slope > 0 in our pool/per-athlete fits). Guards against
+        sign flips on the bias formula.
+        """
+        bundle = _fake_bundle(
+            predict_value=350.0,
+            residuals=[-10, 10],
+            bias_intercept=POOL_BIAS_INTERCEPT,
+            bias_slope=POOL_BIAS_SLOPE,
+            bias_fit_method="pool_fallback",
+        )
+        applied_values: list[float] = []
+        for days in [0, 30, 60, 90, 120, 150]:
+            overrides = {"ctl": 50.0, "atl": 45.0}
+            with (
+                patch.object(race_predict, "_load_model", return_value=bundle),
+                patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+                patch.object(race_predict, "_mode2_overrides", AsyncMock(return_value=overrides)),
+            ):
+                envelope = await race_predict.predict_splits_with_ci(
+                    user_id=1,
+                    mode="race_day",
+                    race_date=(date.today() + timedelta(days=days)).isoformat(),
+                    race_distance_run_m=21000,
+                    target_hr_run=150,
+                )
+            applied_values.append(envelope["bias_correction_applied"])
+        # Strictly increasing (slope > 0)
+        for i in range(1, len(applied_values)):
+            assert applied_values[i] > applied_values[i - 1], f"bias not monotonic: {applied_values}"
+
+    @pytest.mark.asyncio
+    async def test_legacy_bundle_no_bias_correction(self):
+        """Bundle without bias keys → correction skipped, pred unchanged,
+        envelope returns 0.0 + None. Critical for backwards-compat."""
+        bundle = _fake_bundle(predict_value=355.0, residuals=[-10, 10])  # no bias_*
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="today",
+                race_date=(date.today() + timedelta(days=126)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["bias_correction_applied"] == 0.0
+        assert envelope["bias_fit_method"] is None
+        # Pred untouched (model predicted 355, no shift)
+        assert envelope["splits"]["run"]["pred"] == pytest.approx(355.0, abs=0.5)
+
+    @pytest.mark.asyncio
+    async def test_pool_fallback_marked_in_method(self):
+        """Cold-start: bundle with pool constants + method=pool_fallback.
+        Envelope surfaces the tag so caller knows correction came from cross-
+        athlete defaults, not per-athlete fit."""
+        bundle = _fake_bundle(
+            predict_value=355.0,
+            residuals=[-10, 10],
+            bias_intercept=POOL_BIAS_INTERCEPT,
+            bias_slope=POOL_BIAS_SLOPE,
+            bias_fit_method="pool_fallback",
+            bias_n_races_fit=2,
+        )
+        with (
+            patch.object(race_predict, "_load_model", return_value=bundle),
+            patch.object(race_predict, "build_inference_features", return_value=_fake_features()),
+        ):
+            envelope = await race_predict.predict_splits_with_ci(
+                user_id=1,
+                mode="today",
+                race_date=(date.today() + timedelta(days=60)).isoformat(),
+                race_distance_run_m=21000,
+                target_hr_run=150,
+            )
+        assert envelope["bias_fit_method"] == "pool_fallback"
+        # Bias still applied (pool constants are real numbers, not "skip")
+        assert envelope["bias_correction_applied"] > 0
 
 
 class TestQualityGate:

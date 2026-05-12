@@ -35,14 +35,34 @@ async def get_race_projection(
 
     `mode="today"`: per-discipline predictions from current wellness + Intervals state.
     `mode="race_day"`: overrides CTL/ATL + per-sport eFTP with `fitness_projection` at
-    race_date, inflates CI by sqrt(days_to_race / 30).
+    race_date, inflates CI by `min(sqrt(days_to_race / 30), 1.8)`.
 
     `race_date` (ISO YYYY-MM-DD) is auto-filled from the user's RACE_A goal when empty.
     Distances and target HR are passed through to the model; missing distance prunes
     the discipline with a warning. Cold-start models report `not_available[]`.
 
-    Returns: `{mode, race_date, days_to_race, splits, not_available, warnings, generated_at}`
-    plus `{projected_ctl, projected_atl, inflation}` in `race_day` mode.
+    Returns:
+        Top-level: `{mode, race_date, days_to_race, splits, not_available,
+        below_acceptance, warnings, generated_at, ci_level, inflation,
+        inflation_raw, inflation_capped, bias_correction_applied, bias_fit_method}`.
+        In `race_day` mode with projection available also: `{projected_ctl,
+        projected_atl}`.
+
+        CI metadata (always present, both modes — issue #361):
+        * `ci_level` — 0.90 (90% PI from 5/95 percentile residuals).
+        * `inflation` — multiplier applied to CI bounds.
+        * `inflation_raw` — pre-cap sqrt(days/30) value.
+        * `inflation_capped: bool` — True iff cap engaged (~97d+).
+
+        Bias correction (Phase 2.0β2 / issue #363 β2):
+        * `bias_correction_applied: float` — Run-only sec/km shift subtracted
+          from `pred` (0.0 if Run not requested OR legacy bundle).
+        * `bias_fit_method` — `per_athlete_linear` / `pool_fallback` /
+          `out_of_scope` / null.
+
+        Per-discipline `splits[<run|ride|swim>]`: `{pred, ci_low, ci_high,
+        units, total_sec?, total_sec_ci_low?, total_sec_ci_high?,
+        total_sec_unavailable?, total_sec_reason?}`.
     """
     user_id = get_current_user_id()
 

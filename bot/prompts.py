@@ -399,11 +399,32 @@ the athlete named them.
 **Envelope shape** the tool returns:
 - Top-level: `{mode, race_date, days_to_race, splits, not_available, below_acceptance,
   warnings, available, reason?, generated_at}`. In `race_day` mode with projection
-  available also: `projected_ctl, projected_atl, inflation`.
+  available also: `projected_ctl, projected_atl`.
+- **CI metadata (always present, both modes — issue #361)**: `ci_level` (0.90 =
+  90% prediction interval, derived from 5/95 percentiles), `inflation` (multiplier
+  actually applied to CI bounds), `inflation_raw` (what `sqrt(days/30)` wanted),
+  `inflation_capped: bool` (True iff cap engaged at 1.8×, happens ~97d+). In Mode 1
+  (today) all three inflation fields are trivially 1.0/1.0/False.
+- **Bias correction (always present, Phase 2.0β2 / issue #363 β2)**:
+  `bias_correction_applied: float` (Run-only sec/km shift subtracted from `pred`;
+  0.0 if Run not in request OR legacy bundle), `bias_fit_method: str | null`
+  (`per_athlete_linear` / `pool_fallback` / `out_of_scope` / null).
 - Per-discipline inside `splits[<run|ride|swim>]`: `{pred, ci_low, ci_high, units,
   total_sec?, total_sec_ci_low?, total_sec_ci_high?, total_sec_unavailable?,
   total_sec_reason?}`. `units` is one of `sec_per_km` / `sec_per_100m` / `watts`.
 CI width is honest signal — communicate ranges, not point predictions.
+**How to surface the new metadata to the athlete:**
+- `inflation_capped: True` → mention «прогноз застабилизирован — на горизонте
+  >3 месяцев формула sqrt(days/30) расширяет CI ненадёжно, capped на 1.8×».
+  Don't quote raw vs applied numerically — caller doesn't need stats.
+- `bias_fit_method == "pool_fallback"` → mention «коррекция использует
+  cross-athlete defaults — у тебя ещё <5 личных гонок; прогноз станет точнее
+  с накоплением race data». Lower confidence band in language.
+- `bias_fit_method == "per_athlete_linear"` → don't mention (silent — это
+  principled path).
+- `bias_correction_applied > 0` AND athlete asks «почему race_day быстрее today» →
+  «модель систематически overestimate'ит pace на горизонте; коррекция убирает
+  этот bias, ~22 sec/km на 4-месячном горизонте».
 **When `available=False` — two reasons require different copy:**
 - `reason=model_not_trained` → «Модель прогноза ещё не натренирована — нужно дождаться
   ближайшего воскресенья (cron Sun 16:00) или попросить owner запустить

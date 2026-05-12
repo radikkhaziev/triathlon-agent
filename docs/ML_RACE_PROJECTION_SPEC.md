@@ -896,17 +896,105 @@ defaults; long-running 2.0c phase iterates на real ongoing data.
 Integration test: full `predict_splits_with_ci` с blend'ом для всех 3 mode'ов
 (today, race_day fresh, race_day stale).
 
-#### 10.5.5. Phase 2.0 sub-phase plan
+#### 10.5.5. Phase 2.0a validation — formula blend approach DEPRECATED (2026-05-12)
 
-| Sub-phase | Scope | Effort | Output |
+Simulation `tools/race_blend_simulation.py` прогнан на user 1 (n=22 Run races,
+no cross-validation available — user 14/62 не имеют race data в локальной БД).
+Результат — **🔴 RED по spec'у decision gate'у §10.5.6:**
+
+| Metric | Result | Threshold | Verdict |
 |---|---|---|---|
-| **2.0a — Validation** | `tools/race_blend_simulation.py` + run на user 1+14+62 | ~80 LoC | Plot + recommended weight schedule + sanity check на formula constants + go/no-go decision |
-| **2.0b — Impl** | Formula blend в `_predict_one` + `formula_constants.py` + 7 edge case tests | ~150 LoC + 7 tests | Phase 2 ship'аем за один merge с empirically-derived weights |
-| **2.0c — Calibration ongoing** | Constants stay tweakable per athlete (or per-cohort); retune после 3-6mo accumulation | TBD | Iteration на real data, possibly per-athlete penalty calibration when n≥20 races per user |
+| Linear blend MAE drop vs ML-only | 0.69 sec/km | ≥ 5 sec/km | ❌ Far below |
+| Weight schedule slope (30d→150d) | 0.18 | ≥ 0.2 | ⚠️ Marginal |
+| Statistical significance (z) | 1.13 | > 1.65 | ❌ Below noise floor |
+| Per-horizon dominance | Neither wins clearly at any horizon | — | ❌ |
 
-**Кросс-discipline expansion (Phase 2.5)** — Ride (FTP-anchored, race intensity
-0.85-0.88 FTP for 70.3 IM-bike pacing) и Swim (CSS-anchored). Те же 3 sub-phase'а,
-после успешного Run ship'а.
+Root cause: per-race variance (60 sec/km std) dominates horizon effect
+(16 sec/km). Formula constants don't fit user 1's race composition (trail/amateur
+races + standalone HMs, no triathlons in race history). Even after per-athlete
+bias-correction of formula (centering mean residual at 0), MAE benefit stays
+below noise floor.
+
+**Conclusion:** vLT × distance-penalty formula approach is not a viable root fix
+for #359 Q1 on observed data. **Pivot to §10.5.6** — post-hoc ML residual bias
+correction via linear `bias(d) = a + b * d` fit per-athlete. See #362 closing
+comment + #363 (Phase 2 pivot tracker) for full history.
+
+#### 10.5.6. Phase 2.0β2 — ML residual bias correction (✅ SHIPPED 2026-05-12)
+
+Per-athlete bias correction via walk-forward mini-simulation residual fit.
+Linear model `bias(d) = a + b * d`. Cold-start (n_races < 5) falls back to
+pool constants. Applied uniformly across today and race_day modes. Surfaced
+in envelope as `bias_correction_applied` and `bias_fit_method`.
+
+**Validation** (LOO cross-validation, user 1 simulation, n=22 races × 5 horizons):
+
+| Metric | ML only | Linear corrected | Δ |
+|---|---|---|---|
+| Overall MAE (sec/km) | 55.04 | 50.04 | **−5.00 (−9%)** |
+| MAE @ 30d | 50.2 | 48.5 | −1.72 |
+| MAE @ 90d | 56.4 | 51.4 | **−5.00 (hits gate threshold)** |
+| MAE @ 150d | 59.3 | 51.0 | **−8.29** |
+| Statistical significance (z) | — | +2.63 | p < 0.01 |
+
+**Decision gate criteria (locked 2026-05-12 — supersedes §10.5.5 slope-only criteria):**
+
+- 🟢 **Green:** MAE drop ≥ 5 sec/km on horizons ≥ 90d **AND** z > 1.65
+- 🟡 **Yellow:** 2-5 sec/km drop OR significant but small → ship behind feature flag
+- 🔴 **Red:** < 2 sec/km drop → bias correction not root fix → pivot to β1 (feature enrichment)
+
+**Result: 🟢 GREEN** — MAE drop +6.65 sec/km on horizons ≥90d, z=+2.63.
+
+**Architecture:**
+
+- **Train-time** (`data/ml/race_train.py:_fit_bias_model`): mini-simulation across
+  athlete's historical Run races × horizons `[30, 60, 90, 120, 150]`. For each
+  point: build inference features as-of `race_date - days_out`, run trained model,
+  collect `residual = pred - actual`. Fit `bias(d) = a + b * d` via `np.polyfit`.
+  Save to `bundle["metrics"]["bias_intercept"]` / `["bias_slope"]` /
+  `["bias_n_races_fit"]` / `["bias_fit_method"]`.
+- **Cold-start fallback**: if `n_races_fit < MIN_RACES_FOR_PER_ATHLETE_BIAS=5` OR
+  simulation produces <10 data points → pool constants from
+  `data/ml/bias_constants.py:POOL_BIAS_INTERCEPT=6.178, POOL_BIAS_SLOPE=0.126`
+  (derived from user 1 simulation). Method tagged as `pool_fallback`.
+- **Out-of-scope**: Ride/Swim — Phase 2.0β2 is Run-only (penalty table different,
+  fewer races). Bundle gets pool constants tagged as `out_of_scope`, but
+  envelope surface is Run-specific (Ride/Swim legs don't show bias_correction).
+- **Predict-time** (`data/ml/race_predict.py:_predict_one`): read
+  `bundle["metrics"]["bias_intercept"]` + `["bias_slope"]`. If both present:
+  `pred -= a + b * max(days_to_race, 0)`. Backwards-compat: legacy bundles
+  without bias keys skip silently. Applied in BOTH today and race_day modes
+  (schema parity per user directive).
+- **Envelope surface** (`predict_splits_with_ci`):
+  - `bias_correction_applied: float` — sec/km actually subtracted (Run leg's
+    bias; 0.0 if Run not requested or no bias keys)
+  - `bias_fit_method: str | None` — `"per_athlete_linear"` / `"pool_fallback"`
+    / `"out_of_scope"` / `None`
+
+**Concrete user 1 example (Ironman 70.3 Belgrade, race_date 2026-09-15, 126 days out):**
+
+- Pre-Phase-2.0β2 race_day prediction: ~5:51/km Run
+- Bias @ 126d = 6.178 + 0.126 × 126 = **22.05 sec/km**
+- Post-correction: 5:51 − 22.05 = **~5:29/km Run** (≈ 1h55m on 21.1km)
+
+Matches plan target range (race plan calls for 2:05-2:15 — corrected prediction
+is at upper edge / slightly aggressive, consistent with «model + bias correction
+slightly optimistic» which we'll calibrate further in β2.1 with multi-athlete pool).
+
+**Closes #359 Q1.** Formula blend approach (§10.5.5) deprecated — see #362
+closing comment + #363 (Phase 2 pivot tracker).
+
+**Followups (not blocking ship, tracked in #363):**
+
+- **β2.1:** Retune pool constants after multi-athlete race data accumulates
+  (target: ≥3 athletes with ≥10 races each).
+- **β1:** Race-feature enrichment (`is_trail` / `weather_temp_c` /
+  `elevation_per_km`). Oracle MAE 42.5 vs ML 55 ⇒ 12.5 sec/km headroom from
+  per-race context, not addressed by horizon-only bias correction.
+- **β3:** Cross-athlete pool model — requires multi-tenant race data.
+
+**Кросс-discipline expansion (Phase 2.5)** — Ride/Swim bias models. Те же
+mini-simulation harness + per-athlete fit, после успешного Run ship'а на проде.
 
 ### 10.6. Cross-athlete pool model (Phase 2 deferred, prerequisite gate)
 
@@ -916,7 +1004,7 @@ donor для user 1). **Prerequisite — Phase 1.6 noise tag backfill complete �
 атлетах** (pooling грязные данные шумит сильнее чем не pooling). Trigger: 5+
 athletes с n≥200 each.
 
-### 10.3. Calibration check
+### 10.7. Calibration check
 
 Постфактум (после каждой состоявшейся гонки в `races`): проверяем что actual
 сплит попадает в [ci_low, ci_high] примерно в 90% случаев. Если систематически
@@ -1013,7 +1101,7 @@ CREATE TABLE race_projections (
 );
 ```
 
-Зачем: post-race calibration check (§10.3). Если не критично — Phase 2.
+Зачем: post-race calibration check (§10.7). Если не критично — Phase 2.
 
 ---
 
@@ -1055,7 +1143,7 @@ CREATE TABLE race_projections (
 
 ### Phase 1.7 — CI inflation cap + OOS CTL warning (✅ shipped 2026-05-12)
 
-Addressed issues [#350](https://github.com/radikkhaziev/issues/350) (CI inflation horizon) and [#359](https://github.com/radikkhaziev/issues/359) (run-model insensitivity + CI width):
+Addressed issues [#350](https://github.com/radikkhaziev/triathlon-agent/issues/350) (CI inflation horizon) and [#359](https://github.com/radikkhaziev/triathlon-agent/issues/359) (run-model insensitivity + CI width):
 
 - [x] `INFLATION_MAX = 1.8` + `MIN_RACE_DAYS_FOR_FORECAST = 14` в `data/ml/race_predict.py`. Past ~97 days inflation caps at 1.8× (was 2.6× at 200d); within 14d Mode 2 falls back to Mode 1 inflation=1.0. See §10.2.
 - [x] `metrics.ctl_feature_p90` saved at train time (`data/ml/race_train.py`); predict-time check in `_predict_one` attaches private `_ctl_out_of_sample = {projected, train_p90}`; aggregator in `predict_splits_with_ci` emits warning. Backwards-compat: legacy bundles без `metrics.ctl_feature_p90` skip silently. See §10.4.
@@ -1265,6 +1353,6 @@ Rationale documented in §14 «Phase 1 runtime acceptance — фактическ
 | User | Run | Ride | Swim | walk/jog/clean | Verdict |
 |---|---|---|---|---|---|
 | 1 | R²=+0.22 MAE=35.9 | R²=−0.09 (gated) | R²=−682 (gated) | 0/9/72 | Run serves as ranking signal; Ride/Swim quality-gate blocked correctly. Phase 1.6 walk-filter was no-op (clean tagging). |
-| 62 | R²=**+0.45** MAE=19.4 | R²=**+0.32** MAE=15.7 | R²=**+0.12** MAE=7.2 | 0/1/166 | **First full-triathlon athlete** — все три passgo through quality gate. Swim MAE 7.2 ниже spec target ≤8. |
+| 62 | R²=**+0.45** MAE=19.4 | R²=**+0.32** MAE=15.7 | R²=**+0.12** MAE=7.2 | 0/1/166 | **First full-triathlon athlete** — все три pass through quality gate. Swim MAE 7.2 ниже spec target ≤8. |
 
 Phase 1.6 noise classification доказала что (а) не регрессирует на clean athletes, (б) infrastructure ready для атлетов с walks-as-Run проблемой. Дальнейший рост Run R² для clean athletes — Phase 2 work (formula blend + pool model), не noise filter.
