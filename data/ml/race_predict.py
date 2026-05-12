@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from data.db.athlete import AthleteGoal
 from data.db.fitness_projection import FitnessProjection
 from data.db.wellness import Wellness
 from data.ml.race_features import DISCIPLINE_TO_SPORT, build_inference_features
@@ -30,6 +31,17 @@ CI_LOW_PCT = 5
 CI_HIGH_PCT = 95
 # Mode 2 inflation reference window (§10.2) — 30 days = scale factor 1.0.
 INFLATION_DAYS_BASE = 30
+
+# Mode 2 CTL ratio ceiling — caps `projected_ctl / current_ctl` to keep the
+# per-sport CTL scaling (applied at `_predict_one`) inside the training-data
+# envelope of the XGBoost model. Empirically training rows span ctl_run in
+# ~5-30 — scaling those by 2.27× (user 1 case: 30→68 over 127 days) would push
+# features to ~11-68, outside training distribution, producing unpredictable
+# inference output. 2.0 cap = athlete can at most double per-sport CTL on this
+# projection — anything above requires sustained ramp > 10 CTL/week (overreach
+# territory), which the model can't extrapolate safely. Communicated to caller
+# via `_ctl_target_unrealistic` flag when the cap engages.
+CTL_PROJECTION_RATIO_CAP = 2.0
 
 # Per-discipline (units, physiological-floor) so the envelope is self-describing
 # and the CI clamp doesn't fall into negative-time territory on tiny-n models.
@@ -128,38 +140,113 @@ def _enforce_quality_gate(bundle: dict[str, Any], discipline: str, *, user_id: i
 
 
 async def _mode2_overrides(user_id: int, race_date: str) -> dict | None:
-    """Read FitnessProjection at race_date → CTL/ATL + per-sport eFTP overrides.
+    """Project current state forward to race day via linear interpolation
+    ``current_CTL → goal.ctl_target``.
 
-    Returns None if no projection row exists (cold-start / no Premium Intervals).
-    Per-sport CTL is **scaled proportionally** (spec §8.1) — webhook sportInfo
-    doesn't carry per-sport CTL, only eFTP/wPrime/pMax.
+    Why not ``FitnessProjection.get(race_date).ctl``: Intervals.icu's projection
+    is a **zero-load decay curve** — what CTL would be IF the athlete stopped
+    training. Athletes who don't write future workouts into Intervals calendar
+    (the project generates plans into our own ``ai_workouts`` table) get a
+    `fitness_projection` that collapses to ~0 by 3×τ_CTL (≈ 126 days) — making
+    race_day Mode 2 return garbage (`projected_ctl=1.6` for a 127-day race
+    when current CTL is 30 and target is 68). See issue #349.
 
-    ``async`` because the caller (`predict_splits_with_ci`) runs from an MCP
-    tool inside an event loop; ``@dual`` ORM methods (`FitnessProjection.get`,
-    `Wellness.get`) detect the running loop and return coroutines — we MUST
-    await them. Calling sync-style returns a coroutine and crashes on
-    attribute access.
+    The fallback (anticipated by spec §8.3 as a Phase 2 candidate, brought
+    forward to fix the broken Mode 2 in Phase 1.5):
+
+        days_to_race / days_to_goal × (ctl_target − current_ctl) + current_ctl
+
+    capped at 1.0 when race_date >= goal.event_date.
+
+    For ``current_eftp`` (Ride feature) we still read from `FitnessProjection`
+    when available — Intervals computes eFTP independently of training-load
+    decay (it's a threshold value, not a volume metric), so its projection of
+    eFTP stays sane even when CTL collapses.
+
+    Returns ``None`` for cold-start: no RACE_A goal, no `ctl_target` on the
+    goal, no current wellness row, race in the past. Caller falls back to
+    Mode-1 state with a warning.
+
+    ``async`` because ``@dual`` ORM methods detect a running event loop and
+    return coroutines; calling sync-style would crash on attribute access.
     """
-    projection = await FitnessProjection.get(user_id, race_date)
-    if projection is None or projection.ctl is None:
+    today = local_today()
+
+    # Anchor 1: current wellness — gives `current_ctl/atl` for the linear path.
+    # Explicit `is None` (not truthy): a literal 0.0 CTL (cold-start athlete)
+    # would falsy-coerce and trigger an early return that hides the real cause.
+    today_w = await Wellness.get(user_id, today)
+    if today_w is None or today_w.ctl is None:
+        return None
+    current_ctl = float(today_w.ctl)
+    current_atl = float(today_w.atl) if today_w.atl is not None else None
+
+    # Anchor 2: RACE_A goal — gives `ctl_target` (where the plan ends) and
+    # `event_date` (linear interpolation reference point).
+    goal = await AthleteGoal.get_by_category(user_id, "RACE_A")
+    if goal is None or goal.ctl_target is None or goal.event_date is None:
         return None
 
+    race_dt = date.fromisoformat(race_date)
+    days_to_race = (race_dt - today).days
+    days_to_goal = (goal.event_date - today).days
+    if days_to_goal <= 0:
+        # Belt-and-suspenders: `AthleteGoal.get_by_category(include_past=False)`
+        # already filters past goals at the ORM layer, but mid-call goal date
+        # could be exactly today → `days_to_goal == 0` → division by zero.
+        # Guard catches both edge cases.
+        return None
+
+    # Cap ratio at 1.0 — race beyond the planned goal date inherits the
+    # ctl_target (no further projection signal). Floor at 0.0 — race in the
+    # past (caller's MCP tool already 400s on this, but defensive) returns
+    # current_ctl unchanged.
+    ratio = max(0.0, min(1.0, days_to_race / days_to_goal))
+    target_ctl = float(goal.ctl_target)
+    projected_ctl_raw = current_ctl + (target_ctl - current_ctl) * ratio
+
+    # Cap projected CTL to keep ratio ≤ CTL_PROJECTION_RATIO_CAP — protects the
+    # XGBoost model from out-of-distribution feature scaling (`_predict_one`
+    # multiplies per-sport CTL features by `_ctl_ratio`). See constant docstring
+    # for empirical envelope. Caller learns via `_ctl_target_unrealistic` flag.
+    max_projected_ctl = current_ctl * CTL_PROJECTION_RATIO_CAP
+    projected_ctl = min(projected_ctl_raw, max_projected_ctl)
+    target_capped = projected_ctl < projected_ctl_raw
+
+    # ATL projection: at race-day taper an athlete is at ATL ≈ CTL × 0.95
+    # (small positive TSB ≈ 5% — the canonical peak shape). Project ATL
+    # toward this taper-state on the same `ratio` so TSB evolves coherently
+    # with CTL. Earlier draft kept `current_atl` unchanged — that produced
+    # nonsensical TSB at race-day (CTL projected up, ATL frozen low → TSB
+    # 30+, far above any real taper state).
+    target_atl = projected_ctl * 0.95
+    projected_atl = current_atl + (target_atl - current_atl) * ratio if current_atl is not None else target_atl
+
     overrides: dict = {
-        "ctl": float(projection.ctl) if projection.ctl is not None else None,
-        "atl": float(projection.atl) if projection.atl is not None else None,
+        "ctl": projected_ctl,
+        "atl": projected_atl,
     }
+    if target_capped:
+        # Signal to caller that the target is more aggressive than the model
+        # can extrapolate safely. Caller may want to surface a warning to the
+        # athlete («target ramp rate >10 CTL/week — projection capped»).
+        overrides["_ctl_target_unrealistic"] = True
 
-    # Per-sport eFTP from sportInfo array (may be NULL for pre-migration rows)
-    eftp_ride = projection.sport_info_by_type("Ride", "eftp")
-    if eftp_ride is not None:
-        overrides["current_eftp"] = eftp_ride
+    # eFTP (Ride threshold) — Intervals' projection of eFTP is meaningful even
+    # when CTL decay'ит, since it tracks pure threshold not training volume.
+    # We still read it from FitnessProjection if available.
+    projection = await FitnessProjection.get(user_id, race_date)
+    if projection is not None:
+        eftp_ride = projection.sport_info_by_type("Ride", "eftp")
+        if eftp_ride is not None:
+            overrides["current_eftp"] = eftp_ride
 
-    # Proportional per-sport CTL scaling — current_per_sport × (proj_global / current_global).
-    # `Wellness.get(today)` is the anchor; if today's row hasn't been synced yet
-    # the ratio is skipped (caller still gets the global CTL/ATL overrides).
-    today_w = await Wellness.get(user_id, local_today())
-    if today_w and today_w.ctl and projection.ctl:
-        overrides["_ctl_ratio"] = float(projection.ctl) / float(today_w.ctl)
+    # Per-sport CTL scaling ratio for `_predict_one` — same shape as before,
+    # but ratio now comes from the linear plan-extrapolation (capped), not
+    # from decay-projection.
+    if current_ctl > 0:
+        overrides["_ctl_ratio"] = projected_ctl / current_ctl
+
     return overrides
 
 

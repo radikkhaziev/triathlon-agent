@@ -252,9 +252,19 @@ static/models/
 - Exclude warmup/cooldown: use `activity_details.intervals` если есть, иначе
   берём avg по всей activity но только если `moving_time >= 25 min` (короткие
   не репрезентативны).
-- Exclude low-intensity recovery: `z1_time_pct < 70%` (иначе модель учится на
-  чиловых пробежках).
+- Exclude low-intensity recovery via combined helper `_is_recovery_jog(zones, tss)`
+  — Z1 ≥ 70% **AND** TSS < 40. Zone-only filter ломал pro-атлетов со
+  структурным 80/20 base; TSS gate отличает 25-min recovery jog от 90-min
+  base session. Server-side фильтр: Phase 1.5 reality calibration в
+  `docs/IMPLEMENTATION_STATUS.md`.
 - Для Run: exclude trail if `type=Run` (road), и наоборот — не смешивать.
+
+**Athlete-side data hygiene.** Server-side фильтрация ловит явный мусор (recovery
+jogs, trail-mixed), но качество данных в итоге определяется поведением атлета —
+тэги Intervals, выбор HR-strap, дисциплина регулярных steady-state сессий.
+Подробно: `docs/knowledge/training-data-hygiene.md`. Knowledge-док rendered into
+AI training-skill context, чтобы Claude мог сказать атлету «у тебя 4 прогулки за
+неделю помечены как Run — это шумит ML и мои prediction'ы».
 
 **Inference target — race pacing, не training pacing:**
 
@@ -692,3 +702,52 @@ Scenario engine ("miss 2 weeks" / "+10% volume" / custom CTL target), webapp `/r
   `sport_info` может быть `None`. **Решение:** перед первым `train-race-models`
   прогнать бэкфилл-actor, который дозаполнит `wellness.sport_info` из Intervals
   REST `/wellness/{id}` для дат до 2026-04-11. Одноразовая операция.
+
+---
+
+## 18. Open issues (post-Phase 1)
+
+Журнал нерешённых проблем + связанных инфраструктурных задач. Обновляется при появлении нового открытия. **Закрытые issue NE удаляем из списка** — историческая привязка к спеке (по дате создания + комментарию о fix-commit).
+
+### 🔴 Blockers for production use
+
+- **[#349](https://github.com/radikkhaziev/triathlon-agent/issues/349) — `fitness_projection` decay вместо плана.**
+  Mode 2 race_day режим возвращает `projected_ctl=1.62` для гонки через 127 дней, потому что Intervals.icu `fitness_projection.ctl` — это **zero-load decay curve** (что было бы если перестать тренироваться), а не план. У атлетов которые не пишут будущие workout'ы в Intervals calendar — projection схлопывается к нулю. Fix: переписать `_mode2_overrides` на линейную экстраполяцию `current_CTL → goal.ctl_target` (spec §8.3 уже предсказала это решение как Phase 2 fallback, но без него Phase 1 Mode 2 непригоден).
+  - **Impact:** Mode 2 race_day выдаёт мусорные сплиты (Run 2:38 вместо 2:05 на 70.3) — quality gate не ловит т.к. метрики модели хорошие, ломается inference-side `projected_ctl`.
+  - **Effort:** ~30 строк в `_mode2_overrides` + 2-3 unit-теста.
+
+### 🟡 UX polish — second-order
+
+- **[#350](https://github.com/radikkhaziev/triathlon-agent/issues/350) — CI inflation cap + min-days threshold.**
+  `inflation = sqrt(days_to_race / 30)` → на 200 днях даёт 2.6×, делая CI неинформативно широким. Плюс на <14 днях имеет смысл fallback на Mode 1 (taper-CTL ≈ current). Cap `INFLATION_MAX = 1.8` + min-threshold `MIN_RACE_DAYS_FOR_FORECAST = 14`. Depends on #349 — после fix decay'а CI станет вменяемым, потом можно тюнить.
+
+### 🟡 Infrastructure (не блокирует функциональность)
+
+- **[#348](https://github.com/radikkhaziev/triathlon-agent/issues/348) — ML retrain в отдельной Dramatiq очереди + ночной cron.**
+  Sun 16:00 → Sun 03:00, `queue_name="ml_retrain"`, отдельный worker с `--threads 1`. Изолирует CPU spike (XGBoost bootstrap) от Telegram/wellness/webhook workers. ~10 строк правок + 1 service в `docker-compose.yml`.
+
+- **[#346](https://github.com/radikkhaziev/triathlon-agent/issues/346) — Sentry alerts не приходят.**
+  Не специфично для ML. Spike protection / rate limit / отсутствующее alert rule. Race-projection capture'ы тоже не видны → если что-то сломается в production retrain'е, узнаем по логам, не Sentry.
+
+### 🟢 Phase 2 — deferred (по запросу или накоплению данных)
+
+- **Scenario engine** («miss 2 weeks» / «+10% volume» / custom CTL target) — требует hypothetical-CTL поверх existing projection. Spec §2.
+- **Webapp `/race-projection` page** — CTL trajectory chart + per-leg CI bars. Backend готов, нужен UI-спринт. Spec §11.2.
+- **Race-specific Ride/Swim calibration** — ждём ≥10 non-Run race events (сейчас Ride 2 / Swim 1 у user 1). Spec §2 Phase 2.
+- **Cross-athlete pool model** — общая регрессия + warm-start per-user. После накопления данных по 5+ атлетам. Spec §2 Phase 2.
+- **Phase 1.5+ feature improvements** — surface filter for Run (`type=Run` strictly), duration condition для recovery-jog filter (если атлет ведёт длинные walks-as-Run, см. user 1 calibration в §6.3). По запросу.
+
+### 🟡 Cross-spec deps
+
+- **[#356](https://github.com/radikkhaziev/triathlon-agent/issues/356) — Coach/Trainer skill.**
+  Использует `docs/knowledge/training-data-hygiene.md` (создан 2026-05-12) для рекомендаций атлетам как улучшить data quality. Влияет на race-projection косвенно — лучше данные → выше MAE/R² → больше моделей проходит quality gate.
+
+### Phase 1 runtime acceptance — фактический статус
+
+§12.3 формально **не пройден** на user 1 (Run MAE=36 vs floor 10; R²=0.22 vs floor 0.50). Spec говорит «block deploy», но мы сознательно выбрали **Variant A — ship as ranking signal под quality gate**:
+
+- Quality gate (§14 «Quality gate» секция) автоматически блокирует модели ниже R²=0.20 (Run/Ride) / R²=0.05 (Swim).
+- Атлет получает либо реальный прогноз с честным CI диапазоном, либо `reason=model_below_acceptance` сообщение — никогда мусор.
+- Acceptance bar §12.3 целевой для **зрелой системы** (3-6 месяцев чистых данных), а не для Phase 1 MVP с n=300-400.
+
+Решение зафиксировано 2026-05-12 после retrain across 5 атлетов. Бар может быть пересмотрен в Phase 2 если накопится evidence что MAE 10 sec/km нереалистичен на real-world data hygiene даже у дисциплинированных атлетов.
