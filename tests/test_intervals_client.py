@@ -11,6 +11,7 @@ from data.intervals.client import (
     RETRY_MAX_DELAY,
     IntervalsAsyncClient,
     IntervalsClientBase,
+    IntervalsScopeError,
     IntervalsSyncClient,
 )
 
@@ -167,5 +168,45 @@ class TestTransportErrorRetry:
             resp = await client._request("GET", "/ping")
             assert resp.status_code == 200
             assert calls["n"] == 2
+        finally:
+            await client._client.aclose()
+
+
+class TestScopeRevoked:
+    """403 from Intervals.icu = scope revoked. Token stays (other scopes still work),
+    but the failing call raises IntervalsScopeError so Dramatiq actors can catch and
+    skip without retry-looping on a permanent user-action denial."""
+
+    def test_sync_403_raises_scope_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Attach `request` so `raise_for_status()` can build the HTTPStatusError
+            # with proper request context (httpx requires it; MockTransport doesn't
+            # auto-attach, unlike the real httpx client transport path).
+            return httpx.Response(403, text="Forbidden", request=request)
+
+        client = IntervalsSyncClient(athlete_id="i1", api_key="k")
+        client._client.close()
+        client._client = httpx.Client(base_url=BASE_URL, transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(IntervalsScopeError) as exc:
+                client._execute(client._spec_list_sport_settings())
+            assert exc.value.method == "GET"
+            assert "/athlete/i1/sport-settings" in exc.value.path
+        finally:
+            client._client.close()
+
+    async def test_async_403_raises_scope_error(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Attach `request` so `raise_for_status()` can build the HTTPStatusError
+            # with proper request context (httpx requires it; MockTransport doesn't
+            # auto-attach, unlike the real httpx client transport path).
+            return httpx.Response(403, text="Forbidden", request=request)
+
+        client = IntervalsAsyncClient(athlete_id="i1", api_key="k")
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(IntervalsScopeError):
+                await client._execute(client._spec_list_sport_settings())
         finally:
             await client._client.aclose()

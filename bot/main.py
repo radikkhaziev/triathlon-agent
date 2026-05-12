@@ -600,6 +600,12 @@ async def _enforce_chat_daily_cap(update: Update, user: User) -> bool:
 @athlete_required
 async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle free-form text messages — AI chat via tool-use."""
+    # PTB's `filters.TEXT` matches `effective_message`, so edited messages also
+    # route here with `update.message is None` (text lives on `edited_message`).
+    # Re-running the AI chat on an edit would double-bill the user and confuse
+    # the conversation, so we ignore edits outright.
+    if update.message is None:
+        return
     user_text = update.message.text
     if not user_text or not user_text.strip():
         return
@@ -686,6 +692,10 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 @athlete_required
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle photo messages — download, save locally, pass to AI chat with vision."""
+    # Same edit-update guard as `handle_chat_message`: `filters.PHOTO` matches
+    # edited photos too, and `update.message` is None on those.
+    if update.message is None:
+        return
     if not await _enforce_chat_daily_cap(update, user):
         return
 
