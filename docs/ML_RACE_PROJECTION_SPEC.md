@@ -1085,9 +1085,10 @@ Dedicated single-threaded worker means jobs process **one-by-one** by
 construction — no parallel XGBoost trains, predictable load. Night slot
 (03:00) puts the spike outside user activity window.
 
-**Scheduler dispatches per-user** (`for i, a in enumerate(athletes)`) with
-`delay=i*30_000`ms — informational under `--threads 1` (jobs are still
-sequential), but keeps Redis queue depth observable per-tick:
+**Scheduler dispatches per-user** plain `.send()` — no `delay` (vestigial from
+old default-queue design; under `--threads 1 --processes 1` ml-worker pulls
+FIFO sequentially, so any delay would just defer message visibility without
+parallelism benefit). Queue depth still observable any time:
 
 ```bash
 redis-cli LLEN dramatiq:ml_retrain
@@ -1149,7 +1150,7 @@ CREATE TABLE race_projections (
 - [x] `data/ml/race_train.py` — XGBRegressor per discipline + bootstrap residuals (500 resamples) → `static/models/race_{user}_{discipline}.joblib`.
 - [x] MCP tool `get_race_projection` — оба режима + cold-start fallback + all error envelopes §9.3 (7 cases).
 - [x] Bootstrap residuals → CI в ответе, inflation `sqrt(days/30)` для Mode 2.
-- [x] **Weekly retrain actor** — `actor_retrain_race_models` (separate actor от progression), shared `scheduler_ml_retrain_job` Sun 03:00 Belgrade slot с 15s offset; `queue_name="ml_retrain"`, `time_limit=600s, max_retries=0`. Isolated `ml-worker` container (`--threads 1 --processes 1`) — see §12.2 / issue #348. Skip via `InsufficientDataError`.
+- [x] **Weekly retrain actor** — `actor_retrain_race_models` (separate actor от progression), shared `scheduler_ml_retrain_job` Sun 03:00 Belgrade slot; `queue_name="ml_retrain"`, `time_limit=600s, max_retries=0`. Isolated `ml-worker` container (`--threads 1 --processes 1`) — see §12.2 / issue #348. Skip via `InsufficientDataError`.
 - [x] **Chat:** Claude корректно зовёт тулзу — `_STATIC_PROMPT_CHAT` секция `## Race projection` с триггерами в `bot/tool_filter.py:analysis` group.
 - [x] **Weekly report:** `SYSTEM_PROMPT_WEEKLY` step 8 + `WEEKLY_TOOL_NAMES` — one-line «🏁 Race-day прогноз» в 📈 Прогресс gated на `goal_event_date ∈ [30, 200]` дней.
 - [x] **Schema deps:** `fitness_projection.sport_info JSONB` (migration `b8c9d0e1f2a3`) + `FitnessProjection.{get, sport_info_by_type}`. Per-sport CTL helper lives inline at `data/ml/race_features.py:_compute_sport_ctl_series` (pandas-batch, ORM-method form turned out zero-caller and was removed).

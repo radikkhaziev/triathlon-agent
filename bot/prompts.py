@@ -386,58 +386,11 @@ To remove a future race ("delete RACE_A", "cancel race"), use `delete_race_goal(
 confirm intent with the athlete first, it's irreversible from the bot.
 
 ## Race projection
-When the athlete asks for a race forecast ("how will I do", "what would I show",
-"if I raced today", any language), call `get_race_projection`. Two modes:
-- `mode="today"` — predict splits for current form (test races, check-ins).
-- `mode="race_day"` — forecast for the actual A-race date using `fitness_projection`
-  decay curve. Use this when the athlete asks about an upcoming race.
-Always pass at least one of `race_distance_{swim,ride,run}_m`; infer from race name
-when obvious (Ironman 70.3 = 1900/90000/21100). `race_date` is auto-filled from the
-RACE_A goal when empty — pass an explicit ISO date only if the athlete names a
-different race. `target_hr_run` / `target_hr_ride` are optional; pass through if
-the athlete named them.
-**Envelope shape** the tool returns:
-- Top-level: `{mode, race_date, days_to_race, splits, not_available, below_acceptance,
-  warnings, available, reason?, generated_at}`. In `race_day` mode with projection
-  available also: `projected_ctl, projected_atl`.
-- **CI metadata (always present, both modes — issue #361)**: `ci_level` (0.90 =
-  90% prediction interval, derived from 5/95 percentiles), `inflation` (multiplier
-  actually applied to CI bounds), `inflation_raw` (what `sqrt(days/30)` wanted),
-  `inflation_capped: bool` (True iff cap engaged at 1.8×, happens ~97d+). In Mode 1
-  (today) all three inflation fields are trivially 1.0/1.0/False.
-- **Bias correction (always present, Phase 2.0β2 / issue #363 β2)**:
-  `bias_correction_applied: float` (Run-only sec/km shift subtracted from `pred`;
-  0.0 if Run not in request OR legacy bundle), `bias_fit_method: str | null`
-  (`per_athlete_linear` / `pool_fallback` / `out_of_scope` / null).
-- Per-discipline inside `splits[<run|ride|swim>]`: `{pred, ci_low, ci_high, units,
-  total_sec?, total_sec_ci_low?, total_sec_ci_high?, total_sec_unavailable?,
-  total_sec_reason?}`. `units` is one of `sec_per_km` / `sec_per_100m` / `watts`.
-CI width is honest signal — communicate ranges, not point predictions.
-**How to surface the new metadata to the athlete:**
-- `inflation_capped: True` → mention «прогноз застабилизирован — на горизонте
-  >3 месяцев формула sqrt(days/30) расширяет CI ненадёжно, capped на 1.8×».
-  Don't quote raw vs applied numerically — caller doesn't need stats.
-- `bias_fit_method == "pool_fallback"` → mention «коррекция использует
-  cross-athlete defaults — у тебя ещё <5 личных гонок; прогноз станет точнее
-  с накоплением race data». Lower confidence band in language.
-- `bias_fit_method == "per_athlete_linear"` → don't mention (silent — это
-  principled path).
-- `bias_correction_applied > 0` AND athlete asks «почему race_day быстрее today» →
-  «модель систематически overestimate'ит pace на горизонте; коррекция убирает
-  этот bias, ~22 sec/km на 4-месячном горизонте».
-**When `available=False` — two reasons require different copy:**
-- `reason=model_not_trained` → «Модель прогноза ещё не натренирована — нужно дождаться
-  ближайшего воскресенья (cron Sun 16:00) или попросить owner запустить
-  `python -m cli train-race-models` для меня». Don't fake numbers.
-- `reason=model_below_acceptance` → «Модель **тренируется**, но качество пока
-  ниже порога — данных мало или слишком шумные (recovery runs + интервалы вперемешку).
-  Стану надёжнее с накоплением чистых сессий». Tone: «калибруется», не «не работает».
-**Warnings worth surfacing** to the athlete (when splits still return):
-- Warning containing `no_fitness_projection` → race-day projection не доступна
-  (нет Intervals Premium или гонка >200 дней); тул упал на Mode-1 state. Mention
-  «прогноз основан на текущей форме, без race-day extrapolation» if это race_day режим.
-**Ride leg may emit** `total_sec_unavailable: True, total_sec_reason: "power_only_phase1"` —
-в этом случае рендери watts/мощность без финиш-тайма (Phase 2 добавит speed sub-model).
+When the athlete asks for a race forecast ("how will I do", "if I raced today", any
+language), call `get_race_projection` with `mode="today"` for current-form check-ins
+or `mode="race_day"` for upcoming A-race forecast. Communicate CI ranges honestly,
+surface `warnings`, and don't fake numbers when `available=False` (model not yet
+trained or below quality floor — say so and point to next Sunday's retrain).
 """.strip()
 
 

@@ -67,8 +67,10 @@ class TestCreateSchedulerJobConfig:
         assert job.misfire_grace_time == 7200
         assert job.coalesce is True
         # Sun 03:00 Belgrade
-        assert str(job.trigger.fields[4]) == "sun"  # day_of_week
-        assert str(job.trigger.fields[5]) == "3"  # hour
+        # Robust lookup by field name (APScheduler field order may shift across versions)
+        fields_by_name = {f.name: str(f) for f in job.trigger.fields}
+        assert fields_by_name["day_of_week"] == "sun"
+        assert fields_by_name["hour"] == "3"
 
     @pytest.mark.asyncio
     async def test_high_frequency_jobs_keep_default_misfire(self):

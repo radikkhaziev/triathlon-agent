@@ -148,7 +148,7 @@ docker compose exec api python -m cli reprocess-ramp-test 1 i146377549 --push
 | Month                     | `sync-activities 2 2025-11`| 2025-11-01 → 2025-11-30     |
 | Date range                | `sync-activities 2 2025-01-01:2025-03-31` | Explicit range |
 
-All sync commands dispatch dramatiq tasks with 20s delay between days. Requires a running worker (`dramatiq tasks.actors`) and Redis.
+All sync commands dispatch dramatiq tasks with 20s delay between days. Requires a running worker (`dramatiq tasks.actors --queues default`) and Redis. ML retrain (`actor_retrain_progression_model` / `actor_retrain_race_models`) lives on a separate `ml_retrain` queue served by a dedicated `ml-worker` container — see issue #348 / spec §12.2. Local dev: start `ml-worker` separately if testing weekly retrain, or invoke `python -m cli train-race-models <user_id>` directly.
 
 ---
 
