@@ -184,7 +184,7 @@ class TestBuildDataset:
         assert df.empty
 
     def test_z1_filter_engages_in_pipeline(self):
-        """Regression guard: confirm `_is_recovery_dominated` actually fires
+        """Regression guard: confirm `_is_z1_dominated` actually fires
         inside the `build_dataset` loop, not just in isolation. Without this
         coverage, a refactor that drops the call site (or moves the check
         below where rows are counted) would slip through.
@@ -215,7 +215,8 @@ class TestBuildDataset:
                 "sport": "Run",
                 "sub_type": None,
                 "moving_time": 3600,
-                "tss": 45.0,
+                # TSS below RECOVERY_TSS_CEILING — short jog, low load
+                "tss": 25.0,
                 "avg_hr": 138.0,
                 "is_race": False,
                 "distance": 10000.0,
@@ -261,6 +262,165 @@ class TestBuildDataset:
         assert len(df) == 2
         assert set(df["activity_id"]) == {"i1", "i3"}
         assert "i2" not in df["activity_id"].values
+
+    def test_z1_filter_keeps_long_z1_base(self):
+        """Regression guard for the user-62 case: a Z1-dominated session with
+        TSS≥40 (structured 80/20 base) must NOT be filtered. Pre-TSS-gate this
+        broke pro athletes (Ras R²=0.44→0.04). Catches anyone who would later
+        re-tighten the filter back to zone-only.
+        """
+        run_rows = [
+            {
+                "activity_id": "i1",
+                "date": "2026-04-01",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 3600,
+                "tss": 50.0,
+                "avg_hr": 140.0,
+                "is_race": False,
+                "distance": 10000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [600, 2400, 480, 120, 0],  # Z2 base — keep
+            },
+            {
+                # Long Z1-base session: 90 min @ TSS 75, 85% Z1 — keep!
+                "activity_id": "i2_long_base",
+                "date": "2026-04-08",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 5400,
+                "tss": 75.0,
+                "avg_hr": 135.0,
+                "is_race": False,
+                "distance": 15000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [4590, 600, 210, 0, 0],  # 85% Z1, but TSS≥40
+            },
+        ]
+        with (
+            patch.object(race_features, "_fetch_activities", return_value=_activities_df(run_rows)),
+            patch.object(
+                race_features,
+                "_fetch_all_sports_activities",
+                return_value=pd.DataFrame(columns=["date", "sport", "tss"]),
+            ),
+            patch.object(race_features, "_fetch_wellness", return_value=_wellness_df([])),
+            patch.object(race_features, "_fetch_garmin_daily", return_value=_garmin_df()),
+            patch.object(race_features, "_fetch_training_log", return_value=_training_log_df()),
+            patch.object(race_features, "_fetch_athlete_state", return_value={}),
+        ):
+            df = race_features.build_dataset(1, "run")
+        # Both rows survive — Z1-base session kept despite Z1-dominated zones
+        assert len(df) == 2
+        assert "i2_long_base" in df["activity_id"].values
+
+    def test_z1_filter_missing_tss_keeps_activity(self):
+        """End-to-end coverage of the lenient missing-TSS path: a Z1-dominated
+        row with `tss=None` must NOT be filtered. The helper-level test
+        `test_missing_tss_keeps_activity` covers `_is_recovery_jog` directly;
+        this integration test guards against a `build_dataset`-level regression
+        where `act.get("tss")` might be coerced to NaN by pandas or the
+        call-site stops passing it.
+        """
+        run_rows = [
+            {
+                "activity_id": "i1",
+                "date": "2026-04-01",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 3600,
+                "tss": 50.0,
+                "avg_hr": 140.0,
+                "is_race": False,
+                "distance": 10000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [600, 2400, 480, 120, 0],  # Z2 base — keep
+            },
+            {
+                # Z1-dominated but TSS missing → lenient, keep
+                "activity_id": "i2_no_tss",
+                "date": "2026-04-08",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 3600,
+                "tss": None,
+                "avg_hr": 138.0,
+                "is_race": False,
+                "distance": 10000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [3060, 540, 0, 0, 0],  # 85% Z1
+            },
+        ]
+        with (
+            patch.object(race_features, "_fetch_activities", return_value=_activities_df(run_rows)),
+            patch.object(
+                race_features,
+                "_fetch_all_sports_activities",
+                return_value=pd.DataFrame(columns=["date", "sport", "tss"]),
+            ),
+            patch.object(race_features, "_fetch_wellness", return_value=_wellness_df([])),
+            patch.object(race_features, "_fetch_garmin_daily", return_value=_garmin_df()),
+            patch.object(race_features, "_fetch_training_log", return_value=_training_log_df()),
+            patch.object(race_features, "_fetch_athlete_state", return_value={}),
+        ):
+            df = race_features.build_dataset(1, "run")
+        # Note: `_target_value` may reject the row if TSS being None propagates
+        # to other paths; explicitly check that filter didn't fire (i.e. row
+        # presence depends only on _target_value/HR gates, not on z1-filter).
+        # Z1-dominated + no TSS → filter must NOT engage.
+        assert "i2_no_tss" in df["activity_id"].values
+
+    def test_z1_filter_tss_at_ceiling_keeps_activity(self):
+        """Boundary integration test: TSS exactly at RECOVERY_TSS_CEILING
+        (40.0) must survive — strict-less comparison (`<`, not `<=`), defensive
+        lean toward keeping. Guards against a future flip of `<` to `<=`.
+        """
+        run_rows = [
+            {
+                "activity_id": "i1_boundary",
+                "date": "2026-04-01",
+                "sport": "Run",
+                "sub_type": None,
+                "moving_time": 3600,
+                "tss": float(race_features.RECOVERY_TSS_CEILING),  # exactly 40.0
+                "avg_hr": 138.0,
+                "is_race": False,
+                "distance": 10000.0,
+                "elevation_gain": 0.0,
+                "avg_power": None,
+                "normalized_power": None,
+                "pace_mps": 2.78,
+                "hr_zone_times": [3060, 540, 0, 0, 0],  # 85% Z1
+            },
+        ]
+        with (
+            patch.object(race_features, "_fetch_activities", return_value=_activities_df(run_rows)),
+            patch.object(
+                race_features,
+                "_fetch_all_sports_activities",
+                return_value=pd.DataFrame(columns=["date", "sport", "tss"]),
+            ),
+            patch.object(race_features, "_fetch_wellness", return_value=_wellness_df([])),
+            patch.object(race_features, "_fetch_garmin_daily", return_value=_garmin_df()),
+            patch.object(race_features, "_fetch_training_log", return_value=_training_log_df()),
+            patch.object(race_features, "_fetch_athlete_state", return_value={}),
+        ):
+            df = race_features.build_dataset(1, "run")
+        # Survived — boundary err-to-keep
+        assert "i1_boundary" in df["activity_id"].values
 
 
 # ---------------------------------------------------------------------------
@@ -341,40 +501,41 @@ class TestBuildInferenceFeatures:
         assert f["current_eftp"] == 230.0
 
 
-class TestZ1RecoveryFilter:
-    """Phase 1.5 z1-filter (§6.3) drops recovery-dominated Run activities so
-    the model doesn't learn «athlete in OK form ran 6:30/km» from a recovery
-    jog.
+class TestZ1Dominated:
+    """`_is_z1_dominated` — zone-composition primitive. Returns True when Z1 ≥
+    70% of recorded HR time. Does NOT distinguish recovery jog from structured
+    Z1-base — the filter decision uses :class:`TestRecoveryJog` (combined
+    helper). These tests just exercise the zone-only check.
     """
 
-    def test_recovery_dominated_returns_true(self):
-        # 80% Z1 + 15% Z2 + 5% Z3 → recovery jog
+    def test_z1_dominated_returns_true(self):
+        # 80% Z1 + 15% Z2 + 5% Z3 → dominated by Z1
         zones = [4800, 900, 300, 0, 0]  # secs per zone
-        assert race_features._is_recovery_dominated(zones) is True
+        assert race_features._is_z1_dominated(zones) is True
 
-    def test_base_aerobic_run_returns_false(self):
-        # 10% Z1 + 75% Z2 + 12% Z3 + 3% Z4 → standard Z2 base — keep it
+    def test_z2_base_run_returns_false(self):
+        # 10% Z1 + 75% Z2 + 12% Z3 + 3% Z4 → standard Z2 base — not Z1-dominated
         zones = [600, 4500, 720, 180, 0]
-        assert race_features._is_recovery_dominated(zones) is False
+        assert race_features._is_z1_dominated(zones) is False
 
     def test_threshold_workout_returns_false(self):
-        # WU/CD Z1+Z2 + main set Z4-Z5 → intervals, definitely not recovery
+        # WU/CD Z1+Z2 + main set Z4-Z5 → intervals, definitely not Z1-dominated
         zones = [600, 1200, 800, 1800, 1200]
-        assert race_features._is_recovery_dominated(zones) is False
+        assert race_features._is_z1_dominated(zones) is False
 
     def test_missing_zones_returns_false(self):
         """Older activities w/o synced details → don't filter what we can't measure."""
-        assert race_features._is_recovery_dominated(None) is False
-        assert race_features._is_recovery_dominated([]) is False
-        assert race_features._is_recovery_dominated([0, 0, 0, 0, 0]) is False
+        assert race_features._is_z1_dominated(None) is False
+        assert race_features._is_z1_dominated([]) is False
+        assert race_features._is_z1_dominated([0, 0, 0, 0, 0]) is False
 
     def test_threshold_boundary(self):
         """Exactly 70% Z1 → drop (inclusive — `>=`)."""
         zones = [7000, 3000, 0, 0, 0]  # 70% / 30%
-        assert race_features._is_recovery_dominated(zones) is True
+        assert race_features._is_z1_dominated(zones) is True
         # 69% Z1 → keep
         zones = [6900, 3100, 0, 0, 0]
-        assert race_features._is_recovery_dominated(zones) is False
+        assert race_features._is_z1_dominated(zones) is False
 
     def test_threshold_constant(self):
         """Floor value tracked in constant — anyone tuning the filter must
@@ -384,20 +545,20 @@ class TestZ1RecoveryFilter:
     def test_tuple_input_works(self):
         """SQLAlchemy/pandas may return tuple instead of list — accept both."""
         zones = (4800, 900, 300, 0, 0)  # 80% Z1 — recovery
-        assert race_features._is_recovery_dominated(zones) is True
+        assert race_features._is_z1_dominated(zones) is True
 
     def test_ndarray_input_works(self):
         """numpy arrays are returned by some pandas paths — should work too."""
         import numpy as np
 
         zones = np.array([4800, 900, 300, 0, 0])
-        assert race_features._is_recovery_dominated(zones) is True
+        assert race_features._is_z1_dominated(zones) is True
 
     def test_string_input_rejected(self):
         """Strings are technically iterable; reject so we don't iterate chars."""
         # Wouldn't be a real use case (JSON wouldn't return string) but defensive.
-        assert race_features._is_recovery_dominated("invalid") is False
-        assert race_features._is_recovery_dominated(b"invalid") is False
+        assert race_features._is_z1_dominated("invalid") is False
+        assert race_features._is_z1_dominated(b"invalid") is False
 
     def test_nan_values_neutralized(self):
         """NaN poison check — `bool(float('nan')) is True` so `z or 0`
@@ -407,15 +568,74 @@ class TestZ1RecoveryFilter:
         """
         # 80% Z1 + NaN garbage in higher zones — should still flag as recovery.
         zones = [4800, 900, float("nan"), None, 0]
-        assert race_features._is_recovery_dominated(zones) is True
+        assert race_features._is_z1_dominated(zones) is True
 
     def test_all_nan_returns_false(self):
         """If every entry is NaN the sum coerces to 0 → can't classify."""
         zones = [float("nan")] * 5
-        assert race_features._is_recovery_dominated(zones) is False
+        assert race_features._is_z1_dominated(zones) is False
 
     def test_negative_seconds_clamped(self):
         """Defensive — negative time has no physical meaning, treat as 0."""
         zones = [4800, -100, 200, 0, 0]
         # Z1=4800, total=4800+0+200=5000 → 96% Z1 → recovery
-        assert race_features._is_recovery_dominated(zones) is True
+        assert race_features._is_z1_dominated(zones) is True
+
+
+class TestRecoveryJog:
+    """`_is_recovery_jog(zones, tss)` — combined filter decision.
+
+    Calibration empirical (2026-05-12 retrain): zone-only filter broke pro
+    athletes (user 62 Ras: R²=0.44 → 0.04) because it dropped their long
+    Z1-base sessions (TSS 60+) as «recovery». Adding TSS<40 gate keeps the
+    base sessions in train-set while still dropping fluff recovery jogs.
+    """
+
+    Z1_DOMINATED_ZONES = [4800, 900, 300, 0, 0]  # 80% Z1 — recovery shape
+    BALANCED_ZONES = [600, 4500, 720, 180, 0]  # 10% Z1 + 75% Z2 — base shape
+
+    def test_short_z1_jog_is_filtered(self):
+        """Classic recovery jog: Z1≥70% AND TSS<40 → drop."""
+        assert race_features._is_recovery_jog(self.Z1_DOMINATED_ZONES, tss=25.0) is True
+
+    def test_long_z1_base_session_is_kept(self):
+        """Structured Z1-base 90 min @ TSS 70: Z1≥70% but TSS≥ceiling → keep."""
+        assert race_features._is_recovery_jog(self.Z1_DOMINATED_ZONES, tss=70.0) is False
+
+    def test_z2_base_run_is_kept(self):
+        """Standard Z2-base run: Z1<70% → keep regardless of TSS."""
+        assert race_features._is_recovery_jog(self.BALANCED_ZONES, tss=25.0) is False
+        assert race_features._is_recovery_jog(self.BALANCED_ZONES, tss=70.0) is False
+
+    def test_missing_tss_keeps_activity(self):
+        """Can't classify safely without TSS → don't filter (lenient)."""
+        assert race_features._is_recovery_jog(self.Z1_DOMINATED_ZONES, tss=None) is False
+
+    def test_missing_zones_keeps_activity(self):
+        """No HR zone data → primitive returns False, so combined → False."""
+        assert race_features._is_recovery_jog(None, tss=25.0) is False
+        assert race_features._is_recovery_jog([], tss=25.0) is False
+
+    def test_tss_boundary(self):
+        """Exactly TSS_CEILING → keep (strictly-less, not less-or-equal)."""
+        ceiling = race_features.RECOVERY_TSS_CEILING
+        # TSS exactly at ceiling → not filtered (defensive — boundary errs to keep)
+        assert race_features._is_recovery_jog(self.Z1_DOMINATED_ZONES, tss=ceiling) is False
+        # TSS just below → filtered
+        assert race_features._is_recovery_jog(self.Z1_DOMINATED_ZONES, tss=ceiling - 0.01) is True
+
+    def test_nan_tss_keeps_activity(self):
+        """NaN TSS → unclassifiable → keep."""
+        assert race_features._is_recovery_jog(self.Z1_DOMINATED_ZONES, tss=float("nan")) is False
+
+    def test_non_numeric_tss_keeps_activity(self):
+        """Non-numeric TSS (defensive) → keep."""
+        assert race_features._is_recovery_jog(self.Z1_DOMINATED_ZONES, tss="bad") is False
+
+    def test_constants(self):
+        """Pin exact values — symmetric with `Z1_RECOVERY_THRESHOLD == 0.70`
+        pin in `TestZ1Dominated`. Anyone tuning the gate must update the test
+        deliberately, surfaced as a diff hunk in review.
+        """
+        assert race_features.Z1_RECOVERY_THRESHOLD == 0.70
+        assert race_features.RECOVERY_TSS_CEILING == 40.0
