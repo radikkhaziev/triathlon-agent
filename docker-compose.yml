@@ -70,10 +70,39 @@ services:
 
   worker:
     build: .
-    command: dramatiq tasks.actors
+    # --queues default: explicit isolation from ml_retrain (issue #348). Without
+    # --queues Dramatiq consumes ALL known queues, which would race ml-worker
+    # for CPU-heavy XGBoost jobs and defeat the isolation.
+    command: dramatiq tasks.actors --queues default
     env_file: .env
     environment:
       TZ: ${TIMEZONE:-Europe/Belgrade}
+    # FIT files (tasks/actors/activities.py: static/fit-files/) and Telegram
+    # avatars (tasks/actors/avatars.py: static/avatar/) write here — shared
+    # with api so dashboard can serve them. Pre-existing latent gap, fixed
+    # as part of #348 docker-compose cleanup.
+    volumes:
+      - static_data:/app/static
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ml-worker:
+    build: .
+    # Isolated CPU pool for race-projection / progression model retraining
+    # (issue #348). Sequential by construction: --threads 1 --processes 1 means
+    # ML jobs run one-by-one in this container, no concurrent XGBoost trains.
+    # Sun 03:00 Belgrade cron pushes N messages → ml-worker processes them
+    # sequentially over 30-60 min without touching default worker pool.
+    command: dramatiq tasks.actors --queues ml_retrain --threads 1 --processes 1
+    env_file: .env
+    environment:
+      TZ: ${TIMEZONE:-Europe/Belgrade}
+    volumes:
+      - static_data:/app/static
     depends_on:
       migrate:
         condition: service_completed_successfully

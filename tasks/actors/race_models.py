@@ -1,8 +1,9 @@
 """Dramatiq actor — weekly retrain of race-projection models (Run/Ride/Swim).
 
-Co-tenant of `actor_retrain_progression_model`: same Sun 16:00 slot, separate
-actor so a `InsufficientDataError` for one discipline doesn't poison the
-progression model's run. Each discipline persisted independently to
+Co-tenant of `actor_retrain_progression_model`: same Sun 03:00 slot + shared
+`ml_retrain` queue (#348 isolated CPU pool), separate actor so a
+`InsufficientDataError` for one discipline doesn't poison the progression
+model's run. Each discipline persisted independently to
 `static/models/race_{user_id}_{discipline}.joblib`.
 """
 
@@ -19,7 +20,7 @@ from data.ml.race_train import train_user_model
 logger = logging.getLogger(__name__)
 
 
-@dramatiq.actor(queue_name="default", time_limit=600_000, max_retries=0)
+@dramatiq.actor(queue_name="ml_retrain", time_limit=600_000, max_retries=0)
 @validate_call
 def actor_retrain_race_models(user: UserDTO) -> None:
     """Retrain race-projection models for all three disciplines.

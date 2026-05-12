@@ -91,22 +91,22 @@ async def scheduler_activities_job(athletes: list[UserDTO]) -> None:
 
 
 @with_athletes
-async def scheduler_progression_model_job(athletes: list[UserDTO]) -> None:
+async def scheduler_ml_retrain_job(athletes: list[UserDTO]) -> None:
     """Retrain weekly ML models (progression + race-projection) for all athletes.
 
+    Dispatches to the isolated `ml_retrain` queue (issue #348) — processed by
+    a dedicated single-threaded `ml-worker` container (`--threads 1 --processes 1`)
+    so XGBoost CPU spikes don't compete with the default worker (Telegram /
+    wellness / webhooks). Worker pulls FIFO one-by-one — no parallel CPU spike
+    by construction; explicit `delay` would just idle the worker waiting for
+    the next message's visibility timestamp, so we send without delays.
+
     Race retrain shares the slot but has its own actor — `InsufficientDataError`
-    in race-train doesn't poison progression's run (and vice versa). Race actor
-    is offset by 15s to avoid burst-spike on Anthropic / GPU contention.
+    in race-train doesn't poison progression's run (and vice versa).
     """
-    for i, a in enumerate(athletes):
-        actor_retrain_progression_model.send_with_options(
-            kwargs={"user": a, "sport": "Ride"},
-            delay=i * 30_000,
-        )
-        actor_retrain_race_models.send_with_options(
-            kwargs={"user": a},
-            delay=i * 30_000 + 15_000,
-        )
+    for a in athletes:
+        actor_retrain_progression_model.send(user=a, sport="Ride")
+        actor_retrain_race_models.send(user=a)
     logger.info("Dispatched progression + race-model retraining for %d athletes", len(athletes))
 
 
@@ -314,9 +314,9 @@ async def create_scheduler() -> AsyncIOScheduler:
     )
 
     scheduler.add_job(
-        scheduler_progression_model_job,
-        trigger=CronTrigger(day_of_week="sun", hour=16, minute=0, timezone=settings.TIMEZONE),
-        id="scheduler_progression_model_job",
+        scheduler_ml_retrain_job,
+        trigger=CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=settings.TIMEZONE),
+        id="scheduler_ml_retrain_job",
         misfire_grace_time=7200,
         coalesce=True,
     )

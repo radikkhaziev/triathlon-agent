@@ -54,14 +54,21 @@ class TestCreateSchedulerJobConfig:
         assert job.coalesce is True
 
     @pytest.mark.asyncio
-    async def test_progression_model_has_misfire_grace_and_coalesce(self):
+    async def test_ml_retrain_job_has_misfire_grace_and_coalesce(self):
+        """Issue #348: renamed from `scheduler_progression_model_job` →
+        `scheduler_ml_retrain_job` after queue isolation. Slot moved from
+        Sun 16:00 → Sun 03:00 Belgrade. Misfire grace + coalesce preserved.
+        """
         from bot.scheduler import create_scheduler
 
         scheduler = await create_scheduler()
-        job = scheduler.get_job("scheduler_progression_model_job")
+        job = scheduler.get_job("scheduler_ml_retrain_job")
         assert job is not None
         assert job.misfire_grace_time == 7200
         assert job.coalesce is True
+        # Sun 03:00 Belgrade
+        assert str(job.trigger.fields[4]) == "sun"  # day_of_week
+        assert str(job.trigger.fields[5]) == "3"  # hour
 
     @pytest.mark.asyncio
     async def test_high_frequency_jobs_keep_default_misfire(self):

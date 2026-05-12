@@ -11,7 +11,7 @@ from data.ml.progression import train_model
 logger = logging.getLogger(__name__)
 
 
-@dramatiq.actor(queue_name="default", time_limit=300_000)
+@dramatiq.actor(queue_name="ml_retrain", time_limit=300_000, max_retries=0)
 @validate_call
 def actor_retrain_progression_model(user: UserDTO, sport: str = "Ride") -> None:
     """Retrain progression model for a user+sport and save results."""
