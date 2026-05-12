@@ -11,6 +11,32 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## Intervals.icu native-format workout description (2026-05-12)
+
+**Trigger:** AI-pushed тренировки (`actor_push_workout` / `suggest_workout` / ramp tests / `compose_workout`) исторически отправляли только `workout_doc.steps` (JSON), без top-level `description`. Garmin/Wahoo через FIT-экспорт всё видели, но в Intervals.icu web/mobile UI шагов не было — только название + длительность. Пользователь сообщил, ресёрч подтвердил: Intervals UI рендерит структуру **только** из top-level `description` в их native-формате (поле документировано в OpenAPI `/events POST` как «native Intervals.icu format»).
+
+**Грамматика установлена опытным путём** (user 1, Swim/Run/Ride probes 2026-05-12) и зафиксирована в `docs/INTERVALS_NATIVE_WORKOUT_FORMAT.md`. Ключевое:
+- Distance: `mtr`/`km`/`mi` (буква `m` после числа — это **минуты**, не метры; первая parser-trap)
+- Time: `m`/`s`/`h` с поддержкой combo (`5m30s`)
+- Repeat-block: `Nx` line + flush-left sub-bullets + blank lines до/после
+- Step line: `- [label] <duration|distance> <target> [cadence]`
+- Targets per sport: Run → `% LTHR` или `% Pace`, Ride → bare `%` (FTP implied) или `Z\d+`, Swim → `% Pace`. **`Z\d+` без квалификатора резолвится в power zones** (валидно для Ride, ломает Run/Swim).
+- «Swim-регрессия 2026-04-30» = parse-failure-induced steps-strip: если парсер не справился с description, Intervals дропает `workout_doc.steps`. С валидным native-form это не происходит.
+
+**Реализация** (`data/intervals/dto.py:PlannedWorkoutDTO.to_intervals_event`):
+- Helper'ы `_sanitize_label` / `_render_duration` / `_render_distance` / `_render_target` / `_render_step` / `_render_native_description`.
+- `_sanitize_label`: вырезает любые digit-led токены (`\b\d+\w*\b`) — парсер хватает первый numeric как duration; реальный triggering label из prod: `Drill: 50 fingertip drag + 50 free`. Для Run/Swim дополнительно стрипает `Z\d+`.
+- `to_intervals_event` теперь сетает `event.description = native render` для всех спортов **кроме** `_NO_TARGET_SPORTS = {"Other"}` (зарядки/yoga/mobility — у них нет intensity-target'ов, native-грамматика их не выражает; для них работает существующий путь в `workout_cards.py` через top-level description с URL).
+- `workout_doc.description` (Garmin Connect note slot) продолжает нести AI rationale, без изменений.
+
+**Тесты** (`tests/db/test_ai_workouts.py`): 21 новый тест на helper'ы (sanitization edge cases, duration/distance/target formats per sport, repeat-block invariants, full description render). Старые тесты, утверждавшие `event.description is None`, переписаны под новый контракт.
+
+**Backfill:** `scripts/repush_ai_workouts_with_native_desc.py` — one-shot скрипт обходит указанный диапазон дат, выбирает AI-тренировки, реконструирует `PlannedWorkoutDTO` из echoed `workout_doc.steps` (нормализуя pace `start` → `value` после Intervals' round-trip), вызывает `update_event` чтобы перепушить с native description. Использован 2026-05-12 для завтрашних Run + Swim тренировок user 1.
+
+**Probe-инструмент:** `scripts/probe_intervals_swim_regression.py` — ad-hoc верификатор грамматики Intervals (sport=swim/run/ride scenarios, history coexistence, timestamp-suffix naming для side-by-side compare). Сохранён как утилита для будущих regression-проверок Intervals API.
+
+---
+
 ## ML race projection — Phase 1 (2026-05-11)
 
 Per-discipline regression model (Run/Ride/Swim) that turns current/projected wellness state into race-day splits with 90% confidence intervals. Spec: `docs/ML_RACE_PROJECTION_SPEC.md`.
