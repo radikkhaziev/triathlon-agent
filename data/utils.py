@@ -106,15 +106,6 @@ def extract_sport_ctl(sport_info: list[dict] | None) -> dict[str, float | None]:
     return result
 
 
-def extract_sport_ctl_tuple(sport_info: list[dict] | None) -> tuple[float, float, float]:
-    """Same as extract_sport_ctl but returns (swim, ride, run) tuple.
-
-    Returns 0.0 instead of None for missing values — used in AI prompt formatting.
-    """
-    d = extract_sport_ctl(sport_info)
-    return (d["swim"] or 0.0, d["ride"] or 0.0, d["run"] or 0.0)
-
-
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------

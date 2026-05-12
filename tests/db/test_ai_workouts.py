@@ -23,23 +23,23 @@ from data.intervals.dto import (
 
 class TestWorkoutStep:
     def test_simple_step(self):
-        step = WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "value": 65})
+        step = WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "start": 65})
         assert step.text == "Warm-up"
         assert step.duration == 600
-        assert step.hr == {"units": "%lthr", "value": 65}
+        assert step.hr == {"units": "%lthr", "start": 65}
         assert step.power is None
 
     def test_power_step(self):
-        step = WorkoutStepDTO(text="Z2", duration=1800, power={"units": "%ftp", "value": 75})
-        assert step.power["value"] == 75
+        step = WorkoutStepDTO(text="Z2", duration=1800, power={"units": "%ftp", "start": 75})
+        assert step.power["start"] == 75
 
     def test_repeat_group(self):
         step = WorkoutStepDTO(
             text="Tempo",
             reps=3,
             steps=[
-                WorkoutStepDTO(duration=300, hr={"units": "%lthr", "value": 88}),
-                WorkoutStepDTO(duration=120, hr={"units": "%lthr", "value": 65}),
+                WorkoutStepDTO(duration=300, hr={"units": "%lthr", "start": 88}),
+                WorkoutStepDTO(duration=120, hr={"units": "%lthr", "start": 65}),
             ],
         )
         assert step.reps == 3
@@ -47,7 +47,7 @@ class TestWorkoutStep:
         assert step.duration == 0
 
     def test_model_dump_excludes_none(self):
-        step = WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "value": 65})
+        step = WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "start": 65})
         d = step.model_dump(exclude_none=True)
         assert "power" not in d
         assert "pace" not in d
@@ -68,7 +68,7 @@ class TestPlannedWorkout:
         defaults = dict(
             sport="Ride",
             name="Z2 Endurance",
-            steps=[WorkoutStepDTO(text="Main", duration=3600, power={"units": "%ftp", "value": 75})],
+            steps=[WorkoutStepDTO(text="Main", duration=3600, power={"units": "%ftp", "start": 75})],
             duration_minutes=60,
             target_date=date(2026, 3, 29),
         )
@@ -105,8 +105,8 @@ class TestPlannedWorkout:
 
     def test_workout_doc_in_event(self):
         steps = [
-            WorkoutStepDTO(text="Warm-up", duration=600, power={"units": "%ftp", "value": 60}),
-            WorkoutStepDTO(text="Main", duration=1800, power={"units": "%ftp", "value": 75}),
+            WorkoutStepDTO(text="Warm-up", duration=600, power={"units": "%ftp", "start": 60}),
+            WorkoutStepDTO(text="Main", duration=1800, power={"units": "%ftp", "start": 75}),
         ]
         w = self._make_workout(steps=steps)
         event = w.to_intervals_event()
@@ -114,7 +114,7 @@ class TestPlannedWorkout:
         assert "steps" in doc
         assert len(doc["steps"]) == 2
         assert doc["steps"][0]["text"] == "Warm-up"
-        assert doc["steps"][1]["power"]["value"] == 75
+        assert doc["steps"][1]["power"]["start"] == 75
 
     def test_workout_doc_repeat_group(self):
         steps = [
@@ -122,8 +122,8 @@ class TestPlannedWorkout:
                 text="Intervals",
                 reps=4,
                 steps=[
-                    WorkoutStepDTO(duration=300, hr={"units": "%lthr", "value": 90}),
-                    WorkoutStepDTO(duration=120, hr={"units": "%lthr", "value": 60}),
+                    WorkoutStepDTO(duration=300, hr={"units": "%lthr", "start": 90}),
+                    WorkoutStepDTO(duration=120, hr={"units": "%lthr", "start": 60}),
                 ],
             ),
         ]
@@ -174,9 +174,9 @@ class TestPlannedWorkout:
         for every sport except Other — regression guard against silently
         dropping it back to None."""
         cases = [
-            ("Swim", WorkoutStepDTO(text="Main", distance=200.0, pace={"units": "%pace", "value": 70, "end": 80})),
-            ("Run", WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 70})),
-            ("Ride", WorkoutStepDTO(text="Main", duration=600, power={"units": "%ftp", "value": 70})),
+            ("Swim", WorkoutStepDTO(text="Main", distance=200.0, pace={"units": "%pace", "start": 70, "end": 80})),
+            ("Run", WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "start": 70})),
+            ("Ride", WorkoutStepDTO(text="Main", duration=600, power={"units": "%ftp", "start": 70})),
         ]
         for sport, step in cases:
             w = self._make_workout(sport=sport, steps=[step], duration_minutes=10, rationale="x")
@@ -203,14 +203,14 @@ class TestPlannedWorkout:
             PlannedWorkoutDTO(
                 sport="Run",
                 name="Test",
-                steps=[WorkoutStepDTO(text="Main", duration=600, hr={"units": "bpm", "value": 150})],
+                steps=[WorkoutStepDTO(text="Main", duration=600, hr={"units": "bpm", "start": 150})],
                 duration_minutes=10,
             )
 
-    def test_rejects_missing_value(self):
-        """Target dict must carry a numeric `value` — otherwise renderer would
+    def test_rejects_missing_start(self):
+        """Target dict must carry a numeric `start` — otherwise renderer would
         emit a malformed line."""
-        with pytest.raises(ValidationError, match="missing numeric 'value'"):
+        with pytest.raises(ValidationError, match="missing numeric 'start'"):
             PlannedWorkoutDTO(
                 sport="Run",
                 name="Test",
@@ -230,7 +230,32 @@ class TestPlannedWorkout:
                         reps=3,
                         steps=[
                             WorkoutStepDTO(duration=300),  # missing target
-                            WorkoutStepDTO(duration=120, hr={"units": "%lthr", "value": 60}),
+                            WorkoutStepDTO(duration=120, hr={"units": "%lthr", "start": 60}),
+                        ],
+                    ),
+                ],
+                duration_minutes=20,
+            )
+
+    def test_rejects_nested_repeat_groups(self):
+        """Nested repeats have no native-grammar syntax and would silently lose inner steps
+        in the description renderer — reject at DTO construction instead."""
+        with pytest.raises(ValidationError, match="nested inside another repeat"):
+            PlannedWorkoutDTO(
+                sport="Run",
+                name="Test",
+                steps=[
+                    WorkoutStepDTO(
+                        text="Outer",
+                        reps=2,
+                        steps=[
+                            WorkoutStepDTO(
+                                text="Inner",
+                                reps=3,
+                                steps=[
+                                    WorkoutStepDTO(duration=60, hr={"units": "%lthr", "start": 80}),
+                                ],
+                            ),
                         ],
                     ),
                 ],
@@ -242,7 +267,7 @@ class TestPlannedWorkout:
         PlannedWorkoutDTO(
             sport="Swim",
             name="Test",
-            steps=[WorkoutStepDTO(text="Main", distance=400, pace={"units": "%pace", "value": 95})],
+            steps=[WorkoutStepDTO(text="Main", distance=400, pace={"units": "%pace", "start": 95})],
             duration_minutes=15,
         )
 
@@ -250,7 +275,7 @@ class TestPlannedWorkout:
         w = PlannedWorkoutDTO(
             sport="Run",
             name="Test",
-            steps=[WorkoutStepDTO(text="Run", duration=1200, hr={"units": "%lthr", "value": 72, "end": 82})],
+            steps=[WorkoutStepDTO(text="Run", duration=1200, hr={"units": "%lthr", "start": 72, "end": 82})],
             duration_minutes=20,
         )
         assert w.target_date == date.today()
@@ -324,20 +349,20 @@ class TestRenderDistance:
 
 class TestRenderTarget:
     def test_hr_lthr_range(self):
-        step = WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 75, "end": 82})
+        step = WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "start": 75, "end": 82})
         assert _render_target(step, "Run") == "75-82% LTHR"
 
     def test_hr_lthr_single(self):
-        step = WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "value": 75})
+        step = WorkoutStepDTO(text="Main", duration=600, hr={"units": "%lthr", "start": 75})
         assert _render_target(step, "Run") == "75% LTHR"
 
     def test_power_ftp_range(self):
         """Bare `%` for Ride power — FTP implied by native grammar."""
-        step = WorkoutStepDTO(text="Main", duration=600, power={"units": "%ftp", "value": 88, "end": 94})
+        step = WorkoutStepDTO(text="Main", duration=600, power={"units": "%ftp", "start": 88, "end": 94})
         assert _render_target(step, "Ride") == "88-94%"
 
     def test_pace_range(self):
-        step = WorkoutStepDTO(text="Main", distance=200.0, pace={"units": "%pace", "value": 80, "end": 90})
+        step = WorkoutStepDTO(text="Main", distance=200.0, pace={"units": "%pace", "start": 80, "end": 90})
         assert _render_target(step, "Swim") == "80-90% Pace"
 
     def test_target_none_when_step_has_no_intensity(self):
@@ -350,21 +375,21 @@ class TestRenderStep:
         step = WorkoutStepDTO(
             text="Drill freestyle",
             distance=100.0,
-            pace={"units": "%pace", "value": 80, "end": 90},
+            pace={"units": "%pace", "start": 80, "end": 90},
         )
         assert _render_step(step, "Swim") == "- Drill freestyle 100mtr 80-90% Pace"
 
     def test_empty_label_omitted(self):
-        step = WorkoutStepDTO(duration=300, hr={"units": "%lthr", "value": 70})
+        step = WorkoutStepDTO(duration=300, hr={"units": "%lthr", "start": 70})
         assert _render_step(step, "Run") == "- 5m 70% LTHR"
 
 
 class TestRenderNativeDescription:
     def test_blank_lines_between_top_level_entities(self):
         steps = [
-            WorkoutStepDTO(text="WU", duration=600, hr={"units": "%lthr", "value": 70}),
-            WorkoutStepDTO(text="Main", duration=1800, hr={"units": "%lthr", "value": 85}),
-            WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "value": 60}),
+            WorkoutStepDTO(text="WU", duration=600, hr={"units": "%lthr", "start": 70}),
+            WorkoutStepDTO(text="Main", duration=1800, hr={"units": "%lthr", "start": 85}),
+            WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "start": 60}),
         ]
         rendered = _render_native_description(steps, "Run")
         assert rendered == "- WU 10m 70% LTHR\n\n- Main 30m 85% LTHR\n\n- CD 5m 60% LTHR\n"
@@ -373,16 +398,16 @@ class TestRenderNativeDescription:
         """Repeat blocks must have blank lines around them and sub-steps
         flush-left without indentation — see syntax guide §«Repeat Group»."""
         steps = [
-            WorkoutStepDTO(text="WU", duration=600, hr={"units": "%lthr", "value": 70}),
+            WorkoutStepDTO(text="WU", duration=600, hr={"units": "%lthr", "start": 70}),
             WorkoutStepDTO(
                 text="Intervals",
                 reps=4,
                 steps=[
-                    WorkoutStepDTO(text="On", duration=300, hr={"units": "%lthr", "value": 90}),
-                    WorkoutStepDTO(text="Off", duration=120, hr={"units": "%lthr", "value": 60}),
+                    WorkoutStepDTO(text="On", duration=300, hr={"units": "%lthr", "start": 90}),
+                    WorkoutStepDTO(text="Off", duration=120, hr={"units": "%lthr", "start": 60}),
                 ],
             ),
-            WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "value": 60}),
+            WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "start": 60}),
         ]
         rendered = _render_native_description(steps, "Run")
         assert rendered == (
@@ -393,7 +418,7 @@ class TestRenderNativeDescription:
         """Mirror of the working Swim probe 109771472 — distance steps,
         pace targets, sanitised labels, two adjacent repeat blocks."""
         steps = [
-            WorkoutStepDTO(text="Warm-up easy mix", distance=300.0, pace={"units": "%pace", "value": 65, "end": 78}),
+            WorkoutStepDTO(text="Warm-up easy mix", distance=300.0, pace={"units": "%pace", "start": 65, "end": 78}),
             WorkoutStepDTO(
                 text="Drill set",
                 reps=4,
@@ -401,12 +426,12 @@ class TestRenderNativeDescription:
                     WorkoutStepDTO(
                         text="50 fingertip drag",  # leading digit — must be stripped
                         distance=100.0,
-                        pace={"units": "%pace", "value": 80, "end": 90},
+                        pace={"units": "%pace", "start": 80, "end": 90},
                     ),
-                    WorkoutStepDTO(text="Rest", duration=15, pace={"units": "%pace", "value": 40, "end": 50}),
+                    WorkoutStepDTO(text="Rest", duration=15, pace={"units": "%pace", "start": 40, "end": 50}),
                 ],
             ),
-            WorkoutStepDTO(text="Cool-down", distance=100.0, pace={"units": "%pace", "value": 60, "end": 75}),
+            WorkoutStepDTO(text="Cool-down", distance=100.0, pace={"units": "%pace", "start": 60, "end": 75}),
         ]
         rendered = _render_native_description(steps, "Swim")
         assert "- 50" not in rendered  # leading digit stripped

@@ -256,10 +256,16 @@ class WorkoutStepDTO(BaseModel):
     duration: int = 0  # seconds (0 for repeat groups)
     distance: float | None = None  # meters (e.g. 100, 200, 1000). Mutually exclusive with duration
     reps: int | None = None  # repeat count (e.g. 3 for 3x intervals)
-    hr: dict | None = None  # {"units": "%lthr", "value": 75}
-    power: dict | None = None  # {"units": "%ftp", "value": 80}
-    pace: dict | None = None  # {"units": "%pace", "value": 90}
-    cadence: dict | None = None  # {"units": "rpm", "value": 90}
+    # Schema: {"units": "%lthr"|"%ftp"|"%pace"|"rpm", "start": <int>, "end": <int>}.
+    # `start` is the corridor lower bound (NOT `value` — Intervals' FIT export
+    # routes `{value, end}` payloads to «Lap HR / zone-mapped» mode which Garmin
+    # then clamps to its own zone boundaries, drifting from intended range).
+    # Verified empirically 2026-05-12 via «AI: Absolute V2» test workout — see
+    # `docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md` §12 «Attempt 3b».
+    hr: dict | None = None  # {"units": "%lthr", "start": 75, "end": 82}
+    power: dict | None = None  # {"units": "%ftp", "start": 65, "end": 78}
+    pace: dict | None = None  # {"units": "%pace", "start": 95, "end": 105}
+    cadence: dict | None = None  # {"units": "rpm", "start": 85, "end": 95}
     steps: list["WorkoutStepDTO"] | None = None  # sub-steps for repeat groups
 
     @model_validator(mode="after")
@@ -370,29 +376,44 @@ def _render_target(step: "WorkoutStepDTO", sport: str) -> str | None:
 
     Returns ``None`` only when the step has no target at all (acceptable for
     ``Other``; rejected by the validator everywhere else). Bad-shape targets
-    (unknown units, non-numeric value) cannot reach this function — they fail
-    in ``PlannedWorkoutDTO._check_target_shape`` at DTO construction.
+    (unknown units, non-numeric ``start``) cannot reach this function — they
+    fail in ``PlannedWorkoutDTO._check_steps_have_targets`` at DTO construction.
     """
 
-    def _fmt(value: float, end: float | None, suffix: str) -> str:
-        v = int(round(value))
-        if end is not None and end != value:
+    def _fmt(start: float, end: float | None, suffix: str) -> str:
+        v = int(round(start))
+        if end is not None and end != start:
             return f"{v}-{int(round(end))}{suffix}"
         return f"{v}{suffix}"
 
     for attr, (_units, suffix) in _TARGET_SUFFIX.items():
         target = getattr(step, attr)
         if target:
-            return _fmt(target["value"], target.get("end"), suffix)
+            return _fmt(target["start"], target.get("end"), suffix)
     return None
 
 
+def _render_cadence(step: "WorkoutStepDTO") -> str | None:
+    """Render optional cadence trailer (e.g. `90rpm`) per native grammar §«Step»."""
+    if not step.cadence:
+        return None
+    value = step.cadence.get("start")
+    # `bool` subclasses `int` — `isinstance(False, int) is True`. Exclude bools
+    # so `start: True` can't render as `1rpm`. Cadence `0` (coasting marker) is
+    # numerically valid and must render.
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    units = (step.cadence.get("units") or "rpm").lower()
+    return f"{int(round(value))}{units}"
+
+
 def _render_step(step: "WorkoutStepDTO", sport: str) -> str:
-    """Render a single (non-repeat) step as a `- label dur target` bullet."""
+    """Render a single (non-repeat) step as a `- label dur target [cadence]` bullet."""
     label = _sanitize_label(step.text, sport)
     measure = _render_distance(step.distance) if step.distance else _render_duration(step.duration)
     target = _render_target(step, sport)
-    parts = [p for p in (label, measure, target) if p]
+    cadence = _render_cadence(step)
+    parts = [p for p in (label, measure, target, cadence) if p]
     return "- " + " ".join(parts)
 
 
@@ -404,9 +425,11 @@ def _render_native_description(steps: list["WorkoutStepDTO"], sport: str) -> str
     and tolerates them between adjacent plain steps. Single-pass `\\n\\n`.join
     keeps the rule satisfied without branching.
 
-    Nested repeat groups aren't supported by the native grammar; if any appear
-    the inner reps are flattened (label kept, sub-sub-steps inlined). No
-    callers currently produce nested groups.
+    Sub-step recursion intentionally stops at one level: native grammar has no
+    syntax for nested repeats, and `_check_steps_have_targets` already rejects
+    a step that nests both `reps + steps` inside another repeat's `steps`. If
+    such a payload ever reaches the renderer, the nested-group inner steps are
+    dropped — fail closed at the validator, don't try to be clever here.
     """
     chunks: list[str] = []
     for step in steps:
@@ -438,7 +461,7 @@ class PlannedWorkoutDTO(BaseModel):
         Two failure modes both rejected here:
         1. Text-only steps (`Z2` label + duration, no hr/power/pace dict) leave
            Garmin/Wahoo unable to alert the athlete on a corridor.
-        2. Targets with unknown `units` or missing/non-numeric `value` — these
+        2. Targets with unknown `units` or missing/non-numeric `start` — these
            survive past basic presence checks but break the native-format
            description renderer, which would emit a target-less line and
            trigger Intervals' parse-failure-induced `workout_doc.steps` drop.
@@ -448,7 +471,7 @@ class PlannedWorkoutDTO(BaseModel):
         if self.sport in _NO_TARGET_SPORTS:
             return self
 
-        def _walk(steps: list[WorkoutStepDTO], trail: str) -> None:
+        def _walk(steps: list[WorkoutStepDTO], trail: str, depth: int = 0) -> None:
             for i, s in enumerate(steps):
                 label = f"{trail}[{i}]{' ' + s.text if s.text else ''}"
                 if s.reps:
@@ -457,7 +480,18 @@ class PlannedWorkoutDTO(BaseModel):
                             f"Step {label!r} sets reps={s.reps} but has no sub-steps. "
                             f"Repeat groups must contain a non-empty steps list."
                         )
-                    _walk(s.steps, label)
+                    if depth >= 1:
+                        # Native-format renderer (`_render_native_description`)
+                        # intentionally recurses only one level; a nested repeat
+                        # would silently drop its inner steps from the workout
+                        # description Intervals shows on web/mobile. Fail at
+                        # DTO construction instead.
+                        raise ValueError(
+                            f"Step {label!r} is a repeat group nested inside another repeat. "
+                            f"Native workout grammar has no syntax for nested repeats — "
+                            f"flatten the structure (e.g. write 6×[A,B] instead of 2×[3×[A,B]])."
+                        )
+                    _walk(s.steps, label, depth + 1)
                     continue
                 if not (s.hr or s.power or s.pace):
                     raise ValueError(
@@ -480,12 +514,15 @@ class PlannedWorkoutDTO(BaseModel):
                             f"Step {label!r} has {attr} target with units "
                             f"{target.get('units')!r}; expected {expected_units!r}."
                         )
-                    value = target.get("value")
+                    start = target.get("start")
                     end = target.get("end")
-                    if not isinstance(value, (int, float)):
-                        raise ValueError(f"Step {label!r} {attr} target missing numeric 'value' " f"(got {value!r}).")
-                    if end is not None and not isinstance(end, (int, float)):
-                        raise ValueError(f"Step {label!r} {attr} target has non-numeric 'end' " f"(got {end!r}).")
+                    # `bool` subclasses `int` in Python — `isinstance(True, int)`
+                    # is True. Explicit exclusion so a `start: True` payload
+                    # can't sneak past the numeric guard.
+                    if not isinstance(start, (int, float)) or isinstance(start, bool):
+                        raise ValueError(f"Step {label!r} {attr} target missing numeric 'start' (got {start!r}).")
+                    if end is not None and (not isinstance(end, (int, float)) or isinstance(end, bool)):
+                        raise ValueError(f"Step {label!r} {attr} target has non-numeric 'end' (got {end!r}).")
 
         _walk(self.steps, "steps")
         return self

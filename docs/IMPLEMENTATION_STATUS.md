@@ -31,9 +31,31 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 **Тесты** (`tests/db/test_ai_workouts.py`): 21 новый тест на helper'ы (sanitization edge cases, duration/distance/target formats per sport, repeat-block invariants, full description render). Старые тесты, утверждавшие `event.description is None`, переписаны под новый контракт.
 
-**Backfill:** `scripts/repush_ai_workouts_with_native_desc.py` — one-shot скрипт обходит указанный диапазон дат, выбирает AI-тренировки, реконструирует `PlannedWorkoutDTO` из echoed `workout_doc.steps` (нормализуя pace `start` → `value` после Intervals' round-trip), вызывает `update_event` чтобы перепушить с native description. Использован 2026-05-12 для завтрашних Run + Swim тренировок user 1.
+**Backfill:** `scripts/repush_ai_workouts_with_native_desc.py` — one-shot скрипт обходит указанный диапазон дат, выбирает AI Run/Ride/Swim тренировки (Other пропускает — у `compose_workout` свой description path с HTML URL), реконструирует `PlannedWorkoutDTO` из echoed `workout_doc.steps` (нормализуя enrichment-conflicts: zero'ит `duration` на distance-степах и parent repeat-группах, иначе валидатор отбивает), вызывает `update_event` чтобы перепушить с native description. Использован 2026-05-12 для завтрашних Run + Swim тренировок user 1.
 
 **Probe-инструмент:** `scripts/probe_intervals_swim_regression.py` — ad-hoc верификатор грамматики Intervals (sport=swim/run/ride scenarios, history coexistence, timestamp-suffix naming для side-by-side compare). Сохранён как утилита для будущих regression-проверок Intervals API.
+
+---
+
+## Intervals.icu HR corridor schema — `value` → `start` rename (2026-05-12)
+
+**Trigger:** атлет сообщил что Garmin часы показывают bpm коридоры расходящиеся ~2.3% от ожидаемых (LTHR на часах 168 vs system 172). Расследование §12 `docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md` показало: Intervals' FIT-export маршрутизирует payloads с полем **`value`** в режим «Lap HR / zone-mapped» (часы клампят к **своим** локальным зонам), а с полем **`start`** — в «Instant HR / absolute corridor» (часы показывают точный bpm-диапазон). Наш codebase исторически слал `{value, end}` → drift bite.
+
+**Single-character фикс:** rename `value` → `start` в HR/power/pace corridor dicts. Затронуло:
+- `bot/prompts.py` — `_zones_block` builder (5 occurrences для Run/Ride/Swim examples) — Claude теперь генерирует `start` directly
+- `data/intervals/dto.py` — `WorkoutStepDTO` field comments + `_render_target` reads `start` + `_check_steps_have_targets` validator accepts `start`
+- `data/ramp_tests.py` — все step `pace`/`power` dicts в Run + Ride ramp protocols
+- `mcp_server/tools/ai_workouts.py` — `suggest_workout` docstring examples (Run HR, Ride power, Swim pace)
+- `tests/db/test_ai_workouts.py` — fixtures и assertions
+
+Тесты регрессионно покрывают rename (51 кейс, все green). Спека `docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md` (commit `437fa0b`) фиксирует empirical findings — четыре schema-attempt'a (units=bpm, start_bpm/end_bpm, UI dropdown survey, finally `{start, end}`), watch-face verification протокол, decision matrix (Phase A «server-side `%X → absolute` converter» moot — `start/end` corridor закрыл root cause без перевода в bpm/watts/sec).
+
+**Implication:** athlete'ы с auto-detect-drift'ом LTHR на часах теперь получают точные коридоры независимо от watch-side настроек. `actor_update_zones` обновляет system LTHR → Intervals пересчитывает FIT для всех будущих событий автоматически (см. §10 «Phase B (auto-regen) — moot»).
+
+**Open quirks (не блокеры)**:
+- Swim UI display хардкодит `min/km` (игнорирует `sport_settings.pace_units: "SECS_100M"`) — не наш баг, см. §13.6.A
+- `update_event` не триггерит async-enrichment (`zoneTimes/normalized_power/polarization_index`), только `create_event` — backfill через update сохраняет storage корректно но без UI-aggregated полей, см. §13.6.B
+- ⏳ Bike power discrepancy pending end-to-end verification на реальном power meter, см. §13.6.C
 
 ---
 

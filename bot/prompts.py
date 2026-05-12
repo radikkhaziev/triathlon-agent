@@ -131,12 +131,12 @@ Athlete profile:
 8. **Race-day прогноз (опционально):** если у атлета есть RACE_A goal и до неё 30-200 дней —
    вызови get_race_projection(mode="race_day"). Дистанции **строго из категории гонки** (sport_type
    на goal). Для триатлона: Sprint 750/20000/5000, Olympic 1500/40000/10000, 70.3 1900/90000/21100,
-   IM 3800/180000/42200 — передавай race_distance_{swim,ride,run}_m. Для бега (sport_type=run):
+   IM 3800/180000/42200 — передавай race_distance_{{swim,ride,run}}_m. Для бега (sport_type=run):
    5K=5000, 10K=10000, Half=21100, Marathon=42195 — передавай **только** race_distance_run_m.
    Для ride/swim single-sport — аналогично только соответствующая дистанция. Если в названии гонки
    («Drina Trail», «Belgrade Marathon») дистанция не угадывается явно — пропусти шаг, не выдумывай.
    Получив envelope, добавь ОДНУ строку в секцию 📈 Прогресс:
-   «🏁 Race-day прогноз ({event_date}): Swim {swim} · Bike {bike} · Run {run} → ~{total} (±{ci_minutes} мин)»
+   «🏁 Race-day прогноз ({{event_date}}): Swim {{swim}} · Bike {{bike}} · Run {{run}} → ~{{total}} (±{{ci_minutes}} мин)»
    (для single-sport — только соответствующий сплит без точек-разделителей).
    Если available=False (cold-start: model_not_trained / no_fitness_projection / распределение
    ещё нестабильно) — **молча пропусти**, не упоминай. Не раздувай — одна строка максимум.{progression_step}
@@ -522,7 +522,7 @@ def _zones_block(
         lines.append(
             f"  - **Run**: use `hr` with `%lthr` units. LTHR = {lthr_run or '—'}. "
             f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2 step: "
-            f'`{{"text": "Z2", "duration": 900, "hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}}}`.'
+            f'`{{"text": "Z2", "duration": 900, "hr": {{"units": "%lthr", "start": {z2[0]}, "end": {z2[1]}}}}}`.'
         )
 
     # Ride — prefer %FTP (power). Intervals.icu stores power_zones already as
@@ -539,14 +539,14 @@ def _zones_block(
             lines.append(
                 f"  - **Ride**: use `power` with `%ftp` units. FTP = {ftp_str}. "
                 f"Ranges per zone ({source}): {_format_range_list(ranges)}. Example Z2: "
-                f'`"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
+                f'`"power": {{"units": "%ftp", "start": {z2[0]}, "end": {z2[1]}}}`.'
             )
         elif t.ftp:
             z2 = _FALLBACK_RIDE_POWER_PCT[1]
             lines.append(
                 f"  - **Ride**: use `power` with `%ftp` units. FTP = {t.ftp}W. "
                 f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_RIDE_POWER_PCT)}. "
-                f'Example Z2: `"power": {{"units": "%ftp", "value": {z2[0]}, "end": {z2[1]}}}`.'
+                f'Example Z2: `"power": {{"units": "%ftp", "start": {z2[0]}, "end": {z2[1]}}}`.'
             )
         else:
             lthr_bike = (ride and ride.lthr) or t.lthr_bike
@@ -554,7 +554,7 @@ def _zones_block(
             lines.append(
                 f"  - **Ride**: use `hr` with `%lthr` units. LTHR bike = {lthr_bike or '—'}. "
                 f"Ranges per zone (Friel fallback): {_format_range_list(_FALLBACK_BIKE_HR_PCT)}. "
-                f'Example Z2: `"hr": {{"units": "%lthr", "value": {z2[0]}, "end": {z2[1]}}}`.'
+                f'Example Z2: `"hr": {{"units": "%lthr", "start": {z2[0]}, "end": {z2[1]}}}`.'
             )
 
     # Swim — CSS corridor (no real zones in Intervals.icu sport-settings for swim).
@@ -568,7 +568,7 @@ def _zones_block(
             css_str = "—"
         lines.append(
             f"  - **Swim**: use `pace` with `%pace` units. CSS = {css_str}. "
-            'Z2 corridor 95-105%. Example: `"pace": {"units": "%pace", "value": 95, "end": 105}`.'
+            'Z2 corridor 95-105%. Example: `"pace": {"units": "%pace", "start": 95, "end": 105}`.'
         )
 
     return "\n".join(lines)
