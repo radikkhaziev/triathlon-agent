@@ -11,82 +11,16 @@ References:
 """
 
 import bisect
-import io
 import logging
 from typing import Any
 
 import numpy as np
-from fitparse import FitFile
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# 1. RR extraction from FIT
-# ---------------------------------------------------------------------------
-
-
-def parse_fit(fit_bytes: bytes) -> tuple[list[float], list[dict]]:
-    """Parse FIT file once, extracting both RR intervals and Record messages.
-
-    Returns:
-        (rr_ms, records) where:
-        - rr_ms: list of RR intervals in milliseconds (from HRV messages)
-        - records: list of dicts with timestamp_s, heart_rate, power, speed
-    """
-    fit = FitFile(io.BytesIO(fit_bytes))
-    rr_ms: list[float] = []
-    records: list[dict] = []
-    start_ts = None
-
-    for msg in fit.get_messages():
-        msg_name = msg.name
-        if msg_name == "hrv":
-            for field in msg.fields:
-                if field.name == "time" and field.value is not None:
-                    values = field.value if isinstance(field.value, (list, tuple)) else [field.value]
-                    for v in values:
-                        if v is not None and v < 60.0:
-                            rr_ms.append(v * 1000.0)
-        elif msg_name == "record":
-            rec: dict[str, Any] = {}
-            for field in msg.fields:
-                if field.name == "timestamp" and field.value is not None:
-                    if start_ts is None:
-                        start_ts = field.value
-                    rec["timestamp_s"] = (field.value - start_ts).total_seconds()
-                elif field.name == "heart_rate":
-                    rec["heart_rate"] = field.value
-                elif field.name == "power":
-                    rec["power"] = field.value
-                elif field.name in ("speed", "enhanced_speed"):
-                    rec["speed"] = field.value
-            if "timestamp_s" in rec:
-                records.append(rec)
-
-    return rr_ms, records
-
-
-def extract_rr_intervals(fit_bytes: bytes) -> list[float]:
-    """Extract RR intervals (ms) from FIT file HRV messages.
-
-    Convenience wrapper around parse_fit() for cases where only RR is needed.
-    """
-    rr_ms, _ = parse_fit(fit_bytes)
-    return rr_ms
-
-
-def extract_records(fit_bytes: bytes) -> list[dict]:
-    """Extract Record messages from FIT file.
-
-    Convenience wrapper around parse_fit() for cases where only records are needed.
-    """
-    _, records = parse_fit(fit_bytes)
-    return records
-
-
-# ---------------------------------------------------------------------------
-# 2. Artifact correction
+# 1. Artifact correction
 # ---------------------------------------------------------------------------
 
 
@@ -154,7 +88,7 @@ def correct_rr_artifacts(
 
 
 # ---------------------------------------------------------------------------
-# 3. DFA alpha 1
+# 2. DFA alpha 1
 # ---------------------------------------------------------------------------
 
 
@@ -223,7 +157,7 @@ def calculate_dfa_alpha1(
 
 
 # ---------------------------------------------------------------------------
-# 4. DFA timeseries (sliding window)
+# 3. DFA timeseries (sliding window)
 # ---------------------------------------------------------------------------
 
 
@@ -277,7 +211,7 @@ def calculate_dfa_timeseries(
 
     Args:
         rr_ms: Corrected RR intervals in milliseconds.
-        records: FIT Record messages (from extract_records).
+        records: FIT Record messages (dicts with timestamp_s, heart_rate, power, speed).
         window_sec: Window size in seconds (default 120 = 2 min).
         step_sec: Step size in seconds (default 5).
 
@@ -336,7 +270,7 @@ def calculate_dfa_timeseries(
 
 
 # ---------------------------------------------------------------------------
-# 5. Threshold detection (HRVT1/HRVT2)
+# 4. Threshold detection (HRVT1/HRVT2)
 # ---------------------------------------------------------------------------
 
 
@@ -617,7 +551,7 @@ def _filter_valid_points(
 
 
 # ---------------------------------------------------------------------------
-# 6. Readiness (Ra) and Durability (Da)
+# 5. Readiness (Ra) and Durability (Da)
 # ---------------------------------------------------------------------------
 
 

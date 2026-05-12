@@ -30,15 +30,15 @@ class TestBuildRampStepsRide:
 
     def test_warmup_phases(self):
         steps, _ = build_ramp_steps_ride(208.0)
-        assert steps[0].duration == 300 and steps[0].power["value"] == 50
-        assert steps[1].duration == 300 and steps[1].power["value"] == 60
+        assert steps[0].duration == 300 and steps[0].power["start"] == 50
+        assert steps[1].duration == 300 and steps[1].power["start"] == 60
 
     def test_regular_work_steps_60_to_110_pct(self):
         """11 regular work steps × 3 min, 60→110% in uniform 5% increments."""
         steps, _ = build_ramp_steps_ride(208.0)
         regular_work = steps[2:13]  # after 2 WU, before final + CD
         assert len(regular_work) == 11
-        pcts = [s.power["value"] for s in regular_work]
+        pcts = [s.power["start"] for s in regular_work]
         assert pcts == [60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110]
         for s in regular_work:
             assert s.duration == 180  # 3 min
@@ -47,7 +47,7 @@ class TestBuildRampStepsRide:
         """Final work step: 10% jump to 120%, 4 min, push-to-failure."""
         steps, _ = build_ramp_steps_ride(208.0)
         final = steps[-2]  # before CD
-        assert final.power["value"] == 120
+        assert final.power["start"] == 120
         assert final.duration == 240  # 4 min
         assert "push to failure" in final.text.lower()
 
@@ -55,7 +55,7 @@ class TestBuildRampStepsRide:
         steps, _ = build_ramp_steps_ride(208.0)
         cd = steps[-1]
         assert cd.duration == 600  # 10 min
-        assert cd.power["value"] == 50
+        assert cd.power["start"] == 50
 
     def test_ftp_param_currently_unused(self):
         """Steps don't depend on FTP value — Intervals.icu does the conversion.
@@ -85,7 +85,7 @@ class TestBuildRampStepsRun:
     def test_warmup_and_cooldown_use_hr(self):
         steps, _ = build_ramp_steps_run(295.0)
         for s in (steps[0], steps[-1]):
-            assert s.hr == {"units": "%lthr", "value": 70}
+            assert s.hr == {"units": "%lthr", "start": 70}
             assert s.pace is None
         assert steps[0].duration == 600  # WU 10 min
         assert steps[-1].duration == 420  # CD 7 min
@@ -95,13 +95,13 @@ class TestBuildRampStepsRun:
         for s in steps[1:-1]:
             assert s.pace is not None
             assert s.pace["units"] == "%pace"
-            assert isinstance(s.pace["value"], int)
+            assert isinstance(s.pace["start"], int)
             assert s.duration == 180  # 3 min
 
     def test_work_steps_pct_progressive(self):
         """%pace ascends from 80% to 115% across 8 work steps in 5% increments."""
         steps, _ = build_ramp_steps_run(295.0)
-        pcts = [s.pace["value"] for s in steps[1:-1]]
+        pcts = [s.pace["start"] for s in steps[1:-1]]
         assert pcts == [80, 85, 90, 95, 100, 105, 110, 115]
 
     def test_step_labels_include_threshold_pct(self):

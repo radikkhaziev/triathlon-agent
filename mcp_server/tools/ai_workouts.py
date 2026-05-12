@@ -102,19 +102,19 @@ async def suggest_workout(
     (`hr`, `power`, or `pace`). Text-only steps like `{"text": "Z2", "duration": 600}` are rejected:
     Garmin/Wahoo watches cannot alert on the target corridor without an explicit target, so the
     athlete runs blind. Derive the numeric target from athlete thresholds (LTHR/FTP/CSS) provided
-    in the system prompt. Use a range via `value` (low) + `end` (high) to get HR-corridor beeps.
+    in the system prompt. Use a range via `start` (low) + `end` (high) to get HR-corridor beeps.
 
     Sport-specific examples:
-      Run   (HR-driven):  {"text": "Z2",   "duration": 900, "hr":    {"units": "%lthr", "value": 72, "end": 82}}
-      Run   (tempo Z3):   {"text": "Temp", "duration": 480, "hr":    {"units": "%lthr", "value": 82, "end": 87}}
-      Ride  (power Z2):   {"text": "Z2",   "duration": 600, "power": {"units": "%ftp",  "value": 65, "end": 75}}
-      Ride  (threshold):  {"text": "FTP",  "duration": 480, "power": {"units": "%ftp",  "value": 95, "end": 105}}
-      Swim  (CSS pace):   {"text": "Main", "distance": 400, "pace":  {"units": "%pace", "value": 95, "end": 100}}
+      Run   (HR-driven):  {"text": "Z2",   "duration": 900, "hr":    {"units": "%lthr", "start": 72, "end": 82}}
+      Run   (tempo Z3):   {"text": "Temp", "duration": 480, "hr":    {"units": "%lthr", "start": 82, "end": 87}}
+      Ride  (power Z2):   {"text": "Z2",   "duration": 600, "power": {"units": "%ftp",  "start": 65, "end": 75}}
+      Ride  (threshold):  {"text": "FTP",  "duration": 480, "power": {"units": "%ftp",  "start": 95, "end": 105}}
+      Swim  (CSS pace):   {"text": "Main", "distance": 400, "pace":  {"units": "%pace", "start": 95, "end": 100}}
 
     Example repeat (3x5min tempo + 2min recovery):
       {"reps": 3, "text": "Tempo", "steps": [
-         {"text": "On",  "duration": 300, "hr": {"units": "%lthr", "value": 82, "end": 87}},
-         {"text": "Off", "duration": 120, "hr": {"units": "%lthr", "value": 60, "end": 72}}
+         {"text": "On",  "duration": 300, "hr": {"units": "%lthr", "start": 82, "end": 87}},
+         {"text": "Off", "duration": 120, "hr": {"units": "%lthr", "start": 60, "end": 72}}
       ]}
 
     Total step seconds must approximately match `duration_minutes * 60`, otherwise the workout

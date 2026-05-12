@@ -74,18 +74,18 @@ def build_ramp_steps_run(
         )
 
     steps: list[WorkoutStepDTO] = [
-        WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "value": 70}),
+        WorkoutStepDTO(text="Warm-up", duration=600, hr={"units": "%lthr", "start": 70}),
     ]
     for i, pct in enumerate(_RUN_RAMP_PCT, start=1):
         steps.append(
             WorkoutStepDTO(
                 text=f"Step {i} ({pct}% threshold)",
                 duration=180,
-                pace={"units": "%pace", "value": pct},
+                pace={"units": "%pace", "start": pct},
             )
         )
     steps.append(
-        WorkoutStepDTO(text="Cool-down", duration=420, hr={"units": "%lthr", "value": 70}),
+        WorkoutStepDTO(text="Cool-down", duration=420, hr={"units": "%lthr", "start": 70}),
     )
 
     # Treadmill cap warning — last step at 115% × threshold_speed (km/h).
@@ -126,26 +126,26 @@ def build_ramp_steps_ride(
         )
 
     steps: list[WorkoutStepDTO] = [
-        WorkoutStepDTO(text="Warm-up easy", duration=300, power={"units": "%ftp", "value": 50}),
-        WorkoutStepDTO(text="Warm-up build", duration=300, power={"units": "%ftp", "value": 60}),
+        WorkoutStepDTO(text="Warm-up easy", duration=300, power={"units": "%ftp", "start": 50}),
+        WorkoutStepDTO(text="Warm-up build", duration=300, power={"units": "%ftp", "start": 60}),
     ]
     for i, pct in enumerate(_RIDE_RAMP_PCT_REGULAR, start=1):
         steps.append(
             WorkoutStepDTO(
                 text=f"Step {i} ({pct}% FTP)",
                 duration=180,
-                power={"units": "%ftp", "value": pct},
+                power={"units": "%ftp", "start": pct},
             )
         )
     steps.append(
         WorkoutStepDTO(
             text=f"Step {len(_RIDE_RAMP_PCT_REGULAR) + 1} ({_RIDE_RAMP_PCT_FINAL}% FTP) — push to failure",
             duration=240,
-            power={"units": "%ftp", "value": _RIDE_RAMP_PCT_FINAL},
+            power={"units": "%ftp", "start": _RIDE_RAMP_PCT_FINAL},
         )
     )
     steps.append(
-        WorkoutStepDTO(text="Cool-down", duration=600, power={"units": "%ftp", "value": 50}),
+        WorkoutStepDTO(text="Cool-down", duration=600, power={"units": "%ftp", "start": 50}),
     )
 
     return steps, warnings

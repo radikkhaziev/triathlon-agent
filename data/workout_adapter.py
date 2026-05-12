@@ -4,12 +4,9 @@ Parses HumanGo workout descriptions, evaluates adaptation constraints,
 and produces modified PlannedWorkout for Intervals.icu.
 """
 
-import logging
 import re
 
-from data.intervals.dto import PlannedWorkoutDTO, RecoveryScoreDTO, ScheduledWorkoutDTO, WorkoutStepDTO
-
-logger = logging.getLogger(__name__)
+from data.intervals.dto import RecoveryScoreDTO, WorkoutStepDTO
 
 # ---------------------------------------------------------------------------
 # Constants: zone boundaries (HR as % LTHR, Power as % FTP)
@@ -321,69 +318,7 @@ def compute_constraints(
 
 
 # ---------------------------------------------------------------------------
-# Step clamping
-# ---------------------------------------------------------------------------
-
-
-def clamp_step(
-    step: WorkoutStepDTO,
-    max_zone: int,
-    duration_factor: float,
-    ftp: float = 233,
-    lthr: int = 153,
-) -> WorkoutStepDTO:
-    """Clamp a workout step to respect zone and duration constraints."""
-    new_duration = int(step.duration * duration_factor)
-
-    # Handle repeat groups
-    if step.steps:
-        clamped_subs = [clamp_step(s, max_zone, duration_factor, ftp, lthr) for s in step.steps]
-        return WorkoutStepDTO(
-            text=step.text,
-            reps=step.reps,
-            steps=clamped_subs,
-        )
-
-    # Clamp targets
-    new_power = _clamp_power(step.power, max_zone, ftp) if step.power else None
-    new_hr = _clamp_hr(step.hr, max_zone, lthr) if step.hr else None
-
-    return WorkoutStepDTO(
-        text=step.text,
-        duration=new_duration,
-        hr=new_hr,
-        power=new_power,
-        pace=step.pace,  # pace not clamped (swim)
-        cadence=step.cadence,
-    )
-
-
-def _clamp_power(power: dict, max_zone: int, ftp: float) -> dict:
-    """Clamp power target to max zone."""
-    max_pct = ZONE_UPPER.get(max_zone, 100)
-    max_watts = ftp * max_pct / 100
-
-    low = min(power.get("low", 0), max_watts)
-    high = min(power.get("high", 0), max_watts)
-    mid = int((low + high) / 2)
-
-    return {"units": "watts", "value": mid, "low": int(low), "high": int(high)}
-
-
-def _clamp_hr(hr: dict, max_zone: int, lthr: int) -> dict:
-    """Clamp HR target to max zone."""
-    max_pct = ZONE_UPPER.get(max_zone, 100)
-    max_bpm = lthr * max_pct / 100
-
-    low = min(hr.get("low", 0), max_bpm)
-    high = min(hr.get("high", 0), max_bpm)
-    mid = int((low + high) / 2)
-
-    return {"units": "bpm", "value": mid, "low": int(low), "high": int(high)}
-
-
-# ---------------------------------------------------------------------------
-# Adaptation decision + full pipeline
+# Adaptation decision
 # ---------------------------------------------------------------------------
 
 
@@ -396,65 +331,3 @@ def needs_adaptation(
     """Check if the workout exceeds the allowed zone constraints."""
     workout_max = estimate_workout_max_zone(steps, ftp, lthr)
     return workout_max > max_zone
-
-
-def adapt_workout(
-    original: ScheduledWorkoutDTO,
-    recovery: RecoveryScoreDTO,
-    hrv_status: str,
-    tsb: float,
-    ra: float | None = None,
-    ftp: float = 233,
-    lthr: int = 153,
-) -> PlannedWorkoutDTO | None:
-    """Create an adapted workout or None if adaptation is not needed.
-
-    Returns a PlannedWorkout with suffix="adapted" if the original workout
-    exceeds the athlete's current recovery constraints.
-    """
-    steps = parse_humango_description(original.description)
-    if not steps:
-        logger.info("No parseable steps in workout %s — skipping adaptation", original.id)
-        return None
-
-    max_zone, duration_factor = compute_constraints(recovery, hrv_status, tsb, ra)
-
-    if not needs_adaptation(steps, max_zone, ftp, lthr) and duration_factor >= 0.95:
-        return None
-
-    adapted_steps = [clamp_step(s, max_zone, duration_factor, ftp, lthr) for s in steps]
-
-    # Calculate adapted duration
-    total_secs = _total_duration(adapted_steps)
-    adapted_minutes = max(total_secs // 60, 10)
-
-    # Strip sport prefix from name (e.g. "CYCLING:Endurance-3" → "Endurance-3")
-    clean_name = original.name or "Workout"
-    if ":" in clean_name:
-        clean_name = clean_name.split(":", 1)[1].strip()
-
-    return PlannedWorkoutDTO(
-        sport=original.type or "Ride",
-        name=f"Adapted: {clean_name}",
-        steps=adapted_steps,
-        duration_minutes=adapted_minutes,
-        rationale=(
-            f"Recovery {recovery.score:.0f} ({recovery.category}), "
-            f"HRV {hrv_status}, TSB {tsb:+.0f}. "
-            f"Max zone capped to Z{max_zone}, duration x{duration_factor:.0%}."
-        ),
-        target_date=original.start_date_local,
-        suffix="adapted",
-    )
-
-
-def _total_duration(steps: list[WorkoutStepDTO]) -> int:
-    """Calculate total duration of steps in seconds."""
-    total = 0
-    for s in steps:
-        if s.steps and s.reps:
-            sub_dur = sum(sub.duration for sub in s.steps)
-            total += sub_dur * s.reps
-        else:
-            total += s.duration
-    return total
