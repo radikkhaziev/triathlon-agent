@@ -60,6 +60,11 @@ class Activity(Base):
     sub_type: Mapped[str | None] = mapped_column(String, nullable=True)  # NONE|RACE|COMMUTE|WARMUP|COOLDOWN
     rpe: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Borg CR-10 (1-10), see docs/RPE_SPEC.md
     source: Mapped[str | None] = mapped_column(String, nullable=True)  # GARMIN_CONNECT, OAUTH_CLIENT, STRAVA, ...
+    # Intervals.icu's native workout compliance (0-100% match between planned
+    # workout_doc and actual recorded data). Distinct from our race-plan
+    # compliance (`race_plan_compliance` table) and from per-workout-card
+    # adherence (`workout_cards.compliance`).
+    compliance: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fit_file_path: Mapped[str | None] = mapped_column(String, nullable=True)
     # Webhook-time noise classification (Phase 1.6, ML_RACE_PROJECTION_SPEC §6.4).
@@ -98,6 +103,7 @@ class Activity(Base):
                 "sub_type": getattr(a, "sub_type", None),
                 "source": getattr(a, "source", None),
                 "rpe": getattr(a, "icu_rpe", None),
+                "compliance": getattr(a, "compliance", None),
                 "last_synced_at": now,
             }
             for a in activities
@@ -122,6 +128,12 @@ class Activity(Base):
                 "sub_type": func.coalesce(cls.sub_type, stmt.excluded.sub_type),
                 "source": stmt.excluded.source,
                 "rpe": func.coalesce(cls.rpe, stmt.excluded.rpe),
+                # Retain previously-captured compliance if a later re-sync
+                # returns None (e.g. user deleted the planned workout — Intervals
+                # would then have nothing to compare and emit None). We trust
+                # Intervals as source of truth when it has a value; we don't
+                # forget the value when it temporarily doesn't.
+                "compliance": func.coalesce(stmt.excluded.compliance, cls.compliance),
                 "last_synced_at": stmt.excluded.last_synced_at,
             },
         )

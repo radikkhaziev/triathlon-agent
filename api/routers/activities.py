@@ -105,6 +105,9 @@ async def activity_details(
         "icu_training_load": round(activity.icu_training_load, 1) if activity.icu_training_load is not None else None,
         "average_hr": round(activity.average_hr) if activity.average_hr is not None else None,
         "rpe": activity.rpe,
+        # Intervals.icu's native workout compliance % (planned vs actual,
+        # 0-100). NULL when activity had no scheduled workout to compare.
+        "compliance": round(activity.compliance, 1) if activity.compliance is not None else None,
         "is_race": activity.is_race,
         "race": (
             {

@@ -208,6 +208,11 @@ function InlineDetail({ data }: { data: ActivityDetailsResponse }) {
     <>
       <div className="text-xs text-text-dim leading-[1.8]">
         {lines.map((line, i) => <div key={i}>{line}</div>)}
+        {data.compliance != null && (
+          <div>
+            <strong>{t('activities.compliance')}:</strong> {Math.round(data.compliance)}%
+          </div>
+        )}
       </div>
       {hrZones && <ZoneBar zones={hrZones} label="HR Zones" />}
       {powerZones && <ZoneBar zones={powerZones} label="Power Zones" />}

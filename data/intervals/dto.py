@@ -172,6 +172,7 @@ class ActivityDTO(BaseModel):
     sub_type: str | None = None
     source: str | None = None  # e.g. "GARMIN_CONNECT", "OAUTH_CLIENT", "STRAVA"
     icu_rpe: int | None = None  # Borg CR-10 (1-10), from Intervals.icu / Garmin
+    compliance: float | None = None  # Intervals.icu workout compliance % (0-100, planned vs actual)
 
     # WEBHOOK_DATA_CAPTURE Phase 1: rolling power model + fitness snapshot per
     # activity. Arrive on ACTIVITY_ACHIEVEMENTS (~60s after upload) for every
