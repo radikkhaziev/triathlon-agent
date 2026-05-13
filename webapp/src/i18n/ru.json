@@ -137,7 +137,13 @@
     "description_title": "Описание",
     "target_power": "Мощность",
     "target_pace": "Темп",
-    "target_hr": "ЧСС"
+    "target_hr": "ЧСС",
+    "rationale_title": "Обоснование",
+    "estimated": "Расчётно",
+    "timeline_title": "Хронология",
+    "power_zones": "Зоны мощности",
+    "hr_zones": "Зоны ЧСС",
+    "pace_zones": "Зоны темпа"
   },
   "settings": {
     "title": "Настройки",

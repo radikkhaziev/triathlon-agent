@@ -88,10 +88,18 @@ async def scheduled_workout_detail(
     workout_id: int,
     user: User = Depends(require_viewer),
 ) -> dict:
-    """Single scheduled workout with structured steps + athlete thresholds.
+    """Single scheduled workout with structured steps + athlete thresholds +
+    Intervals.icu enrichment (estimated TSS, normalized power, zone times, etc.)
+    + per-sport zone boundaries.
 
     Thresholds are bundled so the frontend can render absolute target ranges
-    (% → bpm / watts / sec-per-km) without a second roundtrip.
+    (% → bpm / watts / sec-per-km) without a second roundtrip; zones drive the
+    timeline-chart colouring.
+
+    Enrichment-fields are populated by Intervals.icu on `POST /events` (see
+    `docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md` §13.6 B — `update_event` does NOT
+    re-trigger enrichment). Some fields may be null for sports lacking the
+    relevant signal (e.g. `normalized_power` is 0/null for Swim).
     """
     uid = get_data_user_id(user)
     async with get_session() as session:
@@ -100,6 +108,9 @@ async def scheduled_workout_detail(
             raise HTTPException(status_code=404, detail="Workout not found")
 
     t = await AthleteSettings.get_thresholds(uid)
+    sport_settings = await AthleteSettings.get(uid, w.type) if w.type else None
+
+    wd = w.workout_doc or {}
 
     return {
         "id": w.id,
@@ -111,12 +122,26 @@ async def scheduled_workout_detail(
         "duration_secs": w.moving_time,
         "distance_km": w.distance,
         "description": w.description,
-        "steps": (w.workout_doc or {}).get("steps"),
+        "steps": wd.get("steps"),
+        "rationale": wd.get("description"),
+        "enrichment": {
+            "tss": wd.get("strain_score"),
+            "normalized_power": wd.get("normalized_power") or None,
+            "variability_index": wd.get("variability_index"),
+            "polarization_index": wd.get("polarization_index"),
+            "intensity_factor": wd.get("intensity_factor"),
+            "zone_times": wd.get("zoneTimes"),
+        },
         "thresholds": {
             "lthr_run": t.lthr_run,
             "lthr_bike": t.lthr_bike,
             "ftp": t.ftp,
             "threshold_pace_run_sec_per_km": t.threshold_pace_run,
             "css_sec_per_100m": t.css,
+        },
+        "zones": {
+            "hr": sport_settings.hr_zones if sport_settings else None,
+            "power": sport_settings.power_zones if sport_settings else None,
+            "pace": sport_settings.pace_zones if sport_settings else None,
         },
     }
