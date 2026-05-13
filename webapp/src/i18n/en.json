@@ -137,7 +137,13 @@
     "description_title": "Description",
     "target_power": "Power",
     "target_pace": "Pace",
-    "target_hr": "HR"
+    "target_hr": "HR",
+    "rationale_title": "Rationale",
+    "estimated": "Estimated",
+    "timeline_title": "Timeline",
+    "power_zones": "Power Zones",
+    "hr_zones": "HR Zones",
+    "pace_zones": "Pace Zones"
   },
   "settings": {
     "title": "Settings",

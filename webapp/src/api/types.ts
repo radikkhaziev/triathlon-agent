@@ -225,6 +225,25 @@ export interface WorkoutDetailThresholds {
   css_sec_per_100m: number | null
 }
 
+// Intervals.icu enrichment populated on POST /events.
+// All fields nullable — some sports lack the relevant signal (Swim has no power).
+export interface WorkoutEnrichment {
+  tss: number | null
+  normalized_power: number | null
+  variability_index: number | null
+  polarization_index: number | null
+  intensity_factor: number | null
+  zone_times: { id: string; secs: number | null }[] | null
+}
+
+// Per-sport zone boundaries from AthleteSettings (units differ per kind —
+// see CLAUDE.md «HR / Power / Pace Zones» section).
+export interface WorkoutDetailZones {
+  hr: number[] | null      // absolute bpm, ascending
+  power: number[] | null   // %FTP, ascending (NOT watts)
+  pace: number[] | null    // %threshold (100.0 = threshold), ascending
+}
+
 export interface ScheduledWorkoutDetail {
   id: number
   type: string | null
@@ -236,7 +255,10 @@ export interface ScheduledWorkoutDetail {
   distance_km: number | null
   description: string | null
   steps: WorkoutStep[] | null
+  rationale: string | null
+  enrichment: WorkoutEnrichment
   thresholds: WorkoutDetailThresholds
+  zones: WorkoutDetailZones
 }
 
 export interface ScheduledWorkoutsDay {
