@@ -61,6 +61,12 @@ _HR_LOW = re.compile(r"low:\s*([\d.]+)\s*bpm", re.IGNORECASE)
 _HR_HIGH = re.compile(r"high:\s*([\d.]+)\s*bpm", re.IGNORECASE)
 _PACE_LOW = re.compile(r"low:\s*(\d+):(\d+)\s*per\s*100\s*meters", re.IGNORECASE)
 _PACE_HIGH = re.compile(r"high:\s*(\d+):(\d+)\s*per\s*100\s*meters", re.IGNORECASE)
+# Run pace — HumanGo emits sec/km for run intervals (e.g. `low: 6:33 per km`).
+# Distinct regex from Swim (`per 100 meters`) to avoid cross-sport false matches.
+# Word boundary after `km` excludes false positives like `per kmh` (theoretical
+# but HumanGo never emits this; defensive only).
+_PACE_LOW_KM = re.compile(r"low:\s*(\d+):(\d+)\s*per\s*km\b", re.IGNORECASE)
+_PACE_HIGH_KM = re.compile(r"high:\s*(\d+):(\d+)\s*per\s*km\b", re.IGNORECASE)
 
 STEP_TYPES = {"warmup", "interval", "recovery", "cooldown", "rest"}
 
@@ -390,20 +396,22 @@ def _humango_power_pct(low_w: float, high_w: float, ftp: int) -> dict | None:
     return {"units": "%ftp", "start": start, "end": end}
 
 
-def _humango_pace_pct(low_sec_per_100m: int, high_sec_per_100m: int, css_sec_per_100m: float) -> dict | None:
-    """Convert HumanGo swim pace (sec/100m low=slower / high=faster) to ``%pace``.
+def _humango_pace_pct(low_sec: int, high_sec: int, threshold_sec: float) -> dict | None:
+    """Convert a HumanGo pace corridor (low=slower / high=faster) to ``%pace``.
 
-    Intervals' ``%pace`` is a velocity ratio (100 = threshold velocity, faster
-    = higher %). HumanGo's «low» pace is slower (more sec/100m), so it maps to
-    the LOWER velocity-ratio bound; «high» pace is faster, maps to the HIGHER
-    bound. Result: ``start < end`` preserves the corridor direction.
+    Unit-agnostic — caller passes matching units (Swim: sec/100m vs CSS;
+    Run: sec/km vs threshold_pace_run). Intervals' ``%pace`` is a velocity
+    ratio (100 = threshold velocity, faster = higher %). HumanGo's «low»
+    pace is slower (more sec per unit distance), so it maps to the LOWER
+    velocity-ratio bound; «high» pace is faster, maps to the HIGHER bound.
+    Result: ``start < end`` preserves the corridor direction.
     """
-    if not css_sec_per_100m or css_sec_per_100m <= 0:
+    if not threshold_sec or threshold_sec <= 0:
         return None
-    if not low_sec_per_100m or not high_sec_per_100m:
+    if not low_sec or not high_sec:
         return None
-    start = round(css_sec_per_100m / low_sec_per_100m * 100)  # slower → lower velocity %
-    end = round(css_sec_per_100m / high_sec_per_100m * 100)  # faster → higher velocity %
+    start = round(threshold_sec / low_sec * 100)  # slower → lower velocity %
+    end = round(threshold_sec / high_sec * 100)  # faster → higher velocity %
     return {"units": "%pace", "start": start, "end": end}
 
 
@@ -439,6 +447,22 @@ def _humango_target_for_step(
             lthr = thresholds.lthr_run if sport == "Run" else thresholds.lthr_bike
             target = _humango_hr_pct(float(low_m.group(1)), float(high_m.group(1)), lthr or 0)
             return ("hr", target) if target else (None, None)
+
+    # Run pace targets — HumanGo regularly emits run intervals with sec/km
+    # corridors (e.g. tempo / threshold sessions). Without this branch, such
+    # blocks come through target-less and watches alert on nothing. The
+    # `%pace` schema is the same as Swim — only the threshold differs
+    # (`threshold_pace_run` is sec/km, not sec/100m). HR check above takes
+    # precedence when both signals are present in the block (HR is the more
+    # universal Run target; pace breaks when GPS is poor or treadmill).
+    if sport == "Run":
+        low_m = _PACE_LOW_KM.search(text_block)
+        high_m = _PACE_HIGH_KM.search(text_block)
+        if low_m and high_m:
+            low_sec = int(low_m.group(1)) * 60 + int(low_m.group(2))
+            high_sec = int(high_m.group(1)) * 60 + int(high_m.group(2))
+            target = _humango_pace_pct(low_sec, high_sec, thresholds.threshold_pace_run or 0)
+            return ("pace", target) if target else (None, None)
 
     if sport == "Swim":
         low_m = _PACE_LOW.search(text_block)
@@ -518,8 +542,8 @@ def humango_to_intervals_steps(
     Returns ``None`` when the caller must skip pushing — either the converter
     cannot run, or it ran but found nothing pushable:
     - Sport not in ``{Run, Ride, Swim}`` (HumanGo doesn't push these structured).
-    - Threshold for the sport is missing / zero (LTHR for Run, FTP for Ride,
-      CSS for Swim) — cold-start athlete, see SPEC §6.
+    - Threshold for the sport is missing / zero (LTHR or threshold_pace_run for
+      Run, FTP or LTHR for Ride, CSS for Swim) — cold-start athlete, see SPEC §6.
     - Description parsed cleanly but yielded zero steps (defensive — in the
       normal call path ``is_humango_event`` already gates on the ``==========``
       separator, so empty-but-valid is unreachable from the actor).
@@ -532,8 +556,14 @@ def humango_to_intervals_steps(
         return None
 
     # Cold-start guard: each sport needs at least one usable threshold.
-    if sport == "Run" and not (thresholds.lthr_run and thresholds.lthr_run > 0):
-        logger.info("HumanGo enrichment skipped: missing LTHR for Run")
+    # Run accepts either LTHR (for HR-driven blocks) or threshold_pace_run
+    # (for pace-driven blocks) — empirically HumanGo emits one or the other
+    # per workout, not both.
+    if sport == "Run" and not (
+        (thresholds.lthr_run and thresholds.lthr_run > 0)
+        or (thresholds.threshold_pace_run and thresholds.threshold_pace_run > 0)
+    ):
+        logger.info("HumanGo enrichment skipped: missing LTHR and threshold_pace for Run")
         return None
     if sport == "Ride" and not (
         (thresholds.ftp and thresholds.ftp > 0) or (thresholds.lthr_bike and thresholds.lthr_bike > 0)
@@ -581,4 +611,33 @@ def humango_to_intervals_steps(
             steps.append(step)
         i += 1
 
-    return steps if steps else None
+    if not steps:
+        return None
+
+    # Fail-closed guard: cold-start check at function entry verifies «at least
+    # one threshold present», but a mismatched-pair case can still produce
+    # target-less steps — e.g. athlete has `lthr_run` set but HumanGo emits
+    # pace-only Run blocks (or symmetric: only `threshold_pace_run` set,
+    # description carries HR). The granular threshold check inside
+    # `_humango_target_for_step` returns `None` for the missing pair, but the
+    # step still gets emitted (with `hr=power=pace=None`). Pushing such steps
+    # would lock out future re-enrichment via `is_humango_event`'s idempotency
+    # guard (which only checks `workout_doc.steps` non-empty, not target presence).
+    # Drop the whole workout so the next sync tick can retry once thresholds
+    # are updated.
+    if all(_step_is_target_less(s) for s in steps):
+        logger.info(
+            "HumanGo enrichment skipped: parsed %d step(s) but none carry "
+            "hr/power/pace — likely description/threshold sport-target mismatch",
+            len(steps),
+        )
+        return None
+
+    return steps
+
+
+def _step_is_target_less(s: WorkoutStepDTO) -> bool:
+    """A step has no actionable target. For repeat groups, check sub-steps."""
+    if s.reps and s.steps:
+        return all(_step_is_target_less(sub) for sub in s.steps)
+    return s.hr is None and s.power is None and s.pace is None
