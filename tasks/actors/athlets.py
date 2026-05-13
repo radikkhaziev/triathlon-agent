@@ -8,7 +8,7 @@ from pydantic import validate_call
 
 from bot.i18n import _, set_language
 from data.db import AthleteGoal, AthleteSettings, User, UserDTO
-from data.intervals.client import IntervalsScopeError, IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import ScheduledWorkoutDTO, SportSettingsDTO
 from data.sport_map import resolve_race_sport_type
 from tasks.dto import DateDTO, local_today
@@ -43,13 +43,16 @@ def actor_sync_athlete_settings(
     If ``sport_settings`` is provided (e.g. from webhook payload), skips the API call.
     """
     if sport_settings is None:
-        with IntervalsSyncClient.for_user(user) as client:
-            try:
+        try:
+            with IntervalsSyncClient.for_user(user) as client:
                 all_settings = client.list_sport_settings()
-            except IntervalsScopeError:
-                # User revoked the SETTINGS scope on Intervals.icu. Nothing to
-                # sync; abort cleanly so Dramatiq doesn't retry-loop on a 403.
-                return
+        except IntervalsAccessError as e:
+            # 401 (token revoked) / 403 (scope revoked) / missing-creds — any of
+            # them means we can't sync. Skip cleanly so Dramatiq doesn't
+            # retry-loop. Note: the `try` wraps `for_user(...)` itself because
+            # missing-creds raises *before* the context manager body runs.
+            logger.info("Skipping settings sync for user %d: %s", user.id, e)
+            return
     else:
         all_settings = sport_settings
 
@@ -125,29 +128,36 @@ def actor_sync_athlete_goals(user: UserDTO):
     existing_ids = {g.intervals_event_id for g in AthleteGoal.get_all(user.id)}
     new_events: list[tuple[str, ScheduledWorkoutDTO]] = []
 
-    with IntervalsSyncClient.for_user(user) as client:
-        for category in ("RACE_A", "RACE_B", "RACE_C"):
-            try:
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            for category in ("RACE_A", "RACE_B", "RACE_C"):
                 events: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, newest=newest, category=category)
-            except IntervalsScopeError:
-                # CALENDAR scope revoked — no goals visible, skip the whole sync.
-                return
-            for event in events:
-                if event.id not in existing_ids:
-                    new_events.append((category, event))
-                    # Guard against the same event.id appearing under more than
-                    # one category — without this, a second pass would notify
-                    # twice for the same race.
-                    existing_ids.add(event.id)
-                AthleteGoal.upsert_from_intervals(
-                    user_id=user.id,
-                    category=category,
-                    event_name=event.name or f"{category} event",
-                    event_date=event.start_date_local,
-                    intervals_event_id=event.id,
-                    sport_type=resolve_race_sport_type(event.type),
-                )
-                logger.info("Synced goal %s for user %d: %s %s", category, user.id, event.name, event.start_date_local)
+                for event in events:
+                    if event.id not in existing_ids:
+                        new_events.append((category, event))
+                        # Guard against the same event.id appearing under more
+                        # than one category — without this, a second pass would
+                        # notify twice for the same race.
+                        existing_ids.add(event.id)
+                    AthleteGoal.upsert_from_intervals(
+                        user_id=user.id,
+                        category=category,
+                        event_name=event.name or f"{category} event",
+                        event_date=event.start_date_local,
+                        intervals_event_id=event.id,
+                        sport_type=resolve_race_sport_type(event.type),
+                    )
+                    logger.info(
+                        "Synced goal %s for user %d: %s %s",
+                        category,
+                        user.id,
+                        event.name,
+                        event.start_date_local,
+                    )
+    except IntervalsAccessError as e:
+        # CALENDAR scope revoked / no creds — nothing to sync, abort cleanly.
+        logger.info("Skipping goal sync for user %d: %s", user.id, e)
+        return
 
     for category, event in new_events:
         _actor_send_goal_notification.send(
@@ -182,22 +192,22 @@ def actor_update_zones(user: UserDTO):
     # Reversed order would leave DB and API permanently disagreeing if a
     # Dramatiq retry sees the *new* DB value as `config` (drift collapses
     # to 0% → no alert → API never receives the push).
-    with IntervalsSyncClient.for_user(user) as client:
-        for alert in drift.alerts:
-            sport = alert.sport
-            new_value = alert.measured
-            old_value = alert.config_value
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            for alert in drift.alerts:
+                sport = alert.sport
+                new_value = alert.measured
+                old_value = alert.config_value
 
-            if new_value is None or new_value <= 0:
-                logger.warning(
-                    "Skipping %s update for user %d: invalid measured=%r",
-                    alert.metric,
-                    user.id,
-                    new_value,
-                )
-                continue
+                if new_value is None or new_value <= 0:
+                    logger.warning(
+                        "Skipping %s update for user %d: invalid measured=%r",
+                        alert.metric,
+                        user.id,
+                        new_value,
+                    )
+                    continue
 
-            try:
                 if alert.metric == "LTHR":
                     client.update_sport_settings(sport, {"lthr": new_value})
                     AthleteSettings.upsert(user_id=user.id, sport=sport, lthr=new_value)
@@ -226,11 +236,10 @@ def actor_update_zones(user: UserDTO):
                     )
                 else:
                     logger.warning("Unknown drift metric %s for user %d, skipping", alert.metric, user.id)
-            except IntervalsScopeError:
-                # SETTINGS:WRITE scope revoked — drift remains in our DB but
-                # we can't push to Intervals.icu. Bail out of the whole loop:
-                # the user has to reconnect with the right scope to recover.
-                logger.info("SETTINGS:WRITE revoked for user %d — aborting zone push", user.id)
-                return
+    except IntervalsAccessError as e:
+        # SETTINGS:WRITE scope revoked / no creds — drift stays in our DB but
+        # we can't push to Intervals.icu. User has to reconnect to recover.
+        logger.info("Skipping zone update for user %d: %s", user.id, e)
+        return
 
     _actor_send_zones_notification.send(user, updated)

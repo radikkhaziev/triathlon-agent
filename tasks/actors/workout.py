@@ -5,7 +5,7 @@ from pydantic import validate_call
 
 from bot.formatter import build_workout_pushed_message
 from data.db import AiWorkout, UserDTO
-from data.intervals.client import IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import EventExDTO, PlannedWorkoutDTO, ScheduledWorkoutDTO
 from tasks.dto import DateDTO
 
@@ -51,9 +51,13 @@ def actor_push_workout(
         logger.info(f"Workout {workout.external_id} already exists for user {user.id}, skipping push.")
         return
 
-    with IntervalsSyncClient.for_user(user) as client:
-        _event: EventExDTO = workout.to_intervals_event()
-        data_event: ScheduledWorkoutDTO = client.create_event(_event)
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            _event: EventExDTO = workout.to_intervals_event()
+            data_event: ScheduledWorkoutDTO = client.create_event(_event)
+    except IntervalsAccessError as e:
+        logger.info("Skipping workout push for user %d: %s", user.id, e)
+        return
 
     intervals_id = data_event.id
 

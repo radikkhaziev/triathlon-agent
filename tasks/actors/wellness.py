@@ -9,7 +9,7 @@ from dramatiq import group, pipeline
 from pydantic import validate_call
 
 from data.db import HrvAnalysis, RhrAnalysis, UserDTO, Wellness, get_sync_session
-from data.intervals.client import IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, RhrStatusDTO, RmssdStatusDTO, WellnessDTO
 from data.metrics import TREND_THRESHOLDS, calculate_trend, combined_recovery_score, rmssd_flatt_esco
 from tasks.dto import ORMDTO, DateDTO, local_today
@@ -292,8 +292,12 @@ def actor_user_wellness(
     dt = dt or today
 
     if wellness is None:
-        with IntervalsSyncClient.for_user(user) as client:
-            wellness: WellnessDTO = client.get_wellness(dt)
+        try:
+            with IntervalsSyncClient.for_user(user) as client:
+                wellness: WellnessDTO = client.get_wellness(dt)
+        except IntervalsAccessError as e:
+            logger.info("Skipping wellness fetch for user %d on %s: %s", user.id, dt, e)
+            return
 
     if not wellness:
         logger.info("No wellness data found for user %s on %s", user.id, dt)

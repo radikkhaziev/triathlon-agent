@@ -29,7 +29,16 @@ RETRY_STATUSES = {429, 500, 502, 503, 504}
 FIT_MAX_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
-class IntervalsAuthError(Exception):
+class IntervalsAccessError(Exception):
+    """Base for permanent Intervals.icu access failures.
+
+    Catching this in a Dramatiq actor means: «this user can't currently talk to
+    Intervals.icu — log, skip, don't retry». Concrete subclasses distinguish
+    the cause (token revoked, scope revoked, no creds configured at all).
+    """
+
+
+class IntervalsAuthError(IntervalsAccessError):
     """Raised when Intervals.icu returns 401 for an OAuth user.
 
     The token has been revoked or expired. On 401, ``_execute()``
@@ -41,12 +50,10 @@ class IntervalsAuthError(Exception):
         super().__init__(f"Intervals.icu OAuth token revoked for user {user_id}")
 
 
-class IntervalsScopeError(Exception):
+class IntervalsScopeError(IntervalsAccessError):
     """Raised when Intervals.icu returns 403 (scope revoked / insufficient).
 
     The token is still valid for other scopes — we do NOT clear it.
-    Callers (typically Dramatiq actors) catch this and skip the operation
-    gracefully so Dramatiq doesn't retry-loop on a permanent user-action denial.
     """
 
     def __init__(self, user_id: int | None, method: str, path: str):
@@ -55,6 +62,18 @@ class IntervalsScopeError(Exception):
         self.path = path
         suffix = f" for user {user_id}" if user_id is not None else ""
         super().__init__(f"Intervals.icu 403 on {method} {path}{suffix}")
+
+
+class IntervalsCredsMissingError(IntervalsAccessError):
+    """Raised by ``_resolve_credentials`` when the user has no usable Intervals.icu
+    credentials — either no ``athlete_id``, or ``intervals_auth_method='none'``
+    after a revoke. The actor must skip; there's nothing to authenticate with.
+    """
+
+    def __init__(self, user_id: int, reason: str):
+        self.user_id = user_id
+        self.reason = reason
+        super().__init__(f"User {user_id} has no Intervals.icu credentials: {reason}")
 
 
 def to_snake(name: str) -> str:
@@ -352,19 +371,26 @@ class IntervalsClientBase:
 def _resolve_credentials(user: User) -> dict:
     """Pick the right auth kwargs for IntervalsClient based on User's auth method.
 
-    Returns a dict suitable for unpacking into ``cls(athlete_id=..., **creds)``.
-    Raises ``LookupError`` if no usable credentials are configured.
+    Returns a dict suitable for unpacking into ``cls(**creds)`` — the dict
+    already contains ``athlete_id`` plus exactly one of ``access_token`` /
+    ``api_key``, so callers should NOT pass ``athlete_id`` separately
+    (that would produce a duplicate-keyword TypeError).
+
+    Raises ``IntervalsCredsMissingError`` if no usable credentials are configured —
+    callers (typically Dramatiq actors) catch ``IntervalsAccessError`` and skip
+    so Dramatiq doesn't retry-loop on a user with revoked Intervals.icu access.
     """
     if not user.athlete_id:
-        raise LookupError(f"User {user.id} has no athlete_id — cannot build Intervals.icu API URLs")
+        raise IntervalsCredsMissingError(user.id, "no athlete_id — cannot build Intervals.icu API URLs")
     if user.intervals_auth_method == "oauth" and user.intervals_access_token:
         return {"athlete_id": user.athlete_id, "access_token": user.intervals_access_token}
     if user.api_key:
         return {"athlete_id": user.athlete_id, "api_key": user.api_key}
-    raise LookupError(
-        f"User {user.id} has no Intervals.icu credentials "
-        f"(method={user.intervals_auth_method}, api_key={'set' if user.api_key_encrypted else 'empty'}, "
-        f"oauth_token={'set' if user.intervals_access_token_encrypted else 'empty'})"
+    raise IntervalsCredsMissingError(
+        user.id,
+        f"method={user.intervals_auth_method}, "
+        f"api_key={'set' if user.api_key_encrypted else 'empty'}, "
+        f"oauth_token={'set' if user.intervals_access_token_encrypted else 'empty'}",
     )
 
 

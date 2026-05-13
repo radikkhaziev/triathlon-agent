@@ -17,7 +17,7 @@ from bot.i18n import _, set_language
 from config import settings
 from data.db import Activity, ActivityDetail, ActivityHrv, User, UserDTO, Wellness
 from data.db.common import get_sync_session
-from data.intervals.client import IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from tasks.tools import TelegramTool
 
 logger = logging.getLogger(__name__)
@@ -91,6 +91,9 @@ def _fetch_polyline(user: User, activity_id: str) -> str | None:
     try:
         with IntervalsSyncClient.for_user(user) as client:
             detail = client.get_activity_detail(activity_id)
+    except IntervalsAccessError as e:
+        logger.info("Skipping polyline fetch for user %d activity %s: %s", user.id, activity_id, e)
+        return None
     except Exception as e:
         logger.warning("Polyline fetch failed for %s: %s", activity_id, e)
         return None
