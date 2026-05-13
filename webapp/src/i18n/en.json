@@ -129,7 +129,15 @@
   "plan": {
     "title": "Training Plan",
     "load_error": "Could not load plan.",
-    "rest_day": "Rest day"
+    "rest_day": "Rest day",
+    "back_to_list": "Back to plan",
+    "load_workout_error": "Could not load workout.",
+    "no_steps": "No structured steps for this workout.",
+    "steps_title": "Steps",
+    "description_title": "Description",
+    "target_power": "Power",
+    "target_pace": "Pace",
+    "target_hr": "HR"
   },
   "settings": {
     "title": "Settings",

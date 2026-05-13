@@ -1,12 +1,12 @@
 import zoneinfo
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import ScheduledWorkout, User, get_session
+from data.db import AthleteSettings, ScheduledWorkout, User, get_session
 from data.utils import format_duration
 
 router = APIRouter()
@@ -80,4 +80,43 @@ async def scheduled_workouts(
         "has_next": has_next,
         "role": user.role,
         "days": days,
+    }
+
+
+@router.get("/api/scheduled-workout/{workout_id}")
+async def scheduled_workout_detail(
+    workout_id: int,
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Single scheduled workout with structured steps + athlete thresholds.
+
+    Thresholds are bundled so the frontend can render absolute target ranges
+    (% → bpm / watts / sec-per-km) without a second roundtrip.
+    """
+    uid = get_data_user_id(user)
+    async with get_session() as session:
+        w = await session.get(ScheduledWorkout, workout_id)
+        if w is None or w.user_id != uid:
+            raise HTTPException(status_code=404, detail="Workout not found")
+
+    t = await AthleteSettings.get_thresholds(uid)
+
+    return {
+        "id": w.id,
+        "type": w.type,
+        "name": w.name,
+        "category": w.category,
+        "date": w.start_date_local,
+        "duration": format_duration(w.moving_time),
+        "duration_secs": w.moving_time,
+        "distance_km": w.distance,
+        "description": w.description,
+        "steps": (w.workout_doc or {}).get("steps"),
+        "thresholds": {
+            "lthr_run": t.lthr_run,
+            "lthr_bike": t.lthr_bike,
+            "ftp": t.ftp,
+            "threshold_pace_run_sec_per_km": t.threshold_pace_run,
+            "css_sec_per_100m": t.css,
+        },
     }

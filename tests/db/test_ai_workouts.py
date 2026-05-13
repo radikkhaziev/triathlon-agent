@@ -262,6 +262,72 @@ class TestPlannedWorkout:
                 duration_minutes=20,
             )
 
+    def test_accepts_rest_step_without_target(self):
+        """Terminal step labelled `Rest` is allowed without hr/power/pace.
+
+        Intervals.icu renders target-less Rest as a real pool-side / between-set
+        pause; a fake low-Z target would render as «slow swimming» instead.
+        See `docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md` §14.
+        """
+        PlannedWorkoutDTO(
+            sport="Swim",
+            name="Test",
+            steps=[
+                WorkoutStepDTO(text="Stage 1", distance=400, pace={"units": "%pace", "start": 90, "end": 95}),
+                WorkoutStepDTO(text="Rest", duration=45),
+                WorkoutStepDTO(text="Stage 2", distance=400, pace={"units": "%pace", "start": 95, "end": 100}),
+            ],
+            duration_minutes=15,
+        )
+
+    def test_accepts_recovery_step_without_target(self):
+        """Terminal `Recovery` step is also allowed without target (same rationale as Rest)."""
+        PlannedWorkoutDTO(
+            sport="Swim",
+            name="Test",
+            steps=[
+                WorkoutStepDTO(text="Tempo", distance=200, pace={"units": "%pace", "start": 90, "end": 95}),
+                WorkoutStepDTO(text="Recovery", duration=30),
+                WorkoutStepDTO(text="Tempo", distance=200, pace={"units": "%pace", "start": 90, "end": 95}),
+            ],
+            duration_minutes=10,
+        )
+
+    def test_rest_label_is_case_and_whitespace_insensitive(self):
+        """Validator strips + lowercases `text` before checking `_NO_TARGET_STEP_LABELS`.
+
+        Guards against regression if someone refactors and drops the `.strip().lower()`
+        normalisation in `_check_steps_have_targets`.
+        """
+        for label in ("Rest", "rest", "REST", "  Rest  "):
+            PlannedWorkoutDTO(
+                sport="Swim",
+                name="Test",
+                steps=[
+                    WorkoutStepDTO(text="Stage", distance=400, pace={"units": "%pace", "start": 90, "end": 95}),
+                    WorkoutStepDTO(text=label, duration=30),
+                ],
+                duration_minutes=12,
+            )
+
+    def test_rejects_non_rest_label_without_target(self):
+        """Only `Rest` / `Recovery` (exact, after strip+lower) bypass the target check.
+
+        A made-up label like `RestX` or `Off` must still fail — otherwise Claude could
+        smuggle text-only steps past the validator under any name.
+        """
+        for label in ("RestX", "Off", "Stop", ""):
+            with pytest.raises(ValidationError, match="no intensity target"):
+                PlannedWorkoutDTO(
+                    sport="Swim",
+                    name="Test",
+                    steps=[
+                        WorkoutStepDTO(text="Stage", distance=400, pace={"units": "%pace", "start": 90, "end": 95}),
+                        WorkoutStepDTO(text=label, duration=30),
+                    ],
+                    duration_minutes=12,
+                )
+
     def test_accepts_pace_target(self):
         """Swim steps with pace target are valid."""
         PlannedWorkoutDTO(

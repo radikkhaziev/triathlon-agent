@@ -1,5 +1,5 @@
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
@@ -69,36 +69,23 @@ export default function Plan() {
 }
 
 function WorkoutItem({ workout: w }: { workout: ScheduledWorkout }) {
-  const [expanded, setExpanded] = useState(false)
   const icon = SPORT_ICONS[w.type || ''] || '\u{1F3C6}'
   const name = stripWorkoutPrefix(w.name)
   const meta = [w.duration, w.distance_km ? `${w.distance_km} km` : null].filter(Boolean).join(' \u00B7 ')
-  const hasDesc = !!w.description?.trim()
+
+  const linkClass = [
+    'border-t border-border flex items-center gap-2.5 px-4 py-3',
+    'cursor-pointer hover:bg-surface-2 transition-colors no-underline text-text',
+  ].join(' ')
 
   return (
-    <div className="border-t border-border">
-      <div
-        className={`flex items-center gap-2.5 px-4 py-3 ${hasDesc ? 'cursor-pointer hover:bg-surface-2' : ''} transition-colors`}
-        onClick={hasDesc ? () => setExpanded(!expanded) : undefined}
-      >
-        <span className="text-lg shrink-0 w-6 text-center">{icon}</span>
-        <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-semibold truncate">{name}</div>
-          {meta && <div className="text-xs text-text-dim mt-px">{meta}</div>}
-        </div>
-        {hasDesc && (
-          <span className={`text-xs text-text-dim transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`}>
-            &#x25B6;
-          </span>
-        )}
+    <Link to={`/workout/${w.id}`} className={linkClass}>
+      <span className="text-lg shrink-0 w-6 text-center">{icon}</span>
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] font-semibold truncate">{name}</div>
+        {meta && <div className="text-xs text-text-dim mt-px">{meta}</div>}
       </div>
-      {expanded && hasDesc && (
-        <div className="px-4 pb-3.5 border-t border-border">
-          <pre className="font-mono text-xs leading-relaxed text-text-dim whitespace-pre-wrap break-words m-0 p-3 bg-bg rounded-lg">
-            {w.description}
-          </pre>
-        </div>
-      )}
-    </div>
+      <span className="text-xs text-text-dim shrink-0">&rsaquo;</span>
+    </Link>
   )
 }

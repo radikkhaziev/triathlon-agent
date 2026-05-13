@@ -303,6 +303,14 @@ class WorkoutStepDTO(BaseModel):
 # Sports where intensity targets are not applicable (yoga, stretching, mobility)
 _NO_TARGET_SPORTS = frozenset({"Other"})
 
+# Terminal step labels that legitimately carry no intensity target. In Intervals.icu
+# the chart renders these as a real pause (flat gap between active segments) — the
+# correct visual for pool-side stationary rest. Adding a fake low-Z target turns it
+# into a "swim slowly" segment instead, which is wrong. HumanGo's importer already
+# emits target-less rests via `EventExDTO` (bypassing this validator); allowing them
+# here makes `PlannedWorkoutDTO` / `suggest_workout` behave the same way.
+_NO_TARGET_STEP_LABELS = frozenset({"rest", "recovery"})
+
 # ---------------------------------------------------------------------------
 # Native-format description renderer (Intervals.icu structured-workout text).
 # Grammar + parser quirks: docs/INTERVALS_NATIVE_WORKOUT_FORMAT.md.
@@ -467,7 +475,13 @@ class PlannedWorkoutDTO(BaseModel):
            description renderer, which would emit a target-less line and
            trigger Intervals' parse-failure-induced `workout_doc.steps` drop.
 
-        Exception: ``Other`` sport (yoga, stretching, mobility) — no watch alerts needed.
+        Exceptions:
+        - ``Other`` sport (yoga, stretching, mobility) — no watch alerts needed.
+        - Terminal step labelled ``Rest`` / ``Recovery`` (case + whitespace-insensitive
+          match against ``_NO_TARGET_STEP_LABELS``) — Intervals.icu renders these as
+          a real pool-side / between-set pause (flat chart gap). A fake low-Z target
+          would render as «slow swimming/jogging» instead. See
+          ``docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md`` §14 for the empirical finding.
         """
         if self.sport in _NO_TARGET_SPORTS:
             return self
@@ -495,6 +509,8 @@ class PlannedWorkoutDTO(BaseModel):
                     _walk(s.steps, label, depth + 1)
                     continue
                 if not (s.hr or s.power or s.pace):
+                    if (s.text or "").strip().lower() in _NO_TARGET_STEP_LABELS:
+                        continue
                     raise ValueError(
                         f"Step {label!r} has no intensity target. Every non-repeat "
                         f"step must include hr/power/pace so watches can alert the "
