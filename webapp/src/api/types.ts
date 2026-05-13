@@ -193,6 +193,52 @@ export interface ScheduledWorkout {
   description: string | null
 }
 
+// One step in a structured workout. Mirrors WorkoutStepDTO (data/intervals/dto.py).
+// `hr` / `power` / `pace` targets carry % corridor; absolute values derived
+// on the frontend using `WorkoutDetailThresholds`.
+// `end` is optional — backend validator accepts targets with only `start` (e.g.
+// a single-value target rather than a corridor). Renderer must degrade
+// gracefully to "{start}%" when `end` is absent.
+export interface WorkoutTarget {
+  units: string  // "%lthr" | "%ftp" | "%pace" | "rpm"
+  start: number
+  end?: number | null
+}
+
+export interface WorkoutStep {
+  text: string
+  duration: number  // seconds (0 for repeat groups)
+  distance: number | null  // meters
+  reps: number | null
+  hr: WorkoutTarget | null
+  power: WorkoutTarget | null
+  pace: WorkoutTarget | null
+  cadence: WorkoutTarget | null
+  steps: WorkoutStep[] | null  // sub-steps for repeat groups
+}
+
+export interface WorkoutDetailThresholds {
+  lthr_run: number | null
+  lthr_bike: number | null
+  ftp: number | null
+  threshold_pace_run_sec_per_km: number | null
+  css_sec_per_100m: number | null
+}
+
+export interface ScheduledWorkoutDetail {
+  id: number
+  type: string | null
+  name: string | null
+  category: string
+  date: string
+  duration: string | null
+  duration_secs: number | null
+  distance_km: number | null
+  description: string | null
+  steps: WorkoutStep[] | null
+  thresholds: WorkoutDetailThresholds
+}
+
 export interface ScheduledWorkoutsDay {
   date: string
   weekday: string

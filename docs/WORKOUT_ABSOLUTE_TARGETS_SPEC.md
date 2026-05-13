@@ -629,3 +629,58 @@ Connect sync → watch face) что для HR в §12. Параллели с HR-
 schema после rename), но нужна верификация на велосипеде с реальным
 power meter / smart trainer ERG. Триггер для investigation — следующая
 запланированная AI bike-тренировка (когда атлет пушнёт и поедет).
+
+## 14. Rest / Recovery steps — no-target allowed (2026-05-13)
+
+**Finding.** `PlannedWorkoutDTO._check_steps_have_targets` исходно требовал
+`hr/power/pace` на _каждом_ terminal step. Это ломало swim-тренировки с
+паузами: чтобы DTO собрался, Claude в чате вынужден был ставить fake-pace
+(например `{units: "%pace", start: 40, end: 55}`) на Rest. Intervals.icu
+тогда рендерит этот шаг как **сегмент медленного плавания Z1**, а не как
+**реальный pool-side stop** (плоский провал между бар-ами на chart).
+
+Сравнение визуала на одном workout:
+- _С fake-pace на Rest_ (event `109954764` v1): Z1 1.6%, Z3 51.2%, Z4 47.2%.
+  Chart — три цветных бара подряд, тонкая Z1 полоска вместо паузы.
+- _Без таргета на Rest_ (event `109954764` v2): на chart настоящий gap,
+  Intervals не считает это активным временем.
+
+**HumanGo сравнение.** Импорт HumanGo шёл через `EventExDTO` напрямую, минуя
+`PlannedWorkoutDTO`-валидатор (`tasks/actors/workout.py:actor_humango_enrichment`
+→ `data/workout_adapter.py:humango_to_intervals_steps`). Поэтому HumanGo
+swim-тренировки изначально рисовались с правильными паузами, а
+AI-тренировки от Claude — со «slow swimming».
+
+**Решение.** В `data/intervals/dto.py` добавлен `_NO_TARGET_STEP_LABELS =
+frozenset({"rest", "recovery"})` (case-insensitive match по `step.text`).
+`_check_steps_have_targets` пропускает step без target если его label
+попадает в этот набор. Произвольные label-ы по-прежнему режутся (regression
+guard остался).
+
+**MCP docstring обновлён.** `suggest_workout` явно говорит Claude:
+```
+EXCEPTION — Rest / Recovery steps. Set `text` to "Rest" or "Recovery"
+and OMIT hr/power/pace. Intervals.icu renders these as a real
+pool-side / between-set pause (flat gap in the chart).
+```
+
+**Native-format renderer (`render_native_description`) уже работал
+корректно** — для шага без target он эмитит просто `- Rest 20s` (без `Pace`
+суффикса). Этот путь проверен empirically: event `109954764` v2 (rest=20s)
+и v3 (rest=45s) запушены через target-less Rest, Intervals UI рисует
+настоящие паузы, FIT-export к Garmin валидный.
+
+**Caveat.** `_NO_TARGET_STEP_LABELS` локалён к `en` (Rest/Recovery). Если в
+будущем Claude будет писать ru-label-ы («Отдых», «Восстановление»), их
+надо добавить — либо переехать на семантический флаг (`is_rest: bool`) на
+`WorkoutStepDTO`. Сейчас оставлен label-based матч ради совпадения с
+HumanGo конвенцией (`display_names["rest"] == "Rest"` в
+`data/workout_adapter.py:498`).
+
+**Triggers для пересмотра.**
+- Если Claude вдруг начнёт ловить «no intensity target» на терминальном
+  step, который он считает rest-ом — проверить, что `text` начинается с
+  «Rest» или «Recovery» (case-insensitive).
+- Если в swim workout-е появятся внутрисетовые паузы как continuous Z1 на
+  chart — значит fake-pace всё ещё проскочил (например через
+  `compose_workout` или другой путь, минующий `PlannedWorkoutDTO`).

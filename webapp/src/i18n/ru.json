@@ -129,7 +129,15 @@
   "plan": {
     "title": "План тренировок",
     "load_error": "Не удалось загрузить план.",
-    "rest_day": "День отдыха"
+    "rest_day": "День отдыха",
+    "back_to_list": "К плану",
+    "load_workout_error": "Не удалось загрузить тренировку.",
+    "no_steps": "У этой тренировки нет структурированных шагов.",
+    "steps_title": "Шаги",
+    "description_title": "Описание",
+    "target_power": "Мощность",
+    "target_pace": "Темп",
+    "target_hr": "ЧСС"
   },
   "settings": {
     "title": "Настройки",

@@ -11,6 +11,23 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## Workout detail page + Rest target relaxation (2026-05-13)
+
+**Trigger:** план в webapp (`/plan`) показывал только короткую meta-строку (sport icon · duration · distance) и inline expand-collapse с pre-formatted `description`. AI-pushed swim workout от Claude рендерился криво — Rest шаги были обязаны нести pace-таргет (валидатор `PlannedWorkoutDTO._check_steps_have_targets` резал любой target-less terminal step), и Claude ставил fake `{units: "%pace", start: 40, end: 55}` на Rest → Intervals.icu trackчил это как «slow swimming Z1», а не реальный pool-side stop (плоский провал на chart). HumanGo же эмитит `{"text": "Rest", "duration": N}` без target и получает корректные паузы — потому что HumanGo идёт через `EventExDTO` напрямую, минуя `PlannedWorkoutDTO`-валидатор.
+
+**Что сделано:**
+- **Backend:** new `GET /api/scheduled-workout/{id}` (`api/routers/workouts.py`) — single workout + per-sport thresholds (`lthr_run/lthr_bike/ftp/threshold_pace_run/css`) для конвертации `%` → абсолютов на фронте; tenant-safe (404 при чужом `workout_id`, как в `/api/activity/{id}/details`).
+- **Frontend:** new page `webapp/src/pages/ScheduledWorkout.tsx` (`/workout/:id`) с структурированным рендером шагов (bullets, repeat-группы `Nx`, target ranges «65-78% Power (163-195W)»). Pace-конверсия инвертированная (`pace_sec = threshold × 100 / pct`, выше % = быстрее), отображение fast–slow как у Intervals. `Plan.tsx` теперь — список ссылок на детальную страницу (по аналогии с `/activity/:id`), inline expand убран.
+- **Validator relax (`data/intervals/dto.py`):** `_NO_TARGET_STEP_LABELS = frozenset({"rest", "recovery"})` — terminal step без `hr/power/pace` проходит валидацию когда `text.strip().lower()` попадает в этот набор. MCP docstring `suggest_workout` обновлён с явным правилом + пример swim stationary rest. Произвольные label-ы без target по-прежнему режутся.
+- **Spec:** новая секция §14 в `docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md` с empirical-findings (chart-сравнение fake-pace vs target-less Rest), HumanGo сравнением, caveat про en-only label-match, и triggers для пересмотра.
+- **Tests:** 4 новых теста в `tests/db/test_ai_workouts.py` — `Rest` accepted, `Recovery` accepted, case+whitespace-insensitive, прочие label-ы (`Off`, `RestX`, `""`) по-прежнему rejected.
+
+**Caveat (en-only label-match):** `_NO_TARGET_STEP_LABELS` matches только `"rest"`/`"recovery"`. Если Claude начнёт писать ru-label-ы («Отдых», «Восстановление»), их нужно добавить — либо переехать на семантический флаг (`is_rest: bool`) на `WorkoutStepDTO`. Сейчас оставлен label-based матч ради совпадения с HumanGo конвенцией (`display_names["rest"] == "Rest"` в `data/workout_adapter.py`).
+
+**Watch behaviour note:** workout_doc.steps shape ours == HumanGo: `{"text": "Rest", "duration": N}`, identical. Если Garmin при тестировании всё равно auto-advance'ит Rest за ~5 сек — возможно нужен FIT-export side-by-side (`GET /events/{id}/fit`) с HumanGo'шным для диагностики; статус **открыт**, не блокирует визуал в Intervals UI и в webapp детальной странице.
+
+---
+
 ## HumanGo workout enrichment (issue #375, 2026-05-13)
 
 **Trigger:** HumanGo (third-party AI coach) push'ит тренировки в Intervals.icu через shared-calendar sync. События приходят с **plain-text description only**, без `workout_doc.steps`. Следствия: Intervals UI показывает flat-описание без step-rows; `get_workout_compliance` MCP-tool не может посчитать delta HR/power/pace против plan'а; chart-renderer пустой. Garmin sync работает через HumanGo→Garmin direct path (отдельная цепочка, не задета).

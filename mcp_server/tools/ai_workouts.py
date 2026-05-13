@@ -104,17 +104,24 @@ async def suggest_workout(
     athlete runs blind. Derive the numeric target from athlete thresholds (LTHR/FTP/CSS) provided
     in the system prompt. Use a range via `start` (low) + `end` (high) to get HR-corridor beeps.
 
+    EXCEPTION — stationary Rest / Recovery (set `text="Rest"` or `"Recovery"` and OMIT
+    hr/power/pace). Intervals renders these as a real pause (flat chart gap). Use ONLY for
+    truly stationary breaks (pool-side stop, between-set pause). For ACTIVE recovery between
+    intervals (jog, easy spin) keep an explicit low-Z target with a label like `Easy`/`Off` —
+    the watch still needs to alert if the athlete overpaces.
+
     Sport-specific examples:
       Run   (HR-driven):  {"text": "Z2",   "duration": 900, "hr":    {"units": "%lthr", "start": 72, "end": 82}}
       Run   (tempo Z3):   {"text": "Temp", "duration": 480, "hr":    {"units": "%lthr", "start": 82, "end": 87}}
       Ride  (power Z2):   {"text": "Z2",   "duration": 600, "power": {"units": "%ftp",  "start": 65, "end": 75}}
       Ride  (threshold):  {"text": "FTP",  "duration": 480, "power": {"units": "%ftp",  "start": 95, "end": 105}}
       Swim  (CSS pace):   {"text": "Main", "distance": 400, "pace":  {"units": "%pace", "start": 95, "end": 100}}
+      Swim  (stationary): {"text": "Rest", "duration": 30}   # no target — real pause
 
-    Example repeat (3x5min tempo + 2min recovery):
+    Example repeat (3x5min tempo + 2min active recovery jog):
       {"reps": 3, "text": "Tempo", "steps": [
-         {"text": "On",  "duration": 300, "hr": {"units": "%lthr", "start": 82, "end": 87}},
-         {"text": "Off", "duration": 120, "hr": {"units": "%lthr", "start": 60, "end": 72}}
+         {"text": "On",   "duration": 300, "hr": {"units": "%lthr", "start": 82, "end": 87}},
+         {"text": "Easy", "duration": 120, "hr": {"units": "%lthr", "start": 60, "end": 72}}
       ]}
 
     Total step seconds must approximately match `duration_minutes * 60`, otherwise the workout

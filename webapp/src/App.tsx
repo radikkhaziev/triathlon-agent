@@ -15,6 +15,7 @@ import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Wellness from './pages/Wellness'
 import Plan from './pages/Plan'
+import ScheduledWorkout from './pages/ScheduledWorkout'
 import Activities from './pages/Activities'
 import Activity from './pages/Activity'
 import Dashboard from './pages/Dashboard'
@@ -158,6 +159,7 @@ export default function App() {
       <Route path="/report" element={<Navigate to="/wellness" />} />
       <Route path="/wellness" element={dataRoute(Wellness)} />
       <Route path="/plan" element={dataRoute(Plan)} />
+      <Route path="/workout/:id" element={dataRoute(ScheduledWorkout)} />
       <Route path="/activities" element={dataRoute(Activities)} />
       <Route path="/activity/:id" element={dataRoute(Activity)} />
       <Route path="/progress" element={dataRoute(Progress)} />
