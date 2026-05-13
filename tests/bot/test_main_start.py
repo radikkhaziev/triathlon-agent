@@ -13,9 +13,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-def _make_update(chat_id: int, *, full_name: str = "Test User", username: str | None = "tester"):
+def _make_update(
+    chat_id: int,
+    *,
+    full_name: str = "Test User",
+    username: str | None = "tester",
+    language_code: str | None = None,
+):
     """Build a minimal ``Update`` stand-in with the fields ``start()`` reads."""
-    tg_user = SimpleNamespace(id=chat_id, username=username, full_name=full_name)
+    tg_user = SimpleNamespace(
+        id=chat_id,
+        username=username,
+        full_name=full_name,
+        language_code=language_code,
+    )
     message = SimpleNamespace(reply_text=AsyncMock())
     return SimpleNamespace(effective_user=tg_user, message=message)
 
@@ -107,3 +118,47 @@ class TestStartLanguageContract:
         assert order, "neither _set_lang nor _ was invoked"
         assert order[0] == "set_lang:en", f"first event must be set_lang:en, got {order[0]!r} (full order: {order})"
         assert "translate" in order, "expected at least one _() call after set_lang"
+
+
+class TestStartLanguageCodePropagation:
+    """``/start`` must forward Telegram's ``language_code`` to
+    ``get_or_create_from_telegram`` — that's how a new English-speaking user
+    gets the English welcome on their very first interaction (instead of being
+    pinned to the schema-level ``ru`` default until they tap ``/lang``)."""
+
+    @pytest.mark.asyncio
+    async def test_passes_telegram_language_code_to_get_or_create(self):
+        from bot.main import start
+
+        update = _make_update(chat_id=999, language_code="en-US")
+        user = _make_user(language="en", athlete_id="i123")
+
+        get_or_create = AsyncMock(return_value=user)
+        with (
+            patch("bot.main.User.get_or_create_from_telegram", new=get_or_create),
+            patch("bot.main._set_lang"),
+        ):
+            await start(update, MagicMock())
+
+        kwargs = get_or_create.call_args.kwargs
+        assert kwargs["language_code"] == "en-US", f"expected language_code='en-US', got {kwargs!r}"
+
+    @pytest.mark.asyncio
+    async def test_passes_none_when_telegram_omits_language_code(self):
+        """Telegram clients may omit ``language_code`` entirely (old clients,
+        some Web app contexts). Forwarded as ``None`` — DB-side normaliser
+        falls back to ``en`` (international default, not the owner's ``ru``)."""
+        from bot.main import start
+
+        update = _make_update(chat_id=999, language_code=None)
+        user = _make_user(language="ru", athlete_id="i123")
+
+        get_or_create = AsyncMock(return_value=user)
+        with (
+            patch("bot.main.User.get_or_create_from_telegram", new=get_or_create),
+            patch("bot.main._set_lang"),
+        ):
+            await start(update, MagicMock())
+
+        kwargs = get_or_create.call_args.kwargs
+        assert kwargs["language_code"] is None

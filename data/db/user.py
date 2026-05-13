@@ -27,6 +27,24 @@ from data.db.dto import (  # noqa: F401, E402
 from .common import Base
 from .decorator import dual, with_session
 
+_SUPPORTED_LANGUAGES = frozenset({"ru", "en"})
+
+
+def normalize_telegram_language(code: str | None) -> str:
+    """Map Telegram's BCP-47 ``language_code`` to our supported language set.
+
+    Telegram returns codes like ``"en"`` / ``"en-US"`` / ``"pt-br"``. We support
+    only ``ru`` and ``en``. Russian speakers get Russian; everyone else
+    (unsupported locale, or no ``language_code`` at all from older Telegram
+    clients) defaults to English — the international fallback rather than the
+    project owner's mother tongue. Returns the value to be stored in
+    ``users.language``.
+    """
+    if not code:
+        return "en"
+    short = code.split("-", 1)[0].lower()
+    return short if short in _SUPPORTED_LANGUAGES else "en"
+
 
 def parse_pace_to_sec(pace: str | None) -> int | None:
     """Parse a 'M:SS' pace string to seconds (per km), validated.
@@ -556,6 +574,7 @@ class User(Base):
         *,
         username: str | None = None,
         display_name: str | None = None,
+        language_code: str | None = None,
     ) -> User:
         """Fetch an existing user or create a new `viewer` from Telegram identity.
 
@@ -569,6 +588,10 @@ class User(Base):
         `athlete` stays manual via `cli shell`. We intentionally don't rely
         on `create()`'s default role, so a future change to that default
         cannot silently widen the widget-auth security posture.
+
+        ``language_code`` is Telegram's BCP-47 client locale (``"en"``,
+        ``"ru-RU"``, ``"pt-br"``, ...). Used **only on creation** — existing
+        users keep their explicitly-set ``language`` (e.g. via ``/lang``).
         """
         # `include_inactive=True` so a blocked user (is_active=False) is still
         # findable — prevents `IntegrityError` on the UNIQUE `chat_id` if we
@@ -585,6 +608,7 @@ class User(Base):
                 role="viewer",
                 username=username,
                 display_name=display_name,
+                language=normalize_telegram_language(language_code),
             )
         except IntegrityError:
             # Concurrent insert: another request created the row first.
