@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 import zoneinfo
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
 
@@ -15,7 +16,8 @@ import sentry_sdk
 from sqlalchemy import select as sa_select
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
-from telegram import ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Update, WebAppInfo
+from telegram import Chat, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Update, WebAppInfo
+from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import (
     Application,
@@ -54,6 +56,61 @@ init_sentry()
 agent = ClaudeAgent()
 
 TZ = zoneinfo.ZoneInfo(settings.TIMEZONE)
+
+
+# Telegram's chat-action expires after a few seconds server-side, so a single
+# ``send_action`` stops showing «typing…» mid-think on Claude tool-use loops
+# that routinely run 20-60 s. Re-send periodically until the long block exits.
+# Shorter interval → snappier UX but more requests against the bot's shared
+# Telegram API rate-limit bucket; raise it if 429s appear in worker logs.
+_TYPING_REFRESH_SECONDS = 4.0
+
+# Bounded shutdown — if the in-flight ``send_action`` happens to be stuck on
+# the network when the wrapped block exits, we'd otherwise hold up the handler
+# waiting for it. Wait this long for graceful exit, then cancel.
+_TYPING_SHUTDOWN_TIMEOUT_SECONDS = 1.0
+
+
+@asynccontextmanager
+async def keep_typing(chat: Chat):
+    """Hold Telegram's «typing…» indicator alive for the duration of the block.
+
+    Spawns a background task that re-sends ``ChatAction.TYPING`` every
+    ``_TYPING_REFRESH_SECONDS``. Errors inside the keepalive loop are
+    swallowed at ``debug`` — failing to refresh the indicator must never
+    surface as a user-facing error or abort the wrapped operation.
+    """
+    stop = asyncio.Event()
+
+    async def _loop():
+        while not stop.is_set():
+            try:
+                await chat.send_action(ChatAction.TYPING)
+            except Exception:
+                logger.debug("typing keepalive send failed", exc_info=True)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=_TYPING_REFRESH_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+
+    task = asyncio.create_task(_loop())
+    try:
+        yield
+    finally:
+        # Bounded shutdown: try for graceful exit first (in-flight send_action
+        # finishes naturally so we don't race the next handler's action), but
+        # cap the wait so a hung Telegram request doesn't block reply_text.
+        stop.set()
+        try:
+            await asyncio.wait_for(task, timeout=_TYPING_SHUTDOWN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                logger.debug("typing keepalive task cancelled after shutdown timeout", exc_info=True)
+        except Exception:
+            logger.debug("typing keepalive task ended with exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -621,19 +678,18 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if reply and reply.text:
         user_text = f"[В ответ на: {reply.text}]\n\n{user_text}"
 
-    await update.message.chat.send_action("typing")
-
     try:
         # Free-form chat watches race-creation previews + memory mutations.
         # Workout previews come through the /workout ConversationHandler, not
         # here. Filtering narrowly keeps tool_calls deep-copy cost minimal.
-        result = await agent.chat(
-            user_text,
-            mcp_token=user.mcp_token,
-            user_id=user.id,
-            language=user.language,
-            tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
-        )
+        async with keep_typing(update.message.chat):
+            result = await agent.chat(
+                user_text,
+                mcp_token=user.mcp_token,
+                user_id=user.id,
+                language=user.language,
+                tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
+            )
 
         pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
         context.user_data["pending_race"] = pending_race
@@ -706,8 +762,6 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     photo = update.message.photo[-1]  # highest resolution
     caption = update.message.caption or ""
 
-    await update.message.chat.send_action("typing")
-
     try:
         # Download photo from Telegram
         file = await photo.get_file()
@@ -726,15 +780,16 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         image_url = f"{settings.API_BASE_URL}/static/uploads/{filename}"
 
-        result = await agent.chat(
-            user_message=caption,
-            mcp_token=user.mcp_token,
-            user_id=user.id,
-            language=user.language,
-            image_data=bytes(photo_bytes),
-            image_url=image_url,
-            tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
-        )
+        async with keep_typing(update.message.chat):
+            result = await agent.chat(
+                user_message=caption,
+                mcp_token=user.mcp_token,
+                user_id=user.id,
+                language=user.language,
+                image_data=bytes(photo_bytes),
+                image_url=image_url,
+                tool_calls_filter=_RACE_TOOLS | _UNDOABLE_TOOL_NAMES,
+            )
 
         pending_race = _extract_pending_preview(result.tool_calls, _RACE_TOOLS)
         context.user_data["pending_race"] = pending_race
@@ -1040,8 +1095,6 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["workout_sport"] = sport
     context.user_data["workout_messages"] = []
 
-    await query.message.chat.send_action("typing")
-
     now_local = datetime.now(TZ)
     target_date = now_local.date() + timedelta(days=1) if now_local.hour >= 19 else now_local.date()
     target_date_iso = target_date.isoformat()
@@ -1068,12 +1121,13 @@ async def workout_sport_chosen(update: Update, context: ContextTypes.DEFAULT_TYP
     response_text = ""
     tool_calls: list[dict] = []
     try:
-        result = await agent.chat(
-            prompt,
-            mcp_token=user.mcp_token,
-            user_id=user.id,
-            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()) | _UNDOABLE_TOOL_NAMES,
-        )
+        async with keep_typing(query.message.chat):
+            result = await agent.chat(
+                prompt,
+                mcp_token=user.mcp_token,
+                user_id=user.id,
+                tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()) | _UNDOABLE_TOOL_NAMES,
+            )
         response_text = result.text
         tool_calls = result.tool_calls
         context.user_data["workout_messages"].append({"role": "assistant", "content": response_text})
@@ -1128,17 +1182,16 @@ async def workout_dialog_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     sport = context.user_data.get("workout_sport", "Run")
     prompt = f"[Контекст: создаём тренировку {sport}]\n\n{user_text}"
 
-    await update.message.chat.send_action("typing")
-
     response_text = ""
     tool_calls: list[dict] = []
     try:
-        result = await agent.chat(
-            prompt,
-            mcp_token=user.mcp_token,
-            user_id=user.id,
-            tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()) | _UNDOABLE_TOOL_NAMES,
-        )
+        async with keep_typing(update.message.chat):
+            result = await agent.chat(
+                prompt,
+                mcp_token=user.mcp_token,
+                user_id=user.id,
+                tool_calls_filter=set(_PREVIEWABLE_TOOLS.keys()) | _UNDOABLE_TOOL_NAMES,
+            )
         response_text = result.text
         tool_calls = result.tool_calls
         context.user_data["workout_messages"].append({"role": "assistant", "content": response_text})
@@ -1204,8 +1257,6 @@ async def workout_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user:
         context.user_data.pop("workout_messages", None)
         return ConversationHandler.END
 
-    await query.message.chat.send_action("typing")
-
     tool_name = pending["name"]
     try:
         _apply_push_flag(pending)  # flip dry_run / push_to_intervals in place
@@ -1219,8 +1270,9 @@ async def workout_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user:
         return ConversationHandler.END
 
     try:
-        mcp = MCPClient(token=user.mcp_token)
-        result = await mcp.call_tool(tool_name, pending["input"])
+        async with keep_typing(query.message.chat):
+            mcp = MCPClient(token=user.mcp_token)
+            result = await mcp.call_tool(tool_name, pending["input"])
         # MCPClient.call_tool returns a dict. Tools that respond with plain
         # text get wrapped as {"text": "..."}. JSON-RPC errors → {"error": "..."}.
         if isinstance(result, dict) and result.get("error"):
@@ -1295,8 +1347,6 @@ async def race_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user: Us
         await query.message.reply_text("Не нашёл черновик гонки — опиши её снова в чате.")
         return
 
-    await query.message.chat.send_action("typing")
-
     tool_name = pending["name"]
     try:
         _apply_push_flag(pending)
@@ -1308,8 +1358,9 @@ async def race_push(update: Update, context: ContextTypes.DEFAULT_TYPE, user: Us
         return
 
     try:
-        mcp = MCPClient(token=user.mcp_token)
-        result = await mcp.call_tool(tool_name, pending["input"])
+        async with keep_typing(query.message.chat):
+            mcp = MCPClient(token=user.mcp_token)
+            result = await mcp.call_tool(tool_name, pending["input"])
         if isinstance(result, dict) and result.get("error"):
             logger.warning("MCP tool %s returned error: %s", tool_name, result["error"])
             response = f"Ошибка при отправке: {result['error']}"
@@ -1421,7 +1472,6 @@ async def handle_adapt_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     workout_id = query.data.split(":", 1)[1]
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.chat.send_action("typing")
 
     prompt = (
         f"Тренировка (id={workout_id}) требует адаптации под текущее состояние атлета. "
@@ -1431,7 +1481,8 @@ async def handle_adapt_callback(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     try:
-        result = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id, tool_calls_filter=set())
+        async with keep_typing(query.message.chat):
+            result = await agent.chat(prompt, mcp_token=user.mcp_token, user_id=user.id, tool_calls_filter=set())
         response = result.text
     except Exception:
         logger.exception("Adapt workout failed")
