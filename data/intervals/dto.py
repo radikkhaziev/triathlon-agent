@@ -125,7 +125,15 @@ class ScheduledWorkoutDTO(BaseModel):
     type: str | None = None  # Normalized: Ride | Run | Swim | Other
     description: str | None = None
     moving_time: int | None = None  # planned duration in seconds
-    distance: float | None = None  # planned distance in km
+    distance: float | None = None  # planned distance in METERS (Intervals.icu native unit)
+    # Intensity factor as a percent (0-100) per Intervals.icu convention —
+    # NOT the 0-1 decimal used by TrainingPeaks. Emitted at the event top
+    # level, NOT inside `workout_doc` (verified empirically + OpenAPI schema).
+    icu_intensity: float | None = None
+    # Intervals.icu's TSS-equivalent. Top-level event field; `workout_doc.strain_score`
+    # is always None for planned events (Intervals only populates it for completed
+    # activities). Capture as int — Intervals returns integers like 30, not floats.
+    icu_training_load: int | None = None
     workout_doc: dict | None = None  # structured intervals
     updated: datetime | None = None
 

@@ -143,7 +143,11 @@
     "timeline_title": "Timeline",
     "power_zones": "Power Zones",
     "hr_zones": "HR Zones",
-    "pace_zones": "Pace Zones"
+    "pace_zones": "Pace Zones",
+    "stat_duration": "Duration",
+    "stat_distance": "Distance",
+    "stat_load": "Load",
+    "stat_intensity": "Intensity"
   },
   "settings": {
     "title": "Settings",

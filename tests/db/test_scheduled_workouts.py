@@ -35,7 +35,8 @@ def _make_workout(
     type: str = "Ride",
     description: str | None = "Warmup 10min\n3x10min @FTP\nCooldown",
     moving_time: int | None = 5400,
-    distance: float | None = 45.0,
+    # 45 km in METERS — Intervals.icu native unit (see ScheduledWorkout.distance comment).
+    distance: float | None = 45_000.0,
 ) -> ScheduledWorkoutDTO:
     if id == 0:
         id = _uid()
@@ -175,6 +176,53 @@ class TestSaveScheduledWorkoutsLastSyncedAt:
 
         rows, _ = await ScheduledWorkout.get_range(1, date(2026, 3, 25), date(2026, 3, 26))
         assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# save_bulk — icu_intensity / icu_training_load COALESCE invariant
+# ---------------------------------------------------------------------------
+
+
+class TestSaveBulkCoalesce:
+    """Intervals.icu omits `icu_intensity` and `icu_training_load` on
+    user-edited events before recompute. `save_bulk` must NOT overwrite a
+    previously-good value with NULL — see `data/db/workout.py` comment.
+    """
+
+    async def test_preserves_intensity_when_payload_omits(self):
+        workout_id = _uid(50)
+        # First sync — Intervals returns the values.
+        first = _make_workout(id=workout_id)
+        first.icu_intensity = 77.4
+        first.icu_training_load = 30
+        ScheduledWorkout.save_bulk(1, [first])
+
+        # Second sync — Intervals omits both (None) after a user edit.
+        second = _make_workout(id=workout_id)
+        # icu_intensity / icu_training_load default to None on DTO
+        ScheduledWorkout.save_bulk(1, [second])
+
+        rows = await ScheduledWorkout.get_for_date(1, date(2026, 3, 25))
+        target = next(r for r in rows if r.id == workout_id)
+        assert target.icu_intensity == 77.4
+        assert target.icu_training_load == 30
+
+    async def test_overwrites_intensity_when_payload_provides_new_value(self):
+        workout_id = _uid(51)
+        first = _make_workout(id=workout_id)
+        first.icu_intensity = 50.0
+        first.icu_training_load = 20
+        ScheduledWorkout.save_bulk(1, [first])
+
+        second = _make_workout(id=workout_id)
+        second.icu_intensity = 88.0
+        second.icu_training_load = 45
+        ScheduledWorkout.save_bulk(1, [second])
+
+        rows = await ScheduledWorkout.get_for_date(1, date(2026, 3, 25))
+        target = next(r for r in rows if r.id == workout_id)
+        assert target.icu_intensity == 88.0
+        assert target.icu_training_load == 45
 
 
 # ---------------------------------------------------------------------------

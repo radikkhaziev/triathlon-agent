@@ -41,7 +41,16 @@ class ScheduledWorkout(Base):
     type: Mapped[str | None] = mapped_column(String, nullable=True)  # Ride, Run, Swim, WeightTraining
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     moving_time: Mapped[int | None] = mapped_column(Integer, nullable=True)  # seconds
-    distance: Mapped[float | None] = mapped_column(Float, nullable=True)  # km
+    # Intervals.icu's event.distance is in METERS (matches Activity.distance
+    # convention — divide by 1000 when rendering km for the UI).
+    distance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Intensity factor (0-100 percent, Intervals.icu convention — see
+    # ScheduledWorkoutDTO.icu_intensity). Captured here for the workout-detail
+    # page header strip; never computed locally — pure passthrough from API.
+    icu_intensity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # TSS-equivalent from `event.icu_training_load` (top-level, NOT in workout_doc).
+    # Powers the «Нагрузка» cell — `workout_doc.strain_score` is null for planned events.
+    icu_training_load: Mapped[int | None] = mapped_column(Integer, nullable=True)
     workout_doc: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -90,6 +99,17 @@ class ScheduledWorkout(Base):
             row.description = w.description if w.description is not None else (w.workout_doc or {}).get("description")
             row.moving_time = w.moving_time
             row.distance = w.distance
+            # COALESCE: Intervals.icu omits `icu_intensity` / `icu_training_load`
+            # for user-edited events before recompute. Replacing a good value
+            # with NULL would make «Интенсивность» / «Нагрузка» flicker to «—»
+            # until the next sync tick. Other fields (moving_time, distance,
+            # workout_doc) are stable enough that unconditional overwrite is
+            # fine — these two are the only ones empirically observed to drop
+            # in/out.
+            if w.icu_intensity is not None:
+                row.icu_intensity = w.icu_intensity
+            if w.icu_training_load is not None:
+                row.icu_training_load = w.icu_training_load
             row.workout_doc = w.workout_doc
             row.last_synced_at = datetime.now(timezone.utc)
 

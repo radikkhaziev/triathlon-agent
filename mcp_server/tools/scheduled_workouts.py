@@ -46,7 +46,10 @@ async def get_scheduled_workouts(target_date: str = "", days_ahead: int = 0) -> 
                 "category": r.category,
                 "duration": duration,
                 "duration_secs": r.moving_time,
-                "distance_km": r.distance,
+                # `r.distance` is stored in METERS (Intervals.icu native unit —
+                # same as Activity.distance). Convert for the tool surface so
+                # Claude doesn't reason about «1000 km» when the swim is 1 km.
+                "distance_km": r.distance / 1000 if r.distance is not None else None,
                 "description": r.description,
             }
         )

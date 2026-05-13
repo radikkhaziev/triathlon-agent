@@ -42,13 +42,6 @@ export default function ScheduledWorkout() {
 
   const icon = SPORT_ICONS[data.type || ''] || '\u{1F3C6}'
   const name = stripWorkoutPrefix(data.name)
-  const sub = [
-    fmtDateShort(data.date, i18n.language),
-    data.duration,
-    data.distance_km ? `${data.distance_km} km` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ')
 
   return (
     <Layout backTo="/plan" backLabel={t('plan.back_to_list')} hideBottomTabs>
@@ -58,10 +51,12 @@ export default function ScheduledWorkout() {
           <span>{name}</span>
           <span className="text-sm text-text-dim ml-1">{sportLabel(data.type)}</span>
         </div>
-        <div className="text-[13px] text-text-dim mt-1">{sub}</div>
+        <div className="text-[13px] text-text-dim mt-1">{fmtDateShort(data.date, i18n.language)}</div>
       </div>
 
-      <EnrichmentCards enrichment={data.enrichment} t={t} />
+      <PrimaryStats data={data} t={t} />
+
+      <SecondaryCards enrichment={data.enrichment} />
 
       <ZoneTimes enrichment={data.enrichment} sport={data.type} />
 
@@ -100,20 +95,47 @@ export default function ScheduledWorkout() {
   )
 }
 
-function EnrichmentCards({
-  enrichment: e,
+/**
+ * Top-of-page metric strip mirroring Intervals.icu's workout-detail header.
+ * Four labels in one row: Duration · Distance · Load (TSS) · Intensity (IF%).
+ * Cells with no data render as «—» so the layout doesn't shift across workouts.
+ */
+function PrimaryStats({
+  data,
   t,
 }: {
-  enrichment: WorkoutEnrichment
+  data: ScheduledWorkoutDetail
   t: (key: string) => string
 }) {
-  const cards: { label: string; value: string; sub?: string }[] = []
-  if (e.tss != null) {
-    cards.push({ label: 'TSS', value: e.tss.toFixed(0), sub: t('plan.estimated') })
-  }
-  if (e.intensity_factor != null) {
-    cards.push({ label: 'IF', value: e.intensity_factor.toFixed(2) })
-  }
+  const e = data.enrichment
+  const cells: { label: string; value: string }[] = [
+    { label: t('plan.stat_duration'), value: data.duration || '—' },
+    { label: t('plan.stat_distance'), value: data.distance_km != null ? `${data.distance_km.toFixed(1)} km` : '—' },
+    { label: t('plan.stat_load'), value: e.tss != null ? e.tss.toFixed(0) : '—' },
+    {
+      label: t('plan.stat_intensity'),
+      value: e.intensity_pct != null ? `${Math.round(e.intensity_pct)}%` : '—',
+    },
+  ]
+  return (
+    <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-3 grid grid-cols-4 gap-2">
+      {cells.map(c => (
+        <div key={c.label} className="min-w-0">
+          <div className="text-[11px] text-text-dim uppercase tracking-wide truncate">{c.label}</div>
+          <div className="text-base font-bold mt-0.5">{c.value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Secondary derived metrics (NP / VI / PI) — kept separate from the primary
+ * strip because they're sport-specific and analysis-oriented; an athlete
+ * scanning the page wants Load/Intensity prominent, NP/VI/PI on-demand.
+ */
+function SecondaryCards({ enrichment: e }: { enrichment: WorkoutEnrichment }) {
+  const cards: { label: string; value: string }[] = []
   if (e.normalized_power != null && e.normalized_power > 0) {
     cards.push({ label: 'NP', value: `${Math.round(e.normalized_power)}W` })
   }
@@ -124,14 +146,12 @@ function EnrichmentCards({
     cards.push({ label: 'PI', value: e.polarization_index.toFixed(2) })
   }
   if (cards.length === 0) return null
-
   return (
-    <div className="grid grid-cols-2 gap-2 mb-4">
+    <div className="grid grid-cols-3 gap-2 mb-4">
       {cards.map(c => (
-        <div key={c.label} className="bg-surface border border-border rounded-xl px-3.5 py-3">
-          <div className="text-[11px] text-text-dim uppercase tracking-wide">{c.label}</div>
-          <div className="text-lg font-bold mt-0.5">{c.value}</div>
-          {c.sub && <div className="text-[11px] text-text-dim mt-px">{c.sub}</div>}
+        <div key={c.label} className="bg-surface border border-border rounded-xl px-3 py-2">
+          <div className="text-[10px] text-text-dim uppercase tracking-wide">{c.label}</div>
+          <div className="text-base font-bold">{c.value}</div>
         </div>
       ))}
     </div>
@@ -618,7 +638,12 @@ function TimelineChart({
             </text>
           )
         })}
-        {/* Step bars */}
+        {/* Step bars — histogram style: each bar roots at chart bottom and
+            extends up to the corridor's high-intensity end. The corridor's
+            low end is rendered as a faded base shadow inside the bar. Adjacent
+            same-target bars share a baseline and a top edge → continuous
+            silhouette. Different-target adjacents create a visible step
+            (the «staircase» effect that gives the chart its shape). */}
         {flat.map(({ step, startSec, durationSec }, i) => {
           const r = yRanges[i]
           if (!r || durationSec === 0) {
@@ -627,9 +652,14 @@ function TimelineChart({
           }
           const x = xOf(startSec)
           const w = Math.max(xOf(startSec + durationSec) - x, 1)
-          const yTop = yOf(unit === 'sec_per_100m' || unit === 'sec_per_km' ? r.lo : r.hi)
-          const yBot = yOf(unit === 'sec_per_100m' || unit === 'sec_per_km' ? r.hi : r.lo)
-          const barH = Math.max(yBot - yTop, 2)
+          // For pace (inverted): r.lo = fast (high intensity, top of chart).
+          // For power/HR: r.hi = high value (high intensity, top of chart).
+          const highValue = inverted ? r.lo : r.hi
+          const lowValue = inverted ? r.hi : r.lo
+          const yHigh = yOf(highValue)
+          const yLow = yOf(lowValue)
+          const yBaseline = padT + chartH
+          const barH = Math.max(yBaseline - yHigh, 2)
           // Pick zone color. For HR (absolute bpm boundaries), use mid bpm value.
           const bucketValue = isHrAbsolute ? (r.lo + r.hi) / 2 : r.midPct
           const zoneIdx = pickZoneIndex(bucketValue, boundaries)
@@ -639,18 +669,28 @@ function TimelineChart({
             zoneIdx === -1
               ? 'var(--text-dim)'
               : ZONE_COLORS[Math.min(zoneIdx, ZONE_COLORS.length - 1)]
+          const corridorH = Math.max(yLow - yHigh, 2)
           return (
-            <rect
-              key={i}
-              x={x}
-              y={yTop}
-              width={w}
-              height={barH}
-              fill={fill}
-              opacity={0.85}
-            >
-              <title>{step.text || '—'} · {fmtDuration(durationSec)}</title>
-            </rect>
+            <g key={i}>
+              {/* Baseline shadow — from corridor low down to chart bottom.
+                  Same zone color at low opacity so the bar looks rooted but
+                  the corridor still reads as the «main» band. */}
+              <rect
+                x={x}
+                y={yLow}
+                width={w}
+                height={Math.max(yBaseline - yLow, 0)}
+                fill={fill}
+                opacity={0.3}
+              />
+              {/* Corridor — the actual target band, full opacity. */}
+              <rect x={x} y={yHigh} width={w} height={corridorH} fill={fill} opacity={0.85} />
+              {/* Hidden full-height hit area on top of the stack — owns the
+                  tooltip for the whole bar (corridor + baseline shadow). */}
+              <rect x={x} y={yHigh} width={w} height={barH} fill="transparent">
+                <title>{step.text || '—'} · {fmtDuration(durationSec)}</title>
+              </rect>
+            </g>
           )
         })}
       </svg>

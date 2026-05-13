@@ -143,7 +143,11 @@
     "timeline_title": "Хронология",
     "power_zones": "Зоны мощности",
     "hr_zones": "Зоны ЧСС",
-    "pace_zones": "Зоны темпа"
+    "pace_zones": "Зоны темпа",
+    "stat_duration": "Продолжительность",
+    "stat_distance": "Расстояние",
+    "stat_load": "Нагр.",
+    "stat_intensity": "Интенсивность"
   },
   "settings": {
     "title": "Настройки",

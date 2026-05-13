@@ -26,6 +26,26 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 **Watch behaviour note:** workout_doc.steps shape ours == HumanGo: `{"text": "Rest", "duration": N}`, identical. Если Garmin при тестировании всё равно auto-advance'ит Rest за ~5 сек — возможно нужен FIT-export side-by-side (`GET /events/{id}/fit`) с HumanGo'шным для диагностики; статус **открыт**, не блокирует визуал в Intervals UI и в webapp детальной странице.
 
+**Follow-up (2026-05-13): Intervals-UI parity на header strip + timeline chart.**
+
+Заменили distillated «date · duration · distance» sub-line на 4-cell `PrimaryStats` grid (Продолжительность · Расстояние · Нагр. · Интенсивность) — mirrors Intervals.icu workout-detail header 1:1. Под ним `SecondaryCards` 3×grid (NP / VI / PI) для разбора (показывается only when data present). ZoneTimes через переиспользованный `<ZoneBar size="detail">` с densify-логикой (`/^Z(\d+)$/` regex + Map by index, защищает от sparse/unordered server payloads, фильтрует SS bucket).
+
+**Где живут эти 5 значений** (важно для будущих расширений):
+
+| UI cell | Source | Notes |
+|---|---|---|
+| Продолжительность | `scheduled_workouts.moving_time` (col) | сек, форматируется через `format_duration` |
+| Расстояние | `scheduled_workouts.distance` (col) | **METERS** (Intervals native — `/api/scheduled-workout/{id}` делит на 1000 на выходе; column comment обновлён) |
+| Нагр. (TSS) | `scheduled_workouts.icu_training_load` (NEW col, migration `c1d2e3f4a5b6`) | **event top-level**, НЕ `workout_doc.strain_score` (последнее всегда None для planned — Intervals populates только для completed activities) |
+| Интенсивность | `scheduled_workouts.icu_intensity` (NEW col, same migration) | **0-100 percent** (НЕ 0-1 как у TrainingPeaks). Event top-level, не workout_doc |
+| Zone Times | `workout_doc.zoneTimes` (JSON) | `[{id: "Z1", secs: …}, …]`, бывает sparse (отсутствует Z2) или с extra `SS` (Sweet Spot) bucket |
+
+**Distance unit fix (2026-05-13):** column `scheduled_workouts.distance` исторически прокомментирован как `# km`, но Intervals API возвращает METERS (как и `activities.distance`). Frontend показывал «1000 km» для 1km swim. Fix: column comment → METERS, both REST endpoints (`/api/scheduled-workouts` list + `/api/scheduled-workout/{id}` detail) + MCP tool `get_scheduled_workouts` делят на 1000 на выходе. `webapp/src/pages/Plan.tsx` и `ScheduledWorkout.tsx` используют `.toFixed(1)` для отображения «1.0 km» / «42.2 km». Stored values остаются в метрах (no data migration needed) — pre-existing rows автоматически отображаются корректно после первого render.
+
+**COALESCE invariant в `save_bulk`:** Intervals.icu omits `icu_intensity` / `icu_training_load` для user-edited events до пересчёта. Unconditional `row.X = w.X` затирал бы good value NULL-ом → flicker «—» в UI. Fix: `if w.X is not None: row.X = ...` (selective COALESCE на эти два поля; `moving_time`/`distance`/`workout_doc` остаются unconditional — empirically стабильны). Тесты `TestSaveBulkCoalesce` в `tests/db/test_scheduled_workouts.py` фиксируют invariant в обе стороны (preserve + overwrite).
+
+**Timeline chart (SVG, inline в `ScheduledWorkout.tsx`):** histogram-style bars rooted в chart bottom, opacity-layered (baseline shadow 0.3 + corridor band 0.85). Unit-driven zone dispatch (НЕ sport-driven — `W→power_zones`, `bpm→hr_zones`, `sec_per_*→pace_zones`) — Run workout с pace-only targets корректно попадает в pace zones, а не в hr zones. Mixed-unit workouts: pick most-frequent unit, off-unit steps render as gap. Repeat groups flatten-ятся через рекурсивный `walk()` (depth-1 enforced на DTO-уровне, defensive recursion в frontend на случай hand-edited DB rows).
+
 ---
 
 ## HumanGo workout enrichment (issue #375, 2026-05-13)
