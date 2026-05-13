@@ -488,19 +488,18 @@ function TimelineChart({
   // Mixed-unit workouts (e.g. Run mixing HR and pace steps) can't share a
   // single Y-axis without misinterpreting one set as the other. Pick the
   // most-frequent unit and skip steps in other units (rendered as gaps).
-  const unitCounts = new Map<string, number>()
+  type ChartUnit = NonNullable<ReturnType<typeof targetToYRange>>['unit']
+  const unitCounts = new Map<ChartUnit, number>()
   for (const r of yRangesAll) {
     if (r) unitCounts.set(r.unit, (unitCounts.get(r.unit) || 0) + 1)
   }
   if (unitCounts.size === 0) return null
-  let unit: NonNullable<ReturnType<typeof targetToYRange>>['unit'] = 'W'
-  let maxCount = 0
-  for (const [u, c] of unitCounts) {
-    if (c > maxCount) {
-      maxCount = c
-      unit = u as typeof unit
-    }
-  }
+  // Sort entries by count desc and take the first key — declaring `unit` via
+  // destructuring avoids TS narrowing it to the literal type of an initializer
+  // (which would break all `unit === 'X'` comparisons below).
+  const sortedUnits: [ChartUnit, number][] = Array.from(unitCounts.entries())
+  sortedUnits.sort((a, b) => b[1] - a[1])
+  const unit: ChartUnit = sortedUnits[0][0]
 
   // Mask out steps whose unit doesn't match the chosen one — they render as gaps.
   const yRanges = yRangesAll.map(r => (r && r.unit === unit ? r : null))
