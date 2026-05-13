@@ -74,22 +74,34 @@ Watches see the **original HumanGo absolute corridor** because Intervals transla
 | Sport | HumanGo target | Threshold (`AthleteThresholdsDTO`) | Pushed units | Pushed shape |
 |---|---|---|---|---|
 | Run | `low/high: NN bpm` | `lthr_run` | `%lthr` | `{units: "%lthr", start, end}` |
+| Run | `low/high: M:SS per km` | `threshold_pace_run` (sec/km) | `%pace` | `{units: "%pace", start, end}` |
 | Ride | `low/high: NN W` | `ftp` | `%ftp` | `{units: "%ftp", start, end}` |
 | Ride | `low/high: NN bpm` (rare HR-driven ride) | `lthr_bike` | `%lthr` | `{units: "%lthr", start, end}` |
 | Swim | `low/high: M:SS per 100 meters` | `css` (Swim CSS, sec/100m) | `%pace` | `{units: "%pace", start, end}` |
 
-**Pace semantics:** HumanGo's `low` = slower pace (higher sec/100m), `high` = faster pace (lower sec/100m). Intervals' `%pace` is a **velocity ratio** (100 = threshold velocity, faster = higher %). So:
+**Run target precedence:** when a HumanGo block carries both HR _and_ pace (rare — empirically not observed in production but theoretically possible), HR wins. Rationale: HR is universal (treadmill / no-GPS works), pace is GPS-dependent and falls back to «open distance» on the watch when signal is poor. Pace-only blocks use the second Run row.
+
+**Pace semantics:** HumanGo's `low` = slower pace (higher sec per unit distance), `high` = faster pace. Intervals' `%pace` is a **velocity ratio** (100 = threshold velocity, faster = higher %). The math is unit-agnostic — same formula for Run sec/km vs Swim sec/100m, just plug in the matching threshold:
 
 ```
-start = css_sec_per_100m / humango_low_sec × 100   # lower velocity bound
-end   = css_sec_per_100m / humango_high_sec × 100  # higher velocity bound
+start = threshold_sec / humango_low_sec × 100   # lower velocity bound
+end   = threshold_sec / humango_high_sec × 100  # higher velocity bound
 ```
 
-`start < end` holds because `low_sec > high_sec` (slower has more seconds).
+`start < end` holds because `low_sec > high_sec` (slower has more seconds). Verified empirically 2026-05-16 on Run event 109976490 (threshold_pace_run=287, HumanGo 5:46-6:33/km → `start: 73, end: 83`).
+
+**Round-trip precision:** delta `≤ 1 sec` near threshold (interval/tempo paces), growing to **~2 sec** at slow warmup paces. Rounding-granularity = `threshold_sec / 100` per integer percent, so a 1% boundary maps to a larger sec/km step the further from threshold. Cosmetic only — watches use the % corridor verbatim, no FIT-export precision loss.
 
 ## 6. Cold-start fallback
 
-If `athlete_settings.{lthr|ftp|threshold_pace}` is missing for the event's sport, skip enrichment entirely:
+If the relevant threshold(s) for the event's sport are missing, skip enrichment entirely. Per-sport accept-either logic:
+
+| Sport | Required (any of) |
+|---|---|
+| Run | `lthr_run` OR `threshold_pace_run` |
+| Ride | `ftp` OR `lthr_bike` |
+| Swim | `css` |
+
 
 - Log `info`: `"HumanGo enrichment skipped for user %d event %d: missing threshold for sport %s"`.
 - Do NOT push absolute units as fallback — `WORKOUT_ABSOLUTE_TARGETS_SPEC` §12 Attempt 1 verified that `{units: "bpm", value, end}` flips FIT export into Lap-HR mode and the watch zone-clamps. Untested whether `{units: "bpm", start, end}` avoids that; defer to a future spike.
@@ -102,10 +114,12 @@ If `athlete_settings.{lthr|ftp|threshold_pace}` is missing for the event's sport
 | Sport not in `{Run, Ride, Swim}` (e.g. `WeightTraining`, `Other`) | Skip — HumanGo doesn't push these structured anyway. |
 | Repeat group inside description (`repeat N times`) | Honor — existing `parse_humango_description` already lifts these to `WorkoutStepDTO(reps=N, steps=[...])`. Sub-steps get the same %X conversion. |
 | Step with `distance:` but no `duration:` (interval distance reps) | Preserve `distance` (meters), set `duration=0`. Intervals/Garmin handle distance-based steps natively. |
-| Step with no parseable target (RPE-only, e.g. «easy effort») | Emit step with `duration` only. We deliberately bypass `PlannedWorkoutDTO._check_steps_have_targets` here — that validator gates our own AI-pushed workouts, but enrichment writes raw `workout_doc.steps` directly so Intervals.icu (not our DTO) decides whether to render. Empirically Intervals accepts target-less steps in calendar events; a future dev re-introducing the validator gate would regress this path. |
+| Step with no parseable target (RPE-only, e.g. «easy effort») | Emit step with `duration` only — **but** if EVERY step in the workout ends up target-less, the workout is dropped entirely (return `None`). See «fail-closed» below. |
 | Threshold value is zero / negative (corrupted DB) | Treat as missing; skip enrichment with the same log line as cold-start. |
 | Description contains `View on HumanGo` but no `==========` (rest day) | Skip (detection check 2). |
 | Event already has `workout_doc.steps` (we pushed earlier, or another integration did) | Skip (detection check 3, idempotency). |
+| Athlete has only `lthr_run` set, HumanGo emits pace-only Run blocks (symmetric: only `threshold_pace_run` set + HR-only description) | Cold-start passes (one threshold ≥ 0), but `_humango_target_for_step` returns `None` for the missing pair → all steps come back target-less → **fail-closed** post-build guard drops the workout (`None`). Pushing target-less steps would lock out future re-enrichment via `is_humango_event` idempotency (which only checks `workout_doc.steps` non-empty, not target presence). Athlete must add the missing threshold; next sync retries. |
+| Existing target-less workouts pushed before this fix landed | **Backfill gap:** `is_humango_event` idempotency returns `False` once `workout_doc.steps` is non-empty, regardless of target presence. Events enriched between «HumanGo parsing initial commit» and «Run pace fix» with pace-only descriptions stay target-less until manually re-pushed (script following `scripts/repush_ai_workouts_with_native_desc.py` pattern, or one-off `update_event` call). Single-user volume is single-digit; accept-as-is for now, document for next sweep. |
 
 ## 8. Architecture
 
@@ -141,11 +155,12 @@ actor_enrich_humango_workout (Dramatiq)
 - **Editing HumanGo description text** — we only write `workout_doc.steps`. Description retained verbatim.
 - **Push to HumanGo / coach feedback** — read-only on our side.
 - **Workout adaptation** based on HumanGo plan — separate flow in `actor_compose_user_morning_report` via `parse_humango_description` (compliance path, untouched here).
+- **Run pace targets on the compliance path** — `parse_humango_description` + `_parse_pace_target` only handle Swim sec/100m, NOT Run sec/km. When a Run pace-driven workout reaches morning-report compliance evaluation, pace targets are dropped → Δpace cannot be computed. Push path (this spec) is now sport-symmetric; compliance path is a known gap. Tracked separately when compliance UX needs it.
 
 ## 11. Acceptance criteria
 
 - [ ] `is_humango_event` returns True only for HumanGo-sourced events with parseable structure and no existing steps.
-- [ ] `humango_to_intervals_steps` round-trips a sample HumanGo description (Run/Ride/Swim) such that pushed `start`/`end` × threshold ≈ HumanGo's `low`/`high` within ±1 unit rounding.
+- [ ] `humango_to_intervals_steps` round-trips a sample HumanGo description (Run/Ride/Swim) such that pushed `start`/`end` × threshold ≈ HumanGo's `low`/`high` within ±1 unit rounding near threshold (`±2` at slow warmup paces — see §4 «Round-trip precision»).
 - [ ] Cold-start athlete (no thresholds) → converter returns `None`, actor skips with `info` log.
 - [ ] Idempotent: re-running the actor on an already-enriched event is a no-op (no PUT to Intervals).
 - [ ] Verified end-to-end on one real HumanGo event in production: open Intervals.icu calendar after enrichment → structured steps appear with target corridors.

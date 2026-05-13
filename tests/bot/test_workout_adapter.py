@@ -441,6 +441,76 @@ class TestHumangoToIntervalsStepsRoundTrip:
         assert abs(round(warmup.power["start"] * 200 / 100) - 116) <= 1
         assert abs(round(warmup.power["end"] * 200 / 100) - 151) <= 1
 
+    def test_run_pace_round_trip(self):
+        """HumanGo Run with pace-per-km targets (verified empirically 2026-05-16
+        on event 109976490 — caused target-less push before the fix)."""
+        run_desc = (
+            "View on HumanGo: https://app.humango.ai/myday?date=2026-05-16\n\n"
+            "==============================\n\n"
+            "warmup\n\nduration: 5 min\n\npace:\n\nlow: 8:11 per km\n\nhigh: 6:33 per km\n\n"
+            "==============================\n\n"
+            "interval\n\nduration: 15 min\n\npace:\n\nlow: 6:33 per km\n\nhigh: 5:46 per km\n\n"
+            "==============================\n\n"
+            "cooldown\n\nduration: 5 min\n\npace:\n\nlow: 8:11 per km\n\nhigh: 6:33 per km\n\n"
+            "==============================\n"
+        )
+        # threshold_pace_run = 5:30/km = 330 sec/km
+        thresholds = _thresholds(threshold_pace_run=330.0)
+        steps = humango_to_intervals_steps(run_desc, "Run", thresholds)
+        assert steps and len(steps) == 3
+
+        interval = steps[1]
+        assert interval.pace and interval.pace["units"] == "%pace"
+        # HumanGo: low=6:33 (393s/km), high=5:46 (346s/km). Threshold=330s/km.
+        # %pace = threshold/target × 100 (velocity ratio).
+        assert abs(round(330 / interval.pace["start"] * 100) - 393) <= 1
+        assert abs(round(330 / interval.pace["end"] * 100) - 346) <= 1
+        assert interval.pace["start"] < interval.pace["end"]  # slower < faster
+
+    def test_run_pace_only_description_with_hr_only_threshold_returns_none(self):
+        """Fail-closed: athlete has LTHR but no threshold_pace_run, HumanGo
+        emits pace-only Run blocks → cold-start guard passes (LTHR > 0) but
+        each step's pace converter fails (no threshold) → step emitted with
+        all-null targets. Without the post-build guard, those would be pushed
+        and lock out future re-enrichment via `is_humango_event` idempotency.
+
+        Symmetric case (pace threshold only, HR-only description) is the
+        same failure mode — covered by the second assertion below.
+        """
+        run_pace_desc = (
+            "==============================\n\n"
+            "interval\n\nduration: 10 min\n\npace:\n\nlow: 6:33 per km\n\nhigh: 5:46 per km\n\n"
+            "==============================\n"
+        )
+        # LTHR set, pace threshold absent → must return None, not target-less steps.
+        assert humango_to_intervals_steps(run_pace_desc, "Run", _thresholds(lthr_run=160)) is None
+
+        # Symmetric: pace threshold set, HR-only description → also None.
+        run_hr_desc = (
+            "==============================\n\n"
+            "interval\n\nduration: 10 min\n\nheart rate:\n\nlow: 130 bpm\n\nhigh: 150 bpm\n\n"
+            "==============================\n"
+        )
+        assert humango_to_intervals_steps(run_hr_desc, "Run", _thresholds(threshold_pace_run=330.0)) is None
+
+    def test_run_pace_cold_start_returns_none(self):
+        """Run with pace targets but missing threshold_pace_run → skip entirely.
+
+        Previously cold-start only checked lthr_run, so a pace-only run with
+        threshold_pace=None silently produced target-less steps. After the
+        fix, the guard accepts either threshold; absence of BOTH skips.
+        """
+        run_desc = (
+            "==============================\n\n"
+            "interval\n\nduration: 10 min\n\npace:\n\nlow: 6:33 per km\n\nhigh: 5:46 per km\n\n"
+            "==============================\n"
+        )
+        # Neither LTHR nor threshold_pace_run set → cold-start skip.
+        assert humango_to_intervals_steps(run_desc, "Run", _thresholds()) is None
+        # With ONLY threshold_pace_run → must work.
+        steps = humango_to_intervals_steps(run_desc, "Run", _thresholds(threshold_pace_run=330.0))
+        assert steps and steps[0].pace and steps[0].pace["units"] == "%pace"
+
     def test_swim_pace_round_trip(self):
         # CSS = 110 sec/100m (slower than HumanGo's «low»).
         thresholds = _thresholds(css=110.0)
@@ -524,24 +594,22 @@ class TestHumangoToIntervalsStepsEdgeCases:
         assert steps and len(steps) == 1
         assert steps[0].text == "Warm-up"
 
-    def test_sport_mismatch_yields_target_less_steps(self):
-        """If a Run description (HR targets only) is fed in with sport='Ride',
-        the Ride branch first looks for power → none → falls through to HR →
-        finds it. So this particular combination actually works. The truly
-        unsupported combo is a Ride power-block fed in as 'Run' — Run only
-        looks at HR, sees nothing, returns target-less step."""
+    def test_sport_mismatch_returns_none(self):
+        """A Ride-power-only block fed in as 'Run' produces zero targets per
+        step (Run branch only looks at HR/pace). The post-build fail-closed
+        guard then drops the whole workout to None instead of emitting
+        target-less steps — pushing target-less would lock out future
+        re-enrichment via `is_humango_event` idempotency.
+        """
         ride_power_desc = (
             "View on HumanGo: https://app.humango.ai/...\n\n"
             "==============================\n\n"
             "warmup\n\nduration: 5 min\n\npower:\n\nlow: 100 W\n\nhigh: 130 W\n\n"
             "==============================\n"
         )
-        # Run looks at HR only — finds nothing in this Ride-power-only block.
-        steps = humango_to_intervals_steps(ride_power_desc, "Run", _thresholds(lthr_run=160))
-        # Step is still emitted (step type + duration parse), but with no target.
-        # Documents the «target-less step» edge case from SPEC §7.
-        assert steps and len(steps) == 1
-        assert steps[0].hr is None and steps[0].power is None and steps[0].pace is None
+        # Run looks at HR + pace only — finds neither in a power-only block.
+        # All steps target-less → fail-closed guard returns None.
+        assert humango_to_intervals_steps(ride_power_desc, "Run", _thresholds(lthr_run=160)) is None
 
 
 class TestHumangoToIntervalsStepsRepeatGroup:
