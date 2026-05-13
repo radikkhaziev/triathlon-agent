@@ -70,6 +70,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id=chat_id,
         username=tg_user.username,
         display_name=tg_user.full_name,
+        # Telegram's client locale (BCP-47, e.g. "en", "ru-RU"). Honoured only
+        # on first /start — existing users keep whatever they last picked via
+        # /lang, so an English-speaker who once switched to ru stays ru.
+        language_code=tg_user.language_code,
     )
     # Explicit reactivation: /start is an unambiguous re-engagement signal.
     # Webapp/Login Widget auth paths intentionally do NOT reactivate — see

@@ -29,6 +29,7 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     chat_id: str | None = None
     tg_username: str | None = None
     tg_display_name: str | None = None
+    tg_language_code: str | None = None
     from_init_data = False
     is_demo = False
 
@@ -52,6 +53,7 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
                             first = user_data.get("first_name") or ""
                             last = user_data.get("last_name") or ""
                             tg_display_name = f"{first} {last}".strip() or None
+                            tg_language_code = user_data.get("language_code")
                             from_init_data = True
                     except (json.JSONDecodeError, TypeError):
                         pass
@@ -64,6 +66,7 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
             chat_id=chat_id,
             username=tg_username,
             display_name=tg_display_name,
+            language_code=tg_language_code,
         )
     else:
         user = await User.get_by_chat_id(chat_id)
