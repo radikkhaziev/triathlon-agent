@@ -29,10 +29,12 @@ from data.db import (
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
 from data.weekly_preview import extract_weekly_preview
-from data.workout_adapter import compute_constraints, needs_adaptation, parse_humango_description
+from data.workout_adapter import compute_constraints, is_humango_event, needs_adaptation, parse_humango_description
 from tasks.dto import local_today
 from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message, format_pace
 from tasks.tools import MCPTool, TelegramTool
+
+from .workout import actor_enrich_humango_workout
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,18 @@ def actor_user_scheduled_workouts(user: UserDTO):
         newest=newest,
     )
     logger.info("Synced %d scheduled workouts (%s → %s)", count, today, newest)
+
+    # Dispatch HumanGo enrichment for newly-arrived calendar events that look
+    # like HumanGo (signature + structure + no existing workout_doc.steps).
+    # Actor re-fetches + re-checks before pushing, so concurrent dispatches
+    # or already-enriched events are idempotent. See docs/HUMANGO_ENRICHMENT_SPEC.md.
+    dispatched = 0
+    for w in _workouts:
+        if is_humango_event(w.description, w.workout_doc):
+            actor_enrich_humango_workout.send(user=user, intervals_event_id=w.id)
+            dispatched += 1
+    if dispatched:
+        logger.info("Dispatched HumanGo enrichment for %d event(s) (user %d)", dispatched, user.id)
 
 
 # ---------------------------------------------------------------------------

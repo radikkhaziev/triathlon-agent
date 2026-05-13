@@ -32,4 +32,4 @@ from .reports import (  # noqa: F401
 from .training_log import actor_fill_training_log, actor_fill_training_log_post  # noqa: F401
 from .video import actor_render_workout_video  # noqa: F401
 from .wellness import actor_user_wellness  # noqa: F401
-from .workout import actor_push_workout  # noqa: F401
+from .workout import actor_enrich_humango_workout, actor_push_workout  # noqa: F401
