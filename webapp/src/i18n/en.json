@@ -124,7 +124,8 @@
     "no_details": "No detailed data for this activity.",
     "rest_day": "Rest day",
     "compliance": "Compliance",
-    "compliance_hint": "Planned vs actual workout match (Intervals.icu native)"
+    "compliance_hint": "Planned vs actual workout match (Intervals.icu native)",
+    "view_planned_workout": "View planned workout"
   },
   "plan": {
     "title": "Training Plan",

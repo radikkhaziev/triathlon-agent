@@ -108,6 +108,11 @@ async def activity_details(
         # Intervals.icu's native workout compliance % (planned vs actual,
         # 0-100). NULL when activity had no scheduled workout to compare.
         "compliance": round(activity.compliance, 1) if activity.compliance is not None else None,
+        # Intervals.icu's native planned-vs-actual pairing (FK-less reference to
+        # scheduled_workouts.id). Drives the «open planned workout» link on the
+        # activity detail page. NULL when Intervals didn't pair or pairing was
+        # cleaned up (planned event deleted).
+        "paired_event_id": activity.paired_event_id,
         "is_race": activity.is_race,
         "race": (
             {

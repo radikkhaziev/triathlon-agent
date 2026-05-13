@@ -49,6 +49,50 @@ class TestSaveActivities:
         assert len(rows) == 1
         assert rows[0].average_hr == 142.0
 
+    async def test_insert_with_paired_event_id(self):
+        """Intervals.icu's native planned-vs-actual pairing is captured."""
+        act = ActivityDTO(
+            id="i_paired_1",
+            start_date_local=date(2026, 4, 1),
+            type="Run",
+            icu_training_load=50.0,
+            moving_time=2400,
+            paired_event_id=103471545,
+        )
+        await Activity.save_bulk(1, activities=[act])
+        rows = Activity.get_windowed(user_id=1, as_of=date(2026, 4, 1))
+        target = next((r for r in rows if r.id == "i_paired_1"), None)
+        assert target is not None
+        assert target.paired_event_id == 103471545
+
+    async def test_paired_event_id_preserved_on_resync_with_none(self):
+        """COALESCE invariant: Intervals can drop `paired_event_id` when the
+        planned event is deleted or matcher temporarily fails. We retain the
+        previously-captured link so the «open paired plan» UX stays stable.
+        """
+        dt = date(2026, 4, 2)
+        first = ActivityDTO(
+            id="i_paired_2",
+            start_date_local=dt,
+            type="Run",
+            moving_time=1800,
+            paired_event_id=999_111,
+        )
+        await Activity.save_bulk(1, activities=[first])
+
+        # Second sync omits paired_event_id (None).
+        second = ActivityDTO(
+            id="i_paired_2",
+            start_date_local=dt,
+            type="Run",
+            moving_time=1800,
+        )
+        await Activity.save_bulk(1, activities=[second])
+
+        rows = Activity.get_windowed(user_id=1, as_of=dt)
+        target = next(r for r in rows if r.id == "i_paired_2")
+        assert target.paired_event_id == 999_111  # preserved
+
     @pytest.mark.real_db
     @pytest.mark.skip(reason="Core setup commented out; i300 never created — needs rewrite")
     async def test_none_average_hr_stored(self):

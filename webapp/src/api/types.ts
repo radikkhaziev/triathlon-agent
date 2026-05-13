@@ -417,6 +417,9 @@ export interface ActivityDetailsResponse {
   // Intervals.icu native workout compliance (0-100 %, planned vs actual).
   // null when no scheduled workout matched the activity.
   compliance: number | null
+  // Intervals.icu native pairing — scheduled_workouts.id of the planned event
+  // this activity was matched against. Drives the «open planned workout» link.
+  paired_event_id: number | null
   is_race?: boolean
   race?: RaceInfo | null
   details: ActivityDetails | null
