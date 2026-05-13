@@ -276,9 +276,15 @@ class IntervalsClientBase:
         params = {
             "oldest": oldest.strftime("%Y-%m-%d"),
             "newest": newest.strftime("%Y-%m-%d"),
+            # Intervals.icu's /activities list endpoint requires explicit
+            # `fields=` selection — any field NOT listed here is omitted from
+            # the JSON response (verified empirically 2026-05-13 for the
+            # `compliance` column). When you add a new field to ActivityDTO
+            # and want it captured via list-sync (not just webhook-direct),
+            # add it here too.
             "fields": (
                 "id,start_date_local,type,icu_training_load,moving_time,"
-                "average_heartrate,race,sub_type,source,icu_rpe"
+                "average_heartrate,race,sub_type,source,icu_rpe,compliance"
             ),
         }
         return RequestSpec(

@@ -111,6 +111,13 @@ export default function Activity() {
                 sub={t(`rpe.scale.${data.rpe}`)}
               />
             )}
+            {data.compliance != null && (
+              <Card
+                label={t('activities.compliance')}
+                value={`${Math.round(data.compliance)}%`}
+                sub={t('activities.compliance_hint')}
+              />
+            )}
             {(d.efficiency_factor || d.power_hr || d.decoupling != null) && (
               <Card label="Efficiency"
                 value={d.efficiency_factor ? d.efficiency_factor.toFixed(2) : d.power_hr ? d.power_hr.toFixed(2) : '-'}

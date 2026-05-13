@@ -11,7 +11,14 @@ from mcp_server.context import get_current_user_id
 
 @mcp.tool()
 async def get_workout_compliance(activity_id: str) -> dict:
-    """Compare completed activity against scheduled workout. Returns duration + intensity compliance."""
+    """Compare completed activity against scheduled workout.
+
+    Returns: duration / intensity compliance computed locally from step targets
+    + a sanity-check value `intervals_compliance` (Intervals.icu's own % match,
+    0-100; null when no planned workout matched). Use both when reporting to
+    the athlete — large divergence between the two signals an edge case
+    (e.g. activity matched a different planned workout on Intervals' side).
+    """
     user_id = get_current_user_id()
 
     async with get_session() as session:
@@ -32,6 +39,11 @@ async def get_workout_compliance(activity_id: str) -> dict:
         act_avg_hr = activity.average_hr
         act_tss = activity.icu_training_load
         act_rpe = activity.rpe
+        # Intervals.icu's own compliance score — % match between planned
+        # workout_doc and recorded data, computed on their side. Surface it
+        # alongside our duration/power-target comparison so callers can sanity-
+        # check the two against each other.
+        act_intervals_compliance = activity.compliance
         det_avg_power = detail.avg_power if detail else None
         det_hr_zone_times = detail.hr_zone_times if detail else None
         det_power_zone_times = detail.power_zone_times if detail else None
@@ -70,6 +82,7 @@ async def get_workout_compliance(activity_id: str) -> dict:
         "planned": planned,
         "actual": actual,
         "compliance": compliance,
+        "intervals_compliance": act_intervals_compliance,  # Intervals.icu native % (0-100)
         "training_log_compliance": log_entry.compliance if log_entry else None,
     }
 

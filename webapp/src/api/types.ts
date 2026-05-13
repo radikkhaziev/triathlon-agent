@@ -344,6 +344,9 @@ export interface ActivityDetailsResponse {
   icu_training_load: number | null
   average_hr: number | null
   rpe: number | null
+  // Intervals.icu native workout compliance (0-100 %, planned vs actual).
+  // null when no scheduled workout matched the activity.
+  compliance: number | null
   is_race?: boolean
   race?: RaceInfo | null
   details: ActivityDetails | null
