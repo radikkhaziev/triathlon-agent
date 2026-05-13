@@ -9,8 +9,10 @@ from data.intervals.client import (
     BASE_URL,
     MAX_RETRIES,
     RETRY_MAX_DELAY,
+    IntervalsAccessError,
     IntervalsAsyncClient,
     IntervalsClientBase,
+    IntervalsCredsMissingError,
     IntervalsScopeError,
     IntervalsSyncClient,
 )
@@ -170,6 +172,48 @@ class TestTransportErrorRetry:
             assert calls["n"] == 2
         finally:
             await client._client.aclose()
+
+
+class TestCredsMissing:
+    """A user with ``intervals_auth_method='none'`` and no api_key/oauth-token at
+    all (full revoke / never connected) must raise a typed error that subclasses
+    ``IntervalsAccessError`` so actors catch and skip uniformly with 401/403 paths.
+
+    Exercised through the **public** ``IntervalsSyncClient.for_user`` factory
+    rather than the private ``_resolve_credentials`` helper, so the contract
+    survives any future refactor of the helper layout.
+    """
+
+    def _stub_user(self, **overrides):
+        class _StubUser:
+            id = 25
+            athlete_id = "i376855"
+            intervals_auth_method = "none"
+            intervals_access_token = None
+            api_key = None
+            api_key_encrypted = None
+            intervals_access_token_encrypted = None
+
+        u = _StubUser()
+        for k, v in overrides.items():
+            setattr(u, k, v)
+        return u
+
+    def test_no_creds_raises_typed_error(self):
+        # `for_user` is a `@contextmanager` — the body (including
+        # `_resolve_credentials`) only runs on `__enter__`, so the `with`
+        # is what surfaces the raise. Bare call would return a CM, not raise.
+        with pytest.raises(IntervalsCredsMissingError) as exc:
+            with IntervalsSyncClient.for_user(self._stub_user()):
+                pass
+        assert exc.value.user_id == 25
+        # Must be catchable as the base type — that's how actors swallow it.
+        assert isinstance(exc.value, IntervalsAccessError)
+
+    def test_no_athlete_id_raises_typed_error(self):
+        with pytest.raises(IntervalsCredsMissingError):
+            with IntervalsSyncClient.for_user(self._stub_user(athlete_id=None)):
+                pass
 
 
 class TestScopeRevoked:

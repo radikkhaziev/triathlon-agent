@@ -221,6 +221,71 @@ class TestDeauthGuard:
         bootstrap_mocks.client_cls.for_user.assert_not_called()
         bootstrap_mocks.actor_self.send.assert_not_called()
 
+    def test_access_error_at_for_user_entry_marks_failed_with_class_name(self, bootstrap_mocks):
+        """Pre-check sees auth_method='oauth' so it doesn't short-circuit, but
+        `for_user(...)` itself raises (broken OAuth state — token decrypts to
+        None / DB credential inconsistency). The `for_user` factory IS a
+        ``@contextmanager`` whose body runs at ``__enter__`` time, so the raise
+        bubbles before any HTTP call. Actor must mark_failed with the exception
+        CLASS NAME, not ``str(e)`` (leak protection — see backfill.py:181-187).
+        """
+        from data.intervals.client import IntervalsCredsMissingError
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        oldest = date.today() - timedelta(days=365)
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
+        bootstrap_mocks.session.get.return_value = _mock_db_user(auth_method="oauth")
+        # `for_user(...)` raises at the factory itself.
+        bootstrap_mocks.client_cls.for_user.side_effect = IntervalsCredsMissingError(
+            user.id, "oauth token decrypted to None"
+        )
+
+        actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat())
+
+        bootstrap_mocks.state_cls.mark_failed.assert_called_once()
+        fail_kwargs = bootstrap_mocks.state_cls.mark_failed.call_args.kwargs
+        assert fail_kwargs["error"] == "IntervalsCredsMissingError"
+        bootstrap_mocks.actor_self.send.assert_not_called()
+
+    def test_access_error_mid_fetch_marks_failed_with_class_name(self, bootstrap_mocks):
+        """True mid-fetch case: pre-check passes, ``for_user`` returns a working
+        context manager, and the actual API call (``get_wellness_range`` or
+        ``get_activities``) raises ``IntervalsScopeError`` — server-side scope
+        revoke happened between pre-check and the HTTP request. Actor must
+        still mark_failed with the class name.
+        """
+        from unittest.mock import MagicMock
+
+        from data.intervals.client import IntervalsScopeError
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        oldest = date.today() - timedelta(days=365)
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
+        bootstrap_mocks.session.get.return_value = _mock_db_user(auth_method="oauth")
+
+        # Mock client whose data methods raise — exercises the real "mid-fetch"
+        # path (CM body enters successfully, raise comes from method call).
+        mock_client = MagicMock()
+        mock_client.get_wellness_range.side_effect = IntervalsScopeError(
+            user.id, "GET", "/api/v1/athlete/i123/wellness"
+        )
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_client
+        mock_cm.__exit__.return_value = False
+        bootstrap_mocks.client_cls.for_user.return_value = mock_cm
+
+        actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat())
+
+        bootstrap_mocks.state_cls.mark_failed.assert_called_once()
+        fail_kwargs = bootstrap_mocks.state_cls.mark_failed.call_args.kwargs
+        assert fail_kwargs["error"] == "IntervalsScopeError"
+        bootstrap_mocks.actor_self.send.assert_not_called()
+        # Sanity: verify the mock was actually invoked — proves we exercised
+        # the mid-fetch path, not the entry-time path.
+        mock_client.get_wellness_range.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Cursor CAS — message-arg vs DB-cursor mismatch (retry after partial commit)

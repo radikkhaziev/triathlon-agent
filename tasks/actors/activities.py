@@ -43,7 +43,7 @@ from data.hrv_activity import (
     detect_hrv_thresholds,
     diagnose_hrv_thresholds,
 )
-from data.intervals.client import IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
 from data.ml.noise_classifier import classify_activity_row
 from data.utils import HRV_ELIGIBLE_TYPES
@@ -86,6 +86,9 @@ def _actor_download_fit_file(
         try:
             with IntervalsSyncClient.for_user(user) as client:
                 fit_bytes = client.download_fit(activity_id)
+        except IntervalsAccessError as e:
+            logger.info("Skipping FIT download for user %d activity %s: %s", user.id, activity_id, e)
+            return
         except httpx.HTTPStatusError as e:
             # Intervals.icu returns 422 for activities with no downloadable
             # FIT file (Strava-source per licensing, manually-entered, or
@@ -619,9 +622,13 @@ def actor_update_activity_details(
     activity_id: str,
     force: bool = False,
 ):
-    with IntervalsSyncClient.for_user(user) as client:
-        detail_data = client.get_activity_detail(activity_id)
-        intervals_data = client.get_activity_intervals(activity_id)
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            detail_data = client.get_activity_detail(activity_id)
+            intervals_data = client.get_activity_intervals(activity_id)
+    except IntervalsAccessError as e:
+        logger.info("Skipping activity-details fetch for user %d activity %s: %s", user.id, activity_id, e)
+        return
 
     if not detail_data:
         return
@@ -695,8 +702,12 @@ def actor_fetch_user_activities(
     _newest = newest or today
     _oldest = oldest or (today - timedelta(days=30))
 
-    with IntervalsSyncClient.for_user(user) as client:
-        activities: list[ActivityDTO] = client.get_activities(oldest=_oldest, newest=_newest)
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            activities: list[ActivityDTO] = client.get_activities(oldest=_oldest, newest=_newest)
+    except IntervalsAccessError as e:
+        logger.info("Skipping activities fetch for user %d: %s", user.id, e)
+        return
 
     # Strava activities cannot be read via Intervals.icu API (licensing).
     # Skip them entirely so they never enter the DB or trigger downstream fetches.
@@ -944,6 +955,9 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
     try:
         with IntervalsSyncClient.for_user(user) as client:
             remote = client.get_activity_detail(activity_id)
+    except IntervalsAccessError as e:
+        logger.info("Skipping rename for user %d activity %s: %s", user.id, activity_id, e)
+        return
     except Exception:
         logger.warning("Failed to fetch activity detail for rename check %s", activity_id)
         return
@@ -979,5 +993,7 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
         with IntervalsSyncClient.for_user(user) as client:
             client.update_activity(activity_id, {"name": title, "description": description})
         logger.info("Renamed activity %s for user %d: %s", activity_id, user.id, title)
+    except IntervalsAccessError as e:
+        logger.info("Skipping rename push for user %d activity %s: %s", user.id, activity_id, e)
     except Exception:
         logger.exception("Failed to rename activity %s for user %d", activity_id, user.id)

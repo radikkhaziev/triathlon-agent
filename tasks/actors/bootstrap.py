@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 
 from bot.i18n import _, set_language
 from data.db import Activity, User, UserBackfillState, UserDTO, Wellness, get_sync_session
-from data.intervals.client import IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import ActivityDTO, WellnessDTO
 from tasks.dto import DateDTO, local_today
 from tasks.tools import TelegramTool
@@ -113,9 +113,26 @@ def actor_bootstrap_step(
         period_days,
     )
 
-    with IntervalsSyncClient.for_user(user) as client:
-        wellness_rows: list[WellnessDTO] = client.get_wellness_range(oldest=cursor_dt, newest=chunk_end)
-        activity_rows: list[ActivityDTO] = client.get_activities(oldest=cursor_dt, newest=chunk_end)
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            wellness_rows: list[WellnessDTO] = client.get_wellness_range(oldest=cursor_dt, newest=chunk_end)
+            activity_rows: list[ActivityDTO] = client.get_activities(oldest=cursor_dt, newest=chunk_end)
+    except IntervalsAccessError as e:
+        # Two scenarios collapse into this catch:
+        #   (a) Race window — user revokes between the pre-check commit at the
+        #       top of this actor and the API call here (auth_method flips
+        #       'oauth' → 'none' under us).
+        #   (b) Broken OAuth state — auth_method='oauth' but
+        #       intervals_access_token decrypts to None (Fernet key mismatch
+        #       after a key rotation, or an inconsistent partial write). The
+        #       pre-check can't catch this because it only inspects
+        #       auth_method, not the actual credential payload.
+        # Both require backfill abort. Persist only the exception class name
+        # in `state.last_error` — full `str(e)` may include API paths / auth
+        # tokens in future subclasses; see backfill.py:181-187 warning.
+        logger.info("Bootstrap chunk aborted for user=%d: %s", user.id, e)
+        UserBackfillState.mark_failed(user.id, error=type(e).__name__)
+        return
 
     # Strava activities cannot be read via Intervals.icu API (licensing).
     # Mirrors actor_fetch_user_activities — filter before persisting.

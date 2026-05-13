@@ -26,7 +26,7 @@ from data.db import (
     WellnessPostDTO,
     get_sync_session,
 )
-from data.intervals.client import IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
 from data.weekly_preview import extract_weekly_preview
 from data.workout_adapter import compute_constraints, needs_adaptation, parse_humango_description
@@ -55,8 +55,12 @@ def actor_user_scheduled_workouts(user: UserDTO):
     today = local_today()
     newest = today + timedelta(days=14)
 
-    with IntervalsSyncClient.for_user(user) as client:
-        _workouts: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, newest=newest)
+    try:
+        with IntervalsSyncClient.for_user(user) as client:
+            _workouts: list[ScheduledWorkoutDTO] = client.get_events(oldest=today, newest=newest)
+    except IntervalsAccessError as e:
+        logger.info("Skipping scheduled-workouts sync for user %d: %s", user.id, e)
+        return
 
     if not _workouts:
         logger.info("No scheduled workouts found for user %s (%s → %s)", user.id, today, newest)
@@ -215,6 +219,10 @@ def _clear_sentinel(user_id: int, dt: str) -> None:
 def actor_compose_user_morning_report(
     user: UserDTO,
 ):
+    # Intervals.icu auth/scope errors are surfaced via MCP tool envelopes
+    # (each tool returns its own error JSON), not raised here — this actor
+    # never calls IntervalsSyncClient directly, so no IntervalsAccessError
+    # catch is needed. The MCPTool path has its own HTTPStatusError handling.
     _dt = local_today().isoformat()
 
     # Transaction 1: short lock — claim the slot with sentinel, release immediately.
@@ -365,6 +373,9 @@ def actor_compose_weekly_report(user: UserDTO):
     nowhere near an issue (the original drop-bug PR1 addressed). Full
     markdown lives in ``weekly_reports.content_md`` and renders in the
     webapp on tap.
+
+    Note: Intervals.icu auth/scope errors are surfaced via MCP tool envelopes,
+    not raised here — this actor goes through MCPTool, not IntervalsSyncClient.
     """
     result = generate_and_save_weekly_report(user)
     if result is None:
