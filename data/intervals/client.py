@@ -317,6 +317,14 @@ class IntervalsClientBase:
     def _spec_update_activity(self, activity_id: str, data: dict) -> RequestSpec:
         return RequestSpec("PUT", f"/activity/{activity_id}", kwargs={"json": data})
 
+    def _spec_get_event(self, event_id: int) -> RequestSpec:
+        return RequestSpec(
+            "GET",
+            f"/athlete/{self._athlete_id}/events/{event_id}",
+            parser=self._parse_event,
+            handle_404=True,
+        )
+
     def _spec_create_event(self, event: EventExDTO) -> RequestSpec:
         return RequestSpec(
             "POST",
@@ -542,6 +550,9 @@ class IntervalsAsyncClient(IntervalsClientBase):
     ) -> list[ScheduledWorkoutDTO]:
         return await self._execute(self._spec_get_events(oldest, newest, category))
 
+    async def get_event(self, event_id: int) -> ScheduledWorkoutDTO | None:
+        return await self._execute(self._spec_get_event(event_id))
+
 
 # ======================================================================
 # Sync client
@@ -690,3 +701,6 @@ class IntervalsSyncClient(IntervalsClientBase):
         category: str = "WORKOUT",
     ) -> list[ScheduledWorkoutDTO]:
         return self._execute(self._spec_get_events(oldest, newest, category))
+
+    def get_event(self, event_id: int) -> ScheduledWorkoutDTO | None:
+        return self._execute(self._spec_get_event(event_id))

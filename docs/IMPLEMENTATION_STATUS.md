@@ -11,6 +11,51 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## HumanGo workout enrichment (issue #375, 2026-05-13)
+
+**Trigger:** HumanGo (third-party AI coach) push'ит тренировки в Intervals.icu через shared-calendar sync. События приходят с **plain-text description only**, без `workout_doc.steps`. Следствия: Intervals UI показывает flat-описание без step-rows; `get_workout_compliance` MCP-tool не может посчитать delta HR/power/pace против plan'а; chart-renderer пустой. Garmin sync работает через HumanGo→Garmin direct path (отдельная цепочка, не задета).
+
+**Подход (Variant A — convert absolute → %X):** парсим HumanGo'шный текст, конвертируем absolute units (W/bpm/sec-per-100m) в `%lthr`/`%ftp`/`%pace` коридоры против `AthleteSettings.get_thresholds`, push'им `workout_doc.steps` + native-format top-level `description` для chart-render'а. Round-trip math: `pct × threshold ≈ HumanGo's original ±1 unit rounding`, watches видят HumanGo'шный коридор verbatim после Intervals' FIT export. Schema `{units, start, end}` — точно та, что доказана в `docs/WORKOUT_ABSOLUTE_TARGETS_SPEC.md` §12 Attempt 3b (instant-HR corridor mode на watch, не lap-HR clamp).
+
+**Detection (`data/workout_adapter.py:is_humango_event`):** три AND'd чека (любой негатив → skip):
+1. `"View on HumanGo"` substring в description — unique HumanGo signature (других интеграций с такой строкой нет).
+2. `==========` separator — defensive против HumanGo'шных «rest day» / RPE-only entries без структурированных блоков.
+3. `workout_doc.steps` пустой/отсутствует — idempotency guard.
+
+**Converter (`humango_to_intervals_steps`):** re-uses regex'ы существующего `parse_humango_description` (которой compliance-pipeline пользуется), но emit'ит новую `{units, start, end}` schema вместо legacy `{units, value, low, high}`. Sport-specific:
+- Run → `lthr_run`, ratio `bpm / lthr × 100`
+- Ride → `ftp`, ratio `W / ftp × 100`; fallback на HR (`lthr_bike`) если ride-блок без power
+- Swim → `css` (sec/100m), velocity ratio `css_sec / target_sec × 100` (HumanGo'шный «low pace» = slower = lower velocity %)
+
+Single-rep groups (`repeat 1 times` — HumanGo иногда так оборачивает single interval+recovery pair) flatten'ятся в плоские sequential шаги. Cold-start (нет threshold'а для sport) → returns `None`, caller skip.
+
+**Actor (`tasks/actors/workout.py:actor_enrich_humango_workout`):** re-fetch event fresh через новый `IntervalsClient.get_event(id)` (`handle_404=True`), re-check `is_humango_event` на актуальном state (защита от race с другими integration'ами), convert + push. HumanGo'шный original description сохраняется в `workout_doc.description` (Garmin Connect рендерит как workout note на телефоне). `target="PACE"` для Swim/Run pace-driven workouts (mirrors `PlannedWorkoutDTO.to_intervals_event` — иначе Garmin'овский FIT export дропает pace cells). `IntervalsAccessError` swallowed → info-log + return (как другие actor'ы, не retry-loop).
+
+**Wiring:** `actor_user_scheduled_workouts` (`tasks/actors/reports.py`) после `ScheduledWorkout.save_bulk` итерирует events, dispatch'ит `actor_enrich_humango_workout.send(user, intervals_event_id)` per match. Steady-state идемпотентен: после первого enrichment'а `workout_doc.steps` непустой → `is_humango_event` отсекает → 0 re-dispatch'ей.
+
+**Public-helper promotion:** `_render_native_description` → `render_native_description` в `data/intervals/dto.py`. Был private (`_`), но используется тестами (`tests/db/test_ai_workouts.py`) + теперь enrichment actor'ом — фактически public surface, рейнем явно.
+
+**End-to-end verified (user 1, 2026-05-13):**
+- Ride 14/05 (event 108693302): FTP=220 → push 5 steps (warmup×2, interval+recovery, cooldown) с `%ftp` коридорами 41-74 → chart renders ✓
+- Swim 15/05 (event 109153491): CSS=141s/100m → 3 top-level steps (2×warmup, 2×main 4×100m с rest, cooldown) с `%pace` velocity ratios → chart renders ✓
+- Run 24/05 (event 109645836): LTHR=172 → 3 top-level (warmup, 5×[Z2 main + Z3 tempo], cooldown) с `%lthr` коридорами 59-89 → chart renders ✓
+
+**FTP drift замечен и зафиксирован:** во время first Ride enrichment `athlete_settings.ftp=208` в DB vs `220` на Intervals → drift из-за устаревшего sync. Round-trip с stale threshold'ом производит off-by-~5% коридоры. Fix: ручной re-sync `actor_sync_athlete_settings` flow → push'нул повторно с FTP=220.
+
+**Phases:**
+- Phase 1 ✅ shipped — detection + converter + 18 unit tests
+- Phase 2 ✅ shipped — actor + wiring + 7 integration tests
+- Phase 3 ⏳ deferred — backfill CLI для existing HumanGo events на календаре (cron sweep eventually picks them up)
+- Phase 4 ⏳ deferred — LLM-based fallback parser для RPE-only / multilingual descriptions (Phase 1 regex покрывает все production samples так far)
+
+**Known limitations** (documented in spec §7):
+- Run pace `per kilometer` regex not implemented — HumanGo обычно использует HR для Run, не pace. Будет видно по target-less Run steps (если возникнет).
+- `WeightTraining`/`Other` sports skipped — HumanGo не push'ит эти структурированно.
+
+Spec: `docs/HUMANGO_ENRICHMENT_SPEC.md`.
+
+---
+
 ## Intervals.icu native-format workout description (2026-05-12)
 
 **Trigger:** AI-pushed тренировки (`actor_push_workout` / `suggest_workout` / ramp tests / `compose_workout`) исторически отправляли только `workout_doc.steps` (JSON), без top-level `description`. Garmin/Wahoo через FIT-экспорт всё видели, но в Intervals.icu web/mobile UI шагов не было — только название + длительность. Пользователь сообщил, ресёрч подтвердил: Intervals UI рендерит структуру **только** из top-level `description` в их native-формате (поле документировано в OpenAPI `/events POST` как «native Intervals.icu format»).

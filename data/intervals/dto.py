@@ -417,7 +417,7 @@ def _render_step(step: "WorkoutStepDTO", sport: str) -> str:
     return "- " + " ".join(parts)
 
 
-def _render_native_description(steps: list["WorkoutStepDTO"], sport: str) -> str:
+def render_native_description(steps: list["WorkoutStepDTO"], sport: str) -> str:
     """Render a workout's steps as Intervals.icu native-format description.
 
     Top-level entities (single steps and repeat blocks) are separated by blank
@@ -481,7 +481,7 @@ class PlannedWorkoutDTO(BaseModel):
                             f"Repeat groups must contain a non-empty steps list."
                         )
                     if depth >= 1:
-                        # Native-format renderer (`_render_native_description`)
+                        # Native-format renderer (`render_native_description`)
                         # intentionally recurses only one level; a nested repeat
                         # would silently drop its inner steps from the workout
                         # description Intervals shows on web/mobile. Fail at
@@ -606,7 +606,7 @@ class PlannedWorkoutDTO(BaseModel):
           web/mobile UI parses to render the structured workout view. Without
           it the UI shows only the workout's name and total duration — steps
           stay invisible. See ``docs/INTERVALS_NATIVE_WORKOUT_FORMAT.md`` for
-          the grammar; the renderer lives in ``_render_native_description``.
+          the grammar; the renderer lives in ``render_native_description``.
 
         ``workout_doc.description`` carries the AI rationale (Garmin Connect
         shows it as the workout note on the phone). The top-level
@@ -642,7 +642,7 @@ class PlannedWorkoutDTO(BaseModel):
 
         description: str | None = None
         if self.sport not in _NO_TARGET_SPORTS:
-            description = _render_native_description(self.steps, self.sport)
+            description = render_native_description(self.steps, self.sport)
 
         return EventExDTO(
             category="WORKOUT",

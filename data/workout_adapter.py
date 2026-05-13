@@ -4,9 +4,13 @@ Parses HumanGo workout descriptions, evaluates adaptation constraints,
 and produces modified PlannedWorkout for Intervals.icu.
 """
 
+import logging
 import re
 
+from data.db import AthleteThresholdsDTO
 from data.intervals.dto import RecoveryScoreDTO, WorkoutStepDTO
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants: zone boundaries (HR as % LTHR, Power as % FTP)
@@ -331,3 +335,250 @@ def needs_adaptation(
     """Check if the workout exceeds the allowed zone constraints."""
     workout_max = estimate_workout_max_zone(steps, ftp, lthr)
     return workout_max > max_zone
+
+
+# ---------------------------------------------------------------------------
+# HumanGo → Intervals.icu structured-steps enrichment
+# (see docs/HUMANGO_ENRICHMENT_SPEC.md)
+# ---------------------------------------------------------------------------
+
+_HUMANGO_SIGNATURE = "View on HumanGo"
+
+
+def is_humango_event(description: str | None, workout_doc: dict | None) -> bool:
+    """Decide whether a calendar event came from HumanGo and is ready for enrichment.
+
+    Three AND'd checks; any negative → caller must skip the event:
+
+    1. ``View on HumanGo`` signature in the description (unique to HumanGo's
+       shared-calendar push; no other integration writes this string).
+    2. ``==========`` separator present — defensive: HumanGo's «rest day» /
+       RPE-only entries carry the View-link but no structured blocks, so
+       parsing would yield an empty step list.
+    3. ``workout_doc.steps`` empty / absent — idempotency. If we (or anyone)
+       already populated structured steps, don't overwrite.
+    """
+    if not description or _HUMANGO_SIGNATURE not in description:
+        return False
+    if "==========" not in description:
+        return False
+    if workout_doc and workout_doc.get("steps"):
+        return False
+    return True
+
+
+def _humango_hr_pct(low_bpm: float, high_bpm: float, lthr: int) -> dict | None:
+    """Convert HumanGo absolute HR (bpm low/high) to ``%lthr`` corridor.
+
+    Round-trip: pushed ``%lthr`` × athlete's LTHR ≈ HumanGo's original bpm
+    (within ±1 bpm rounding). Watches see the original corridor verbatim
+    after Intervals.icu FIT export.
+    """
+    if not lthr or lthr <= 0:
+        return None
+    start = round(low_bpm / lthr * 100)
+    end = round(high_bpm / lthr * 100)
+    return {"units": "%lthr", "start": start, "end": end}
+
+
+def _humango_power_pct(low_w: float, high_w: float, ftp: int) -> dict | None:
+    """Convert HumanGo absolute power (W low/high) to ``%ftp`` corridor."""
+    if not ftp or ftp <= 0:
+        return None
+    start = round(low_w / ftp * 100)
+    end = round(high_w / ftp * 100)
+    return {"units": "%ftp", "start": start, "end": end}
+
+
+def _humango_pace_pct(low_sec_per_100m: int, high_sec_per_100m: int, css_sec_per_100m: float) -> dict | None:
+    """Convert HumanGo swim pace (sec/100m low=slower / high=faster) to ``%pace``.
+
+    Intervals' ``%pace`` is a velocity ratio (100 = threshold velocity, faster
+    = higher %). HumanGo's «low» pace is slower (more sec/100m), so it maps to
+    the LOWER velocity-ratio bound; «high» pace is faster, maps to the HIGHER
+    bound. Result: ``start < end`` preserves the corridor direction.
+    """
+    if not css_sec_per_100m or css_sec_per_100m <= 0:
+        return None
+    if not low_sec_per_100m or not high_sec_per_100m:
+        return None
+    start = round(css_sec_per_100m / low_sec_per_100m * 100)  # slower → lower velocity %
+    end = round(css_sec_per_100m / high_sec_per_100m * 100)  # faster → higher velocity %
+    return {"units": "%pace", "start": start, "end": end}
+
+
+def _humango_target_for_step(
+    text_block: str,
+    sport: str,
+    thresholds: AthleteThresholdsDTO,
+) -> tuple[str | None, dict | None]:
+    """Pick the right target type for a HumanGo step block based on sport + content.
+
+    Returns ``(target_key, target_dict)`` where ``target_key`` is one of
+    ``"hr"``/``"power"``/``"pace"`` or ``None`` when no parseable target is
+    found OR the relevant threshold is missing. ``target_dict`` follows the
+    ``{units: "%X", start, end}`` schema validated in
+    ``WORKOUT_ABSOLUTE_TARGETS_SPEC.md`` §12 Attempt 3b.
+    """
+    if sport == "Ride":
+        low_m = _POWER_LOW.search(text_block)
+        high_m = _POWER_HIGH.search(text_block)
+        if low_m and high_m:
+            # Audit: if a Ride block ever carries BOTH power and HR, prefer
+            # power but log the existence so we can sample real frequency.
+            if _HR_LOW.search(text_block) and _HR_HIGH.search(text_block):
+                logger.info("HumanGo Ride block has both power and HR targets — preferring power")
+            target = _humango_power_pct(float(low_m.group(1)), float(high_m.group(1)), thresholds.ftp or 0)
+            return ("power", target) if target else (None, None)
+        # Fall through to HR (some HumanGo rides emit HR, not power)
+
+    if sport in ("Run", "Ride"):
+        low_m = _HR_LOW.search(text_block)
+        high_m = _HR_HIGH.search(text_block)
+        if low_m and high_m:
+            lthr = thresholds.lthr_run if sport == "Run" else thresholds.lthr_bike
+            target = _humango_hr_pct(float(low_m.group(1)), float(high_m.group(1)), lthr or 0)
+            return ("hr", target) if target else (None, None)
+
+    if sport == "Swim":
+        low_m = _PACE_LOW.search(text_block)
+        high_m = _PACE_HIGH.search(text_block)
+        if low_m and high_m:
+            low_sec = int(low_m.group(1)) * 60 + int(low_m.group(2))
+            high_sec = int(high_m.group(1)) * 60 + int(high_m.group(2))
+            target = _humango_pace_pct(low_sec, high_sec, thresholds.css or 0)
+            return ("pace", target) if target else (None, None)
+
+    return None, None
+
+
+def _humango_parse_block_for_enrichment(
+    block: str, sport: str, thresholds: AthleteThresholdsDTO
+) -> WorkoutStepDTO | None:
+    """Parse a single HumanGo block into a corridor-schema ``WorkoutStepDTO``.
+
+    Mirrors ``_parse_block`` for step-type / duration / distance extraction
+    but emits the production ``{units, start, end}`` target shape instead of
+    the legacy ``{units, value, low, high}`` shape used by compliance code.
+    """
+    lines = [line.strip() for line in block.split("\n") if line.strip()]
+    if not lines:
+        return None
+
+    step_type = ""
+    for line in lines:
+        low = line.lower()
+        if low in STEP_TYPES:
+            step_type = low
+            break
+    if not step_type:
+        return None
+
+    text_block = "\n".join(lines)
+
+    duration = 0
+    dur_match = _DURATION_FULL.search(text_block)
+    if dur_match:
+        mins = int(dur_match.group(1) or 0)
+        secs = int(dur_match.group(2) or 0)
+        duration = mins * 60 + secs
+
+    distance = 0
+    dist_match = _DISTANCE.search(text_block)
+    if dist_match:
+        distance = int(dist_match.group(1))
+
+    target_key, target = _humango_target_for_step(text_block, sport, thresholds)
+
+    display_names = {
+        "warmup": "Warm-up",
+        "interval": "Interval",
+        "recovery": "Recovery",
+        "cooldown": "Cool-down",
+        "rest": "Rest",
+    }
+
+    return WorkoutStepDTO(
+        text=display_names.get(step_type, step_type.capitalize()),
+        duration=duration if duration > 0 else 0,
+        distance=distance if distance > 0 else None,
+        hr=target if target_key == "hr" else None,
+        power=target if target_key == "power" else None,
+        pace=target if target_key == "pace" else None,
+    )
+
+
+def humango_to_intervals_steps(
+    description: str,
+    sport: str,
+    thresholds: AthleteThresholdsDTO,
+) -> list[WorkoutStepDTO] | None:
+    """Parse a HumanGo workout description and emit Intervals.icu-ready steps.
+
+    Returns ``None`` when the caller must skip pushing — either the converter
+    cannot run, or it ran but found nothing pushable:
+    - Sport not in ``{Run, Ride, Swim}`` (HumanGo doesn't push these structured).
+    - Threshold for the sport is missing / zero (LTHR for Run, FTP for Ride,
+      CSS for Swim) — cold-start athlete, see SPEC §6.
+    - Description parsed cleanly but yielded zero steps (defensive — in the
+      normal call path ``is_humango_event`` already gates on the ``==========``
+      separator, so empty-but-valid is unreachable from the actor).
+
+    A non-empty ``list[WorkoutStepDTO]`` is returned only when there's actually
+    something to push.
+    """
+    if sport not in ("Run", "Ride", "Swim"):
+        logger.info("HumanGo enrichment skipped: sport=%s not in {Run, Ride, Swim}", sport)
+        return None
+
+    # Cold-start guard: each sport needs at least one usable threshold.
+    if sport == "Run" and not (thresholds.lthr_run and thresholds.lthr_run > 0):
+        logger.info("HumanGo enrichment skipped: missing LTHR for Run")
+        return None
+    if sport == "Ride" and not (
+        (thresholds.ftp and thresholds.ftp > 0) or (thresholds.lthr_bike and thresholds.lthr_bike > 0)
+    ):
+        logger.info("HumanGo enrichment skipped: missing FTP and LTHR for Ride")
+        return None
+    if sport == "Swim" and not (thresholds.css and thresholds.css > 0):
+        logger.info("HumanGo enrichment skipped: missing CSS for Swim")
+        return None
+
+    blocks = _split_into_blocks(description)
+    steps: list[WorkoutStepDTO] = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        repeat_match = _REPEAT.search(block)
+        if repeat_match:
+            reps = int(repeat_match.group(1))
+            sub_steps: list[WorkoutStepDTO] = []
+            i += 1
+            while i < len(blocks):
+                if _REPEAT.search(blocks[i]):
+                    break
+                sub = _humango_parse_block_for_enrichment(blocks[i], sport, thresholds)
+                if sub:
+                    step_kind = sub.text.lower().replace("-", "")
+                    if step_kind in ("cooldown", "cool down"):
+                        break  # cooldown belongs to outer level
+                    sub_steps.append(sub)
+                i += 1
+            if sub_steps:
+                # HumanGo sometimes emits `repeat 1 times` to wrap a single
+                # interval+recovery pair. A single-rep group adds zero value
+                # in the Intervals UI / Garmin watch view — flatten it to
+                # plain sequential steps so the calendar reads cleanly.
+                if reps == 1:
+                    steps.extend(sub_steps)
+                else:
+                    first_kind = sub_steps[0].text
+                    steps.append(WorkoutStepDTO(text=f"{reps}x {first_kind}", reps=reps, steps=sub_steps))
+            continue
+
+        step = _humango_parse_block_for_enrichment(block, sport, thresholds)
+        if step:
+            steps.append(step)
+        i += 1
+
+    return steps if steps else None

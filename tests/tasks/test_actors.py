@@ -842,6 +842,197 @@ class TestActorUserScheduledWorkouts:
         _, kwargs = mock_save.call_args
         assert kwargs["newest"] - kwargs["oldest"] == timedelta(days=14)
 
+    # --- HumanGo enrichment dispatch (docs/HUMANGO_ENRICHMENT_SPEC.md Phase 2) ---
+
+    _HUMANGO_DESC = (
+        "View on HumanGo: https://app.humango.ai/myday?date=2026-04-05\n"
+        "==============================\n"
+        "warmup\n\nduration: 5 min\n\npower:\n\nlow: 100 W\n\nhigh: 130 W\n"
+        "==============================\n"
+    )
+
+    def _make_humango_workout(self, id: int) -> ScheduledWorkoutDTO:
+        return ScheduledWorkoutDTO(
+            id=id,
+            start_date_local=date(2026, 4, 5),
+            name="HumanGo Endurance",
+            category="WORKOUT",
+            type="Ride",
+            moving_time=3600,
+            description=self._HUMANGO_DESC,
+            workout_doc=None,
+        )
+
+    def test_dispatches_enrichment_for_humango_events(self):
+        """Per-event detection: only HumanGo events with empty workout_doc
+        trigger `actor_enrich_humango_workout.send`."""
+        from tasks.actors import actor_user_scheduled_workouts
+
+        humango = self._make_humango_workout(9101)
+        non_humango = self._make_workout_dto(9102)  # plain "Z2 Run", no HumanGo signature
+        already_enriched = ScheduledWorkoutDTO(
+            id=9103,
+            start_date_local=date(2026, 4, 5),
+            type="Ride",
+            description=self._HUMANGO_DESC,
+            workout_doc={"steps": [{"duration": 300}]},  # already populated
+        )
+        mock_client = self._make_client([humango, non_humango, already_enriched])
+
+        with (
+            patch("tasks.actors.reports.IntervalsSyncClient.for_user", return_value=mock_client),
+            patch("tasks.actors.reports.ScheduledWorkout.save_bulk", return_value=3),
+            patch("tasks.actors.workout.actor_enrich_humango_workout.send") as mock_dispatch,
+        ):
+            actor_user_scheduled_workouts(_user().model_dump())
+
+        # Only the HumanGo + empty-steps event triggered enrichment.
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["intervals_event_id"] == 9101
+
+    def test_no_dispatch_when_no_humango_events(self):
+        """If no events match `is_humango_event`, dispatch fires zero times."""
+        from tasks.actors import actor_user_scheduled_workouts
+
+        mock_client = self._make_client([self._make_workout_dto(9001)])
+
+        with (
+            patch("tasks.actors.reports.IntervalsSyncClient.for_user", return_value=mock_client),
+            patch("tasks.actors.reports.ScheduledWorkout.save_bulk", return_value=1),
+            patch("tasks.actors.workout.actor_enrich_humango_workout.send") as mock_dispatch,
+        ):
+            actor_user_scheduled_workouts(_user().model_dump())
+
+        mock_dispatch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# actor_enrich_humango_workout
+# ---------------------------------------------------------------------------
+
+
+class TestActorEnrichHumangoWorkout:
+    """`actor_enrich_humango_workout` re-fetches the event fresh, re-checks
+    `is_humango_event` for idempotency, and only pushes when there's something
+    to push."""
+
+    _HUMANGO_DESC = (
+        "View on HumanGo: https://app.humango.ai/myday?date=2026-04-05\n"
+        "==============================\n"
+        "warmup\n\nduration: 5 min\n\npower:\n\nlow: 100 W\n\nhigh: 130 W\n"
+        "==============================\n"
+        "cooldown\n\nduration: 5 min\n\npower:\n\nlow: 80 W\n\nhigh: 110 W\n"
+    )
+
+    def _mock_event(self, **overrides) -> ScheduledWorkoutDTO:
+        defaults = dict(
+            id=9201,
+            start_date_local=date(2026, 4, 5),
+            type="Ride",
+            description=self._HUMANGO_DESC,
+            workout_doc=None,
+        )
+        defaults.update(overrides)
+        return ScheduledWorkoutDTO(**defaults)
+
+    def _mock_client(self, event):
+        mc = MagicMock()
+        mc.get_event.return_value = event
+        mc.__enter__ = MagicMock(return_value=mc)
+        mc.__exit__ = MagicMock(return_value=False)
+        return mc
+
+    def test_pushes_steps_for_eligible_humango_event(self):
+        from data.db import AthleteThresholdsDTO
+        from tasks.actors import actor_enrich_humango_workout
+
+        event = self._mock_event()
+        client = self._mock_client(event)
+        thresholds = AthleteThresholdsDTO(ftp=200)
+
+        with (
+            patch("tasks.actors.workout.IntervalsSyncClient.for_user", return_value=client),
+            patch("tasks.actors.workout.AthleteSettings.get_thresholds", return_value=thresholds),
+        ):
+            actor_enrich_humango_workout(_user().model_dump(), 9201)
+
+        client.update_event.assert_called_once()
+        event_id_arg, payload = client.update_event.call_args.args
+        assert event_id_arg == 9201
+        # Payload carries the new steps in workout_doc plus native description.
+        dumped = payload.model_dump(exclude_none=True)
+        assert dumped["workout_doc"]["steps"]
+        assert dumped["description"]  # native-format render
+        # HumanGo's original description preserved as workout note.
+        assert dumped["workout_doc"]["description"] == self._HUMANGO_DESC
+
+    def test_skip_when_event_not_found(self):
+        from tasks.actors import actor_enrich_humango_workout
+
+        client = self._mock_client(event=None)
+
+        with (
+            patch("tasks.actors.workout.IntervalsSyncClient.for_user", return_value=client),
+            patch("tasks.actors.workout.AthleteSettings.get_thresholds") as mock_thresholds,
+        ):
+            actor_enrich_humango_workout(_user().model_dump(), 9201)
+
+        # Bail out before even loading thresholds; no push.
+        mock_thresholds.assert_not_called()
+        client.update_event.assert_not_called()
+
+    def test_skip_when_event_already_enriched(self):
+        """Re-check guard: between dispatcher and actor, somebody filled
+        workout_doc.steps. Actor must not overwrite."""
+        from tasks.actors import actor_enrich_humango_workout
+
+        event = self._mock_event(workout_doc={"steps": [{"duration": 60}]})
+        client = self._mock_client(event)
+
+        with (
+            patch("tasks.actors.workout.IntervalsSyncClient.for_user", return_value=client),
+            patch("tasks.actors.workout.AthleteSettings.get_thresholds") as mock_thresholds,
+        ):
+            actor_enrich_humango_workout(_user().model_dump(), 9201)
+
+        mock_thresholds.assert_not_called()
+        client.update_event.assert_not_called()
+
+    def test_skip_when_thresholds_missing(self):
+        """Cold-start athlete (no FTP / no LTHR for Ride) — converter returns
+        None, actor doesn't push. Documented in SPEC §6."""
+        from data.db import AthleteThresholdsDTO
+        from tasks.actors import actor_enrich_humango_workout
+
+        event = self._mock_event()
+        client = self._mock_client(event)
+
+        with (
+            patch("tasks.actors.workout.IntervalsSyncClient.for_user", return_value=client),
+            patch(
+                "tasks.actors.workout.AthleteSettings.get_thresholds",
+                return_value=AthleteThresholdsDTO(),  # all None
+            ),
+        ):
+            actor_enrich_humango_workout(_user().model_dump(), 9201)
+
+        client.update_event.assert_not_called()
+
+    def test_skip_when_intervals_access_revoked(self):
+        """Token / scope revoked mid-flight — `IntervalsAccessError` from
+        `for_user` is swallowed, actor returns cleanly so Dramatiq doesn't
+        retry-loop. Same pattern as other actors in this codebase."""
+        from data.intervals.client import IntervalsScopeError
+        from tasks.actors import actor_enrich_humango_workout
+
+        with patch(
+            "tasks.actors.workout.IntervalsSyncClient.for_user",
+            side_effect=IntervalsScopeError(1, "GET", "/api/v1/athlete/i1/events/9201"),
+        ):
+            # Must not raise.
+            actor_enrich_humango_workout(_user().model_dump(), 9201)
+
 
 # ---------------------------------------------------------------------------
 # actor_user_wellness

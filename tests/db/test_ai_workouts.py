@@ -10,10 +10,10 @@ from data.intervals.dto import (
     WorkoutStepDTO,
     _render_distance,
     _render_duration,
-    _render_native_description,
     _render_step,
     _render_target,
     _sanitize_label,
+    render_native_description,
 )
 
 # ---------------------------------------------------------------------------
@@ -391,7 +391,7 @@ class TestRenderNativeDescription:
             WorkoutStepDTO(text="Main", duration=1800, hr={"units": "%lthr", "start": 85}),
             WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "start": 60}),
         ]
-        rendered = _render_native_description(steps, "Run")
+        rendered = render_native_description(steps, "Run")
         assert rendered == "- WU 10m 70% LTHR\n\n- Main 30m 85% LTHR\n\n- CD 5m 60% LTHR\n"
 
     def test_repeat_block_inline_substeps_and_surrounding_blanks(self):
@@ -409,7 +409,7 @@ class TestRenderNativeDescription:
             ),
             WorkoutStepDTO(text="CD", duration=300, hr={"units": "%lthr", "start": 60}),
         ]
-        rendered = _render_native_description(steps, "Run")
+        rendered = render_native_description(steps, "Run")
         assert rendered == (
             "- WU 10m 70% LTHR\n" "\n" "4x\n" "- On 5m 90% LTHR\n" "- Off 2m 60% LTHR\n" "\n" "- CD 5m 60% LTHR\n"
         )
@@ -433,7 +433,7 @@ class TestRenderNativeDescription:
             ),
             WorkoutStepDTO(text="Cool-down", distance=100.0, pace={"units": "%pace", "start": 60, "end": 75}),
         ]
-        rendered = _render_native_description(steps, "Swim")
+        rendered = render_native_description(steps, "Swim")
         assert "- 50" not in rendered  # leading digit stripped
         assert "fingertip drag" in rendered
         assert "4x\n" in rendered
