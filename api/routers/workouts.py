@@ -46,7 +46,8 @@ async def scheduled_workouts(
                     "category": w.category,
                     "duration": format_duration(w.moving_time),
                     "duration_secs": w.moving_time,
-                    "distance_km": w.distance,
+                    # Stored in METERS (Intervals native) — convert for the UI.
+                    "distance_km": w.distance / 1000 if w.distance is not None else None,
                     "description": w.description,
                 }
             )
@@ -120,16 +121,24 @@ async def scheduled_workout_detail(
         "date": w.start_date_local,
         "duration": format_duration(w.moving_time),
         "duration_secs": w.moving_time,
-        "distance_km": w.distance,
+        # Stored in METERS (Intervals native) — convert for the UI.
+        "distance_km": w.distance / 1000 if w.distance is not None else None,
         "description": w.description,
         "steps": wd.get("steps"),
         "rationale": wd.get("description"),
         "enrichment": {
-            "tss": wd.get("strain_score"),
+            # TSS comes from `event.icu_training_load` (top-level). The
+            # workout_doc-internal `strain_score` field is always None for
+            # planned events — Intervals only populates it for completed
+            # activities. Verified empirically 2026-05-13.
+            "tss": w.icu_training_load,
             "normalized_power": wd.get("normalized_power") or None,
             "variability_index": wd.get("variability_index"),
             "polarization_index": wd.get("polarization_index"),
-            "intensity_factor": wd.get("intensity_factor"),
+            # icu_intensity is emitted as event top-level by Intervals.icu
+            # (NOT inside workout_doc — see ScheduledWorkoutDTO docstring).
+            # Value is 0-100 percent; frontend renders verbatim with %.
+            "intensity_pct": w.icu_intensity,
             "zone_times": wd.get("zoneTimes"),
         },
         "thresholds": {

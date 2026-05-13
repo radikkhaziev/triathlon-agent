@@ -227,12 +227,14 @@ export interface WorkoutDetailThresholds {
 
 // Intervals.icu enrichment populated on POST /events.
 // All fields nullable — some sports lack the relevant signal (Swim has no power).
+// `intensity_pct` is Intervals.icu's `icu_intensity` field — 0-100 percent
+// (NOT the 0-1 decimal used by TrainingPeaks).
 export interface WorkoutEnrichment {
   tss: number | null
   normalized_power: number | null
   variability_index: number | null
   polarization_index: number | null
-  intensity_factor: number | null
+  intensity_pct: number | null
   zone_times: { id: string; secs: number | null }[] | null
 }
 

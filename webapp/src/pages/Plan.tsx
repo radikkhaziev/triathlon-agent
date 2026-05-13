@@ -71,7 +71,7 @@ export default function Plan() {
 function WorkoutItem({ workout: w }: { workout: ScheduledWorkout }) {
   const icon = SPORT_ICONS[w.type || ''] || '\u{1F3C6}'
   const name = stripWorkoutPrefix(w.name)
-  const meta = [w.duration, w.distance_km ? `${w.distance_km} km` : null].filter(Boolean).join(' \u00B7 ')
+  const meta = [w.duration, w.distance_km != null ? `${w.distance_km.toFixed(1)} km` : null].filter(Boolean).join(' \u00B7 ')
 
   const linkClass = [
     'border-t border-border flex items-center gap-2.5 px-4 py-3',
