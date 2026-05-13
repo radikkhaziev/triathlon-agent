@@ -65,6 +65,11 @@ class Activity(Base):
     # compliance (`race_plan_compliance` table) and from per-workout-card
     # adherence (`workout_cards.compliance`).
     compliance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Intervals.icu native planned-vs-actual pairing. References
+    # `scheduled_workouts.id` but stored as plain Integer (no FK) — Intervals
+    # rotates / deletes calendar events independently of activities, a hard FK
+    # would either cascade-delete activities on plan cleanup or 23503 on sync.
+    paired_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fit_file_path: Mapped[str | None] = mapped_column(String, nullable=True)
     # Webhook-time noise classification (Phase 1.6, ML_RACE_PROJECTION_SPEC §6.4).
@@ -104,6 +109,7 @@ class Activity(Base):
                 "source": getattr(a, "source", None),
                 "rpe": getattr(a, "icu_rpe", None),
                 "compliance": getattr(a, "compliance", None),
+                "paired_event_id": getattr(a, "paired_event_id", None),
                 "last_synced_at": now,
             }
             for a in activities
@@ -134,6 +140,10 @@ class Activity(Base):
                 # Intervals as source of truth when it has a value; we don't
                 # forget the value when it temporarily doesn't.
                 "compliance": func.coalesce(stmt.excluded.compliance, cls.compliance),
+                # Same pattern: Intervals can drop `paired_event_id` when the
+                # planned event is deleted or the matcher fails. Keep the prior
+                # link so the «open paired plan» UX doesn't break temporarily.
+                "paired_event_id": func.coalesce(stmt.excluded.paired_event_id, cls.paired_event_id),
                 "last_synced_at": stmt.excluded.last_synced_at,
             },
         )

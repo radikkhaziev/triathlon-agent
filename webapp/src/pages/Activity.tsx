@@ -1,4 +1,4 @@
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -72,6 +72,14 @@ export default function Activity() {
       <div className="py-4 pb-3">
         <div className="text-xl font-bold flex items-center gap-2">{icon} {sportLabel(data.type)} {data.is_race && <span className="text-sm">🏁</span>}</div>
         <div className="text-[13px] text-text-dim mt-1">{subParts.join(' \u00B7 ')}</div>
+        {data.paired_event_id != null && (
+          <Link
+            to={`/workout/${data.paired_event_id}`}
+            className="inline-flex items-center gap-1 text-[13px] text-accent no-underline mt-2 hover:underline"
+          >
+            {t('activities.view_planned_workout')} &rarr;
+          </Link>
+        )}
       </div>
 
       {data.is_race && data.race && <RaceSection race={data.race} />}

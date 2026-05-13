@@ -124,7 +124,8 @@
     "no_details": "Нет детальных данных для этой активности.",
     "rest_day": "День отдыха",
     "compliance": "Соответствие",
-    "compliance_hint": "Соответствие плана и факта по версии Intervals.icu"
+    "compliance_hint": "Соответствие плана и факта по версии Intervals.icu",
+    "view_planned_workout": "Открыть плановую тренировку"
   },
   "plan": {
     "title": "План тренировок",

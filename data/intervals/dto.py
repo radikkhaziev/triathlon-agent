@@ -181,6 +181,11 @@ class ActivityDTO(BaseModel):
     source: str | None = None  # e.g. "GARMIN_CONNECT", "OAUTH_CLIENT", "STRAVA"
     icu_rpe: int | None = None  # Borg CR-10 (1-10), from Intervals.icu / Garmin
     compliance: float | None = None  # Intervals.icu workout compliance % (0-100, planned vs actual)
+    # Intervals.icu native pairing — `scheduled_workouts.id` of the planned
+    # event that this activity was matched against. Set when Intervals' own
+    # planned-vs-actual matcher succeeds (sport + date proximity). Persists
+    # the link without us re-deriving it from `TrainingLog.original_*` snapshots.
+    paired_event_id: int | None = None
 
     # WEBHOOK_DATA_CAPTURE Phase 1: rolling power model + fitness snapshot per
     # activity. Arrive on ACTIVITY_ACHIEVEMENTS (~60s after upload) for every
