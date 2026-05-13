@@ -957,6 +957,61 @@ class TestActorComposeMorningReport:
 
         mock_mcp_cls.assert_not_called()
 
+    def test_returns_early_when_user_is_inactive(self):
+        """Pre-check race regression: Telegram-403 sendMessage flips
+        `users.is_active=False` (via `User.set_active_by_chat_id`) while the
+        morning-report message is in flight in the Dramatiq queue. Without the
+        pre-check the actor would claim the sentinel, instantiate MCPTool, and
+        the MCP middleware's `get_by_mcp_token(... AND is_active=True)` would
+        reject → unhandled HTTPStatusError(401) → Sentry stack.
+
+        The pre-check must run BEFORE the SELECT FOR UPDATE sentinel claim:
+        - no `MCPTool` instantiation
+        - no `session.execute(...)` (sentinel SELECT FOR UPDATE) call
+        """
+        from tasks.actors import actor_compose_user_morning_report
+
+        user = _user(id=1)
+        # User row with is_active=False — the smoking gun.
+        inactive_user = MagicMock(is_active=False)
+
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        session.get.return_value = inactive_user
+
+        with (
+            patch("tasks.actors.reports.get_sync_session", return_value=session),
+            patch("tasks.actors.reports.MCPTool") as mock_mcp_cls,
+        ):
+            actor_compose_user_morning_report(user.model_dump())
+
+        mock_mcp_cls.assert_not_called()
+        # Sentinel claim must NOT have been attempted — pre-check is the
+        # FIRST thing the actor does, so nothing should have run yet.
+        session.execute.assert_not_called()
+
+    def test_returns_early_when_user_missing(self):
+        """If `session.get(User, user.id)` returns None (row deleted between
+        scheduler dispatch and actor run) — same early-out, no sentinel claim."""
+        from tasks.actors import actor_compose_user_morning_report
+
+        user = _user(id=1)
+
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        session.get.return_value = None
+
+        with (
+            patch("tasks.actors.reports.get_sync_session", return_value=session),
+            patch("tasks.actors.reports.MCPTool") as mock_mcp_cls,
+        ):
+            actor_compose_user_morning_report(user.model_dump())
+
+        mock_mcp_cls.assert_not_called()
+        session.execute.assert_not_called()
+
     def test_returns_early_when_rhr_row_missing(self):
         """Missing RHR analysis row → MCPTool not called."""
         from tasks.actors import actor_compose_user_morning_report
@@ -1209,3 +1264,53 @@ class TestActivityNotificationTenantGuard:
 
         # Cross-tenant data must NOT be rendered into this user's chat.
         tg_mock.send_message.assert_not_called()
+
+
+class TestGenerateAndSaveWeeklyReport:
+    """`generate_and_save_weekly_report` mirrors the morning-report pre-check
+    contract: bail out cleanly when the user no longer exists / is inactive
+    rather than letting `MCPTool` hit a 401 from the MCP middleware."""
+
+    def test_returns_none_when_user_is_inactive(self):
+        """Telegram-block race: scheduler dispatched the weekly cron while the
+        user was active, but a parallel `sendMessage` 403'd and flipped
+        `is_active=False` before this actor ran. Must short-circuit BEFORE
+        MCPTool — the middleware filters `is_active=True` and would 401."""
+        from tasks.actors.reports import generate_and_save_weekly_report
+
+        user = _user(id=1)
+        inactive_user = MagicMock(is_active=False)
+
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        session.get.return_value = inactive_user
+
+        with (
+            patch("tasks.actors.reports.get_sync_session", return_value=session),
+            patch("tasks.actors.reports.MCPTool") as mock_mcp_cls,
+        ):
+            result = generate_and_save_weekly_report(user)
+
+        assert result is None
+        mock_mcp_cls.assert_not_called()
+
+    def test_returns_none_when_user_missing(self):
+        """User row deleted between dispatch and run → same early-out, no MCP call."""
+        from tasks.actors.reports import generate_and_save_weekly_report
+
+        user = _user(id=1)
+
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        session.get.return_value = None
+
+        with (
+            patch("tasks.actors.reports.get_sync_session", return_value=session),
+            patch("tasks.actors.reports.MCPTool") as mock_mcp_cls,
+        ):
+            result = generate_and_save_weekly_report(user)
+
+        assert result is None
+        mock_mcp_cls.assert_not_called()

@@ -225,6 +225,29 @@ def actor_compose_user_morning_report(
     # catch is needed. The MCPTool path has its own HTTPStatusError handling.
     _dt = local_today().isoformat()
 
+    # Pre-check tenant state BEFORE sentinel acquisition. Scheduler filters at
+    # dispatch, but Telegram 403 (user blocked the bot) flips `is_active=False`
+    # mid-flight via `User.set_active_by_chat_id`. Without this guard the actor
+    # would claim the sentinel, then call MCP — where `MCPAuthMiddleware.
+    # get_by_mcp_token` rejects an inactive user with 401 (Sentry stack trace).
+    # Early-out avoids the wasted SELECT FOR UPDATE + sentinel claim/release.
+    #
+    # Race window: user can still flip inactive (or be deleted) AFTER this
+    # pre-check but BEFORE the sentinel/MCP. That's OK — MCP middleware will
+    # 401 on the now-invalid token, the `except Exception` at the MCP call
+    # (line ~276 below) catches it and calls `_clear_sentinel`. No code path
+    # leaks a stuck sentinel: pre-check returns BEFORE any sentinel write,
+    # and every post-sentinel exit (success/error/disappeared-wellness-row)
+    # either writes the real value or runs `_clear_sentinel`.
+    with get_sync_session() as session:
+        _user_orm = session.get(User, user.id)
+    if _user_orm is None:
+        logger.warning("Morning report skipped: user %d no longer exists", user.id)
+        return
+    if not _user_orm.is_active:
+        logger.info("Morning report skipped: user %d is inactive", user.id)
+        return
+
     # Transaction 1: short lock — claim the slot with sentinel, release immediately.
     # Prevents race: two concurrent actors both see ai_recommendation=None.
     with get_sync_session() as session:
@@ -253,14 +276,6 @@ def actor_compose_user_morning_report(
 
         _wellness_row.ai_recommendation = f"__generating__:{time.time():.0f}"
         session.commit()
-
-    # Fetch user credentials (outside lock)
-    with get_sync_session() as session:
-        _user_orm = session.get(User, user.id)
-    if _user_orm is None:
-        logger.warning("Morning report skipped: user %d no longer exists", user.id)
-        _clear_sentinel(user.id, _dt)
-        return
 
     # Generate report (no DB lock held — can take 30-120s)
     try:
@@ -338,6 +353,12 @@ def generate_and_save_weekly_report(user: UserDTO) -> tuple[str, date] | None:
         _user_orm = session.get(User, user.id)
     if _user_orm is None:
         logger.warning("Weekly report skipped: user %d no longer exists", user.id)
+        return None
+    # Same is_active re-check as in the morning report — MCPAuthMiddleware
+    # filters by `is_active=True`, so a Telegram-block flip mid-flight would
+    # surface as 401 from /mcp/.
+    if not _user_orm.is_active:
+        logger.info("Weekly report skipped: user %d is inactive", user.id)
         return None
     mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
     text = mcp.generate_weekly_report_via_mcp()
