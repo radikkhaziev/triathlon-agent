@@ -4,21 +4,17 @@ import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import WeekNav from '../components/WeekNav'
-import SyncButton from '../components/SyncButton'
+import LastSyncedLabel from '../components/LastSyncedLabel'
 import { useWeekNav } from '../hooks/useWeekNav'
 import { useApi } from '../hooks/useApi'
 import { formatDayDate, stripWorkoutPrefix } from '../lib/formatters'
 import { SPORT_ICONS } from '../lib/constants'
-import type { ScheduledWorkoutsResponse, SyncResponse, ScheduledWorkout } from '../api/types'
+import type { ScheduledWorkoutsResponse, ScheduledWorkout } from '../api/types'
 
 export default function Plan() {
   const { t, i18n } = useTranslation()
   const { offset, prev, next } = useWeekNav()
-  const { data, loading, error, reload } = useApi<ScheduledWorkoutsResponse>(`/api/scheduled-workouts?week_offset=${offset}`)
-
-  const handleSynced = (_result: SyncResponse) => {
-    reload()
-  }
+  const { data, loading, error } = useApi<ScheduledWorkoutsResponse>(`/api/scheduled-workouts?week_offset=${offset}`)
 
   return (
     <Layout title={t('plan.title')}>
@@ -33,13 +29,7 @@ export default function Plan() {
         />
       )}
 
-      {data?.role === 'owner' && (
-        <SyncButton
-          endpoint="/api/jobs/sync-workouts"
-          lastSyncedAt={data.last_synced_at}
-          onSynced={handleSynced}
-        />
-      )}
+      {data?.role === 'owner' && <LastSyncedLabel at={data.last_synced_at} />}
 
       {loading && <LoadingSpinner />}
       {error && <ErrorMessage message={t('plan.load_error')} />}

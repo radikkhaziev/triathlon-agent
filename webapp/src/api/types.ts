@@ -281,12 +281,6 @@ export interface ScheduledWorkoutsResponse {
   days: ScheduledWorkoutsDay[]
 }
 
-export interface SyncResponse {
-  status: string
-  synced_count: number
-  last_synced_at: string | null
-}
-
 // Activities
 export interface ActivityItem {
   id: string

@@ -7,7 +7,7 @@ import MetricCard from '../components/MetricCard'
 import StatusBadge from '../components/StatusBadge'
 import AiRecommendation from '../components/AiRecommendation'
 import SportCtlBars from '../components/SportCtlBars'
-import SyncButton from '../components/SyncButton'
+import LastSyncedLabel from '../components/LastSyncedLabel'
 import { useDayNav } from '../hooks/useDayNav'
 import { useApi } from '../hooks/useApi'
 import { num } from '../lib/formatters'
@@ -16,7 +16,7 @@ import type { WellnessResponse, HRVBlock } from '../api/types'
 export default function Wellness() {
   const { t } = useTranslation()
   const { currentDate, dateStr, isToday, prev, next } = useDayNav()
-  const { data, loading, error, reload } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
+  const { data, loading, error } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
 
   return (
     <Layout title="Wellness">
@@ -29,13 +29,7 @@ export default function Wellness() {
         onNext={next}
       />
 
-      {isToday && (
-        <SyncButton
-          endpoint="/api/jobs/sync-wellness"
-          lastSyncedAt={data?.updated_at ?? null}
-          onSynced={() => reload()}
-        />
-      )}
+      {isToday && <LastSyncedLabel at={data?.updated_at ?? null} />}
 
       {loading && <LoadingSpinner />}
       {error && <ErrorMessage message={t('wellness.load_error')} />}
