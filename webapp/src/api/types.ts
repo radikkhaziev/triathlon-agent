@@ -727,9 +727,10 @@ export interface ChangelogLatest {
 // required shape client-side from `distance_km ** 1.23`.
 export interface MarathonShapeComponents {
   actual_weekly_km: number
-  target_weekly_km: number
+  target_weekly_km: number               // raw marathon-baseline = V^1.135
   longjog_score: number
-  target_longjog_km: number
+  target_longjog_km: number              // scoring-internal = ln(V/4)*12 − 13
+  displayed_target_long_run_km: number   // UI = target_longjog_km + 13 = ln(V/4)*12 (Runalyze parity)
   actual_longjog_km: number
 }
 

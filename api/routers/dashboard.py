@@ -19,7 +19,7 @@ from api.deps import get_data_user_id, require_viewer
 from config import settings
 from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
 from data.db.dto import AthleteGoalDTO
-from data.marathon_shape import DAYS_FOR_WEEK_KM, RunActivity, calculate_marathon_shape
+from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivity, calculate_marathon_shape
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
 from data.ml.race_predict import predict_splits_with_ci
 from data.redis_client import get_redis
@@ -519,12 +519,16 @@ async def marathon_shape(
             # is silently dropped by the `if dist_m is None: continue` below,
             # not by the JOIN. Outerjoin gives the SAME result for any window
             # outside the live pipeline gap and an immediately fresh view inside it.
+            #
+            # Race-effort included intentionally (no `is_race` filter) — mirror
+            # Runalyze upstream (spec §1 declarative stance, §7, §14 D1.A).
+            # Race-day km are real basic-endurance volume; the 70-day time-decay
+            # weight handles taper-phase anomalies.
             select(Activity.start_date_local, ActivityDetail.distance)
             .outerjoin(ActivityDetail, ActivityDetail.activity_id == Activity.id)
             .where(
                 Activity.user_id == uid,
                 Activity.type == "Run",
-                Activity.is_race.is_(False),
                 Activity.start_date_local >= history_start.isoformat(),
                 Activity.start_date_local <= window_end.isoformat(),
             )
@@ -569,6 +573,13 @@ async def marathon_shape(
             )
             continue
         result = calculate_marathon_shape(all_runs, vo2max=vo2, reference_date=wk_end)
+        # Per spec §3 + D2.A: `target_longjog_km` (scoring-internal, ln(V/4)*12-13)
+        # is the value used in the shape_pct quadratic term. UI shows
+        # `displayed_target_long_run_km = target_longjog_km + 13 = ln(V/4)*12`,
+        # which matches Runalyze «Required Long Run» column on the «Other
+        # distances» table. Verified for V=37: scoring=13.7, displayed=26.7 ≈
+        # «ca. 26 km» in upstream screenshot.
+        displayed_long_run = result.target_longjog_km + MIN_KM_FOR_LONGJOG
         weeks_out.append(
             {
                 "week_start": wk_start.isoformat(),
@@ -580,6 +591,7 @@ async def marathon_shape(
                     "target_weekly_km": result.target_weekly_km,
                     "longjog_score": result.longjog_score,
                     "target_longjog_km": result.target_longjog_km,
+                    "displayed_target_long_run_km": round(displayed_long_run, 1),
                     "actual_longjog_km": result.actual_longjog_km,
                 },
             }

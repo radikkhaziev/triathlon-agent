@@ -525,6 +525,16 @@ const MS_DISTANCE_TABS = [
   { key: 'Marathon', label: 'Marathon' },
 ]
 
+// Spec §3 — distance-adjusted Components factors. Calibrated on Runalyze
+// screenshot V≈37 (2026-05-14). Multiply marathon-baseline target by these to
+// derive per-distance Required Weekly/Long Run. Drift unknown for V > 50;
+// refine via §14.D3.B (PHP-port) if user surveys reveal material divergence.
+const MS_RUNALYZE_DISTANCE_FACTORS: Record<MSDistance, { weekly: number; longjog: number | null }> = {
+  '10K': { weekly: 0.26, longjog: null },   // 15 / 58, longjog n/a for 10K (Runalyze shows «—»)
+  HM: { weekly: 0.57, longjog: 0.69 },      // 33/58, 18/26
+  Marathon: { weekly: 1.00, longjog: 1.00 },
+}
+
 // Format helpers for the Predicted block (Phase 1.5).
 // `H:MM:SS` for ≥1h, `M:SS` otherwise. 6135 → "1:42:15". 3340 → "55:40".
 // Negative / zero treated as "—" — envelope filtering upstream prevents these,
@@ -688,8 +698,25 @@ function MarathonShapeWidget() {
   if (!data) return null
 
   const current = data.current_components
-  const weeklyPct = current ? Math.round((current.actual_weekly_km / current.target_weekly_km) * 100) : null
-  const longjogPct = current ? Math.round((current.actual_longjog_km / current.target_longjog_km) * 100) : null
+  // Spec §6 + §3 — Components targets scaled per selected distance using the
+  // empirical Runalyze factor table. Marathon-baseline targets (current.*)
+  // come from V^1.135 / ln(V/4)*12 and are scaled by MS_RUNALYZE_DISTANCE_FACTORS.
+  // Long Run uses `displayed_target_long_run_km` (= scoring-internal + 13) per
+  // §3 D2.A — matches Runalyze «Required Long Run» column.
+  const distanceFactor = MS_RUNALYZE_DISTANCE_FACTORS[distance]
+  const effectiveTargetWeeklyKm = current ? current.target_weekly_km * distanceFactor.weekly : null
+  const effectiveTargetLongRunKm =
+    current && distanceFactor.longjog !== null
+      ? current.displayed_target_long_run_km * distanceFactor.longjog
+      : null
+  const weeklyPct =
+    current && effectiveTargetWeeklyKm
+      ? Math.round((current.actual_weekly_km / effectiveTargetWeeklyKm) * 100)
+      : null
+  const longjogPct =
+    current && effectiveTargetLongRunKm
+      ? Math.round((current.actual_longjog_km / effectiveTargetLongRunKm) * 100)
+      : null
   // If every week is null (no vo2max anywhere in window), hide the chart —
   // a lone annotation line floating without data points is more confusing
   // than helpful. The "VO2max unavailable" message above covers the state.
@@ -765,16 +792,18 @@ function MarathonShapeWidget() {
       {current && (
         <div className="mt-3 pt-3 border-t border-border text-[12px] text-text-dim space-y-1">
           <div className="flex justify-between">
-            <span>Weekly volume</span>
+            <span>Weekly volume ({distance})</span>
             <span className="font-mono">
-              {num(current.actual_weekly_km, 1)} / {num(current.target_weekly_km, 1)} km
+              {num(current.actual_weekly_km, 1)} / {effectiveTargetWeeklyKm !== null ? num(effectiveTargetWeeklyKm, 1) : '—'} km
               {weeklyPct !== null && <span className="text-text-dim ml-2">({weeklyPct}%)</span>}
             </span>
           </div>
           <div className="flex justify-between">
-            <span>Long run</span>
+            <span>Long run ({distance})</span>
             <span className="font-mono">
-              {num(current.actual_longjog_km, 1)} / {num(current.target_longjog_km, 1)} km
+              {effectiveTargetLongRunKm !== null
+                ? `${num(current.actual_longjog_km, 1)} / ${num(effectiveTargetLongRunKm, 1)} km`
+                : 'n/a'}
               {longjogPct !== null && <span className="text-text-dim ml-2">({longjogPct}%)</span>}
             </span>
           </div>
