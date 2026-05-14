@@ -6,6 +6,8 @@ in place for the Today tab and the as-yet-unwired job buttons; the path
 collisions that existed during the END-12/13 cut-over are gone.
 """
 
+import json
+import logging
 import zoneinfo
 from datetime import date, datetime, timedelta
 
@@ -20,7 +22,10 @@ from data.db.dto import AthleteGoalDTO
 from data.marathon_shape import DAYS_FOR_WEEK_KM, RunActivity, calculate_marathon_shape
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
 from data.ml.race_predict import predict_splits_with_ci
+from data.redis_client import get_redis
 from data.utils import extract_sport_ctl, normalize_sport
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -40,6 +45,17 @@ _SPORT_MAP = {
 
 def _today_local() -> date:
     return datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
+
+
+def _ttl_until_midnight_local() -> int:
+    """Seconds until next midnight in `settings.TIMEZONE`. Used as TTL for
+    same-day caches (e.g. marathon-shape predicted_times) so the cache flushes
+    exactly when «today» rolls over. Floor at 60s to avoid pathological
+    sub-minute TTLs near midnight from a clock skew."""
+    tz = zoneinfo.ZoneInfo(settings.TIMEZONE)
+    now = datetime.now(tz)
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(60, int((midnight - now).total_seconds()))
 
 
 def _nearest_wellness(
@@ -581,25 +597,76 @@ async def marathon_shape(
         }
 
     # ── Phase 1.5: ML-based Predicted time + pace per distance.
-    # Sequential await — `predict_splits_with_ci` is async at the outer layer
-    # but `_predict_one` (joblib + XGBoost + bootstrap) is sync and blocks the
-    # loop; `asyncio.gather` wouldn't give parallelism (spec §13 Latency).
-    # Each call ~80ms × 3 = ~240ms total. `predict_splits_with_ci` catches
-    # ModelNotTrained / ModelBelowAcceptance internally and surfaces them via
-    # `not_available` / `below_acceptance` lists — we just check whether the
-    # "run" split landed in the envelope.
-    #
-    # Minor inefficiency: `_load_model` (data/ml/race_predict.py:97) has no
-    # cache, so the same `race_run_{user_id}.joblib` is read from disk 3× per
-    # request. ~50ms each is the dominant cost. Decoupling load from quality-
-    # gate enforcement would let us cache the bundle, but it's a cross-cutting
-    # change in shared infra — defer until joblib I/O becomes hot.
-    predicted_times: dict[str, dict | None] = {}
     today_iso = today.isoformat()
-    for label, dist_m in (("10K", 10000), ("HM", 21097), ("Marathon", 42195)):
+    predicted_times = await _compute_predicted_times(uid, today_iso)
+
+    return {
+        "weeks": weeks_out,
+        "current_components": current_components,
+        "predicted_times": predicted_times,
+    }
+
+
+_MS_PREDICT_CACHE_KEY = "marathon_shape_pred:{user_id}:{today_iso}"
+_MS_DISTANCES: tuple[tuple[str, int], ...] = (("10K", 10000), ("HM", 21097), ("Marathon", 42195))
+
+
+async def _compute_predicted_times(user_id: int, today_iso: str) -> dict[str, dict | None]:
+    """Return per-distance ML predictions (10K / HM / Marathon) for user.
+
+    Backed by a Redis cache keyed on ``(user_id, today_iso)`` with TTL to the
+    next local midnight — predictions shift slowly within a day (CTL drifts
+    ~1 unit/day), so per-day staleness is acceptable for this diagnostic view.
+    Cache miss / Redis unavailable / Redis errors fall through to fresh
+    computation. Cache write failures are logged but don't break the response.
+    """
+    cache_key = _MS_PREDICT_CACHE_KEY.format(user_id=user_id, today_iso=today_iso)
+    redis_client = get_redis()
+    if redis_client is not None:
+        try:
+            cached = await redis_client.get(cache_key)
+            if cached is not None:
+                return json.loads(cached)
+        except Exception as e:  # noqa: BLE001 — Redis errors must never break the endpoint
+            logger.warning("Marathon-shape predict cache read failed: %s", e)
+
+    predicted_times = await _predict_times_fresh(user_id, today_iso)
+
+    if redis_client is not None:
+        try:
+            await redis_client.set(
+                cache_key,
+                json.dumps(predicted_times),
+                ex=_ttl_until_midnight_local(),
+            )
+        except Exception as e:  # noqa: BLE001 — same: cache-write failure must not break the response
+            logger.warning("Marathon-shape predict cache write failed: %s", e)
+
+    return predicted_times
+
+
+async def _predict_times_fresh(user_id: int, today_iso: str) -> dict[str, dict | None]:
+    """Cache-free per-distance ML prediction. Sequential await — see notes below.
+
+    Sequential reasoning: `predict_splits_with_ci` is async at the outer layer
+    but `_predict_one` (joblib + XGBoost + bootstrap) is sync and blocks the
+    loop; `asyncio.gather` wouldn't give parallelism (spec §13 Latency).
+    Each call ~80ms × 3 = ~240ms total. `predict_splits_with_ci` catches
+    ModelNotTrained / ModelBelowAcceptance internally and surfaces them via
+    `not_available` / `below_acceptance` lists — we just check whether the
+    "run" split landed in the envelope.
+
+    Minor inefficiency: `_load_model` (data/ml/race_predict.py:97) has no
+    cache, so the same `race_run_{user_id}.joblib` is read from disk 3× per
+    request. ~50ms each is the dominant cost. Decoupling load from quality-
+    gate enforcement would let us cache the bundle, but it's a cross-cutting
+    change in shared infra — defer until joblib I/O becomes hot.
+    """
+    predicted_times: dict[str, dict | None] = {}
+    for label, dist_m in _MS_DISTANCES:
         try:
             env = await predict_splits_with_ci(
-                user_id=uid,
+                user_id=user_id,
                 mode="today",
                 race_date=today_iso,  # spec §13: today_iso → days_to_race=0 → only intercept bias applied
                 race_distance_run_m=dist_m,
@@ -608,29 +675,43 @@ async def marathon_shape(
             # `predict_splits_with_ci` already filters expected ML errors into
             # envelope lists, so anything reaching here is unexpected and worth
             # a Sentry alert (corrupt joblib, missing feature column, etc.).
-            sentry_sdk.capture_exception(e)
+            # `push_scope` keeps the tags/context scoped to this one capture
+            # — doesn't leak into Sentry events fired by later requests on the
+            # same worker.
+            with sentry_sdk.push_scope() as scope:
+                scope.set_tag("endpoint", "marathon_shape")
+                scope.set_context(
+                    "predict",
+                    {
+                        "user_id": user_id,
+                        "label": label,
+                        "race_distance_m": dist_m,
+                    },
+                )
+                sentry_sdk.capture_exception(e)
             predicted_times[label] = None
             continue
 
         # Run leg is always pace-based — `total_sec_unavailable` flag is a
         # Ride-only marker (power_only_phase1, see race_predict.py:449-451).
-        # If Run lacks `total_sec` here, the envelope is malformed; treat as
-        # null defensively.
-        run = env.get("splits", {}).get("run")
-        if run and run.get("total_sec") is not None:
-            predicted_times[label] = {
-                "total_sec": run["total_sec"],
-                "total_sec_ci_low": run["total_sec_ci_low"],
-                "total_sec_ci_high": run["total_sec_ci_high"],
-                "pace_sec_per_km": round(run["pred"], 1),
-                "pace_ci_low": round(run["ci_low"], 1),
-                "pace_ci_high": round(run["ci_high"], 1),
-            }
-        else:
+        # Defensive `.get()` across the full key set: if the envelope is ever
+        # partial (e.g. upstream contract change leaves one CI bound missing),
+        # we degrade to null instead of raising KeyError into the outer except
+        # (which would over-fire Sentry on a *malformed* envelope rather than
+        # a *crashed* model — different signal entirely).
+        run = env.get("splits", {}).get("run") or {}
+        expected = ("total_sec", "total_sec_ci_low", "total_sec_ci_high", "pred", "ci_low", "ci_high")
+        values = {k: run.get(k) for k in expected}
+        if any(v is None for v in values.values()):
             predicted_times[label] = None
+            continue
 
-    return {
-        "weeks": weeks_out,
-        "current_components": current_components,
-        "predicted_times": predicted_times,
-    }
+        predicted_times[label] = {
+            "total_sec": values["total_sec"],
+            "total_sec_ci_low": values["total_sec_ci_low"],
+            "total_sec_ci_high": values["total_sec_ci_high"],
+            "pace_sec_per_km": round(values["pred"], 1),
+            "pace_ci_low": round(values["ci_low"], 1),
+            "pace_ci_high": round(values["ci_high"], 1),
+        }
+    return predicted_times
