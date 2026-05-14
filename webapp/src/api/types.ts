@@ -760,4 +760,10 @@ export interface MarathonShapeResponse {
   weeks: MarathonShapeWeek[]
   current_components: (MarathonShapeComponents & { vo2max: number }) | null
   predicted_times: Record<'10K' | 'HM' | 'Marathon', MarathonShapePredicted | null>
+  // Longest Run-race distance (meters) in the user's history. Null if no Run
+  // races logged. Used by the widget to flag ML predictions that extrapolate
+  // outside the training distribution — XGBoost can't extrapolate beyond seen
+  // distances, so e.g. Marathon prediction is unreliable for users with no
+  // races > 30 km.
+  max_run_race_distance_m: number | null
 }
