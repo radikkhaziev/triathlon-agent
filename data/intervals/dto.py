@@ -645,16 +645,21 @@ class PlannedWorkoutDTO(BaseModel):
 
         Sports listed in ``_NO_TARGET_SPORTS`` (currently just ``Other``) skip
         the native renderer: native grammar requires an intensity target on
-        every step and yoga/mobility steps don't have one. Workout cards
-        (``compose_workout``) set their own top-level description with the
-        HTML link, which Intervals stores as plain text.
+        every step and yoga/mobility steps don't have one. The resulting
+        ``description=None`` is intentional — see strip rule below. Workout
+        cards (``compose_workout``) keep top-level description at ``None`` for
+        the same reason and stash their HTML link inside
+        ``workout_doc.description`` (Garmin Connect note channel) instead.
 
-        Historical note: a 2026-04-30 regression caused Intervals to silently
-        drop ``workout_doc.steps`` for Swim events when top-level description
-        was present. Probes on 2026-05-12 showed the drop only happens when
-        Intervals' parser fails to recognise the description as native
-        format — successful parses preserve steps for every sport. Passing a
-        validated native render through is safe.
+        Strip rule: Intervals.icu silently empties ``workout_doc.steps`` to
+        ``[]`` whenever top-level ``description`` is set to text its
+        native-format parser doesn't recognise — regardless of sport.
+        Originally diagnosed 2026-04-30 as Swim-only because top-level desc
+        was being set only for Swim at the time; re-verified 2026-05-14 on
+        Other (event 109994999, URL summary as top-level desc → empty steps,
+        watch shows zero-step workout). A successful native parse preserves
+        steps for every sport, which is why this method renders top-level
+        desc only when the renderer can produce native-format output.
         """
         # Top-level event target. Default `None` → Intervals.icu maps to `AUTO`
         # which Garmin then resolves to HR for Run / power for Ride. We must

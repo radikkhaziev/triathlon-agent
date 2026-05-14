@@ -615,32 +615,21 @@ class TestComposeWorkoutPushDescription:
         assert "event" in captured, "create_event was never called"
         return captured["event"]
 
-    async def test_non_swim_mirrors_url_into_top_level_description(self, tmp_path):
-        event = await self._push_and_capture_event(tmp_path, sport="Other")
-        # Top-level description carries the URL — visible in Intervals.icu web UI.
-        assert event.description is not None
-        assert "https://bot.example.com/static/workouts/" in event.description
-        # And workout_doc.description still has it for Garmin.
-        assert "https://bot.example.com/static/workouts/" in event.workout_doc.get("description", "")
+    async def test_top_level_description_left_unset(self, tmp_path):
+        """Regression guard: ``compose_workout`` must leave top-level
+        ``event.description`` unset (``None``) and stash the URL only in
+        ``workout_doc.description``.
 
-    def test_swim_excluded_from_top_level_desc_allow_list(self):
-        """End-to-end push for Swim is hard to drive (compose_workout's card
-        builder emits target-less steps which fail PlannedWorkoutDTO
-        validation, and pydantic's @model_validator can't be cleanly
-        monkeypatched per-test). Pin the allow-list constant directly —
-        adding "Swim" (or any future swim-like sport) to it would re-trigger
-        the Intervals workout_doc.steps regression on Swim events.
-
-        We assert the explicit set, NOT a derivation from ``VALID_SPORTS`` —
-        the whole point of switching from a deny-list to an allow-list is
-        that a new sport added to ``VALID_SPORTS`` must NOT auto-include
-        here. If you add a new sport that genuinely needs top-level
-        description, update this test together with the source constant.
+        Setting top-level desc to any non-native-format text makes
+        Intervals.icu's parser fail and silently strips
+        ``workout_doc.steps`` to ``[]`` on the server — verified 2026-05-14
+        on event 109994999. Garmin still surfaces the URL because it reads
+        ``workout_doc.description`` (FIT note); Intervals web UI loses the
+        link for workout-card events, which is the accepted trade.
         """
-        from mcp_server.tools.workout_cards import _TOP_LEVEL_DESC_SPORTS
-
-        assert _TOP_LEVEL_DESC_SPORTS == frozenset({"Run", "Ride", "Other"})
-        assert "Swim" not in _TOP_LEVEL_DESC_SPORTS
+        event = await self._push_and_capture_event(tmp_path, sport="Other")
+        assert event.description is None
+        assert "https://bot.example.com/static/workouts/" in event.workout_doc.get("description", "")
 
 
 # ---------------------------------------------------------------------------
