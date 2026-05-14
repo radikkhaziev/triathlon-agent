@@ -9,6 +9,7 @@ collisions that existed during the END-12/13 cut-over are gone.
 import zoneinfo
 from datetime import date, datetime, timedelta
 
+import sentry_sdk
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
@@ -18,6 +19,7 @@ from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_s
 from data.db.dto import AthleteGoalDTO
 from data.marathon_shape import DAYS_FOR_WEEK_KM, RunActivity, calculate_marathon_shape
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
+from data.ml.race_predict import predict_splits_with_ci
 from data.utils import extract_sport_ctl, normalize_sport
 
 router = APIRouter()
@@ -578,4 +580,57 @@ async def marathon_shape(
             "vo2max": weeks_out[0]["vo2max_used"],
         }
 
-    return {"weeks": weeks_out, "current_components": current_components}
+    # ── Phase 1.5: ML-based Predicted time + pace per distance.
+    # Sequential await — `predict_splits_with_ci` is async at the outer layer
+    # but `_predict_one` (joblib + XGBoost + bootstrap) is sync and blocks the
+    # loop; `asyncio.gather` wouldn't give parallelism (spec §13 Latency).
+    # Each call ~80ms × 3 = ~240ms total. `predict_splits_with_ci` catches
+    # ModelNotTrained / ModelBelowAcceptance internally and surfaces them via
+    # `not_available` / `below_acceptance` lists — we just check whether the
+    # "run" split landed in the envelope.
+    #
+    # Minor inefficiency: `_load_model` (data/ml/race_predict.py:97) has no
+    # cache, so the same `race_run_{user_id}.joblib` is read from disk 3× per
+    # request. ~50ms each is the dominant cost. Decoupling load from quality-
+    # gate enforcement would let us cache the bundle, but it's a cross-cutting
+    # change in shared infra — defer until joblib I/O becomes hot.
+    predicted_times: dict[str, dict | None] = {}
+    today_iso = today.isoformat()
+    for label, dist_m in (("10K", 10000), ("HM", 21097), ("Marathon", 42195)):
+        try:
+            env = await predict_splits_with_ci(
+                user_id=uid,
+                mode="today",
+                race_date=today_iso,  # spec §13: today_iso → days_to_race=0 → only intercept bias applied
+                race_distance_run_m=dist_m,
+            )
+        except Exception as e:  # noqa: BLE001 — defensive against joblib I/O / feature build failures
+            # `predict_splits_with_ci` already filters expected ML errors into
+            # envelope lists, so anything reaching here is unexpected and worth
+            # a Sentry alert (corrupt joblib, missing feature column, etc.).
+            sentry_sdk.capture_exception(e)
+            predicted_times[label] = None
+            continue
+
+        # Run leg is always pace-based — `total_sec_unavailable` flag is a
+        # Ride-only marker (power_only_phase1, see race_predict.py:449-451).
+        # If Run lacks `total_sec` here, the envelope is malformed; treat as
+        # null defensively.
+        run = env.get("splits", {}).get("run")
+        if run and run.get("total_sec") is not None:
+            predicted_times[label] = {
+                "total_sec": run["total_sec"],
+                "total_sec_ci_low": run["total_sec_ci_low"],
+                "total_sec_ci_high": run["total_sec_ci_high"],
+                "pace_sec_per_km": round(run["pred"], 1),
+                "pace_ci_low": round(run["ci_low"], 1),
+                "pace_ci_high": round(run["ci_high"], 1),
+            }
+        else:
+            predicted_times[label] = None
+
+    return {
+        "weeks": weeks_out,
+        "current_components": current_components,
+        "predicted_times": predicted_times,
+    }

@@ -8,7 +8,7 @@ We only validate the contract the React Dashboard depends on:
 """
 
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -995,3 +995,191 @@ class TestMarathonShape:
         assert data["current_components"] is not None
         assert data["current_components"]["vo2max"] == 50.0
         assert data["current_components"]["actual_longjog_km"] == 14.0
+
+
+# ---------------------------------------------------------------------------
+# /api/marathon-shape — predicted_times (Phase 1.5)
+# ---------------------------------------------------------------------------
+
+
+def _ml_envelope(*, pred: float, total_sec: int, ci_spread_sec_per_km: float = 10.0) -> dict:
+    """Build a minimal `predict_splits_with_ci` envelope with `run` populated.
+
+    Tests mock the ML call rather than train a real model — we only care that
+    the endpoint plumbs the envelope into `predicted_times` correctly.
+    """
+    ci_low = pred - ci_spread_sec_per_km
+    ci_high = pred + ci_spread_sec_per_km
+    # total_sec_ci scales proportionally to pace CI (same multiplier on distance)
+    total_ci_low = int(total_sec * (ci_low / pred))
+    total_ci_high = int(total_sec * (ci_high / pred))
+    return {
+        "mode": "today",
+        "splits": {
+            "run": {
+                "pred": pred,
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+                "units": "sec_per_km",
+                "total_sec": total_sec,
+                "total_sec_ci_low": total_ci_low,
+                "total_sec_ci_high": total_ci_high,
+            }
+        },
+        "not_available": [],
+        "below_acceptance": [],
+        "warnings": [],
+    }
+
+
+def _ml_envelope_cold_start() -> dict:
+    """Envelope shape when ModelNotTrained is caught internally."""
+    return {
+        "mode": "today",
+        "splits": {},
+        "not_available": ["run"],
+        "below_acceptance": [],
+        "warnings": ["race_run model not trained — call `train-race-models` first"],
+    }
+
+
+def _ml_envelope_below_acceptance() -> dict:
+    """Envelope shape when ModelBelowAcceptance gate trips (CV R²/MAE under floor)."""
+    return {
+        "mode": "today",
+        "splits": {},
+        "not_available": [],
+        "below_acceptance": ["run"],
+        "warnings": ["race_run model below acceptance floor — needs more / cleaner data"],
+    }
+
+
+class TestMarathonShapePredictedTimes:
+    async def test_all_three_distances_filled(self, client):
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        def mock_predict(*, race_distance_run_m, **_kwargs):
+            # 10K: 5:34/km, 55:40; HM: 4:51/km, 1:42:15; Marathon: 5:05/km, 3:34:50
+            mapping = {
+                10000: _ml_envelope(pred=334.0, total_sec=3340),
+                21097: _ml_envelope(pred=290.7, total_sec=6135),
+                42195: _ml_envelope(pred=305.4, total_sec=12890),
+            }
+            return mapping[race_distance_run_m]
+
+        with patch(
+            "api.routers.dashboard.predict_splits_with_ci",
+            new=AsyncMock(side_effect=mock_predict),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        pt = resp.json()["predicted_times"]
+        assert set(pt.keys()) == {"10K", "HM", "Marathon"}
+        assert pt["10K"]["total_sec"] == 3340
+        assert pt["10K"]["pace_sec_per_km"] == 334.0
+        assert pt["HM"]["total_sec"] == 6135
+        assert pt["Marathon"]["total_sec"] == 12890
+        # CI bounds — assert values, not just key-existence (regression guard:
+        # a future swap of pace_ci_low ↔ total_sec_ci_low would otherwise pass).
+        # _ml_envelope uses ±10 sec/km spread, total_sec scaled proportionally.
+        assert pt["10K"]["pace_ci_low"] == 324.0  # 334 − 10
+        assert pt["10K"]["pace_ci_high"] == 344.0  # 334 + 10
+        assert pt["HM"]["pace_ci_low"] == 280.7  # 290.7 − 10
+        assert pt["HM"]["pace_ci_high"] == 300.7  # 290.7 + 10
+        # total_sec_ci scales as `total × (ci_pace / pred_pace)` per _ml_envelope
+        assert pt["10K"]["total_sec_ci_low"] == int(3340 * (324.0 / 334.0))
+        assert pt["10K"]["total_sec_ci_high"] == int(3340 * (344.0 / 334.0))
+
+    async def test_below_acceptance_distance_null(self, client):
+        """`below_acceptance` envelope path → predicted_times[label] = null.
+
+        Structurally identical to cold-start at the endpoint layer (no `run`
+        key → null), but exercised as a separate path so a future refactor
+        that splits the two doesn't silently regress.
+        """
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        with patch(
+            "api.routers.dashboard.predict_splits_with_ci",
+            new=AsyncMock(return_value=_ml_envelope_below_acceptance()),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        pt = resp.json()["predicted_times"]
+        assert pt == {"10K": None, "HM": None, "Marathon": None}
+
+    async def test_partial_cold_start_some_distances_null(self, client):
+        """Marathon = cold start, 10K + HM valid — picker switches must still work."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        def mock_predict(*, race_distance_run_m, **_kwargs):
+            if race_distance_run_m == 42195:
+                return _ml_envelope_cold_start()
+            return _ml_envelope(pred=300.0, total_sec=6000)
+
+        with patch(
+            "api.routers.dashboard.predict_splits_with_ci",
+            new=AsyncMock(side_effect=mock_predict),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        pt = resp.json()["predicted_times"]
+        assert pt["10K"] is not None
+        assert pt["HM"] is not None
+        assert pt["Marathon"] is None  # cold start → null
+
+    async def test_total_predict_failure_all_null(self, client):
+        """ML call raises (e.g. joblib I/O fail) → graceful null, no 500."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        with patch(
+            "api.routers.dashboard.predict_splits_with_ci",
+            new=AsyncMock(side_effect=RuntimeError("joblib load failed")),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        assert resp.status_code == 200
+        pt = resp.json()["predicted_times"]
+        assert pt == {"10K": None, "HM": None, "Marathon": None}
+
+    async def test_today_iso_passed_as_race_date(self, client):
+        """Verify spec §13 contract: race_date == today.isoformat() (days_to_race=0)."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        mock = AsyncMock(return_value=_ml_envelope(pred=300.0, total_sec=6000))
+        with patch("api.routers.dashboard.predict_splits_with_ci", new=mock):
+            async with client as c:
+                await c.get("/api/marathon-shape?weeks=12")
+
+        # 3 calls (10K, HM, Marathon), each with mode='today' + race_date=today
+        assert mock.call_count == 3
+        for call in mock.call_args_list:
+            assert call.kwargs["mode"] == "today"
+            assert call.kwargs["race_date"] == "2026-04-30"  # _FIXED_TODAY
+
+    async def test_total_sec_unavailable_treated_as_null(self, client):
+        """Run envelope without total_sec (e.g. Ride power_only flag) → predicted_times[label] = null."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        # Pretend run leg came back without total_sec (edge: should never happen
+        # for Run, but the endpoint must be robust)
+        broken_env = {
+            "mode": "today",
+            "splits": {"run": {"pred": 290.0, "ci_low": 280.0, "ci_high": 300.0, "units": "sec_per_km"}},
+            "not_available": [],
+            "below_acceptance": [],
+            "warnings": [],
+        }
+        with patch(
+            "api.routers.dashboard.predict_splits_with_ci",
+            new=AsyncMock(return_value=broken_env),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        pt = resp.json()["predicted_times"]
+        assert pt == {"10K": None, "HM": None, "Marathon": None}
