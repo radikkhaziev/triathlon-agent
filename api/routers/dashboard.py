@@ -13,11 +13,11 @@ from datetime import date, datetime, timedelta
 
 import sentry_sdk
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, Race, User, Wellness, get_session
 from data.db.dto import AthleteGoalDTO
 from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivity, calculate_marathon_shape
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
@@ -544,6 +544,21 @@ async def marathon_shape(
         )
         vo2_rows = vo2_result.all()
 
+        # Max Run-race distance — used by the widget to decide whether a
+        # predicted_time is extrapolated outside the user's training set.
+        # XGBoost is tree-based and clamps predictions to the nearest leaf
+        # when a feature falls outside training range; in practice this means
+        # Marathon-distance predictions for users with no marathon race
+        # history are unreliable. Widget renders a footnote when the picked
+        # distance > max_race_distance * 1.3. Joins via `activity_id` because
+        # `races.race_type` is the goal-priority class (A/B/C), not the sport.
+        race_max_row = await session.execute(
+            select(func.max(Race.distance_m))
+            .join(Activity, Race.activity_id == Activity.id)
+            .where(Race.user_id == uid, Activity.type == "Run")
+        )
+        max_run_race_distance_m = race_max_row.scalar()
+
     all_runs: list[RunActivity] = []
     for dt_str, dist_m in run_rows:
         if dist_m is None:
@@ -616,6 +631,7 @@ async def marathon_shape(
         "weeks": weeks_out,
         "current_components": current_components,
         "predicted_times": predicted_times,
+        "max_run_race_distance_m": (float(max_run_race_distance_m) if max_run_race_distance_m is not None else None),
     }
 
 

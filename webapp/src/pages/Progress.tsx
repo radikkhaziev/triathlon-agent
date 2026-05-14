@@ -566,6 +566,14 @@ function formatPace(secPerKm: number): string {
 // stops being actionable. Threshold 0.20 = ±10% of central value.
 const MS_WIDE_CI_THRESHOLD = 0.20
 
+// XGBoost cannot extrapolate beyond training distance range — tree-based models
+// clamp predictions to the nearest seen leaf. If the picked race distance is
+// further than this factor × the user's longest race, the prediction is
+// extrapolated and unreliable (CI bands don't catch this — they're computed
+// from in-distribution bootstrap residuals). Threshold 1.3 ≈ within 30% of
+// training-range max we assume interpolation is safe.
+const MS_EXTRAPOLATION_FACTOR = 1.3
+
 function MarathonShapeWidget() {
   const [data, setData] = useState<MarathonShapeResponse | null>(null)
   const [distance, setDistance] = useState<MSDistance>('HM')
@@ -729,6 +737,17 @@ function MarathonShapeWidget() {
     ? (predicted.total_sec_ci_high - predicted.total_sec_ci_low) / predicted.total_sec
     : 0
   const wideCi = predicted && ciSpread > MS_WIDE_CI_THRESHOLD
+  // XGBoost extrapolation check: tree-based models clamp predictions to the
+  // nearest seen value when a feature falls outside training range. If the
+  // picked race distance is > MS_EXTRAPOLATION_FACTOR × the user's longest
+  // Run race, the model is extrapolating and the prediction is unreliable.
+  // Surfaced as inline footnote.
+  const selectedDistanceM = MS_DISTANCE_KM[distance] * 1000
+  const isExtrapolated = !!(
+    predicted &&
+    data.max_run_race_distance_m !== null &&
+    selectedDistanceM > data.max_run_race_distance_m * MS_EXTRAPOLATION_FACTOR
+  )
 
   return (
     <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
@@ -778,6 +797,13 @@ function MarathonShapeWidget() {
           {wideCi && (
             <div className="text-[10px] text-text-dim mt-1.5 italic">
               Model uncertainty high — limited race history; bands will tighten as more data arrives.
+            </div>
+          )}
+          {isExtrapolated && data.max_run_race_distance_m !== null && (
+            <div className="text-[10px] text-text-dim mt-1.5 italic">
+              Extrapolated — your longest race is {(data.max_run_race_distance_m / 1000).toFixed(1)} km,
+              prediction for {distance} extrapolates beyond your training distribution.
+              CI bands don't account for this; treat with caution until you log a race closer to this distance.
             </div>
           )}
         </div>

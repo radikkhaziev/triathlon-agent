@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.deps import require_viewer
 from api.routers.dashboard import router as dashboard_router
-from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, Race, User, Wellness, get_session
 from data.intervals.dto import ActivityDTO
 
 _FIXED_TODAY = date(2026, 4, 30)
@@ -995,6 +995,65 @@ class TestMarathonShape:
         # target_longjog_km (scoring) ≈ 17.3; displayed = 17.3 + 13 = 30.3
         assert c["target_longjog_km"] == 17.3
         assert c["displayed_target_long_run_km"] == 30.3
+
+    async def test_max_run_race_distance_m_in_response(self, client):
+        """Endpoint exposes longest Run-race distance so widget can flag extrapolated predictions.
+
+        XGBoost can't extrapolate beyond training distance range — for a user
+        with no marathons, Marathon prediction collapses to «pace for longest
+        seen distance». Widget renders a footnote when
+        `selected_distance > max_run_race_distance * 1.3`.
+        """
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        # Two Run races at different distances. Race links via activity_id.
+        for aid, distance_m in (("i_race_hm", 21097.0), ("i_race_10k", 10000.0)):
+            await Activity.save_bulk(
+                1,
+                activities=[
+                    _make_activity(
+                        aid=aid,
+                        dt=_MS_WINDOW_END - timedelta(days=60),
+                        sport="Run",
+                        tss=80.0,
+                    )
+                ],
+            )
+            await _save_detail(aid, distance_m)
+        async with get_session() as session:
+            session.add_all(
+                [
+                    Race(
+                        user_id=1,
+                        activity_id="i_race_hm",
+                        name="HM Test",
+                        race_type="B",
+                        distance_m=21097.0,
+                    ),
+                    Race(
+                        user_id=1,
+                        activity_id="i_race_10k",
+                        name="10K Test",
+                        race_type="C",
+                        distance_m=10000.0,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        # Max of 21097 / 10000 → 21097.0
+        assert resp.json()["max_run_race_distance_m"] == 21097.0
+
+    async def test_max_run_race_distance_m_null_without_races(self, client):
+        """No Run races → field is null. Widget shows no footnote in this case."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        assert resp.json()["max_run_race_distance_m"] is None
 
     async def test_endpoint_formula_outputs_for_v50(self, client):
         """Regression: endpoint emits raw marathon-baseline targets per spec §3.
