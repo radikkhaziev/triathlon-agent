@@ -602,7 +602,9 @@ function MarathonShapeWidget() {
       options: {
         ...baseOpts,
         plugins: {
-          ...baseOpts.plugins,
+          // `chartOptions` returns `Record<string, unknown>`, so plugins is
+          // `unknown` and not spreadable without a cast.
+          ...(baseOpts.plugins as Record<string, unknown>),
           annotation: {
             annotations: {
               required: {
