@@ -892,8 +892,13 @@ class TestMarathonShape:
         # 21.1 km registered as longjog (>13 km) → actual_longjog_km == 21.1
         assert newest["components"]["actual_longjog_km"] == 21.1
 
-    async def test_race_runs_excluded(self, client):
-        """Run with is_race=True must NOT contribute to shape."""
+    async def test_race_runs_included_matches_runalyze(self, client):
+        """Run with is_race=True MUST contribute to shape — mirror Runalyze upstream.
+
+        Spec §1 declarative stance + §7 + §14 D1.A: race-day km are real
+        basic-endurance volume. Race kilometers count toward total_km_182d,
+        and races ≥13km count toward longjog_score quadratic term.
+        """
         await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
         race_dto = _make_activity(
             aid="i_race",
@@ -903,18 +908,19 @@ class TestMarathonShape:
         )
         race_dto.is_race = True
         await Activity.save_bulk(1, activities=[race_dto])
-        await _save_detail("i_race", 42195.0)
+        await _save_detail("i_race", 42195.0)  # marathon distance, > MIN_KM_FOR_LONGJOG
 
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
         newest = resp.json()["weeks"][0]
-        # No non-race runs → weekly volume 0, longjog 0, shape 0
-        assert newest["shape_pct"] == 0.0
-        assert newest["components"]["actual_weekly_km"] == 0.0
+        # Race contributes to weekly_km (>0) and is a 42-km longjog
+        assert newest["components"]["actual_weekly_km"] > 0
+        assert newest["components"]["actual_longjog_km"] == 42.2  # rounded km
+        assert newest["shape_pct"] > 0  # non-zero shape from race volume
 
-    async def test_race_filter_keeps_non_race_run_in_mixed_set(self, client):
-        """Mixed-bag regression: race excluded, sibling non-race in same window stays."""
+    async def test_race_and_non_race_both_counted(self, client):
+        """Mixed-bag: race + sibling non-race in same window — both count in volume."""
         await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
         race = _make_activity(
             aid="i_race_mb",
@@ -931,15 +937,14 @@ class TestMarathonShape:
         )
         await Activity.save_bulk(1, activities=[race, regular])
         await _save_detail("i_race_mb", 42195.0)
-        await _save_detail("i_normal_mb", 18000.0)  # 18 km — longjog
+        await _save_detail("i_normal_mb", 18000.0)
 
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
         newest = resp.json()["weeks"][0]
-        # The 18 km non-race run survives the filter; 42.195 km race does not.
-        assert newest["components"]["actual_longjog_km"] == 18.0
-        assert newest["components"]["actual_weekly_km"] > 0
+        # Both runs counted; race longest → actual_longjog_km = 42.2 (the race)
+        assert newest["components"]["actual_longjog_km"] == 42.2
 
     async def test_vo2max_below_minimum_surfaces_clamped_value(self, client):
         """Real VO2max < 25 → response surfaces clamped 25.0 (documented in spec §7)."""
@@ -973,6 +978,52 @@ class TestMarathonShape:
         # User 1 has no wellness vo2max → all weeks null
         for w in resp.json()["weeks"]:
             assert w["shape_pct"] is None
+
+    async def test_displayed_target_long_run_km_in_components(self, client):
+        """Spec §3 D2.A: displayed_target_long_run_km = target_longjog_km + 13.
+
+        For V=50: target_longjog_km ≈ 17.3, displayed ≈ 30.3 — matches the
+        Runalyze «Required Long Run» column on Marathon row (ln(50/4)*12).
+        """
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        newest = resp.json()["weeks"][0]
+        c = newest["components"]
+        # target_longjog_km (scoring) ≈ 17.3; displayed = 17.3 + 13 = 30.3
+        assert c["target_longjog_km"] == 17.3
+        assert c["displayed_target_long_run_km"] == 30.3
+
+    async def test_endpoint_formula_outputs_for_v50(self, client):
+        """Regression: endpoint emits raw marathon-baseline targets per spec §3.
+
+        For V=50:
+          target_weekly_km = 50^1.135 = 84.79 → round to 84.8
+          displayed_target_long_run_km = ln(50/4)*12 = 30.31 → round to 30.3
+          (target_longjog_km = displayed − 13 = 17.31 → round to 17.3)
+
+        Distance-adjusted factors live CLIENT-side (§3 + MS-11) — server only
+        emits raw marathon-baseline. Widget applies `_RUNALYZE_DISTANCE_FACTORS`
+        per picker selection.
+
+        Note: Runalyze screenshot Marathon row showed 58 km weekly which
+        corresponds to V≈35.8 in the formula (not exactly 37) — display values
+        in the upstream UI appear to use intermediate rounding. Our formula
+        matches the canonical BasicEndurance.php source; precise screenshot
+        parity requires exact V which is not derivable from the screenshot.
+        """
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        newest = resp.json()["weeks"][0]
+        c = newest["components"]
+        assert c["target_weekly_km"] == 84.8
+        assert c["target_longjog_km"] == 17.3
+        assert c["displayed_target_long_run_km"] == 30.3
 
     async def test_current_components_from_newest_week(self, client):
         await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)

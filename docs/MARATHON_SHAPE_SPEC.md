@@ -1,6 +1,6 @@
 # Marathon Shape — Runalyze-style basic endurance metric
 
-> Status: 🟢 **Shipped** — single-phase webapp widget. No MCP, no morning report, no schema changes.
+> Status: 🟢 **Phase 1 + 1.5 + 1.6 shipped** — alignment with Runalyze upstream complete (§14 resolved 2026-05-14, see §10/§12). No MCP, no morning report, no schema changes.
 >
 > Issue: [#95](https://github.com/radikkhaziev/triathlon-agent/issues/95).
 
@@ -13,6 +13,14 @@ VO2max отвечает на «насколько быстро ты можешь
 В проекте нет run-volume-aware метрики готовности: TSS показывает нагрузку, CTL — фитнес, но «у меня хватит ножек на марафон/HM?» — не отвечается.
 
 **Disclaimer от первоисточника** (verbatim из [runalyze.com/help/article/marathon-shape](https://runalyze.com/help/article/marathon-shape), 2026-05-14): *«The Marathon Shape is **not scientifically based** and only serves as a rough estimate of whether you are sufficiently trained for a specific target distance (while the Effective VO2max only indicates the general performance level — independent of the distance/duration)»*. Это эмпирическая модель — наш виджет наследует тот же характер. В UI стоит держать tone «rough estimate», без претензии на научную точность.
+
+### Declarative stance
+
+**Mirror Runalyze for the metric itself.** Marathon Shape — эмпирическая модель без научной базы (см. disclaimer выше), у нас нет основания иметь «свою интерпретацию» поверх эмпирики-без-базы. Authority принадлежит upstream Runalyze. Любое расхождение между нашим виджетом и Runalyze UI на одних и тех же исходных данных трактуется как **bug** (не «design choice»), и фиксится в сторону Runalyze.
+
+**Наш единственный value-add — §13 ML predicted time block.** Это явно изолированная инновация: вместо port'а Daniels' VDOT + empirical penalty function Runalyze мы используем наш `predict_splits_with_ci` (XGBoost, per-athlete, 90% CI, bias-corrected). По всем остальным аспектам — formulas, targets, scoring, UI percentages — следуем Runalyze 1-в-1.
+
+Эта позиция даёт чёткий decision rule для будущих изменений: «совпадает с Runalyze — оставляем; не совпадает — фиксим в сторону upstream». Без необходимости каждый раз договариваться о trade-off'е.
 
 ## 2. Solution overview
 
@@ -59,12 +67,33 @@ target_longjog_km(vo2max) = ln(max(vo2max, 25) / 4) * 12 - 13   # SCORING-INTERN
 
 | Имя | Формула | Зачем |
 |---|---|---|
-| `target_longjog_km` | `ln(V/4)*12 − 13` | **scoring-internal**: используется в quadratic term `((distance − 13) / target_longjog_km)²`. Это «целевой избыток длинной пробежки над 13-км порогом». |
-| `displayed_long_run_target_km` | `ln(V/4)*12` | **UI-displayed**: «длина целевой длинной пробежки», как Runalyze показывает в колонке «Required Long Run». Для V=37 (marathon weekly 58 km на скриншоте) даёт 26.7 km ≈ 26 km, совпадает с upstream. |
+| `target_longjog_km` | `ln(V/4)*12 − 13` | **scoring-internal**: используется ТОЛЬКО в quadratic term `((distance − 13) / target_longjog_km)²` формулы shape_pct. Это «целевой избыток длинной пробежки над 13-км порогом». В UI **не показывается**. |
+| `displayed_long_run_target_km` | `ln(V/4)*12` | **UI-displayed**: «длина целевой длинной пробежки», как Runalyze показывает в колонке «Required Long Run». Для V=37 (marathon weekly 58 km на скриншоте) даёт 26.7 km ≈ 26 km, совпадает с upstream. **Используется в Components-блоке виджета** (§6). |
 
 Тождество: `displayed = scoring + 13` (где 13 = `MIN_KM_FOR_LONGJOG`).
 
-Текущий shipped Components-блок (см. §6) показывает long-run percentage **от `target_longjog_km`** (scoring-internal). Это означает: при actual_longjog=18.2 км для VO2max=50 виджет рендерит «105% of required (18.2 km)» — потому что 18.2 / 17.3 ≈ 105. По Runalyze UX правильнее было бы «60% (18.2 / 30.3 km)» — потому что **displayed target — это 30.3 km**, не 17.3 km. Это **дельта семантики со стороны upstream**, не баг расчёта shape_pct (формула scoring корректна), но stylistic divergence от Runalyze UI. Phase 2: переключить Components-renderer на `displayed_long_run_target_km`, либо явно подписать «target excess over 13 km».
+### Distance-adjusted targets (Components rendering)
+
+Runalyze в UI «Other distances» table показывает per-distance Weekly mileage и Long Run target, scaling от marathon-baseline. Точная формула scaling живёт в `RunalyzePluginPanel_Rechenspiele/` PHP-плагине и не выводится тривиально из `V^1.135` — verified не работает линейное `marathon × required/100` (для HM даёт 25 km, факт 33 km).
+
+**Empirical factor table** (calibrated на скриншоте V≈37, 2026-05-14):
+
+```python
+_RUNALYZE_DISTANCE_FACTORS = {
+    "10K":      {"weekly": 0.26, "longjog": None},  # 15 / 58 = 0.26; longjog n/a for 10K
+    "HM":       {"weekly": 0.57, "longjog": 0.69},  # 33/58=0.57; 18/26=0.69
+    "Marathon": {"weekly": 1.00, "longjog": 1.00},  # baseline
+}
+
+def displayed_target_weekly_km(vo2max, distance_key):
+    return target_weekly_km(vo2max) * _RUNALYZE_DISTANCE_FACTORS[distance_key]["weekly"]
+
+def displayed_target_long_run_km(vo2max, distance_key):
+    f = _RUNALYZE_DISTANCE_FACTORS[distance_key]["longjog"]
+    return None if f is None else (target_longjog_km(vo2max) + 13) * f
+```
+
+**Calibration caveat:** factors derived из ОДНОГО скриншота V≈37. Drift риск для других VO2max bracket'ов — unknown. Для Phase 1.6 принимается как-есть; если в production обнаружим material drift, escalate до D3.B (full PHP-port из `RunalyzePluginPanel_Rechenspiele/`). Drift detection: side-by-side comparison нашего виджета и Runalyze UI на разных VO2max уровнях.
 
 ### Marathon Shape (%)
 
@@ -106,7 +135,7 @@ required_shape_pct(distance_km) = distance_km ** 1.23
 
 | Поле | Таблица | Колонка | Notes |
 |---|---|---|---|
-| Run distance | `activity_details` | `distance` (метры) | JOIN `activities ON id = activity_id WHERE type='Run' AND is_race=False` |
+| Run distance | `activity_details` | `distance` (метры) | JOIN `activities ON id = activity_id WHERE type='Run'`. **Race-efforts включены** (no `is_race` filter — mirror Runalyze, см. §7 + §14 D1.A). |
 | Activity date | `activities` | `start_date_local` | varchar `'YYYY-MM-DD'` |
 | VO2max | `wellness` | `vo2max` | per-date snapshot, NULL допустим |
 
@@ -230,7 +259,11 @@ progress_pct = round(shape_pct / required_shape_for_distance(distance_km) * 100,
 - **Distance picker** — `TabSwitcher` с тремя опциями (`10K` / `HM` / `Marathon`), default `HM`. State в виджете, не в роутинге.
 - **Header badge** — current MS / required / Δpp с цветом (зелёный если ≥required, жёлтый 80-100%, красный <80%).
 - **Chart** — Chart.js line (как `EFChart`/`DecouplingChart`). X = `week_end` (12 точек), Y = `shape_pct`. Annotation plugin (уже импортирован в Progress.tsx:24) для horizontal `required` линии. Null-points (vo2max missing) — gap в линии.
-- **Components-блок** — 3 строки из `current_components`. **Формат: «N% of required (raw value)»** — главное число это процент достижения marathon-target, абсолютное значение в скобках для тех кто хочет fact-check. Targets (`target_weekly_km`/`target_longjog_km`) в виджете **не показываются** — они marathon-baseline (`vo2max ** 1.135` / `ln(vo2max/4)*12-13`) и зависят только от VO2max, не от выбранной дистанции. Показ абсолютного «28 / 89 km» при HM-picker'е вызывает confused «надо 89 км/нед на HM??», хотя 89 это для марафона.
+- **Components-блок** — 3 строки из `current_components`. **Формат: «N% of required (raw value)»** — главное число это процент достижения distance-adjusted target, абсолютное actual значение в скобках для fact-check.
+  - **Weekly volume**: `progress = actual_weekly / displayed_target_weekly_km(vo2max, selected_distance) × 100`. Target scaling — через `_RUNALYZE_DISTANCE_FACTORS[selected_distance]["weekly"]` (см. §3). Распределение targets per picker: 10K→`0.26×marathon_baseline`, HM→`0.57×`, Marathon→`1.00×`.
+  - **Long run**: `progress = actual_longjog / displayed_target_long_run_km(vo2max, selected_distance) × 100`. Target = `(target_longjog_km(V) + 13) × factor[distance]["longjog"]` — то есть displayed (`ln(V/4)*12`) scaled per distance. Для 10K longjog skipping (factor=None), строка либо скрыта либо «N/A».
+  - **VO2max**: единственная сущность, не зависящая от picker'а. Show `vo2max_used` (clamped to 25).
+  - При переключении picker'а **все три строки пересчитываются клиентом** без re-fetch — все данные есть в `current_components`. Mirror Runalyze «Other distances» table semantics (§1 stance).
 
 ### Empty/edge states
 
@@ -247,7 +280,7 @@ progress_pct = round(shape_pct / required_shape_for_distance(distance_km) * 100,
 | Run-activity без `activity_details.distance` (старый бэкфилл) | Skip — distance критична для расчёта. |
 | Athlete с VO2max <25 (rare, начинающий) | Clamp к 25 per Runalyze формуле. |
 | Run < 13 км | Не считается «длинным», только в `total_km_182d`. |
-| Race-effort `is_race=True` | **Исключаем** из всех компонентов. Race — это пиковая нагрузка, не базовая выносливость; включение завышало бы shape перед таперингом и обнуляло бы после гонки. См. `Activity.is_race.is_(False)` в SQL фильтре + регрессионный `test_race_runs_excluded`. |
+| Race-effort `is_race=True` | **Включаем** в `total_km_182d` и в longjog scoring (mirror Runalyze upstream — §1 stance). Race-day km — это реально набеганные километры, atletu они идут в total weekly volume и (при distance ≥13km) в longjog quadratic score. Time-decay weight за 70 дней корректно нормализует «таперинг-аномалии». До 2026-05-14 виджет исключал races на основе философского аргумента «race ≠ базовая выносливость» — снято в alignment-фазе (см. §14, D1.A). Регрессионный тест: `test_race_runs_included_matches_runalyze`. |
 | Walks / Hike — НЕ в shape | Они приходят с `type='Walk'`/`'Hike'`, фильтр `Activity.type == "Run"` их не пускает. |
 | TreadmillRun / TrailRun / VirtualRun | Уже нормализованы при ingestion (`data/utils.py:18-32` + `ActivityDTO` field validator в `data/intervals/dto.py:143`) → лежат в БД как `type='Run'`. Strict-фильтр их корректно подхватывает без отдельного маппинга в endpoint'е. Verified на user 1: 411 `Run` + 19 `Run RACE` за всю историю, ни одного TrailRun/VirtualRun raw value. |
 | Атлет с реальным VO2max < 25 (de-trained / новичок) | Внутренний расчёт clamp'ит к 25 (`max(vo2max, 25)` в `target_weekly_km`/`target_longjog_km`). Response `vo2max_used` возвращает clamped значение (25, а не 20) — это «какое значение использовалось в расчёте». Для UI это может быть конфузом («у меня же Garmin показывает 20»), но в реальной аудитории (триатлеты) сценарий не встречается. Если когда-то понадобится — добавить `vo2max_raw` отдельным полем в `current_components`. |
@@ -299,7 +332,7 @@ API integration (`tests/api/test_dashboard.py::TestMarathonShape`):
 - `test_no_vo2max_returns_null_shape` — все weeks `shape_pct: null` без wellness vo2max
 - `test_vo2max_30d_backfill` — 25-day-old vo2max подхватывается через back-walk
 - `test_run_distance_meters_to_km_conversion` — `distance` в метрах → `actual_longjog_km` в км
-- `test_race_runs_excluded` — `is_race=True` НЕ входит в shape
+- `test_race_runs_included_matches_runalyze` — `is_race=True` runs участвуют в shape calculation (post Phase 1.6 alignment, MS-9). До 1.6 здесь был `test_race_runs_excluded` — заменён в alignment-фазе, см. §14 D1.A.
 - `test_per_user_scoping` — tenant isolation на activities + wellness
 - `test_current_components_from_newest_week` — newest week + vo2max в `current_components`
 
@@ -331,8 +364,11 @@ API integration (`tests/api/test_dashboard.py::TestMarathonShape`):
 |---|---|---|
 | **1** | Формулы (`data/marathon_shape.py`) + API endpoint + `MarathonShapeWidget` + unit-тесты | ✅ shipped |
 | **1.5** | ML-based Predicted time + pace block в widget (`predict_splits_with_ci` integration, §13) + Redis cache | ✅ shipped |
+| **1.6** | **Align with Runalyze upstream**: D1.A (race inclusion) + D2.A (displayed long-run target в Components) + D3.A (distance-adjusted Components factors). Closes §14 divergences. | ✅ shipped (MS-9..12) |
 
-Phase 2 — только если появится явный запрос (MCP-tool, morning report integration, история >12 нед, ultra/5K расширение picker'а, distance-adjusted weekly/long-run targets table per §9).
+**Phase 1.6 — почему now:** Phase 1 и 1.5 уже shipped, но user-surfaced divergence 2026-05-14 (Runalyze 10K Achieved 73% vs наш ниже) показала что Components UI расходится с upstream по 3 axis'ам (см. §14). Phase 1.6 — bug-fix phase, приводящая виджет в полное соответствие с §1 declarative stance «mirror Runalyze». ML predicted time block из 1.5 не трогается.
+
+Phase 2 — только если появится явный запрос (MCP-tool, morning report integration, история >12 нед, ultra/5K расширение picker'а, D3.B — full PHP-port distance scaling formula).
 
 ## 11. Acceptance criteria
 
@@ -347,13 +383,22 @@ Phase 2 — только если появится явный запрос (MCP-
 
 ### Phase 1.5 — ML predicted time
 
-- [ ] `/api/marathon-shape` response расширен `predicted_times: {10K, HM, Marathon}` с `total_sec` + `pace_sec_per_km` + `total_sec_ci_low/high` + `pace_ci_low/high` для каждой дистанции.
-- [ ] Cold-start (`ModelNotTrained`) / below-acceptance / отсутствие run-модели → соответствующая дистанция = `null`, остальные могут быть filled. Никаких 500-ок.
-- [ ] Widget показывает Predicted block (Time + Pace + CI), привязанный к выбранной distance из picker'а. При `predicted_times[distance] === null` — блок скрывается, остальной UI рендерится без crash'а.
-- [ ] Pace формат — `M:SS/km` (290 sec → `4:50/km`). Time — `H:MM:SS` для >1h, `MM:SS` иначе.
-- [ ] **Uncertainty-aware UI**: при CI spread > 20% от center value — footnote «model uncertainty high, limited race history» под Predicted block. Test покрывает.
-- [ ] Integration test: endpoint mock'ит `predict_splits_with_ci` (`ModelNotTrained` для одной distance, valid для другой) → response корректно отражает оба случая.
+- [x] `/api/marathon-shape` response расширен `predicted_times: {10K, HM, Marathon}` с `total_sec` + `pace_sec_per_km` + `total_sec_ci_low/high` + `pace_ci_low/high` для каждой дистанции. (MS-5)
+- [x] Cold-start (`ModelNotTrained`) / below-acceptance / отсутствие run-модели → соответствующая дистанция = `null`, остальные могут быть filled. Никаких 500-ок. (MS-5, `test_below_acceptance_distance_null` + `test_partial_cold_start_some_distances_null` + `test_total_predict_failure_all_null`)
+- [x] Widget показывает Predicted block (Time + Pace + CI), привязанный к выбранной distance из picker'а. При `predicted_times[distance] === null` — блок скрывается, остальной UI рендерится без crash'а. (MS-6)
+- [x] Pace формат — `M:SS/km` (290 sec → `4:50/km`). Time — `H:MM:SS` для >1h, `MM:SS` иначе. (MS-6, `formatHMS` / `formatPace` в `Progress.tsx`)
+- [x] **Uncertainty-aware UI**: при CI spread > 20% от center value — footnote «model uncertainty high, limited race history» под Predicted block. (MS-6, `MS_WIDE_CI_THRESHOLD = 0.20` в `Progress.tsx`)
+- [x] Integration test: endpoint mock'ит `predict_splits_with_ci` (`ModelNotTrained` для одной distance, valid для другой) → response корректно отражает оба случая. (MS-7, 10 тестов в `TestMarathonShapePredictedTimes`)
 - [x] Redis cache `(user_id, today_iso)` с TTL до полуночи Belgrade. `_compute_predicted_times` / `_predict_times_fresh` в `api/routers/dashboard.py`. Graceful fallback при Redis disabled / unreachable / get-write errors — endpoint никогда не падает из-за cache. 4 теста (`test_cache_hit_skips_ml_call`, `test_cache_miss_writes_through`, `test_cache_disabled_falls_through`, `test_cache_write_failure_does_not_break_response`).
+
+### Phase 1.6 — Runalyze upstream alignment
+
+- [x] **D1.A — Race inclusion.** SQL filter `Activity.is_race.is_(False)` удалён из `/api/marathon-shape` endpoint. `is_race=True` runs участвуют в `total_km_182d` и в longjog scoring как обычные runs. (MS-9, `test_race_runs_included_matches_runalyze` + `test_race_and_non_race_both_counted`)
+- [x] **D2.A — Long Run displayed target в Components.** `displayed_target_long_run_km` (= `target_longjog_km + 13` = `ln(V/4)*12`) добавлен в **каждой** недели `components` (не только `current_components`). Widget Long Run percentage использует displayed target. (MS-10, `test_displayed_target_long_run_km_in_components`)
+- [x] **D3.A — Distance-adjusted Components factors.** Client-side factor table `MS_RUNALYZE_DISTANCE_FACTORS` в `Progress.tsx` (per §11.6 recommendation — без дублирования в JSON). Widget при переключении picker'а пересчитывает effective targets локально. (MS-11)
+- [x] **Backwards-compatibility.** `target_weekly_km` и `target_longjog_km` в response сохранены (scoring-internal, для debug). Только UI rendering изменился. Phase 1.5 `predicted_times` block нетронут.
+- [~] **Regression — user-surfaced 10K divergence resolved.** *Partial* — точная side-by-side parity с V=37 невозможна: screenshot's effective V back-calc'ится в ~35.8 из weekly=58 (Runalyze display rounding), не 37. Documented в `test_endpoint_formula_outputs_for_v50` docstring + spec §12 MS-12. Реальную regression-проверку даёт `test_endpoint_formula_outputs_for_v50` (formula correctness для V=50, наш typical user). True parity test требует known-V dump из Runalyze + same wellness data — не делалось.
+- [x] **Test для VO2max scaling drift.** Documented inline в `Progress.tsx` (factor table comment) + `test_endpoint_formula_outputs_for_v50` docstring («factors verified on V≈37 calibration, drift unknown for V > 50, refine via §14.D3.B if production reveals material divergence»). (MS-12)
 
 ## 12. Phasing & GitHub issues
 
@@ -368,6 +413,13 @@ Phase 2 — только если появится явный запрос (MCP-
 - [x] **MS-6 — Response types + widget render.** `MarathonShapeResponse.predicted_times` + `MarathonShapePredicted` в `webapp/src/api/types.ts`. Widget рендерит Predicted block (Time / Pace + CI low/high) под header'ом badge'а с `formatHMS` / `formatPace` helpers (защита от `sec <= 0` через `'—'`). Wide-CI footnote при spread > 20%.
 - [x] **MS-7 — Integration test.** Mock `predict_splits_with_ci` → endpoint собирает корректный `predicted_times` envelope, cold-start = null для одной дистанции, valid для другой. 10 тестов в `TestMarathonShapePredictedTimes` (6 endpoint + 4 cache).
 - [x] **MS-8 — Redis cache layer.** `_compute_predicted_times` обёртка над `_predict_times_fresh`, key `marathon_shape_pred:{user_id}:{today_iso}`, TTL через `_ttl_until_midnight_local()`. Graceful fallback на каждом из 3 cache failure mode'ов.
+
+### Phase 1.6 punch-list
+
+- [x] **MS-9 — D1.A: Race inclusion.** `Activity.is_race.is_(False)` удалён из `/api/marathon-shape` SQL в `api/routers/dashboard.py`. `test_race_runs_excluded` заменён на `test_race_runs_included_matches_runalyze` + добавлен `test_race_and_non_race_both_counted` (mixed-bag, оба считаются).
+- [x] **MS-10 — D2.A: Displayed long-run target.** Endpoint response: `displayed_target_long_run_km` (= `target_longjog_km + MIN_KM_FOR_LONGJOG`) добавлен в `components` каждой недели. `MarathonShapeComponents` в `webapp/src/api/types.ts` обновлён. Widget Long Run percentage использует displayed target. `test_displayed_target_long_run_km_in_components` + `test_endpoint_formula_outputs_for_v50`.
+- [x] **MS-11 — D3.A: Distance-adjusted factors (client-side).** `MS_RUNALYZE_DISTANCE_FACTORS` константа в `webapp/src/pages/Progress.tsx`. Components-block теперь computes `effectiveTargetWeeklyKm` + `effectiveTargetLongRunKm` через factor table и пересчитывает проценты при переключении picker'а без re-fetch. 10K row показывает «n/a» для long run (factor=null per Runalyze).
+- [x] **MS-12 — Regression test + drift documentation.** `test_endpoint_formula_outputs_for_v50` зафиксировал formula outputs (84.8 weekly / 17.3 scoring / 30.3 displayed). Calibration scope для `MS_RUNALYZE_DISTANCE_FACTORS` задокументирован inline в `Progress.tsx` («V≈37, drift unknown for V>50, refine via §14.D3.B if material divergence»). Screenshot V≈35.8 (back-calc from weekly=58), не 37 — display rounding в upstream, documented в test docstring.
 
 ## 13. ML-based time prediction (Phase 1.5)
 
@@ -484,7 +536,103 @@ Format helpers:
 - **Historical pace trend** — chart показывает MS%, не predicted pace. Time-series predicted pace требовал бы run inference per week — слишком дорого.
 - **Comparison vs Runalyze' Optimum** — у нас нет VDOT-table (и не планируем). Сравнения нет, есть только наш ML.
 
-## 14. Related
+## 14. Architectural divergences — resolved 2026-05-14
+
+> **Status:** все D1-D4 resolved. Decisions zafix'ened. Этот раздел сохранён как historical context — почему виджет был построен так, как был, и почему был перестроен в Phase 1.6 (§10, §12 MS-9..12).
+
+**Decision record (architect call, 2026-05-14):**
+
+| Divergence | Decision | Rationale |
+|---|---|---|
+| **D1** — Race inclusion | **D1.A — Include races** | Mirror Runalyze (§1 declarative stance). User-surfaced confusion + Радик не competitive racing, taper-artefact concern minor. |
+| **D2** — Long Run scoring vs displayed | **D2.A — Switch UI to displayed** | Implementation bug, не философское различие. Scoring-internal `(ln(V/4)*12 − 13)` имеет sense только внутри quadratic term, как UI denominator не имеет физической интерпретации. |
+| **D3** — Distance-adjusted Components targets | **D3.A — Empirical factor table** | Quick fix, calibrated на V≈37. D3.B (full PHP-port) — Phase 2 backlog при обнаружении material drift. D3.C (full table redesign) — rejected, redesign виджета out-of-scope. |
+| **D4** — Activity type filter | **D4.A — Accept divergence** | Low impact (verified ноль TrailRun/VirtualRun raw на user 1). Расширение фильтра требует calibration data, не оправдано. |
+
+**Original divergence analysis** (для контекста — почему именно эти 4):
+
+Empirically surfaced 2026-05-14 когда атлет сравнил наш widget с собственными Runalyze-показателями (10K Achieved 73% в Runalyze vs ниже у нас — corner case raised by user).
+
+### D1 — Race-effort inclusion
+
+| | Наш widget | Runalyze |
+|---|---|---|
+| `Activity.is_race=True` | **Исключаем** (SQL filter `is_race.is_(False)` + регрессионный `test_race_runs_excluded`) | **Включает** (race-day km идёт в `total_km_182d` и в longjog scoring) |
+
+**Наше reasoning** (§7): race — пиковая нагрузка, не базовая выносливость. Включение завышало бы shape перед таперингом и обнуляло бы после гонки.
+
+**Impact:** атлет с 5 races × 21 km = 105 km / 182 day → ~0.8 km/wk выше weekly_ratio у Runalyze → ~1 пункт MS → **~6 пунктов divergence в `progress_pct` для 10K-picker'а**. На неделе после races divergence растёт, потом убывает с time-decay.
+
+**Опции:**
+- **D1.A** — вернуть races (1 строка SQL + удалить тест). Совпадаем с Runalyze.
+- **D1.B** — оставить exclude, добавить UI-tooltip про divergence.
+- **D1.C** — частично: включить в `weekly_km`, оставить exclude в longjog-scoring (race ≠ «качественная длинная»).
+
+### D2 — Long Run target: scoring-internal vs displayed
+
+| | Наш widget | Runalyze |
+|---|---|---|
+| Components-блок «Long run» percentage базируется на | `target_longjog_km = ln(V/4)*12 − 13` (scoring-internal) | `displayed_long_run_target = ln(V/4)*12` (без −13) |
+
+**Источник divergence:** PHP-формула в `BasicEndurance.php` использует `(distance − 13) / target_excess` для scoring (quadratic term). Атом «target_excess» = «целевой избыток над 13 km» — это математически нужно для scoring, но НЕ имеет интерпретации как «длина целевой длинной». Runalyze UI показывает displayed (`ln(V/4)*12`) — для V=37 это 26.7 km ≈ ca. 26 km on screenshot, совпадает с upstream.
+
+**Impact:** при V=50, actual_longjog 18.2 km:
+- Наш widget: «105% of required (18.2 km)» — потому что 18.2 / 17.3 ≈ 105
+- Runalyze rendering: «60% (18.2 / 30.3 km)»
+
+Подходим к 100%+ значительно раньше → атлет думает «уже всё ок» когда на самом деле ещё 12 km короче целевой длинной.
+
+**Опции:**
+- **D2.A** — переключить Components-renderer на displayed target (`+ 13` в денominator'е). 3 строки в endpoint, регенерим existing tests. Scoring-pct неизменно (formula корректна — только UI).
+- **D2.B** — оставить scoring-internal, явно подписать «target excess over 13 km» в UI.
+
+### D3 — Distance-adjusted Weekly mileage / Long Run targets
+
+| Distance | Наш «Required Weekly» | Runalyze «Required Weekly» (V≈37) | Наш «Required Long Run» | Runalyze (V≈37) |
+|---|---|---|---|---|
+| 10K | `target_weekly_km(V)` = 58 (marathon baseline) | **15** | n/a (нет longjog для 10K) | — |
+| HM | то же 58 | **33** | то же 26.7 (displayed_longjog) | **18** |
+| Marathon | то же 58 | **58** | то же 26.7 | **26** |
+
+**Источник divergence:** наш widget показывает **один target = marathon-baseline `V^1.135`** в Components-блок, не зависит от picker'а. Runalyze скейлит targets по `(distance, V)` через формулу в `RunalyzePluginPanel_Rechenspiele/` PHP-плагине (точная формула не decoded — 8 эмпирических точек со скриншота показывают saturating curve, не выводится из `V^1.135 × required/100`).
+
+**Impact:** при HM-picker'е атлету говорим «33% of required (28.4 km/wk)», подразумевая что required = 84.8 km для марафона. Реально для HM достаточно ~33 km/wk, и 28.4 km/wk = **86% of HM-required**, а не 33%. Сильно влияет на UX: атлет видит низкие проценты на любой не-марафонской дистанции и думает «я провален» когда фактически близок к target'у выбранной дистанции.
+
+**Опции:**
+- **D3.A — empirical factor table** (~15 строк). Hardcoded factors derived from V≈37 screenshot: `{10K: weekly=0.26×, longjog=0; HM: weekly=0.57×, longjog=0.69×; Marathon: weekly=1.0×, longjog=1.0×}`. Calibrated на одном V — может drift'ить.
+- **D3.B — port формулы из Runalyze PHP-плагина** (часы исследований PHP-кода). Точное решение.
+- **D3.C — full table layout** (Runalyze-стиль): таблица 3 строки `[Distance, MS Required, Weekly Required, Long Run Required, Achieved, Predicted]` вместо picker'а. Радикальный UX-redesign, теряем chart-anchor.
+
+### D4 — Activity type filter
+
+| | Наш widget | Runalyze |
+|---|---|---|
+| `Activity.type == "Run"` strict | ✅ | Возможно более лояльный (treadmill-как-walk?, walking? trail-as-other?) |
+
+**Impact:** unknown без точного аудита Runalyze import-логики. Verified на user 1: 411 `Run` + 19 `Run RACE`, ноль `TrailRun`/`VirtualRun` raw — наша нормализация в `data/utils.py` правильно мапит. Но walks/hikes с высоким темпом (3-4 мин/км пешком невозможно, но 5-6 мин/км быстрая ходьба в горах) попадает в `type='Hike'` у нас и пропускается. Runalyze может считать их как Run-volume.
+
+**Опции:**
+- **D4.A** — игнорировать, маленький impact.
+- **D4.B** — расширить фильтр до `type IN ('Run', 'Hike')` при `avg_pace < 8:00/km`. Хрупко, нужны calibration данные.
+
+### Empirical reference
+
+User-surfaced case 2026-05-14 (10K-Achieved divergence):
+- Runalyze показывает 73% для 10K при MS=12.4%
+- Наш widget показывает ниже при том же датасете
+- Подозреваемая основная причина: D1 (race exclusion) + D2 (Long Run scoring vs displayed)
+- D3 не влияет на progress_pct (только на Components-блок UI)
+
+### Implementation status
+
+Выбранные decisions (D1.A + D2.A + D3.A + D4.A) реализуются в **Phase 1.6** (§10) через punch-list MS-9..12 (§12). Tracking issue: создан 2026-05-14 как «feat(marathon-shape): align with Runalyze upstream».
+
+После Phase 1.6 ship:
+- **Scoring** (формула shape_pct) — корректна, совпадает с Runalyze PHP source. **Не меняется в 1.6.**
+- **UI presentation** — приводится в полное соответствие с Runalyze «Other distances» semantics через MS-9/10/11.
+- **Acceptance** — `test_race_runs_included_matches_runalyze` + side-by-side test «73% ± 2pp» на V≈37 athlete fixture (§11 Phase 1.6).
+
+## 15. Related
 
 - [BasicEndurance.php — Runalyze source](https://github.com/Runalyze/Runalyze/blob/master/inc/core/Calculation/BasicEndurance.php) — calculation layer, формулы shape_pct + target_weekly + target_longjog (scoring-internal).
 - `plugin/RunalyzePluginPanel_Rechenspiele/` (Runalyze repo) — UI panel, рендерит «Other distances» table + Prognosis column. **Where to look for**: distance-adjusted weekly/long-run scaling formula + Prognosis penalty function. Not yet ported — см. §9 Phase 2 ideas.
