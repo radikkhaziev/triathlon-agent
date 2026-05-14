@@ -7,6 +7,7 @@ We only validate the contract the React Dashboard depends on:
 - per-user scoping.
 """
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1160,6 +1161,91 @@ class TestMarathonShapePredictedTimes:
         for call in mock.call_args_list:
             assert call.kwargs["mode"] == "today"
             assert call.kwargs["race_date"] == "2026-04-30"  # _FIXED_TODAY
+
+    async def test_cache_hit_skips_ml_call(self, client):
+        """When Redis returns cached predicted_times, ML inference is skipped."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        cached = {
+            "10K": {
+                "total_sec": 3340,
+                "total_sec_ci_low": 3210,
+                "total_sec_ci_high": 3490,
+                "pace_sec_per_km": 334.0,
+                "pace_ci_low": 321.0,
+                "pace_ci_high": 349.0,
+            },
+            "HM": None,
+            "Marathon": None,
+        }
+        mock_redis = MagicMock()
+        mock_redis.get = AsyncMock(return_value=json.dumps(cached))
+        mock_redis.set = AsyncMock()
+        ml_mock = AsyncMock(return_value=_ml_envelope(pred=999.9, total_sec=99999))
+
+        with (
+            patch("api.routers.dashboard.get_redis", return_value=mock_redis),
+            patch("api.routers.dashboard.predict_splits_with_ci", new=ml_mock),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        assert resp.json()["predicted_times"] == cached
+        ml_mock.assert_not_called()  # cache hit skipped all 3 inference calls
+
+    async def test_cache_miss_writes_through(self, client):
+        """Cache miss → ML called → result written to Redis with TTL."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        mock_redis = MagicMock()
+        mock_redis.get = AsyncMock(return_value=None)  # miss
+        mock_redis.set = AsyncMock()
+        ml_mock = AsyncMock(return_value=_ml_envelope(pred=300.0, total_sec=6000))
+
+        with (
+            patch("api.routers.dashboard.get_redis", return_value=mock_redis),
+            patch("api.routers.dashboard.predict_splits_with_ci", new=ml_mock),
+        ):
+            async with client as c:
+                await c.get("/api/marathon-shape?weeks=12")
+
+        assert ml_mock.call_count == 3
+        mock_redis.set.assert_called_once()
+        # set(key, json_value, ex=ttl) — verify TTL is positive
+        _kwargs = mock_redis.set.call_args.kwargs
+        assert _kwargs["ex"] > 0  # TTL until midnight
+
+    async def test_cache_disabled_falls_through(self, client):
+        """`get_redis() is None` (Redis disabled) → endpoint computes fresh, no error."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        ml_mock = AsyncMock(return_value=_ml_envelope(pred=300.0, total_sec=6000))
+
+        with (
+            patch("api.routers.dashboard.get_redis", return_value=None),
+            patch("api.routers.dashboard.predict_splits_with_ci", new=ml_mock),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        assert resp.status_code == 200
+        assert ml_mock.call_count == 3
+        assert resp.json()["predicted_times"]["10K"] is not None
+
+    async def test_cache_write_failure_does_not_break_response(self, client):
+        """Redis.set raising must not 500 — response still carries fresh ML output."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        mock_redis = MagicMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.set = AsyncMock(side_effect=RuntimeError("Redis unreachable"))
+        ml_mock = AsyncMock(return_value=_ml_envelope(pred=300.0, total_sec=6000))
+
+        with (
+            patch("api.routers.dashboard.get_redis", return_value=mock_redis),
+            patch("api.routers.dashboard.predict_splits_with_ci", new=ml_mock),
+        ):
+            async with client as c:
+                resp = await c.get("/api/marathon-shape?weeks=12")
+
+        assert resp.status_code == 200
+        assert resp.json()["predicted_times"]["10K"] is not None
 
     async def test_total_sec_unavailable_treated_as_null(self, client):
         """Run envelope without total_sec (e.g. Ride power_only flag) → predicted_times[label] = null."""

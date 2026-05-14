@@ -330,7 +330,7 @@ API integration (`tests/api/test_dashboard.py::TestMarathonShape`):
 | Phase | Scope | Status |
 |---|---|---|
 | **1** | Формулы (`data/marathon_shape.py`) + API endpoint + `MarathonShapeWidget` + unit-тесты | ✅ shipped |
-| **1.5** | ML-based Predicted time + pace block в widget (`predict_splits_with_ci` integration, §13) | 🔵 pending |
+| **1.5** | ML-based Predicted time + pace block в widget (`predict_splits_with_ci` integration, §13) + Redis cache | ✅ shipped |
 
 Phase 2 — только если появится явный запрос (MCP-tool, morning report integration, история >12 нед, ultra/5K расширение picker'а, distance-adjusted weekly/long-run targets table per §9).
 
@@ -353,7 +353,7 @@ Phase 2 — только если появится явный запрос (MCP-
 - [ ] Pace формат — `M:SS/km` (290 sec → `4:50/km`). Time — `H:MM:SS` для >1h, `MM:SS` иначе.
 - [ ] **Uncertainty-aware UI**: при CI spread > 20% от center value — footnote «model uncertainty high, limited race history» под Predicted block. Test покрывает.
 - [ ] Integration test: endpoint mock'ит `predict_splits_with_ci` (`ModelNotTrained` для одной distance, valid для другой) → response корректно отражает оба случая.
-- [ ] (optional) Redis cache `(user_id, today_iso)` с TTL до полуночи Belgrade. Если skip — задокументировать в PR что cumulative latency на повторных visits приемлема.
+- [x] Redis cache `(user_id, today_iso)` с TTL до полуночи Belgrade. `_compute_predicted_times` / `_predict_times_fresh` в `api/routers/dashboard.py`. Graceful fallback при Redis disabled / unreachable / get-write errors — endpoint никогда не падает из-за cache. 4 теста (`test_cache_hit_skips_ml_call`, `test_cache_miss_writes_through`, `test_cache_disabled_falls_through`, `test_cache_write_failure_does_not_break_response`).
 
 ## 12. Phasing & GitHub issues
 
@@ -364,9 +364,10 @@ Phase 2 — только если появится явный запрос (MCP-
 
 ### Phase 1.5 punch-list
 
-- [ ] **MS-5 — Endpoint extension.** `/api/marathon-shape` вызывает `predict_splits_with_ci(user_id, mode='today', race_date=today, race_distance_run_m=X)` для 10000 / 21097 / 42195 м **sequentially** через `for`-loop (`asyncio.gather` не даёт parallelism — `_predict_one` sync блокирует loop, см. §13 «Latency»). Try/except каждый — `ModelNotTrained` / `ModelBelowAcceptance` → null для дистанции. ~50 строк в `api/routers/dashboard.py`. Latency overhead: ~240ms.
-- [ ] **MS-6 — Response types + widget render.** `MarathonShapeResponse.predicted_times` поле в `webapp/src/api/types.ts`. Widget рендерит Predicted block (Time / Pace + CI low/high) под header'ом badge'а. Format helpers: `formatHMS(sec)` + `formatPace(sec_per_km)`. ~40 строк tsx.
-- [ ] **MS-7 — Integration test.** Mock `predict_splits_with_ci` → endpoint собирает корректный `predicted_times` envelope, cold-start = null для одной дистанции, valid для другой. ~50 строк.
+- [x] **MS-5 — Endpoint extension.** `/api/marathon-shape` вызывает `predict_splits_with_ci(user_id, mode='today', race_date=today_iso, race_distance_run_m=X)` для 10000 / 21097 / 42195 м **sequentially** через `for`-loop в `_predict_times_fresh` (`asyncio.gather` не даёт parallelism — `_predict_one` sync блокирует loop, см. §13 «Latency»). Try/except каждый — `ModelNotTrained` / `ModelBelowAcceptance` → null для дистанции; unexpected errors → Sentry + null. ~80 строк в `api/routers/dashboard.py`.
+- [x] **MS-6 — Response types + widget render.** `MarathonShapeResponse.predicted_times` + `MarathonShapePredicted` в `webapp/src/api/types.ts`. Widget рендерит Predicted block (Time / Pace + CI low/high) под header'ом badge'а с `formatHMS` / `formatPace` helpers (защита от `sec <= 0` через `'—'`). Wide-CI footnote при spread > 20%.
+- [x] **MS-7 — Integration test.** Mock `predict_splits_with_ci` → endpoint собирает корректный `predicted_times` envelope, cold-start = null для одной дистанции, valid для другой. 10 тестов в `TestMarathonShapePredictedTimes` (6 endpoint + 4 cache).
+- [x] **MS-8 — Redis cache layer.** `_compute_predicted_times` обёртка над `_predict_times_fresh`, key `marathon_shape_pred:{user_id}:{today_iso}`, TTL через `_ttl_until_midnight_local()`. Graceful fallback на каждом из 3 cache failure mode'ов.
 
 ## 13. ML-based time prediction (Phase 1.5)
 
