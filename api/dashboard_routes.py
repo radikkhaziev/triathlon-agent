@@ -125,9 +125,3 @@ async def job_morning_report(user: User = Depends(require_viewer)) -> dict:
         "job": "morning-report",
         "message": "Mock: would run scheduler_wellness_job(run_ai=True)",
     }
-
-
-@router.post("/api/jobs/sync-wellness", status_code=202)
-async def job_sync_wellness(user: User = Depends(require_viewer)) -> dict:
-    """Trigger wellness sync (stub)."""
-    return {"status": "accepted", "job": "sync-wellness", "message": "Mock: would run scheduler_wellness_job()"}

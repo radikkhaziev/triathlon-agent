@@ -2,11 +2,9 @@
 - Activity.save_bulk() sets last_synced_at
 - Activity.get_range() returns activities + max last_synced_at
 - GET /api/activities-week returns 7-day week structure
-- POST /api/jobs/sync-activities requires auth
 """
 
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -208,72 +206,3 @@ class TestActivitiesWeekEndpoint:
             resp = await c.get("/api/activities-week?week_offset=0")
         data = resp.json()
         assert data["last_synced_at"] is not None
-
-
-# ---------------------------------------------------------------------------
-# API — POST /api/jobs/sync-activities
-# ---------------------------------------------------------------------------
-
-
-class TestSyncActivitiesEndpoint:
-    @pytest.fixture
-    def client(self):
-        from fastapi import FastAPI
-
-        from api.deps import require_athlete
-        from api.routes import router
-
-        test_app = FastAPI()
-        test_app.include_router(router)
-
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_user.role = "owner"
-        mock_user.is_active = True
-        mock_user.athlete_id = "i001"
-        mock_user.chat_id = "111"
-        mock_user.mcp_token = "test_token"
-        mock_user.username = "tester"
-        mock_user.api_key = "key1"
-        mock_user.display_name = None
-        # UserDTO.model_validate reads these via from_attributes — MagicMock
-        # auto-attrs default to ``MagicMock`` instances which fail
-        # ``str`` / ``str | None`` validation.
-        mock_user.language = "ru"
-        mock_user.avatar_url = None
-        mock_user.is_silent = False
-        mock_user.bot_chat_initialized = True
-        test_app.dependency_overrides[require_athlete] = lambda: mock_user
-        return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
-
-    async def test_requires_auth(self, client):
-        from fastapi import FastAPI
-
-        from api.routes import router
-
-        app_no_override = FastAPI()
-        app_no_override.include_router(router)
-        async with AsyncClient(transport=ASGITransport(app=app_no_override), base_url="http://test") as c:
-            resp = await c.post("/api/jobs/sync-activities")
-        assert resp.status_code == 401
-
-    async def test_runs_sync_job(self, client):
-        with (patch("api.routers.jobs.actor_fetch_user_activities") as mock_actor,):
-            mock_actor.send = MagicMock()
-            await Activity.save_bulk(1, activities=[_make_activity(id="a6001")])
-
-            async with client as c:
-                resp = await c.post("/api/jobs/sync-activities")
-
-            assert resp.status_code == 202
-            data = resp.json()
-            assert data["status"] == "accepted"
-            assert data["job"] == "sync-activities"
-            mock_actor.send.assert_called_once()
-
-    async def test_raises_on_dispatch_failure(self, client):
-        with (patch("api.routers.jobs.actor_fetch_user_activities") as mock_actor,):
-            mock_actor.send = MagicMock(side_effect=Exception("Redis down"))
-            with pytest.raises(Exception, match="Redis down"):
-                async with client as c:
-                    await c.post("/api/jobs/sync-activities")

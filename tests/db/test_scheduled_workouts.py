@@ -2,12 +2,10 @@
 - ScheduledWorkout.save_bulk() sets last_synced_at
 - ScheduledWorkout.get_range() returns workouts + max last_synced_at
 - GET /api/scheduled-workouts returns 7-day week structure
-- POST /api/jobs/sync-workouts requires auth
 - Helper functions (_format_duration, week calculation)
 """
 
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -406,67 +404,6 @@ class TestScheduledWorkoutsEndpoint:
         target = next((w for w in wed_day["workouts"] if w["id"] == workout_id), None)
         assert target is not None
         assert target["description"] == desc
-
-
-# ---------------------------------------------------------------------------
-# API — POST /api/jobs/sync-workouts
-# ---------------------------------------------------------------------------
-
-
-class TestSyncWorkoutsEndpoint:
-    @pytest.fixture
-    def client(self):
-        from unittest.mock import MagicMock
-
-        from fastapi import FastAPI
-
-        from api.deps import require_athlete
-        from api.routes import router
-
-        test_app = FastAPI()
-        test_app.include_router(router)
-
-        mock_user = MagicMock()
-        mock_user.id = 1
-        mock_user.chat_id = "111"
-        mock_user.username = "test"
-        mock_user.athlete_id = "i001"
-        mock_user.api_key = "key1"
-        mock_user.mcp_token = "test_token"
-        mock_user.role = "owner"
-        mock_user.is_active = True
-        mock_user.is_silent = False
-        # UserDTO.model_validate reads these via from_attributes — set
-        # concrete defaults so MagicMock auto-attrs don't fail validation.
-        mock_user.language = "ru"
-        mock_user.avatar_url = None
-        mock_user.bot_chat_initialized = True
-        test_app.dependency_overrides[require_athlete] = lambda: mock_user
-        return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
-
-    async def test_requires_auth(self, client):
-        """POST without authorization should fail (when bot token is set)."""
-        from fastapi import FastAPI
-
-        from api.routes import router
-
-        app_no_override = FastAPI()
-        app_no_override.include_router(router)
-        async with AsyncClient(transport=ASGITransport(app=app_no_override), base_url="http://test") as c:
-            resp = await c.post("/api/jobs/sync-workouts")
-        assert resp.status_code == 401
-
-    async def test_dispatches_dramatiq_actor(self, client):
-        """POST with valid auth dispatches dramatiq actor and returns 202."""
-        with patch("api.routers.jobs.actor_user_scheduled_workouts") as mock_actor:
-            async with client as c:
-                resp = await c.post("/api/jobs/sync-workouts")
-
-            assert resp.status_code == 202
-            data = resp.json()
-            assert data["status"] == "accepted"
-            assert data["job"] == "sync-workouts"
-            mock_actor.send.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

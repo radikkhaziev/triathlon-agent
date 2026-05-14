@@ -61,9 +61,6 @@ POST /api/intervals/auth/disconnect      — clear OAuth tokens (user can reconn
 POST /api/intervals/webhook              — Intervals.icu push webhooks: secret verification, DTO parsing, Sentry monitoring. 10/10 event types researched (see docs/INTERVALS_WEBHOOKS_RESEARCH.md)
 GET  /api/auth/backfill-status           — cursor-based progress of the OAuth bootstrap backfill (status/cursor_dt/progress_pct/chunks_done), tenant-scoped. `last_error` is sanitized to an allowlist (EMPTY_INTERVALS / watchdog_exhausted / OAuth revoked / internal)
 POST /api/auth/retry-backfill            — manual re-run of OAuth bootstrap. Dual cooldown: 7d after completed+data, 1h after EMPTY_INTERVALS, immediate for failed; plus 1h per-user anti-spam rate limit. 409 if already running, 429 with Retry-After on cooldown/rate-limit
-POST /api/jobs/sync-wellness            — dispatch dramatiq actor (require_athlete)
-POST /api/jobs/sync-workouts            — dispatch dramatiq actor (require_athlete)
-POST /api/jobs/sync-activities          — dispatch dramatiq actor (require_athlete)
 GET  /api/changelog/latest               — latest weekly Discussion (`{url, title, published_at}` or 404). 1h in-process cache (200 + 404). 503+`Retry-After:300` on GitHub-side failure. `require_viewer` (demo can read). See `docs/WEEKLY_CHANGELOG_SPEC.md`
 GET  /health
 POST /telegram/webhook                  — webhook mode only
@@ -72,7 +69,7 @@ GET  /static/exercises/{id}.html        — generated exercise card HTML (Static
 GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles)
 ```
 
-**Dashboard API** (real per-user, in `api/routers/dashboard.py`): `/api/training-load`, `/api/activities`, `/api/recovery-trend`, `/api/weekly-recap`, `/api/goal` (`{has_goal: false}` when no active race; React hides the Goal tab in that case). Activities/recap drop sports that don't normalize to Swim/Ride/Run (yoga, hike, weights → not on the chart and excluded from week TSS). Still mock in `api/dashboard_routes.py`: `/api/dashboard` (legacy, no current consumer after Today page removal), `/api/jobs/morning-report`, `/api/jobs/sync-wellness`.
+**Dashboard API** (real per-user, in `api/routers/dashboard.py`): `/api/training-load`, `/api/activities`, `/api/recovery-trend`, `/api/weekly-recap`, `/api/goal` (`{has_goal: false}` when no active race; React hides the Goal tab in that case). Activities/recap drop sports that don't normalize to Swim/Ride/Run (yoga, hike, weights → not on the chart and excluded from week TSS). Still mock in `api/dashboard_routes.py`: `/api/dashboard` (legacy, no current consumer after Today page removal), `/api/jobs/morning-report`.
 
 **Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256, 15-min freshness) or `Bearer <jwt>`. Demo mode: `POST /api/auth/demo` with `DEMO_PASSWORD` → JWT with `purpose=demo` claim, resolved to owner's User with virtual `role="demo"` (read-only, mutation endpoints blocked via `require_athlete`). Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id, blocks demo), `require_owner`. `get_data_user_id(user)` always returns `user.id`. API DTOs centralized in `api/dto.py`.
 
@@ -82,7 +79,7 @@ GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles
 
 React 18 + TypeScript + Vite 6 + React Router v7 + Tailwind CSS v3 + Chart.js v4 + React Context. Light theme, Inter font, mobile-first, Telegram Mini App compatible.
 
-**Routes:** `/` → redirect to `/wellness` for authenticated users, Landing for guests. `/wellness` (home), `/plan`, `/activities`, `/activity/:id`, `/dashboard` (3 tabs), `/progress`, `/settings`, `/login`. `/report` is a legacy alias → `/wellness` (used by morning-report Telegram link). Bottom tabs navigation. Wellness page exposes a manual sync button (`POST /api/jobs/sync-wellness`) to all athletes on today's view.
+**Routes:** `/` → redirect to `/wellness` for authenticated users, Landing for guests. `/wellness` (home), `/plan`, `/activities`, `/activity/:id`, `/dashboard` (3 tabs), `/progress`, `/settings`, `/login`. `/report` is a legacy alias → `/wellness` (used by morning-report Telegram link). Bottom tabs navigation. Wellness/Plan/Activities show a «last synced» timestamp on the relevant view (today / owner's week); data refresh is automatic via cron + Intervals.icu webhooks, no manual trigger.
 
 **Auth:** `AuthProvider` (React Context): Telegram initData → JWT fallback → anonymous. `useAuth()` hook. Desktop: `/web` → 6-digit code → JWT. **Global auth gate** in `App.tsx`: fetches `/api/auth/me` on login, checks `intervals.athlete_id`. If missing → all data routes render `<OnboardingPrompt />` (issue #185). Settings and Login always accessible for OAuth onboarding.
 
