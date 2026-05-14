@@ -804,3 +804,194 @@ class TestWeeklyRecap:
         # User 1 has no activities; the response should be empty buckets
         for w in resp.json()["weeks"]:
             assert w["by_sport"] == {}
+
+
+# ---------------------------------------------------------------------------
+# /api/marathon-shape
+# ---------------------------------------------------------------------------
+
+
+# _FIXED_TODAY = 2026-04-30 (Thursday, weekday=3)
+# anchor_sunday = 2026-04-26 (most recent Sunday on/before today)
+# 12 weeks Mon-Sun: 2026-02-02 (Mon) → 2026-04-26 (Sun)
+_MS_WINDOW_END = date(2026, 4, 26)
+_MS_NEWEST_WEEK_START = date(2026, 4, 20)
+
+
+async def _seed_vo2max(user_id: int, dt: date, vo2max: float) -> None:
+    """Insert a wellness row with vo2max set. Bypasses _seed_wellness because the
+    DTO ingestion path doesn't carry vo2max consistently — for these tests we
+    only need the single field, not full wellness state."""
+    async with get_session() as session:
+        session.add(
+            Wellness(
+                user_id=user_id,
+                date=dt.isoformat(),
+                vo2max=vo2max,
+                updated=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+
+class TestMarathonShape:
+    async def test_returns_12_weeks_newest_first(self, client):
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["weeks"]) == 12
+        assert data["weeks"][0]["week_start"] == _MS_NEWEST_WEEK_START.isoformat()
+        assert data["weeks"][0]["week_end"] == _MS_WINDOW_END.isoformat()
+
+    async def test_no_vo2max_returns_null_shape(self, client):
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        # Без wellness vo2max строки — все weeks: shape_pct=null
+        for w in resp.json()["weeks"]:
+            assert w["shape_pct"] is None
+            assert w["vo2max_used"] is None
+            assert w["components"] is None
+
+    async def test_vo2max_30d_backfill(self, client):
+        """vo2max snapshot 25 дней назад должен подтянуться через walk-back."""
+        await _seed_vo2max(1, _MS_WINDOW_END - timedelta(days=25), vo2max=48.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        newest = resp.json()["weeks"][0]
+        assert newest["vo2max_used"] == 48.0  # picked up via back-walk
+
+    async def test_run_distance_meters_to_km_conversion(self, client):
+        """ActivityDetail.distance is METERS — endpoint must divide by 1000."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        # One 21.1 km long run (= 21100 m) 5 days before week_end
+        await Activity.save_bulk(
+            1,
+            activities=[
+                _make_activity(
+                    aid="i_long",
+                    dt=_MS_WINDOW_END - timedelta(days=5),
+                    sport="Run",
+                    tss=110.0,
+                )
+            ],
+        )
+        await _save_detail("i_long", 21100.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        newest = resp.json()["weeks"][0]
+        # 21.1 km registered as longjog (>13 km) → actual_longjog_km == 21.1
+        assert newest["components"]["actual_longjog_km"] == 21.1
+
+    async def test_race_runs_excluded(self, client):
+        """Run with is_race=True must NOT contribute to shape."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        race_dto = _make_activity(
+            aid="i_race",
+            dt=_MS_WINDOW_END - timedelta(days=10),
+            sport="Run",
+            tss=200.0,
+        )
+        race_dto.is_race = True
+        await Activity.save_bulk(1, activities=[race_dto])
+        await _save_detail("i_race", 42195.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        newest = resp.json()["weeks"][0]
+        # No non-race runs → weekly volume 0, longjog 0, shape 0
+        assert newest["shape_pct"] == 0.0
+        assert newest["components"]["actual_weekly_km"] == 0.0
+
+    async def test_race_filter_keeps_non_race_run_in_mixed_set(self, client):
+        """Mixed-bag regression: race excluded, sibling non-race in same window stays."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        race = _make_activity(
+            aid="i_race_mb",
+            dt=_MS_WINDOW_END - timedelta(days=2),
+            sport="Run",
+            tss=200.0,
+        )
+        race.is_race = True
+        regular = _make_activity(
+            aid="i_normal_mb",
+            dt=_MS_WINDOW_END - timedelta(days=4),
+            sport="Run",
+            tss=60.0,
+        )
+        await Activity.save_bulk(1, activities=[race, regular])
+        await _save_detail("i_race_mb", 42195.0)
+        await _save_detail("i_normal_mb", 18000.0)  # 18 km — longjog
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        newest = resp.json()["weeks"][0]
+        # The 18 km non-race run survives the filter; 42.195 km race does not.
+        assert newest["components"]["actual_longjog_km"] == 18.0
+        assert newest["components"]["actual_weekly_km"] > 0
+
+    async def test_vo2max_below_minimum_surfaces_clamped_value(self, client):
+        """Real VO2max < 25 → response surfaces clamped 25.0 (documented in spec §7)."""
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=20.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        newest = resp.json()["weeks"][0]
+        assert newest["vo2max_used"] == 25.0  # not 20.0 — clamp surfaces honestly
+        assert newest["components"]["target_weekly_km"] == 38.6  # 25^1.135 rounded
+
+    async def test_per_user_scoping(self, client):
+        """User 2's runs and vo2max don't leak into user 1's response."""
+        async with get_session() as session:
+            session.add(User(id=2, chat_id="23456", role="athlete"))
+            await session.commit()
+        await _seed_vo2max(2, _MS_WINDOW_END, vo2max=55.0)
+        run_dto = _make_activity(
+            aid="i_other_run",
+            dt=_MS_WINDOW_END - timedelta(days=3),
+            sport="Run",
+            tss=80.0,
+        )
+        await Activity.save_bulk(2, activities=[run_dto])
+        await _save_detail("i_other_run", 15000.0)
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        # User 1 has no wellness vo2max → all weeks null
+        for w in resp.json()["weeks"]:
+            assert w["shape_pct"] is None
+
+    async def test_current_components_from_newest_week(self, client):
+        await _seed_vo2max(1, _MS_WINDOW_END, vo2max=50.0)
+        await Activity.save_bulk(
+            1,
+            activities=[
+                _make_activity(
+                    aid="i_r",
+                    dt=_MS_WINDOW_END - timedelta(days=2),
+                    sport="Run",
+                    tss=60.0,
+                )
+            ],
+        )
+        await _save_detail("i_r", 14000.0)  # 14 km — counts as longjog
+
+        async with client as c:
+            resp = await c.get("/api/marathon-shape?weeks=12")
+
+        data = resp.json()
+        assert data["current_components"] is not None
+        assert data["current_components"]["vo2max"] == 50.0
+        assert data["current_components"]["actual_longjog_km"] == 14.0

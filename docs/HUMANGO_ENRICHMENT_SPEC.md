@@ -119,7 +119,7 @@ If the relevant threshold(s) for the event's sport are missing, skip enrichment 
 | Description contains `View on HumanGo` but no `==========` (rest day) | Skip (detection check 2). |
 | Event already has `workout_doc.steps` (we pushed earlier, or another integration did) | Skip (detection check 3, idempotency). |
 | Athlete has only `lthr_run` set, HumanGo emits pace-only Run blocks (symmetric: only `threshold_pace_run` set + HR-only description) | Cold-start passes (one threshold ≥ 0), but `_humango_target_for_step` returns `None` for the missing pair → all steps come back target-less → **fail-closed** post-build guard drops the workout (`None`). Pushing target-less steps would lock out future re-enrichment via `is_humango_event` idempotency (which only checks `workout_doc.steps` non-empty, not target presence). Athlete must add the missing threshold; next sync retries. |
-| Existing target-less workouts pushed before this fix landed | **Backfill gap:** `is_humango_event` idempotency returns `False` once `workout_doc.steps` is non-empty, regardless of target presence. Events enriched between «HumanGo parsing initial commit» and «Run pace fix» with pace-only descriptions stay target-less until manually re-pushed (script following `scripts/repush_ai_workouts_with_native_desc.py` pattern, or one-off `update_event` call). Single-user volume is single-digit; accept-as-is for now, document for next sweep. |
+| Existing target-less workouts pushed before this fix landed | **Backfill gap, accepted:** `is_humango_event` idempotency returns `False` once `workout_doc.steps` is non-empty, regardless of target presence. Events enriched between «HumanGo parsing initial commit» and «Run pace fix» with pace-only descriptions stay target-less. Single-user, single-digit volume — no backfill planned. |
 
 ## 8. Architecture
 
@@ -146,8 +146,8 @@ actor_enrich_humango_workout (Dramatiq)
 |---|---|---|
 | **1** | Spec + converter (`humango_to_intervals_steps`) + detection (`is_humango_event`) + unit tests | ✅ shipped |
 | **2** | Actor (`actor_enrich_humango_workout`) + wiring from `actor_user_scheduled_workouts` + integration tests + tenant guard | ✅ shipped |
-| **3** | Backfill CLI for existing HumanGo events on the calendar | ⏳ deferred (low priority; cron sweep eventually picks them up) |
-| **4** | LLM-based fallback parser for RPE-only / multilingual descriptions | ⏳ deferred — Phase 1 regex covers all production samples so far |
+
+**Closed:** cron sweep keeps new HumanGo events covered; the regex parser handles every production sample observed to date. No further phases planned.
 
 ## 10. Out of scope
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Chart, registerables } from 'chart.js'
 import annotationPlugin from 'chartjs-plugin-annotation'
@@ -11,7 +11,7 @@ import { useApi } from '../hooks/useApi'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
 import { num } from '../lib/formatters'
-import type { ProgressResponse, DecouplingTrend } from '../api/types'
+import type { ProgressResponse, DecouplingTrend, MarathonShapeResponse } from '../api/types'
 
 interface FitnessProjectionData {
   count: number
@@ -73,6 +73,7 @@ function ProgressContent({ data, sport }: { data: ProgressResponse; sport: Sport
       <TrendBadge data={data} sport={sport} />
       {data.decoupling_trend && <DecouplingBadge trend={data.decoupling_trend} />}
       {sport !== 'swim' && <PolarizationWidget sport={sport} />}
+      {sport === 'run' && <MarathonShapeWidget />}
       {sport === 'bike' && <ProgressionWidget />}
       {sport === 'swim' ? <SwimCharts data={data} /> : (
         <>
@@ -500,6 +501,219 @@ function PolarizationWidget({ sport }: { sport: Sport }) {
               ⚠ {s}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// Marathon Shape — Runalyze-style basic-endurance metric. Distance-picker
+// renormalises the "ready for X" badge and shifts the chart annotation line;
+// the underlying MS curve doesn't move (it's an objective measurement).
+type MSDistance = '10K' | 'HM' | 'Marathon'
+
+const MS_DISTANCE_KM: Record<MSDistance, number> = {
+  '10K': 10.0,
+  HM: 21.0975,
+  Marathon: 42.195,
+}
+
+const MS_DISTANCE_TABS = [
+  { key: '10K', label: '10K' },
+  { key: 'HM', label: 'HM' },
+  { key: 'Marathon', label: 'Marathon' },
+]
+
+function MarathonShapeWidget() {
+  const [data, setData] = useState<MarathonShapeResponse | null>(null)
+  const [distance, setDistance] = useState<MSDistance>('HM')
+  const chartRef = useRef<HTMLCanvasElement>(null)
+  const chartInstRef = useRef<Chart | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch<MarathonShapeResponse>('/api/marathon-shape?weeks=12')
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => console.warn('marathon-shape fetch failed:', e))
+    return () => { cancelled = true }
+  }, [])
+
+  // Build a chronological view (oldest → newest) for the chart. API returns
+  // newest-first so the badge can read `weeks[0]` directly; reverse for plot.
+  // useMemo here is load-bearing: this array is a useEffect dep, so a stable
+  // reference prevents the chart from being torn down + rebuilt on every
+  // parent re-render (sport/days tab switches at the Progress page level).
+  const chronological = useMemo(() => data ? [...data.weeks].reverse() : [], [data])
+  const required = Math.pow(MS_DISTANCE_KM[distance], 1.23)
+  const newest = data?.weeks[0] ?? null
+  const shape = newest?.shape_pct ?? null
+  const progressPct = shape !== null ? Math.round((shape / required) * 100) : null
+
+  // badgeLabel is only used in the `progressPct !== null` JSX branch; the
+  // null branch renders distinct copy ("No data" / "VO2max unavailable…") that
+  // tells the user *why* it's missing. badgeColor is still resolved in both
+  // branches because it feeds the chart annotation line.
+  let badgeLabel = ''
+  let badgeColor: string
+  if (progressPct === null) {
+    badgeColor = 'var(--text-dim)'
+  } else if (progressPct >= 100) {
+    badgeLabel = `Ready for ${distance}`
+    badgeColor = STATUS_COLORS.green
+  } else if (progressPct >= 80) {
+    badgeLabel = `Almost ready for ${distance}`
+    badgeColor = STATUS_COLORS.yellow
+  } else {
+    badgeLabel = `Building for ${distance}`
+    badgeColor = STATUS_COLORS.red
+  }
+
+  // Effect 1 — chart instance lifecycle (depends only on the dataset).
+  // Distance switches don't touch the underlying series, so we don't tear
+  // the chart down for them — Effect 2 patches the annotation in place.
+  useEffect(() => {
+    if (!chartRef.current || chronological.length === 0) return
+
+    chartInstRef.current?.destroy()
+
+    const labels = chronological.map(w => w.week_end.replace(/^\d{4}-/, ''))
+    const values = chronological.map(w => w.shape_pct)
+    const color = CHART_COLORS.run
+    const baseOpts = chartOptions(`Marathon Shape — 12 weeks`)
+
+    chartInstRef.current = new Chart(chartRef.current, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Marathon Shape (%)',
+          data: values,
+          borderColor: color,
+          backgroundColor: color + '20',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+          pointBackgroundColor: color,
+          borderWidth: 2,
+          spanGaps: true,
+        }],
+      },
+      options: {
+        ...baseOpts,
+        plugins: {
+          ...baseOpts.plugins,
+          annotation: {
+            annotations: {
+              required: {
+                type: 'line',
+                yMin: required,
+                yMax: required,
+                borderColor: badgeColor,
+                borderWidth: 2,
+                borderDash: [5, 5],
+                label: {
+                  display: true,
+                  content: `${distance} ${required.toFixed(1)}%`,
+                  position: 'end',
+                  backgroundColor: badgeColor,
+                  color: '#fff',
+                  font: { size: 10, weight: 'bold' },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+
+    return () => { chartInstRef.current?.destroy() }
+    // Distance/required/badgeColor intentionally excluded — see Effect 2.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chronological])
+
+  // Effect 2 — annotation patch on distance switch (no chart rebuild).
+  useEffect(() => {
+    const chart = chartInstRef.current
+    // Chart.js options is typed as `any` by the plugin; cast to access the
+    // annotation plugin's nested config without dragging in its types.
+    const annotation = (chart?.options?.plugins as { annotation?: { annotations?: { required?: Record<string, unknown> } } })
+      ?.annotation?.annotations?.required
+    if (!chart || !annotation) return
+
+    annotation.yMin = required
+    annotation.yMax = required
+    annotation.borderColor = badgeColor
+    const label = annotation.label as { content?: string; backgroundColor?: string } | undefined
+    if (label) {
+      label.content = `${distance} ${required.toFixed(1)}%`
+      label.backgroundColor = badgeColor
+    }
+    chart.update('none')  // 'none' = no animation, instant re-render
+  }, [distance, required, badgeColor])
+
+  if (!data) return null
+
+  const current = data.current_components
+  const weeklyPct = current ? Math.round((current.actual_weekly_km / current.target_weekly_km) * 100) : null
+  const longjogPct = current ? Math.round((current.actual_longjog_km / current.target_longjog_km) * 100) : null
+  // If every week is null (no vo2max anywhere in window), hide the chart —
+  // a lone annotation line floating without data points is more confusing
+  // than helpful. The "VO2max unavailable" message above covers the state.
+  const hasAnyData = chronological.some(w => w.shape_pct !== null)
+
+  return (
+    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[13px] text-text-dim">Marathon Shape</span>
+      </div>
+
+      <TabSwitcher tabs={MS_DISTANCE_TABS} active={distance} onChange={k => setDistance(k as MSDistance)} />
+
+      {progressPct !== null && shape !== null ? (
+        <div className="mb-3 mt-2">
+          <div className="flex items-baseline gap-3">
+            <span className="text-2xl font-bold" style={{ color: badgeColor }}>
+              {progressPct}%
+            </span>
+            <span className="text-[13px]" style={{ color: badgeColor }}>{badgeLabel}</span>
+          </div>
+          <div className="text-[11px] text-text-dim mt-0.5">
+            MS {shape.toFixed(1)} / target {required.toFixed(1)}
+          </div>
+        </div>
+      ) : (
+        <div className="mb-3 mt-2 text-[13px] text-text-dim">
+          {newest === null ? 'No data' : 'VO2max unavailable for the most recent week'}
+        </div>
+      )}
+
+      {hasAnyData && (
+        <ChartCard>
+          <canvas ref={chartRef} />
+        </ChartCard>
+      )}
+
+      {current && (
+        <div className="mt-3 pt-3 border-t border-border text-[12px] text-text-dim space-y-1">
+          <div className="flex justify-between">
+            <span>Weekly volume</span>
+            <span className="font-mono">
+              {num(current.actual_weekly_km, 1)} / {num(current.target_weekly_km, 1)} km
+              {weeklyPct !== null && <span className="text-text-dim ml-2">({weeklyPct}%)</span>}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>Long run</span>
+            <span className="font-mono">
+              {num(current.actual_longjog_km, 1)} / {num(current.target_longjog_km, 1)} km
+              {longjogPct !== null && <span className="text-text-dim ml-2">({longjogPct}%)</span>}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>VO2max</span>
+            <span className="font-mono">{num(current.vo2max, 1)}</span>
+          </div>
         </div>
       )}
     </div>
