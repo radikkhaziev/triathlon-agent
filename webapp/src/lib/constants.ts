@@ -32,13 +32,18 @@ export const STATUS_BADGE_MAP: Record<string, { cls: string; labelKey: string }>
   insufficient_data: { cls: 'bg-[#88888820] text-text-dim', labelKey: 'status.insufficient_data' },
 }
 
+// Hex (not rgb()) so call sites can append a 2-char alpha suffix —
+// e.g. `CHART_COLORS.ctl + '20'` → `'#3b82f620'` (valid 8-digit hex with
+// ~12% opacity). Appending the same suffix to an `rgb(...)` string yields
+// invalid CSS and Chart.js silently falls back to its default
+// backgroundColor, which renders as a dark fill on dark UI.
 export const CHART_COLORS = {
-  ctl: 'rgb(59, 130, 246)',
-  atl: 'rgb(239, 68, 68)',
-  tsb: 'rgb(34, 197, 94)',
-  swim: 'rgb(59, 130, 246)',
-  ride: 'rgb(34, 197, 94)',
-  run: 'rgb(245, 158, 11)',
+  ctl: '#3b82f6',
+  atl: '#ef4444',
+  tsb: '#22c55e',
+  swim: '#3b82f6',
+  ride: '#22c55e',
+  run: '#f59e0b',
 }
 
 // TSB zone hex palette — solid (not rgba) because we render these as inline
