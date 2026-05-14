@@ -743,7 +743,20 @@ export interface MarathonShapeWeek {
   components: MarathonShapeComponents | null
 }
 
+// Phase 1.5 — ML-predicted finish time + pace per distance. Each value is
+// either a full envelope or null (cold-start / below-acceptance / ML failure).
+// See spec §13.
+export interface MarathonShapePredicted {
+  total_sec: number
+  total_sec_ci_low: number
+  total_sec_ci_high: number
+  pace_sec_per_km: number
+  pace_ci_low: number
+  pace_ci_high: number
+}
+
 export interface MarathonShapeResponse {
   weeks: MarathonShapeWeek[]
   current_components: (MarathonShapeComponents & { vo2max: number }) | null
+  predicted_times: Record<'10K' | 'HM' | 'Marathon', MarathonShapePredicted | null>
 }

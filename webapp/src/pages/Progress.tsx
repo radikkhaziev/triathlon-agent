@@ -525,6 +525,37 @@ const MS_DISTANCE_TABS = [
   { key: 'Marathon', label: 'Marathon' },
 ]
 
+// Format helpers for the Predicted block (Phase 1.5).
+// `H:MM:SS` for ≥1h, `M:SS` otherwise. 6135 → "1:42:15". 3340 → "55:40".
+// Negative / zero treated as "—" — envelope filtering upstream prevents these,
+// but the guard is free defence against future degenerate model output.
+function formatHMS(sec: number): string {
+  if (!(sec > 0)) return '—'
+  const total = Math.round(sec)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const ss = String(s).padStart(2, '0')
+  if (h > 0) {
+    const mm = String(m).padStart(2, '0')
+    return `${h}:${mm}:${ss}`
+  }
+  return `${m}:${ss}`
+}
+
+// `M:SS/km`. 290.7 → "4:51/km" (rounded to nearest second).
+function formatPace(secPerKm: number): string {
+  if (!(secPerKm > 0)) return '—'
+  const total = Math.round(secPerKm)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}/km`
+}
+
+// Spec §13 — surface a footnote when CI is wide enough that the point estimate
+// stops being actionable. Threshold 0.20 = ±10% of central value.
+const MS_WIDE_CI_THRESHOLD = 0.20
+
 function MarathonShapeWidget() {
   const [data, setData] = useState<MarathonShapeResponse | null>(null)
   const [distance, setDistance] = useState<MSDistance>('HM')
@@ -664,6 +695,14 @@ function MarathonShapeWidget() {
   // than helpful. The "VO2max unavailable" message above covers the state.
   const hasAnyData = chronological.some(w => w.shape_pct !== null)
 
+  // Phase 1.5 — ML-predicted finish time + pace for the currently-selected
+  // distance. null when the run model is cold-start / below-acceptance / failed.
+  const predicted = data.predicted_times?.[distance] ?? null
+  const ciSpread = predicted
+    ? (predicted.total_sec_ci_high - predicted.total_sec_ci_low) / predicted.total_sec
+    : 0
+  const wideCi = predicted && ciSpread > MS_WIDE_CI_THRESHOLD
+
   return (
     <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
       <div className="flex items-center justify-between mb-3">
@@ -687,6 +726,33 @@ function MarathonShapeWidget() {
       ) : (
         <div className="mb-3 mt-2 text-[13px] text-text-dim">
           {newest === null ? 'No data' : 'VO2max unavailable for the most recent week'}
+        </div>
+      )}
+
+      {predicted && (
+        <div className="mb-3 pb-3 border-b border-border">
+          <div className="text-[12px] text-text-dim mb-1.5">Predicted ({distance})</div>
+          <div className="flex gap-6 text-[13px]">
+            <div>
+              <div className="text-text-dim text-[11px]">Time</div>
+              <div className="font-mono font-semibold">{formatHMS(predicted.total_sec)}</div>
+              <div className="text-text-dim text-[11px] font-mono">
+                {formatHMS(predicted.total_sec_ci_low)} – {formatHMS(predicted.total_sec_ci_high)}
+              </div>
+            </div>
+            <div>
+              <div className="text-text-dim text-[11px]">Pace</div>
+              <div className="font-mono font-semibold">{formatPace(predicted.pace_sec_per_km)}</div>
+              <div className="text-text-dim text-[11px] font-mono">
+                {formatPace(predicted.pace_ci_low)} – {formatPace(predicted.pace_ci_high)}
+              </div>
+            </div>
+          </div>
+          {wideCi && (
+            <div className="text-[10px] text-text-dim mt-1.5 italic">
+              Model uncertainty high — limited race history; bands will tighten as more data arrives.
+            </div>
+          )}
         </div>
       )}
 
