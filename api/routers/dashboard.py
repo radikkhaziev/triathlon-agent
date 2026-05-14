@@ -16,6 +16,7 @@ from api.deps import get_data_user_id, require_viewer
 from config import settings
 from data.db import Activity, ActivityDetail, AthleteGoal, User, Wellness, get_session
 from data.db.dto import AthleteGoalDTO
+from data.marathon_shape import DAYS_FOR_WEEK_KM, RunActivity, calculate_marathon_shape
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
 from data.utils import extract_sport_ctl, normalize_sport
 
@@ -440,3 +441,141 @@ async def recovery_trend(
         hrv.append(round(float(h), 1) if h is not None else None)
 
     return {"dates": dates, "recovery": recovery, "hrv": hrv}
+
+
+def _vo2max_at(
+    vo2max_by_date: dict[str, float | None],
+    anchor: date,
+    *,
+    back_days: int = 30,
+) -> float | None:
+    """Most recent non-null vo2max on/before `anchor` within `back_days`.
+
+    Wellness can have missing or NULL vo2max rows even when the surrounding
+    days are populated (Intervals.icu pushes vo2max only on activity days
+    with a Garmin estimate). Walk back up to 30 days so the widget renders a
+    stable value rather than oscillating between weeks that happen to have
+    a fitness test and weeks that don't.
+    """
+    for delta in range(back_days + 1):
+        key = (anchor - timedelta(days=delta)).isoformat()
+        v = vo2max_by_date.get(key)
+        if v is not None:
+            return v
+    return None
+
+
+@router.get("/api/marathon-shape")
+async def marathon_shape(
+    weeks: int = Query(default=12, ge=1, le=24),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Weekly Marathon Shape time-series for the Progress page widget.
+
+    For each of the last ``weeks`` Mon-Sun weeks (ending at the most recent
+    Sunday ≤ today), computes Runalyze-style basic-endurance shape % using
+    ~26 weeks of Run history ending at that week's Sunday and the VO2max
+    snapshot on that day (with 30-day backward fallback for sparse rows).
+
+    Distance-specific required shape (HM / Marathon / 70.3) is computed
+    CLIENT-side from ``distance_km ** 1.23`` — endpoint returns only the
+    absolute shape %.
+    """
+    today = _today_local()
+    # Most recent Sunday on/before today. weekday(): Mon=0..Sun=6.
+    days_since_sunday = (today.weekday() + 1) % 7
+    window_end = today - timedelta(days=days_since_sunday)
+    window_start = window_end - timedelta(weeks=weeks - 1, days=6)
+    # Need DAYS_FOR_WEEK_KM (182 days) of Run history before window_start so
+    # the oldest week in the window has a full 26-week tail. Wellness needs
+    # 30 days more for the back-fallback.
+    history_start = window_start - timedelta(days=DAYS_FOR_WEEK_KM)
+    wellness_start = window_start - timedelta(days=30)
+
+    uid = get_data_user_id(user)
+    async with get_session() as session:
+        runs_result = await session.execute(
+            # OUTER join: a Run without an `activity_details` row (the pipeline
+            # writes the detail seconds after `Activity.save_bulk` —
+            # `_actor_update_analityc_tables` in `tasks/actors/activities.py:383`)
+            # is silently dropped by the `if dist_m is None: continue` below,
+            # not by the JOIN. Outerjoin gives the SAME result for any window
+            # outside the live pipeline gap and an immediately fresh view inside it.
+            select(Activity.start_date_local, ActivityDetail.distance)
+            .outerjoin(ActivityDetail, ActivityDetail.activity_id == Activity.id)
+            .where(
+                Activity.user_id == uid,
+                Activity.type == "Run",
+                Activity.is_race.is_(False),
+                Activity.start_date_local >= history_start.isoformat(),
+                Activity.start_date_local <= window_end.isoformat(),
+            )
+        )
+        run_rows = runs_result.all()
+
+        vo2_result = await session.execute(
+            select(Wellness.date, Wellness.vo2max).where(
+                Wellness.user_id == uid,
+                Wellness.date >= wellness_start.isoformat(),
+                Wellness.date <= window_end.isoformat(),
+            )
+        )
+        vo2_rows = vo2_result.all()
+
+    all_runs: list[RunActivity] = []
+    for dt_str, dist_m in run_rows:
+        if dist_m is None:
+            continue
+        try:
+            dt = date.fromisoformat(dt_str)
+        except (TypeError, ValueError):
+            continue
+        all_runs.append(RunActivity(dt=dt, distance_km=float(dist_m) / 1000.0))
+
+    vo2max_by_date: dict[str, float | None] = {d: float(v) if v is not None else None for d, v in vo2_rows}
+
+    weeks_out: list[dict] = []
+    for i in range(weeks):
+        wk_start = window_start + timedelta(weeks=i)
+        wk_end = wk_start + timedelta(days=6)
+        vo2 = _vo2max_at(vo2max_by_date, wk_end)
+        if vo2 is None:
+            weeks_out.append(
+                {
+                    "week_start": wk_start.isoformat(),
+                    "week_end": wk_end.isoformat(),
+                    "shape_pct": None,
+                    "vo2max_used": None,
+                    "components": None,
+                }
+            )
+            continue
+        result = calculate_marathon_shape(all_runs, vo2max=vo2, reference_date=wk_end)
+        weeks_out.append(
+            {
+                "week_start": wk_start.isoformat(),
+                "week_end": wk_end.isoformat(),
+                "shape_pct": result.shape_pct,
+                "vo2max_used": round(result.vo2max_used, 1),
+                "components": {
+                    "actual_weekly_km": result.actual_weekly_km,
+                    "target_weekly_km": result.target_weekly_km,
+                    "longjog_score": result.longjog_score,
+                    "target_longjog_km": result.target_longjog_km,
+                    "actual_longjog_km": result.actual_longjog_km,
+                },
+            }
+        )
+
+    # Newest first — consistent with `/api/weekly-recap` ordering.
+    weeks_out.reverse()
+
+    current_components: dict | None = None
+    if weeks_out and weeks_out[0]["components"] is not None:
+        c = weeks_out[0]["components"]
+        current_components = {
+            **c,
+            "vo2max": weeks_out[0]["vo2max_used"],
+        }
+
+    return {"weeks": weeks_out, "current_components": current_components}

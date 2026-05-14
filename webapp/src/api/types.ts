@@ -721,3 +721,29 @@ export interface ChangelogLatest {
   title: string
   published_at: string  // ISO timestamp from GitHub
 }
+
+// Marathon Shape — Runalyze-style basic-endurance metric. Endpoint returns 12
+// weekly buckets (newest first); the widget computes distance-specific
+// required shape client-side from `distance_km ** 1.23`.
+export interface MarathonShapeComponents {
+  actual_weekly_km: number
+  target_weekly_km: number
+  longjog_score: number
+  target_longjog_km: number
+  actual_longjog_km: number
+}
+
+export interface MarathonShapeWeek {
+  week_start: string
+  week_end: string
+  // shape_pct / vo2max_used / components are null together — vo2max gates the
+  // entire week's computation (see `_vo2max_at` in api/routers/dashboard.py).
+  shape_pct: number | null
+  vo2max_used: number | null
+  components: MarathonShapeComponents | null
+}
+
+export interface MarathonShapeResponse {
+  weeks: MarathonShapeWeek[]
+  current_components: (MarathonShapeComponents & { vo2max: number }) | null
+}
