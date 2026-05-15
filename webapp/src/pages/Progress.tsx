@@ -898,13 +898,15 @@ const BR_DISTANCE_TABS = [
 
 // Spec §3.1 (target_ctl_bike) + §3.2 (target_long_ride_hours). Table values,
 // not FTP-parameterised — there is no published `f(FTP, age)` formula for
-// bike CTL bands. Calibrated on mid-pack AG-triathlete reference (Friel /
-// Coggan band midpoints); see spec §3.1 Provenance + Calibration caveat.
-// Phase 2 may revisit if drift shows up at elite / beginner brackets.
+// bike CTL bands. `ctl` is PER-SPORT CTL (extract_sport_ctl(...)["ride"]),
+// derived as total_CTL_band × bike-share-of-TSS, calibrated for a SOLID
+// AG-athlete (top 30-50% age-group, not just-finisher, not elite) — see
+// spec §3.1 «Calibration boundaries» + Provenance. Phase 2 may parameterise
+// via the athlete's historical bike-share if drift shows up off-bracket.
 const BR_DISTANCE_TARGETS: Record<BRDistance, { ctl: number; longRideH: number }> = {
-  Olympic: { ctl: 50, longRideH: 1.5 },
-  '70.3': { ctl: 75, longRideH: 3.0 },
-  IM: { ctl: 100, longRideH: 5.0 },
+  Olympic: { ctl: 35, longRideH: 1.5 },
+  '70.3': { ctl: 50, longRideH: 3.0 },
+  IM: { ctl: 80, longRideH: 5.0 },
 }
 
 // Spec §3.1 / §3.2 traffic-light bounds. Same ratio thresholds for Volume
