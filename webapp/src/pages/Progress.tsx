@@ -43,6 +43,18 @@ const STATUS_COLORS = {
   red: '#ef4444',
 } as const
 
+// One sub-section inside the unified days-dependent card. `first:` strips the
+// top divider/padding so the first rendered child sits flush against the card
+// top — works because Tailwind's `first:` operates on the actual DOM, so React
+// conditional rendering (e.g. TrendBadge returning null) is handled correctly.
+function SubBlock({ children, chart = false }: { children: React.ReactNode; chart?: boolean }) {
+  return (
+    <div className="border-t border-border first:border-t-0 mt-3 pt-3 first:mt-0 first:pt-0">
+      {chart ? <div style={{ height: 280 }}>{children}</div> : children}
+    </div>
+  )
+}
+
 export default function Progress() {
   const [sport, setSport] = useState<Sport>('bike')
   const [days, setDays] = useState('180')
@@ -52,7 +64,29 @@ export default function Progress() {
 
   return (
     <Layout title="Progress">
-      <TabSwitcher tabs={SPORT_TABS} active={sport} onChange={k => setSport(k as Sport)} />
+      <FitnessProjectionChart />
+
+      <div className="flex gap-1 py-3 sticky top-0 bg-bg z-10">
+        {SPORT_TABS.map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => setSport(tab.key as Sport)}
+            className={`flex-1 py-2 px-1 border-none rounded-lg text-[13px] font-semibold cursor-pointer transition-all font-sans ${
+              sport === tab.key
+                ? 'bg-[var(--button)] text-[var(--button-text)]'
+                : 'bg-[var(--surface)] text-text-dim'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {data?.decoupling_trend && <DecouplingBadge trend={data.decoupling_trend} />}
+      {sport !== 'swim' && <PolarizationWidget sport={sport} />}
+      {sport === 'run' && <MarathonShapeWidget />}
+      {sport === 'bike' && <ProgressionWidget />}
+
       <TabSwitcher tabs={DAYS_TABS} active={days} onChange={setDays} />
 
       {loading && <LoadingSpinner />}
@@ -70,18 +104,15 @@ export default function Progress() {
 function ProgressContent({ data, sport }: { data: ProgressResponse; sport: Sport }) {
   return (
     <>
-      <TrendBadge data={data} sport={sport} />
-      {data.decoupling_trend && <DecouplingBadge trend={data.decoupling_trend} />}
-      {sport !== 'swim' && <PolarizationWidget sport={sport} />}
-      {sport === 'run' && <MarathonShapeWidget />}
-      {sport === 'bike' && <ProgressionWidget />}
-      {sport === 'swim' ? <SwimCharts data={data} /> : (
-        <>
-          <EFChart data={data} sport={sport} />
-          <DecouplingChart data={data} sport={sport} />
-        </>
-      )}
-      <FitnessProjectionChart />
+      <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
+        <TrendBadge data={data} sport={sport} />
+        {sport === 'swim' ? <SwimCharts data={data} /> : (
+          <>
+            <EFChart data={data} sport={sport} />
+            <DecouplingChart data={data} sport={sport} />
+          </>
+        )}
+      </div>
       <ActivityList data={data} sport={sport} />
     </>
   )
@@ -103,12 +134,14 @@ function TrendBadge({ data, sport }: { data: ProgressResponse; sport: Sport }) {
   const label = sport === 'swim' ? 'Pace trend' : 'EF trend'
 
   return (
-    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3 flex items-center justify-between">
-      <span className="text-[13px] text-text-dim">{label}</span>
-      <span className="text-sm font-bold" style={{ color }}>
-        {arrow} {Math.abs(trend.pct).toFixed(1)}%
-      </span>
-    </div>
+    <SubBlock>
+      <div className="flex items-center justify-between">
+        <span className="text-[13px] text-text-dim">{label}</span>
+        <span className="text-sm font-bold" style={{ color }}>
+          {arrow} {Math.abs(trend.pct).toFixed(1)}%
+        </span>
+      </div>
+    </SubBlock>
   )
 }
 
@@ -170,10 +203,12 @@ function EFChart({ data, sport }: { data: ProgressResponse; sport: Sport }) {
     return () => { chartInstRef.current?.destroy() }
   }, [data, sport])
 
+  if (!data.weekly?.length) return null
+
   return (
-    <ChartCard>
+    <SubBlock chart>
       <canvas ref={chartRef} />
-    </ChartCard>
+    </SubBlock>
   )
 }
 
@@ -289,9 +324,9 @@ function DecouplingChart({ data, sport }: { data: ProgressResponse; sport: Sport
   if (activities.length < 2) return null
 
   return (
-    <ChartCard>
+    <SubBlock chart>
       <canvas ref={chartRef} />
-    </ChartCard>
+    </SubBlock>
   )
 }
 
@@ -362,10 +397,12 @@ function SwimCharts({ data }: { data: ProgressResponse }) {
 
   const hasSwolf = data.weekly?.some(w => w.swolf_mean != null) ?? false
 
+  if (!data.weekly?.length) return null
+
   return (
     <>
-      <ChartCard><canvas ref={paceRef} /></ChartCard>
-      {hasSwolf && <ChartCard><canvas ref={swolfRef} /></ChartCard>}
+      <SubBlock chart><canvas ref={paceRef} /></SubBlock>
+      {hasSwolf && <SubBlock chart><canvas ref={swolfRef} /></SubBlock>}
     </>
   )
 }
@@ -394,13 +431,15 @@ function ActivityList({ data, sport }: { data: ProgressResponse; sport: Sport })
               </>
             ) : (
               <>
-                {act.ef != null && <span>{num(act.ef, 4)}</span>}
+                {act.ef != null && (
+                  <span><span className="text-text-dim font-normal">EF</span> {num(act.ef, 2)}</span>
+                )}
                 {act.decoupling != null && (
                   <span
                     className="text-[12px] ml-2 font-medium"
                     style={{ color: STATUS_COLORS[act.decoupling_status || 'green'] }}
                   >
-                    {num(act.decoupling, 1)}%
+                    <span className="text-text-dim font-normal">Drift</span> {num(act.decoupling, 1)}%
                   </span>
                 )}
               </>
