@@ -767,3 +767,33 @@ export interface MarathonShapeResponse {
   // races > 30 km.
   max_run_race_distance_m: number | null
 }
+
+// Bike Readiness — 3-signal (Volume / Long ride / Durability) bike-leg
+// readiness, no synthetic Bike Shape %. Endpoint returns 12 weekly CTL_bike
+// snapshots + current 3-signal envelope; the widget computes
+// distance-specific targets (Olympic / 70.3 / IM) and the traffic-light
+// verdict client-side from the empirical target table (spec §3.1).
+export interface BikeReadinessWeek {
+  week_start: string
+  week_end: string
+  // null when `wellness.sport_info` is missing for week_end and the 7-day
+  // back-walk also yields nothing (e.g. fresh user, backfill gap).
+  ctl_bike: number | null
+}
+
+export interface BikeReadinessComponents {
+  ctl_bike: number | null               // newest week's CTL_bike — Volume signal
+  longest_ride_hours: number | null     // max moving_time over last 28d, hours
+  longest_ride_date: string | null      // "YYYY-MM-DD" of the longest ride
+  decoupling_median_pct: number | null  // median of last 5 valid bike rides over 84d
+  decoupling_status: 'green' | 'yellow' | 'red' | null
+  decoupling_n: number                  // count of valid rides used (0 = insufficient)
+  // Signed % EF change over the 84-day window. >0 = improving aerobic fitness.
+  // null when fewer than 2 weekly samples landed (insufficient_data).
+  ef_trend_pct: number | null
+}
+
+export interface BikeReadinessResponse {
+  weeks: BikeReadinessWeek[]
+  current_components: BikeReadinessComponents
+}

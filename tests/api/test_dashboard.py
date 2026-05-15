@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.deps import require_viewer
 from api.routers.dashboard import router as dashboard_router
-from data.db import Activity, ActivityDetail, AthleteGoal, Race, User, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, AthleteSettings, Race, User, Wellness, get_session
 from data.intervals.dto import ActivityDTO
 
 _FIXED_TODAY = date(2026, 4, 30)
@@ -1379,3 +1379,387 @@ class TestMarathonShapePredictedTimes:
 
         pt = resp.json()["predicted_times"]
         assert pt == {"10K": None, "HM": None, "Marathon": None}
+
+
+# ---------------------------------------------------------------------------
+# /api/bike-readiness   (BIKE_READINESS_SPEC §3, §5, §11)
+# ---------------------------------------------------------------------------
+
+
+# Sunday-anchored 12-week window, mirror /api/marathon-shape:
+#   _FIXED_TODAY = 2026-04-30 (Thu) → newest Sunday = 2026-04-26 → newest week
+#   Mon 2026-04-20 → Sun 2026-04-26; oldest Mon = 2026-02-02.
+_BR_WINDOW_END = _MS_WINDOW_END  # = date(2026, 4, 26)
+_BR_NEWEST_WEEK_START = _MS_NEWEST_WEEK_START  # = date(2026, 4, 20)
+
+
+async def _seed_wellness_sport_info(
+    user_id: int,
+    dt: date,
+    *,
+    ctl_bike: float | None = None,
+    ctl_run: float | None = None,
+) -> None:
+    """Insert a wellness row with `sport_info` populated. The endpoint reads
+    CTL_bike via `extract_sport_ctl(sport_info)["ride"]`, which expects a list
+    of `{"type": <sport>, "ctl": <float>}` dicts (the format Intervals.icu
+    returns enriched with our pipeline's `ctl` field, see `data/utils.py:81`).
+    """
+    sport_info: list[dict] = []
+    if ctl_bike is not None:
+        sport_info.append({"type": "Ride", "ctl": ctl_bike})
+    if ctl_run is not None:
+        sport_info.append({"type": "Run", "ctl": ctl_run})
+    async with get_session() as session:
+        session.add(
+            Wellness(
+                user_id=user_id,
+                date=dt.isoformat(),
+                sport_info=sport_info or None,
+                updated=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+
+async def _seed_valid_bike_ride(
+    aid: str,
+    *,
+    dt: date,
+    is_race: bool = False,
+    decoupling: float | None = 4.0,
+    moving_time: int = 4200,
+    efficiency_factor: float = 2.10,
+    user_id: int = 1,
+) -> None:
+    """Seed one bike Activity + an ActivityDetail row that clears every
+    `is_valid_for_decoupling` gate (≥60min, VI ≤1.10, >70% Z1+Z2, decoupling
+    not NULL) and `_is_z2` (avg_hr inside 68–83% LTHR, with LTHR=153 from
+    `_seed_bike_thresholds`). Pass `decoupling=None` to seed an indoor-ride
+    style row that the strict filter should drop. `efficiency_factor` is
+    overridable so `test_ef_trend_pct_field_populated` can seed a positive
+    trend (rides with different EF values across two weekly buckets)."""
+    dto = ActivityDTO(
+        id=aid,
+        start_date_local=dt,
+        type="Ride",
+        moving_time=moving_time,
+        average_hr=115.0,  # inside Z2 for LTHR=153
+    )
+    dto.is_race = is_race
+    await Activity.save_bulk(user_id, activities=[dto])
+    async with get_session() as session:
+        session.add(
+            ActivityDetail(
+                activity_id=aid,
+                variability_index=1.02,
+                efficiency_factor=efficiency_factor,
+                decoupling=decoupling,
+                hr_zone_times=[1200, 2400, 400, 150, 50],  # 86% Z1+Z2
+                pace=2.5,
+            )
+        )
+        await session.commit()
+
+
+async def _seed_bike_thresholds(user_id: int = 1) -> None:
+    """LTHR=153 → Z2 (68–83% LTHR) = 104–127 bpm. `_seed_valid_bike_ride`
+    sets avg_hr=115 so rides clear the Z2 gate under `strict_filter=True`."""
+    await AthleteSettings.upsert(user_id=user_id, sport="Ride", lthr=153)
+
+
+class TestBikeReadiness:
+    """Spec BIKE_READINESS_SPEC §8 — 12 integration tests for /api/bike-readiness."""
+
+    @pytest.fixture(autouse=True)
+    def _freeze_progress_today(self):
+        """`compute_efficiency_trend` (mcp_server/tools/progress.py:107) calls
+        bare `date.today()` to compute its 84-day window. The module-level
+        `_freeze_today` only pins the dashboard endpoint's notion of today —
+        without this extra patch, the helper's window drifts with wall-clock
+        time and the decoupling / EF-trend assertions become date-fragile."""
+
+        class _FrozenDate(date):
+            @classmethod
+            def today(cls):
+                return _FIXED_TODAY
+
+        with patch("mcp_server.tools.progress.date", _FrozenDate):
+            yield
+
+    async def test_returns_12_weeks_newest_first(self, client):
+        await _seed_wellness_sport_info(1, _BR_WINDOW_END, ctl_bike=70.0)
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["weeks"]) == 12
+        assert data["weeks"][0]["week_start"] == _BR_NEWEST_WEEK_START.isoformat()
+        assert data["weeks"][0]["week_end"] == _BR_WINDOW_END.isoformat()
+        # Newest-first ordering — second bucket must be one week earlier
+        assert data["weeks"][1]["week_end"] == (_BR_WINDOW_END - timedelta(days=7)).isoformat()
+
+    async def test_ctl_bike_extracted_from_sport_info_json(self, client):
+        await _seed_wellness_sport_info(1, _BR_WINDOW_END, ctl_bike=68.4, ctl_run=42.0)
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        data = resp.json()
+        # Only the Ride entry's CTL is surfaced — not run.
+        assert data["weeks"][0]["ctl_bike"] == 68.4
+        assert data["current_components"]["ctl_bike"] == 68.4
+
+    async def test_no_sport_info_returns_null_ctl(self, client):
+        # Wellness row exists but without sport_info — typical for a fresh user
+        # whose Intervals.icu pipeline hasn't enriched per-sport CTL yet.
+        async with get_session() as session:
+            session.add(
+                Wellness(
+                    user_id=1,
+                    date=_BR_WINDOW_END.isoformat(),
+                    sport_info=None,
+                    updated=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        data = resp.json()
+        for w in data["weeks"]:
+            assert w["ctl_bike"] is None
+        assert data["current_components"]["ctl_bike"] is None
+
+    async def test_ctl_bike_7d_backwalk(self, client):
+        """A Sunday with NULL sport_info should fall back to the most recent
+        earlier day with a value (spec §7 — 7-day walk-back, safe because
+        CTL decays with τ=42d)."""
+        # Seed CTL 5 days BEFORE window_end (= Tuesday 2026-04-21). The
+        # window_end Sunday itself has no row → endpoint walks back to find 65.0.
+        await _seed_wellness_sport_info(1, _BR_WINDOW_END - timedelta(days=5), ctl_bike=65.0)
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        assert resp.json()["weeks"][0]["ctl_bike"] == 65.0
+
+    async def test_longest_ride_max_in_28d(self, client):
+        # Three rides: 70min (4200s), 120min (7200s), 90min (5400s). The
+        # 120-min ride wins → 2.0h.
+        await _seed_valid_bike_ride("short", dt=_BR_WINDOW_END - timedelta(days=2), moving_time=4200)
+        await _seed_valid_bike_ride("long", dt=_BR_WINDOW_END - timedelta(days=10), moving_time=7200)
+        await _seed_valid_bike_ride("mid", dt=_BR_WINDOW_END - timedelta(days=20), moving_time=5400)
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["longest_ride_hours"] == 2.0
+        assert cc["longest_ride_date"] == (_BR_WINDOW_END - timedelta(days=10)).isoformat()
+
+    async def test_race_rides_excluded(self, client):
+        """Spec §3.2, §7: is_race=True rides must not surface as longest_ride
+        and must not contribute to the decoupling median."""
+        await _seed_bike_thresholds()
+        # 3-hour A-race + 1-hour training ride. Without the filter the race
+        # would win the longest-ride slot and pollute decoupling with 12%.
+        await _seed_valid_bike_ride(
+            "race",
+            dt=_BR_WINDOW_END - timedelta(days=3),
+            is_race=True,
+            moving_time=10800,  # 3h
+            decoupling=12.0,
+        )
+        await _seed_valid_bike_ride(
+            "train",
+            dt=_BR_WINDOW_END - timedelta(days=2),
+            moving_time=3600,
+            decoupling=4.0,
+        )
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["longest_ride_hours"] == 1.0  # the 1h training ride, not the 3h race
+        assert cc["longest_ride_date"] == (_BR_WINDOW_END - timedelta(days=2)).isoformat()
+        # Race decoupling 12% would have made the median yellow/red; training-only
+        # median is 4.0% → green.
+        assert cc["decoupling_median_pct"] == 4.0
+        assert cc["decoupling_status"] == "green"
+        assert cc["decoupling_n"] == 1
+
+    async def test_decoupling_median_from_compute_efficiency_trend(self, client):
+        """`decoupling_median_pct` must match exactly the value the helper
+        produces — spec §3.3 «не пишем свой SQL/Python pipeline»."""
+        await _seed_bike_thresholds()
+        # 5 rides with decoupling 3.0, 3.5, 4.0, 4.5, 5.0 → median = 4.0
+        for i, drift in enumerate([3.0, 3.5, 4.0, 4.5, 5.0]):
+            await _seed_valid_bike_ride(
+                f"r{i}",
+                dt=_BR_WINDOW_END - timedelta(days=10 + i),
+                decoupling=drift,
+            )
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["decoupling_median_pct"] == 4.0
+        assert cc["decoupling_n"] == 5
+
+    async def test_decoupling_status_yellow_threshold(self, client):
+        """Status binding follows `decoupling_status()` helper: green ≤5,
+        yellow ≤10, red >10. This exercises the *yellow* band; the green
+        path is covered by `test_race_rides_excluded`, the red band by
+        `test_decoupling_status_red_threshold`."""
+        await _seed_bike_thresholds()
+        # 5 rides all at 7% → median = 7.0 → yellow
+        for i in range(5):
+            await _seed_valid_bike_ride(
+                f"y{i}",
+                dt=_BR_WINDOW_END - timedelta(days=2 + i),
+                decoupling=7.0,
+            )
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["decoupling_median_pct"] == 7.0
+        assert cc["decoupling_status"] == "yellow"
+
+    async def test_decoupling_status_red_threshold(self, client):
+        """Median strictly > 10 → red. Locks the upper threshold so a future
+        widening of the yellow band (e.g. yellow ≤ 12) would fail loud."""
+        await _seed_bike_thresholds()
+        # 5 rides all at 12% → median = 12.0 → red
+        for i in range(5):
+            await _seed_valid_bike_ride(
+                f"r{i}",
+                dt=_BR_WINDOW_END - timedelta(days=2 + i),
+                decoupling=12.0,
+            )
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["decoupling_median_pct"] == 12.0
+        assert cc["decoupling_status"] == "red"
+
+    async def test_indoor_ride_counts_if_decoupling_present(self, client):
+        """Spec §7: indoor ride (VirtualRide normalises → "Ride" at DTO
+        ingest, `data/intervals/dto.py:_normalize_type`) is counted iff
+        ActivityDetail.decoupling is not NULL. A ride without decoupling —
+        common for older indoor rides without HR drift computed — must be
+        filtered out by `is_valid_for_decoupling`."""
+        await _seed_bike_thresholds()
+        await _seed_valid_bike_ride("indoor_ok", dt=_BR_WINDOW_END - timedelta(days=2), decoupling=4.0)
+        await _seed_valid_bike_ride(
+            "indoor_no_decoup",
+            dt=_BR_WINDOW_END - timedelta(days=3),
+            decoupling=None,  # is_valid_for_decoupling → False
+        )
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        # Only the ride with non-NULL decoupling lands in last_5.
+        assert cc["decoupling_n"] == 1
+        assert cc["decoupling_median_pct"] == 4.0
+
+    async def test_no_valid_rides_returns_null_decoupling(self, client):
+        """Empty 84-day window → decoupling_median_pct is null, n=0. The
+        widget reads decoupling_n=0 OR status=null as "insufficient" — both
+        signals are emitted distinctly here so we don't lose the distinction
+        through accidental coercion."""
+        # No activities seeded → helper returns {"data_points": 0, ...}
+        # without a decoupling_trend key.
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["decoupling_median_pct"] is None
+        assert cc["decoupling_status"] is None
+        assert cc["decoupling_n"] == 0
+
+    async def test_per_user_scoping(self, client):
+        """Tenant isolation: rows for user 2 must not leak into user 1's
+        response — regression for `docs/MULTI_TENANT_SECURITY_SPEC.md` T1."""
+        async with get_session() as session:
+            session.add(User(id=2, chat_id="other", role="athlete"))
+            await session.commit()
+        # Seed under user 2 only
+        await _seed_bike_thresholds(user_id=2)
+        await _seed_wellness_sport_info(2, _BR_WINDOW_END, ctl_bike=99.0)
+        await _seed_valid_bike_ride(
+            "u2_ride",
+            dt=_BR_WINDOW_END - timedelta(days=1),
+            decoupling=4.0,
+            user_id=2,
+        )
+
+        # Call as user 1 (the test fixture's mock_user)
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["ctl_bike"] is None
+        assert cc["longest_ride_hours"] is None
+        assert cc["decoupling_n"] == 0
+
+    async def test_ef_trend_pct_field_populated(self, client):
+        """ef_trend_pct is a signed percentage, not an enum or status string.
+        Spec §6 — EF trend is a *supplementary* sub-line, not a traffic-light
+        signal, so the widget needs the raw % to prefix '+' / '-' on the sign.
+
+        Seed two weekly buckets with differentiated EF (older 2.00 → newer
+        2.20, +10%) so the assertion catches a degenerate regression where
+        the endpoint hardcodes zero or strips direction."""
+        await _seed_bike_thresholds()
+        # Older bucket (ISO W16): EF=2.00. Newer bucket (W17): EF=2.20.
+        # `_trend_pct` is (last - first) / |first| * 100 = (2.20-2.00)/2.00*100 = +10.0.
+        await _seed_valid_bike_ride(
+            "w16_old",
+            dt=_BR_WINDOW_END - timedelta(days=9),
+            decoupling=4.0,
+            efficiency_factor=2.00,
+        )
+        await _seed_valid_bike_ride(
+            "w17_new",
+            dt=_BR_WINDOW_END - timedelta(days=2),
+            decoupling=4.0,
+            efficiency_factor=2.20,
+        )
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert isinstance(cc["ef_trend_pct"], (int, float))
+        # +10% improvement — exact value pinned by `_trend_pct`'s rounding.
+        assert cc["ef_trend_pct"] == 10.0
+
+    async def test_ef_trend_pct_null_when_insufficient(self, client):
+        """Single weekly EF sample → `_trend_pct` returns
+        `direction=insufficient_data`, and the endpoint maps that to
+        `ef_trend_pct: None`. The widget hides the sub-line on null
+        (Progress.tsx EF-trend conditional render). Spec §3.3."""
+        await _seed_bike_thresholds()
+        # Single ride → only one ISO week populated → trend insufficient.
+        await _seed_valid_bike_ride("lone", dt=_BR_WINDOW_END - timedelta(days=2), decoupling=4.0)
+
+        async with client as c:
+            resp = await c.get("/api/bike-readiness?weeks=12")
+
+        cc = resp.json()["current_components"]
+        assert cc["ef_trend_pct"] is None
+        # Sanity: the ride DID land in the decoupling pipeline — null here
+        # is about EF trend specifically, not a blanket "no data" miss.
+        assert cc["decoupling_n"] == 1

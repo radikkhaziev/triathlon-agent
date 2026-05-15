@@ -11,7 +11,7 @@ import { useApi } from '../hooks/useApi'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
 import { num } from '../lib/formatters'
-import type { ProgressResponse, DecouplingTrend, MarathonShapeResponse } from '../api/types'
+import type { ProgressResponse, DecouplingTrend, MarathonShapeResponse, BikeReadinessResponse } from '../api/types'
 
 interface FitnessProjectionData {
   count: number
@@ -86,6 +86,7 @@ export default function Progress() {
       {sport !== 'swim' && <PolarizationWidget sport={sport} />}
       {sport === 'run' && <MarathonShapeWidget />}
       {sport === 'bike' && <ProgressionWidget />}
+      {sport === 'bike' && <BikeReadinessWidget />}
 
       <TabSwitcher tabs={DAYS_TABS} active={days} onChange={setDays} />
 
@@ -877,6 +878,306 @@ function MarathonShapeWidget() {
             <span className="font-mono">{num(current.vo2max, 1)}</span>
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+
+// Bike Readiness — 3-signal (Volume / Long ride / Durability) bike-leg
+// readiness, no synthetic Bike Shape %. Distance picker renormalises the
+// per-distance targets but doesn't refetch — endpoint returns absolute
+// values, widget computes ratios + verdict client-side (spec §3, §6).
+type BRDistance = 'Olympic' | '70.3' | 'IM'
+
+const BR_DISTANCE_TABS = [
+  { key: 'Olympic', label: 'Olympic' },
+  { key: '70.3', label: '70.3' },
+  { key: 'IM', label: 'IM' },
+]
+
+// Spec §3.1 (target_ctl_bike) + §3.2 (target_long_ride_hours). Table values,
+// not FTP-parameterised — there is no published `f(FTP, age)` formula for
+// bike CTL bands. Calibrated on mid-pack AG-triathlete reference (Friel /
+// Coggan band midpoints); see spec §3.1 Provenance + Calibration caveat.
+// Phase 2 may revisit if drift shows up at elite / beginner brackets.
+const BR_DISTANCE_TARGETS: Record<BRDistance, { ctl: number; longRideH: number }> = {
+  Olympic: { ctl: 50, longRideH: 1.5 },
+  '70.3': { ctl: 75, longRideH: 3.0 },
+  IM: { ctl: 100, longRideH: 5.0 },
+}
+
+// Spec §3.1 / §3.2 traffic-light bounds. Same ratio thresholds for Volume
+// and Long ride; Durability uses backend-computed status (decoupling has
+// fixed %-thresholds 5 / 10 wired into `decoupling_status` helper).
+const BR_RATIO_GREEN = 1.0
+const BR_RATIO_YELLOW = 0.8
+
+type BRSignal = 'green' | 'yellow' | 'red' | 'insufficient'
+
+function ratioToSignal(ratio: number | null): BRSignal {
+  if (ratio === null) return 'insufficient'
+  if (ratio >= BR_RATIO_GREEN) return 'green'
+  if (ratio >= BR_RATIO_YELLOW) return 'yellow'
+  return 'red'
+}
+
+// Decimal hours → "H:MM". 2.25 → "2:15", 0.75 → "0:45". Used for the long-ride
+// row («2:15 / 3:00»). Sub-hour rides keep the leading zero so the column
+// stays visually aligned with the target.
+function formatHoursHM(hours: number): string {
+  if (!Number.isFinite(hours) || hours < 0) return '—'
+  const total = Math.round(hours * 60)
+  const h = Math.floor(total / 60)
+  const m = total % 60
+  return `${h}:${String(m).padStart(2, '0')}`
+}
+
+function BikeReadinessWidget() {
+  const [data, setData] = useState<BikeReadinessResponse | null>(null)
+  const [distance, setDistance] = useState<BRDistance>('70.3')
+  const chartRef = useRef<HTMLCanvasElement>(null)
+  const chartInstRef = useRef<Chart | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch<BikeReadinessResponse>('/api/bike-readiness?weeks=12')
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(e => console.warn('bike-readiness fetch failed:', e))
+    return () => { cancelled = true }
+  }, [])
+
+  // Chronological for the chart (oldest → newest). API returns newest-first
+  // so `current_components` reads weeks[0]; reverse here for plotting. Stable
+  // ref via useMemo — load-bearing because this array feeds the chart-effect
+  // deps, see the same pattern in MarathonShapeWidget.
+  const chronological = useMemo(() => data ? [...data.weeks].reverse() : [], [data])
+  const targets = BR_DISTANCE_TARGETS[distance]
+  const current = data?.current_components ?? null
+
+  // Three signals per spec §3. Each is computed client-side from the absolute
+  // values returned by the endpoint — the only distance-dependent inputs are
+  // `targets.ctl` and `targets.longRideH`. Durability comes pre-classified
+  // from the backend (it has no distance dependence — decoupling thresholds
+  // are fixed 5%/10%).
+  const volumeRatio = current?.ctl_bike != null ? current.ctl_bike / targets.ctl : null
+  const longRideRatio = current?.longest_ride_hours != null ? current.longest_ride_hours / targets.longRideH : null
+  const volumeSignal = ratioToSignal(volumeRatio)
+  const longRideSignal = ratioToSignal(longRideRatio)
+  const durabilitySignal: BRSignal =
+    !current || current.decoupling_status === null || current.decoupling_n === 0
+      ? 'insufficient'
+      : current.decoupling_status
+
+  // Spec §3.4 verdict. `available` = signals we actually have data for; a
+  // mostly-empty user shouldn't be flagged "Building" off a single red.
+  const signals: BRSignal[] = [volumeSignal, longRideSignal, durabilitySignal]
+  const greens = signals.filter(s => s === 'green').length
+  const reds = signals.filter(s => s === 'red').length
+  const insufficient = signals.filter(s => s === 'insufficient').length
+  const available = 3 - insufficient
+
+  let verdictLabel: string
+  let verdictColor: string
+  let subtext: string | null
+  if (insufficient >= 2) {
+    verdictLabel = `Not enough data for ${distance}`
+    verdictColor = 'var(--text-dim)'
+    subtext = null
+  } else if (reds >= 1) {
+    verdictLabel = `Building for ${distance}`
+    verdictColor = STATUS_COLORS.red
+    // Building subtext counts non-reds (greens + yellows) — gradient
+    // information that distinguishes "1 red, 2 green" from "1 red, 0 green".
+    subtext = `${available - reds} of ${available} signals on track`
+  } else if (greens === available) {
+    verdictLabel = `Ready for ${distance}`
+    verdictColor = STATUS_COLORS.green
+    subtext = 'All signals on track ✓'
+  } else {
+    // YYY vs GGY both land here — subtext distinguishes them by counting
+    // only fully-green signals (spec §3.4 — "Subtext gradient information
+    // without extra verdict state").
+    verdictLabel = `Almost ready for ${distance}`
+    verdictColor = STATUS_COLORS.yellow
+    subtext = `${greens} of ${available} signals on track`
+  }
+
+  // Effect 1 — chart lifecycle, depends only on the dataset. Distance
+  // switches patch the annotation in place (Effect 2) instead of rebuilding
+  // the chart, mirroring the MarathonShapeWidget pattern.
+  useEffect(() => {
+    if (!chartRef.current || chronological.length === 0) return
+
+    chartInstRef.current?.destroy()
+
+    const labels = chronological.map(w => w.week_end.replace(/^\d{4}-/, ''))
+    const values = chronological.map(w => w.ctl_bike)
+    const color = CHART_COLORS.ride
+    const baseOpts = chartOptions('CTL Bike — 12 weeks')
+
+    chartInstRef.current = new Chart(chartRef.current, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'CTL bike',
+          data: values,
+          borderColor: color,
+          backgroundColor: color + '20',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+          pointBackgroundColor: color,
+          borderWidth: 2,
+          spanGaps: true,
+        }],
+      },
+      options: {
+        ...baseOpts,
+        plugins: {
+          ...(baseOpts.plugins as Record<string, unknown>),
+          annotation: {
+            annotations: {
+              target: {
+                type: 'line',
+                yMin: targets.ctl,
+                yMax: targets.ctl,
+                borderColor: STATUS_COLORS.green,
+                borderWidth: 2,
+                borderDash: [5, 5],
+                label: {
+                  display: true,
+                  content: `${distance} target ${targets.ctl}`,
+                  position: 'end',
+                  backgroundColor: STATUS_COLORS.green,
+                  color: '#fff',
+                  font: { size: 10, weight: 'bold' },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+
+    return () => { chartInstRef.current?.destroy() }
+    // Distance/targets intentionally excluded — see Effect 2.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chronological])
+
+  // Effect 2 — annotation patch on distance switch (no chart rebuild).
+  useEffect(() => {
+    const chart = chartInstRef.current
+    const annotation = (chart?.options?.plugins as { annotation?: { annotations?: { target?: Record<string, unknown> } } })
+      ?.annotation?.annotations?.target
+    if (!chart || !annotation) return
+
+    annotation.yMin = targets.ctl
+    annotation.yMax = targets.ctl
+    const label = annotation.label as { content?: string } | undefined
+    if (label) label.content = `${distance} target ${targets.ctl}`
+    chart.update('none')
+  }, [distance, targets.ctl])
+
+  if (!data) return null
+
+  const hasAnyChartData = chronological.some(w => w.ctl_bike !== null)
+
+  return (
+    <div className="bg-surface border border-border rounded-[14px] p-4 mb-3">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[13px] text-text-dim">Bike Readiness</span>
+      </div>
+
+      <TabSwitcher tabs={BR_DISTANCE_TABS} active={distance} onChange={k => setDistance(k as BRDistance)} />
+
+      <div className="mb-3 mt-2">
+        <div className="text-base font-bold" style={{ color: verdictColor }}>{verdictLabel}</div>
+        {subtext && <div className="text-[11px] text-text-dim mt-0.5">{subtext}</div>}
+      </div>
+
+      {hasAnyChartData && (
+        <ChartCard>
+          <canvas ref={chartRef} />
+        </ChartCard>
+      )}
+
+      <div className="mt-3 pt-3 border-t border-border space-y-2 text-[12px]">
+        <SignalRow
+          signal={volumeSignal}
+          label="Volume"
+          value={
+            current?.ctl_bike != null
+              ? `CTL ${num(current.ctl_bike, 0)} / ${targets.ctl}`
+              : 'CTL unavailable'
+          }
+          pct={volumeRatio !== null ? Math.round(volumeRatio * 100) : null}
+        />
+        <SignalRow
+          signal={longRideSignal}
+          label="Long ride"
+          value={
+            current?.longest_ride_hours != null
+              ? `${formatHoursHM(current.longest_ride_hours)} / ${formatHoursHM(targets.longRideH)}`
+              : 'No bike rides last 28 days'
+          }
+          pct={longRideRatio !== null ? Math.round(longRideRatio * 100) : null}
+        />
+        <SignalRow
+          signal={durabilitySignal}
+          label="Durability"
+          value={
+            current && current.decoupling_median_pct != null
+              ? `Pa:Hr ${num(current.decoupling_median_pct, 1)}% (${current.decoupling_n} rides)`
+              : 'No valid rides'
+          }
+          pct={null}
+          subLine={
+            current?.ef_trend_pct != null
+              ? `\u{1F4C8} EF trend ${current.ef_trend_pct >= 0 ? '+' : ''}${num(current.ef_trend_pct, 1)}% (12w)`
+              : null
+          }
+        />
+      </div>
+    </div>
+  )
+}
+
+// One row in the 3-signal block: colored dot + label + actual/target +
+// optional percentage. Durability passes `subLine` for the supplementary EF
+// trend (spec §3.3 / §6 — EF is a complement, not a fourth signal).
+function SignalRow({
+  signal,
+  label,
+  value,
+  pct,
+  subLine,
+}: {
+  signal: BRSignal
+  label: string
+  value: string
+  pct: number | null
+  subLine?: string | null
+}) {
+  const dotColor = signal === 'insufficient' ? 'var(--text-dim)' : STATUS_COLORS[signal]
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{ backgroundColor: dotColor }}
+          />
+          <span className="text-text-dim">{label}</span>
+        </div>
+        <span className="font-mono">
+          {value}
+          {pct !== null && <span className="text-text-dim ml-2">({pct}%)</span>}
+        </span>
+      </div>
+      {subLine && (
+        <div className="ml-4 mt-0.5 text-[11px] text-text-dim">{subLine}</div>
       )}
     </div>
   )

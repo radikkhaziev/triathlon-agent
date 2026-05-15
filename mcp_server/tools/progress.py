@@ -118,6 +118,11 @@ async def compute_efficiency_trend(
         sg = _sport_group(act.type)
         if not sg or sg not in target_sports:
             continue
+        # Race-effort excluded: peak race load is not a training-base signal.
+        # All three callers (BR-1, /api/progress, AI MCP tool) analyse
+        # training efficiency, not race performance.
+        if act.is_race:
+            continue
         min_dur = _MIN_DURATION.get(sg, 0)
         if strict_filter:
             pass  # strict duration handled by is_valid_for_decoupling below

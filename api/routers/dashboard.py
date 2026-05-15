@@ -24,6 +24,7 @@ from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
 from data.ml.race_predict import predict_splits_with_ci
 from data.redis_client import get_redis
 from data.utils import extract_sport_ctl, normalize_sport
+from mcp_server.tools.progress import compute_efficiency_trend
 
 logger = logging.getLogger(__name__)
 
@@ -743,3 +744,141 @@ async def _predict_times_fresh(user_id: int, today_iso: str) -> dict[str, dict |
             "pace_ci_high": round(values["ci_high"], 1),
         }
     return predicted_times
+
+
+@router.get("/api/bike-readiness")
+async def bike_readiness(
+    weeks: int = Query(default=12, ge=1, le=24),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Bike readiness — CTL_bike trend + current 3-signal snapshot.
+
+    For each of the last ``weeks`` Mon-Sun weeks (ending at the most recent
+    Sunday ≤ today), returns the CTL_bike value extracted from
+    ``wellness.sport_info``. ``current_components`` carries the longest ride
+    in the last 28 days, the median decoupling of the last 5 valid bike
+    rides over 84 days, and the EF trend over that same window — the inputs
+    to the widget's 3-signal traffic-light verdict.
+
+    Distance-specific targets (Olympic / 70.3 / IM) and the verdict itself
+    are computed CLIENT-side — endpoint returns absolute values only
+    (spec §3, §5).
+    """
+    today = _today_local()
+    days_since_sunday = (today.weekday() + 1) % 7
+    window_end = today - timedelta(days=days_since_sunday)
+    window_start = window_end - timedelta(weeks=weeks - 1, days=6)
+    # 7-day back-walk per spec §7: a Sunday with NULL `sport_info` falls
+    # back to the most recent earlier day with a value (CTL drifts slowly,
+    # τ=42d, so 7d-stale is safe).
+    wellness_start = window_start - timedelta(days=7)
+    longest_window_start = today - timedelta(days=28)
+
+    uid = get_data_user_id(user)
+    async with get_session() as session:
+        wellness_result = await session.execute(
+            select(Wellness.date, Wellness.sport_info).where(
+                Wellness.user_id == uid,
+                Wellness.date >= wellness_start.isoformat(),
+                Wellness.date <= window_end.isoformat(),
+            )
+        )
+        wellness_rows = wellness_result.all()
+
+        # Longest training ride in 28d: race-effort excluded (spec §3.2, §7) —
+        # `is_race=True` is peak load, not training base. Activity.type is
+        # canonical post-normalisation (data/intervals/dto.py:_normalize_type
+        # maps VirtualRide / GravelRide / etc → "Ride"), so a single
+        # `type == "Ride"` filter covers all bike variants. `start_date_local`
+        # is a String column ("YYYY-MM-DD"), iso compare is correct.
+        longest_result = await session.execute(
+            select(Activity.start_date_local, Activity.moving_time)
+            .where(
+                Activity.user_id == uid,
+                Activity.type == "Ride",
+                Activity.is_race.is_(False),
+                Activity.start_date_local >= longest_window_start.isoformat(),
+            )
+            .order_by(Activity.moving_time.desc())
+            .limit(1)
+        )
+        longest_row = longest_result.first()
+
+    ctl_bike_by_date: dict[str, float | None] = {
+        dt_str: extract_sport_ctl(sport_info).get("ride") for dt_str, sport_info in wellness_rows
+    }
+
+    def _ctl_bike_at(anchor: date, back_days: int = 7) -> float | None:
+        for delta in range(back_days + 1):
+            v = ctl_bike_by_date.get((anchor - timedelta(days=delta)).isoformat())
+            if v is not None:
+                return v
+        return None
+
+    weeks_out: list[dict] = []
+    for i in range(weeks):
+        wk_start = window_start + timedelta(weeks=i)
+        wk_end = wk_start + timedelta(days=6)
+        weeks_out.append(
+            {
+                "week_start": wk_start.isoformat(),
+                "week_end": wk_end.isoformat(),
+                "ctl_bike": _ctl_bike_at(wk_end),
+            }
+        )
+    # Newest first — consistent with `/api/marathon-shape` and `/api/weekly-recap`.
+    weeks_out.reverse()
+
+    longest_ride_hours: float | None = None
+    longest_ride_date: str | None = None
+    if longest_row is not None:
+        dt_str, mt = longest_row
+        if mt is not None and mt > 0:
+            longest_ride_hours = round(mt / 3600.0, 2)
+            longest_ride_date = dt_str
+
+    # Single helper call gives both Durability median and supplementary EF
+    # trend (spec §5). `strict_filter=True` applies `is_valid_for_decoupling`
+    # (VI ≤ 1.10, >70% Z1+Z2, ride ≥ 60 min) — no duplicate pipeline here.
+    eff = await compute_efficiency_trend(
+        user_id=uid,
+        sport="bike",
+        days_back=84,
+        group_by="week",
+        strict_filter=True,
+    )
+    # `compute_efficiency_trend` collapses to a single-sport dict when only
+    # one sport is requested; `decoupling_trend` is absent when no valid
+    # rides cleared the filter, and `trend` is `insufficient_data` when
+    # there's < 2 weekly EF samples — guard both.
+    decoup_trend = eff.get("decoupling_trend") if isinstance(eff, dict) else None
+    trend = eff.get("trend") if isinstance(eff, dict) else None
+
+    if isinstance(decoup_trend, dict):
+        decoupling_median_pct = decoup_trend.get("median")
+        decoupling_status = decoup_trend.get("status")
+        decoupling_n = decoup_trend.get("last_n", 0)
+    else:
+        decoupling_median_pct = None
+        decoupling_status = None
+        decoupling_n = 0
+
+    if isinstance(trend, dict) and trend.get("direction") != "insufficient_data":
+        ef_trend_pct: float | None = trend.get("pct")
+    else:
+        ef_trend_pct = None
+
+    current_components = {
+        "ctl_bike": weeks_out[0]["ctl_bike"] if weeks_out else None,
+        "longest_ride_hours": longest_ride_hours,
+        "longest_ride_date": longest_ride_date,
+        "decoupling_median_pct": decoupling_median_pct,
+        "decoupling_status": decoupling_status,
+        "decoupling_n": decoupling_n,
+        "ef_trend_pct": ef_trend_pct,
+    }
+
+    return {
+        "weeks": weeks_out,
+        "current_components": current_components,
+    }
