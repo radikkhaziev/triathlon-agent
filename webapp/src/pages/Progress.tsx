@@ -37,6 +37,19 @@ const DAYS_TABS = [
   { key: '365', label: '1y' },
 ]
 
+// Fitness-projection history length (lower bound). Upper bound is always the
+// last planned workout, set server-side. days = 30/90/180.
+const FITNESS_RANGE_TABS = [
+  { key: '30', label: '1m' },
+  { key: '90', label: '3m' },
+  { key: '180', label: '6m' },
+]
+
+// CTL/ATL are each split into a solid (past) + dashed projection dataset.
+// The label suffix pairs them — keep label construction, legend filter and
+// the paired-toggle onClick all sourced from this single constant.
+const PROJECTION_SUFFIX = ' (projection)'
+
 const STATUS_COLORS = {
   green: '#22c55e',
   yellow: '#eab308',
@@ -1308,12 +1321,15 @@ function FitnessProjectionChart() {
   const chartRef = useRef<HTMLCanvasElement>(null)
   const chartInstRef = useRef<Chart | null>(null)
   const [projection, setProjection] = useState<FitnessProjectionData | null>(null)
+  const [range, setRange] = useState('90')  // 3m default
 
   useEffect(() => {
-    apiFetch<FitnessProjectionData>('/api/fitness-projection')
-      .then(setProjection)
+    let cancelled = false
+    apiFetch<FitnessProjectionData>(`/api/fitness-projection?days=${range}`)
+      .then(d => { if (!cancelled) setProjection(d) })
       .catch(e => console.warn('fitness-projection fetch failed:', e))
-  }, [])
+    return () => { cancelled = true }
+  }, [range])
 
   useEffect(() => {
     if (!chartRef.current || !projection || projection.count === 0) return
@@ -1350,7 +1366,7 @@ function FitnessProjectionChart() {
             spanGaps: true,
           },
           {
-            label: 'CTL (projection)',
+            label: `CTL${PROJECTION_SUFFIX}`,
             data: ctlFuture,
             borderColor: CHART_COLORS.ctl,
             borderDash: [6, 4],
@@ -1370,7 +1386,7 @@ function FitnessProjectionChart() {
             spanGaps: true,
           },
           {
-            label: 'ATL (projection)',
+            label: `ATL${PROJECTION_SUFFIX}`,
             data: atlFuture,
             borderColor: CHART_COLORS.atl,
             borderDash: [6, 4],
@@ -1385,7 +1401,25 @@ function FitnessProjectionChart() {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 13 }, filter: (item) => !item.text.includes('projection') } },
+          legend: {
+            position: 'top',
+            labels: { boxWidth: 12, padding: 10, font: { size: 13 }, filter: (item) => !item.text.endsWith(PROJECTION_SUFFIX) },
+            // The projection twin is filtered out of the legend. Default
+            // onClick toggles only the clicked dataset, leaving the future
+            // half visible. Toggle the base and its projection twin together.
+            onClick: (_e, legendItem, legend) => {
+              const ch = legend.chart
+              const idx = legendItem.datasetIndex
+              if (idx == null) return
+              const visible = !ch.isDatasetVisible(idx)
+              ch.data.datasets.forEach((ds, i) => {
+                if (ds.label === legendItem.text || ds.label === `${legendItem.text}${PROJECTION_SUFFIX}`) {
+                  ch.setDatasetVisibility(i, visible)
+                }
+              })
+              ch.update()
+            },
+          },
           title: { display: true, text: 'Fitness Projection (CTL / ATL)', font: { size: 14, weight: 'bold' } },
           annotation: todayIdx >= 0 ? {
             annotations: {
@@ -1411,12 +1445,18 @@ function FitnessProjectionChart() {
     return () => { chartInstRef.current?.destroy() }
   }, [projection])
 
+  // No fitness-projection rows at all → render nothing (incl. the range
+  // selector). `days` only moves the lower bound, so count===0 for the
+  // default range means the user has no projection data for any range.
   if (!projection || projection.count === 0) return null
 
   return (
-    <ChartCard>
-      <canvas ref={chartRef} />
-    </ChartCard>
+    <div className="mb-3">
+      <TabSwitcher tabs={FITNESS_RANGE_TABS} active={range} onChange={setRange} />
+      <ChartCard>
+        <canvas ref={chartRef} />
+      </ChartCard>
+    </div>
   )
 }
 

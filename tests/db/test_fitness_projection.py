@@ -134,10 +134,12 @@ class TestFitnessProjectionEndpoint:
     # recomputing the same wrong value). 2026-05-16 − 90d == 2026-02-15.
     FIXED_TODAY = date(2026, 5, 16)
 
-    async def _call(self, *, projection_rows, last_planned):
+    async def _call(self, *, projection_rows, last_planned, days=90):
         """Invoke the endpoint with both DB calls + local_today mocked.
 
-        Returns ``(result, get_projection mock)``.
+        ``days`` is passed explicitly because calling the endpoint function
+        directly (not via the app) would otherwise leave the ``Query`` default
+        as a FieldInfo object. Returns ``(result, get_projection mock)``.
         """
         with (
             patch("api.routers.activities.FitnessProjection") as mock_fp,
@@ -153,7 +155,7 @@ class TestFitnessProjectionEndpoint:
             mock_user = MagicMock()
             mock_user.id = 1
             mock_user.role = "athlete"
-            result = await fitness_projection(user=mock_user)
+            result = await fitness_projection(days=days, user=mock_user)
 
         return result, mock_fp.get_projection
 
@@ -185,11 +187,24 @@ class TestFitnessProjectionEndpoint:
         assert result["ramp_rate"] == [4.7, 4.5]
 
     @pytest.mark.asyncio
-    async def test_window_lower_bound_is_today_minus_90d(self):
-        """oldest is always today − 90 days regardless of planned workouts."""
+    async def test_window_lower_bound_defaults_to_today_minus_90d(self):
+        """Default days=90 → oldest = today − 90 days (== 2026-02-15)."""
         _, get_proj = await self._call(projection_rows=[], last_planned=None)
 
         assert get_proj.await_args.kwargs["oldest"] == "2026-02-15"
+
+    @pytest.mark.asyncio
+    # Literal expecteds (FIXED_TODAY=2026-05-16 minus N days) so the test can't
+    # pass by recomputing the production formula. 1m/3m/6m == the UI toggle.
+    @pytest.mark.parametrize(
+        ("days", "expected_oldest"),
+        [(30, "2026-04-16"), (90, "2026-02-15"), (180, "2025-11-17")],
+    )
+    async def test_days_param_sets_lower_bound(self, days, expected_oldest):
+        """The UI's 1m/3m/6m toggle (30/90/180) drives the oldest bound."""
+        _, get_proj = await self._call(projection_rows=[], last_planned=None, days=days)
+
+        assert get_proj.await_args.kwargs["oldest"] == expected_oldest
 
     @pytest.mark.asyncio
     async def test_upper_bound_is_future_planned_workout(self):
