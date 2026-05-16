@@ -179,6 +179,18 @@ class ScheduledWorkout(Base):
 
         return workouts, last_synced_at
 
+    @classmethod
+    @with_session
+    async def get_last_scheduled_date(cls, user_id: int, *, session: AsyncSession) -> str | None:
+        """Latest planned-workout date (``start_date_local``) for the user, or None.
+
+        Used as the fitness-projection chart's upper bound: past the last
+        planned workout the Intervals curve is pure zero-load decay, so there
+        is nothing meaningful to show beyond it.
+        """
+        result = await session.execute(select(func.max(cls.start_date_local)).where(cls.user_id == user_id))
+        return result.scalar_one_or_none()
+
 
 class AiWorkout(Base):
     """AI-generated workout pushed to Intervals.icu (Phase 1: Adaptive Training Plan)."""

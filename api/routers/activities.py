@@ -6,11 +6,22 @@ from sqlalchemy import exists, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, ActivityHrv, ActivityWeather, FitnessProjection, Race, User, get_session
+from data.db import (
+    Activity,
+    ActivityDetail,
+    ActivityHrv,
+    ActivityWeather,
+    FitnessProjection,
+    Race,
+    ScheduledWorkout,
+    User,
+    get_session,
+)
 from data.ml.progression import get_latest_analysis
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.tools.polarization import get_polarization_multi_window
 from mcp_server.tools.progress import compute_efficiency_trend
+from tasks.dto import local_today
 
 router = APIRouter()
 
@@ -211,8 +222,24 @@ async def progression(
 
 @router.get("/api/fitness-projection")
 async def fitness_projection(user: User = Depends(require_viewer)) -> dict:
-    """Get fitness projection (CTL/ATL decay curve from Intervals.icu)."""
-    rows = await FitnessProjection.get_projection(user_id=get_data_user_id(user))
+    """Get fitness projection (CTL/ATL decay curve from Intervals.icu).
+
+    Windowed to ``[today - 90d, last planned workout]``: ~3 months of history
+    give the trend, and the upper bound is the last scheduled workout because
+    beyond it the Intervals curve is pure zero-load decay (nothing to show).
+    Falls back to ``today`` when no future workout is planned.
+    """
+    uid = get_data_user_id(user)
+    today = local_today()
+
+    oldest = (today - timedelta(days=90)).isoformat()
+    last_planned = await ScheduledWorkout.get_last_scheduled_date(uid)
+    # ISO "YYYY-MM-DD" sorts lexicographically == chronologically, so max() picks
+    # the later of {last planned workout, today} — the chart always reaches at
+    # least today even if every planned workout is already in the past.
+    newest = max(last_planned, today.isoformat()) if last_planned else today.isoformat()
+
+    rows = await FitnessProjection.get_projection(user_id=uid, oldest=oldest, newest=newest)
     return {
         "count": len(rows),
         "dates": [str(r.date) for r in rows],

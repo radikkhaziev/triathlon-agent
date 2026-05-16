@@ -1,6 +1,7 @@
 """Tests for FitnessProjection model — save_bulk upsert and get_projection."""
 
-from unittest.mock import MagicMock, patch
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -80,57 +81,133 @@ class TestGetProjection:
         result = FitnessProjection.get_projection(user_id=999, session=mock_session)
         assert result == []
 
+    @staticmethod
+    def _executed_sql(mock_session) -> str:
+        return str(mock_session.execute.call_args[0][0].compile(compile_kwargs={"literal_binds": True}))
+
+    def test_no_bounds_emits_no_date_predicate(self):
+        """Default call (oldest=newest=None) → only the user_id filter, full series.
+
+        Backward-compat guard: data/race_plan_service.py relies on the unbounded
+        behaviour to read future race-day rows.
+        """
+        mock_session = MagicMock()
+        mock_session.execute.return_value.scalars.return_value.all.return_value = []
+
+        FitnessProjection.get_projection(user_id=7, session=mock_session)
+
+        sql = self._executed_sql(mock_session)
+        assert "fitness_projection.date >=" not in sql
+        assert "fitness_projection.date <=" not in sql
+
+    def test_oldest_and_newest_window_the_query(self):
+        """oldest/newest add inclusive >= / <= predicates on date."""
+        mock_session = MagicMock()
+        mock_session.execute.return_value.scalars.return_value.all.return_value = []
+
+        FitnessProjection.get_projection(user_id=7, oldest="2026-02-15", newest="2026-05-29", session=mock_session)
+
+        sql = self._executed_sql(mock_session)
+        assert "2026-02-15" in sql
+        assert "2026-05-29" in sql
+        assert "fitness_projection.date >=" in sql
+        assert "fitness_projection.date <=" in sql
+
+    def test_only_oldest_applies_lower_bound_only(self):
+        """A lone oldest bound emits >= but not <=."""
+        mock_session = MagicMock()
+        mock_session.execute.return_value.scalars.return_value.all.return_value = []
+
+        FitnessProjection.get_projection(user_id=7, oldest="2026-02-15", session=mock_session)
+
+        sql = self._executed_sql(mock_session)
+        assert "fitness_projection.date >=" in sql
+        assert "fitness_projection.date <=" not in sql
+
 
 class TestFitnessProjectionEndpoint:
     """Tests for the /api/fitness-projection API response shape."""
 
-    @pytest.mark.asyncio
-    async def test_empty_projection_response(self):
-        """Empty projection returns count=0 with empty arrays."""
-        from unittest.mock import AsyncMock
+    # Endpoint's "today" is pinned so window assertions check literal dates —
+    # this makes the tz/offset/max() logic genuinely testable (a UTC-vs-Belgrade
+    # regression would change FIXED_TODAY's effect and fail, instead of the test
+    # recomputing the same wrong value). 2026-05-16 − 90d == 2026-02-15.
+    FIXED_TODAY = date(2026, 5, 16)
 
-        with patch("api.routers.activities.FitnessProjection") as mock_cls:
-            mock_cls.get_projection = AsyncMock(return_value=[])
+    async def _call(self, *, projection_rows, last_planned):
+        """Invoke the endpoint with both DB calls + local_today mocked.
+
+        Returns ``(result, get_projection mock)``.
+        """
+        with (
+            patch("api.routers.activities.FitnessProjection") as mock_fp,
+            patch("api.routers.activities.ScheduledWorkout") as mock_sw,
+            patch("api.routers.activities.local_today", return_value=self.FIXED_TODAY),
+            patch("api.routers.activities.get_data_user_id", return_value=1),
+        ):
+            mock_fp.get_projection = AsyncMock(return_value=projection_rows)
+            mock_sw.get_last_scheduled_date = AsyncMock(return_value=last_planned)
 
             from api.routers.activities import fitness_projection
 
             mock_user = MagicMock()
             mock_user.id = 1
             mock_user.role = "athlete"
+            result = await fitness_projection(user=mock_user)
 
-            with patch("api.routers.activities.get_data_user_id", return_value=1):
-                result = await fitness_projection(user=mock_user)
+        return result, mock_fp.get_projection
 
-            assert result["count"] == 0
-            assert result["dates"] == []
-            assert result["ctl"] == []
-            assert result["atl"] == []
-            assert result["ramp_rate"] == []
+    @pytest.mark.asyncio
+    async def test_empty_projection_response(self):
+        """Empty projection returns count=0 with empty arrays."""
+        result, _ = await self._call(projection_rows=[], last_planned=None)
+
+        assert result["count"] == 0
+        assert result["dates"] == []
+        assert result["ctl"] == []
+        assert result["atl"] == []
+        assert result["ramp_rate"] == []
 
     @pytest.mark.asyncio
     async def test_projection_response_shape(self):
         """Projection with data returns parallel arrays."""
-        from unittest.mock import AsyncMock
-
         mock_rows = [
             MagicMock(date="2026-04-16", ctl=19.5, atl=38.0, ramp_rate=4.7),
             MagicMock(date="2026-04-17", ctl=18.8, atl=35.2, ramp_rate=4.5),
         ]
 
-        with patch("api.routers.activities.FitnessProjection") as mock_cls:
-            mock_cls.get_projection = AsyncMock(return_value=mock_rows)
+        result, _ = await self._call(projection_rows=mock_rows, last_planned="2099-01-01")
 
-            from api.routers.activities import fitness_projection
+        assert result["count"] == 2
+        assert result["dates"] == ["2026-04-16", "2026-04-17"]
+        assert result["ctl"] == [19.5, 18.8]
+        assert result["atl"] == [38.0, 35.2]
+        assert result["ramp_rate"] == [4.7, 4.5]
 
-            mock_user = MagicMock()
-            mock_user.id = 1
-            mock_user.role = "athlete"
+    @pytest.mark.asyncio
+    async def test_window_lower_bound_is_today_minus_90d(self):
+        """oldest is always today − 90 days regardless of planned workouts."""
+        _, get_proj = await self._call(projection_rows=[], last_planned=None)
 
-            with patch("api.routers.activities.get_data_user_id", return_value=1):
-                result = await fitness_projection(user=mock_user)
+        assert get_proj.await_args.kwargs["oldest"] == "2026-02-15"
 
-            assert result["count"] == 2
-            assert result["dates"] == ["2026-04-16", "2026-04-17"]
-            assert result["ctl"] == [19.5, 18.8]
-            assert result["atl"] == [38.0, 35.2]
-            assert result["ramp_rate"] == [4.7, 4.5]
+    @pytest.mark.asyncio
+    async def test_upper_bound_is_future_planned_workout(self):
+        """A planned workout in the future becomes the upper bound."""
+        _, get_proj = await self._call(projection_rows=[], last_planned="2026-06-05")
+
+        assert get_proj.await_args.kwargs["newest"] == "2026-06-05"
+
+    @pytest.mark.asyncio
+    async def test_upper_bound_falls_back_to_today_when_no_plan(self):
+        """No planned workouts → upper bound clamps to today."""
+        _, get_proj = await self._call(projection_rows=[], last_planned=None)
+
+        assert get_proj.await_args.kwargs["newest"] == "2026-05-16"
+
+    @pytest.mark.asyncio
+    async def test_upper_bound_clamps_to_today_when_plan_in_past(self):
+        """Last planned workout already in the past → still reach at least today."""
+        _, get_proj = await self._call(projection_rows=[], last_planned="2026-05-01")
+
+        assert get_proj.await_args.kwargs["newest"] == "2026-05-16"
