@@ -112,6 +112,11 @@ class EventExDTO(BaseModel):
     description: str | None = None
     indoor: bool | None = None
     distance: float | None = None
+    # Estimated planned TSS (see `estimate_tss`). Sent so Intervals folds the
+    # plan into the fitness-projection forward curve — for runs/rides Intervals
+    # otherwise leaves planned load NULL. AC-1 verified Intervals retains it
+    # (docs/PLANNED_LOAD_SPEC.md §10). None → omitted by `exclude_none` dump.
+    icu_training_load: int | None = None
 
 
 class ScheduledWorkoutDTO(BaseModel):
@@ -311,6 +316,72 @@ class WorkoutStepDTO(BaseModel):
                 )
             )
         return result
+
+
+def _step_intensity(step: "WorkoutStepDTO") -> float:
+    """IF for a terminal step = midpoint of the % corridor / 100.
+
+    Targets are already percentages of the athlete's threshold (%pace / %ftp /
+    %lthr — CLAUDE.md «Units contract»), so the percentage *is* the intensity
+    factor; no threshold lookup needed. Precedence pace → power → hr (one is
+    set per step by the per-sport convention). Cadence is not an intensity.
+    Target-less steps (rest / recovery) → 0.
+    """
+    tgt = step.pace or step.power or step.hr
+    if not tgt:
+        return 0.0
+    lo, hi = tgt.get("start"), tgt.get("end")
+    if lo is None and hi is None:
+        return 0.0
+    lo = hi if lo is None else lo
+    hi = lo if hi is None else hi
+    return (lo + hi) / 2.0 / 100.0
+
+
+def _flatten_steps(steps: list["WorkoutStepDTO"] | None):
+    """Yield (duration_sec, IF) for every terminal step, repeat groups expanded."""
+    for s in steps or []:
+        if s.steps:  # repeat container — size defined by children × reps
+            reps = s.reps if s.reps is not None else 1  # reps=0 → expand zero times
+            for _ in range(reps):
+                yield from _flatten_steps(s.steps)
+        else:
+            yield (s.duration or 0, _step_intensity(s))
+
+
+def estimate_tss(steps: list["WorkoutStepDTO"] | None, moving_time: int | None) -> int | None:
+    """Planned TSS for a structured workout. See docs/PLANNED_LOAD_SPEC.md §4.
+
+    ``TSS = Σ dur_h · IF² · 100``. Threshold-free. «Open» steps (duration ≤ 0
+    with a target — HumanGo «run until done» blocks) absorb the residual
+    ``moving_time − Σ timed`` split evenly. Returns ``None`` when no TSS can be
+    derived (stepless plan, all-rest, or nothing bounds the duration) — caller
+    leaves ``icu_training_load`` unset rather than pushing a misleading 0.
+    """
+    terms = list(_flatten_steps(steps))
+    if not terms:
+        return None  # stepless plan — duration alone isn't scorable
+
+    timed = sum(d for d, _ in terms if d > 0)
+    open_idx = {i for i, (d, inten) in enumerate(terms) if d <= 0 and inten > 0}
+    if open_idx:
+        residual = max((moving_time or 0) - timed, 0)
+        if residual == 0 and timed == 0:
+            return None  # nothing bounds any duration
+        share = residual / len(open_idx)
+    else:
+        share = 0.0
+
+    total = 0.0
+    for i, (d, inten) in enumerate(terms):
+        dur = share if i in open_idx else d
+        if dur <= 0 or inten <= 0:
+            continue
+        total += (dur / 3600.0) * inten**2 * 100.0
+
+    # Half-up (not Python's banker's `round`): TSS is a positive rough estimate;
+    # an exact .5 ~never occurs but half-up is the conventional, deterministic choice.
+    return int(total + 0.5) if total > 0 else None
 
 
 # Sports where intensity targets are not applicable (yoga, stretching, mobility)
@@ -689,4 +760,7 @@ class PlannedWorkoutDTO(BaseModel):
             workout_doc=workout_doc,
             target=target,
             description=description,
+            # Single estimator for both push paths (PLANNED_LOAD_SPEC §5).
+            # `target_tss` stays the bot display value only.
+            icu_training_load=estimate_tss(self.steps, self.duration_minutes * 60),
         )
