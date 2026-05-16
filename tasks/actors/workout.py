@@ -6,7 +6,13 @@ from pydantic import validate_call
 from bot.formatter import build_workout_pushed_message
 from data.db import AiWorkout, AthleteSettings, UserDTO
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
-from data.intervals.dto import EventExDTO, PlannedWorkoutDTO, ScheduledWorkoutDTO, render_native_description
+from data.intervals.dto import (
+    EventExDTO,
+    PlannedWorkoutDTO,
+    ScheduledWorkoutDTO,
+    estimate_tss,
+    render_native_description,
+)
 from data.workout_adapter import humango_to_intervals_steps, is_humango_event
 from tasks.dto import DateDTO
 
@@ -141,6 +147,10 @@ def actor_enrich_humango_workout(user: UserDTO, intervals_event_id: int):
                 },
                 description=native_desc,
                 target=target,
+                # Webhook-time planned load so Intervals folds it into the
+                # fitness-projection curve (PLANNED_LOAD_SPEC §3, owner-required
+                # core). None → omitted; Intervals keeps its own / leaves NULL.
+                icu_training_load=estimate_tss(steps, event.moving_time),
             )
             client.update_event(intervals_event_id, payload)
             logger.info(
