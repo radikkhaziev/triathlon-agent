@@ -221,18 +221,22 @@ async def progression(
 
 
 @router.get("/api/fitness-projection")
-async def fitness_projection(user: User = Depends(require_viewer)) -> dict:
-    """Get fitness projection (CTL/ATL decay curve from Intervals.icu).
+async def fitness_projection(
+    days: int = Query(default=90, ge=1, le=365),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Get fitness projection (CTL/ATL curve from Intervals.icu).
 
-    Windowed to ``[today - 90d, last planned workout]``: ~3 months of history
-    give the trend, and the upper bound is the last scheduled workout because
-    beyond it the Intervals curve is pure zero-load decay (nothing to show).
-    Falls back to ``today`` when no future workout is planned.
+    Windowed to ``[today - days, last planned workout]``. ``days`` is the
+    history length the UI toggles (1m/3m/6m → 30/90/180). The upper bound is
+    the last scheduled workout: Intervals' forward curve *does* fold in
+    planned-workout load, but past the last workout it's only decay (nothing
+    more to show). Falls back to ``today`` when no future workout is planned.
     """
     uid = get_data_user_id(user)
     today = local_today()
 
-    oldest = (today - timedelta(days=90)).isoformat()
+    oldest = (today - timedelta(days=days)).isoformat()
     last_planned = await ScheduledWorkout.get_last_scheduled_date(uid)
     # ISO "YYYY-MM-DD" sorts lexicographically == chronologically, so max() picks
     # the later of {last planned workout, today} — the chart always reaches at
