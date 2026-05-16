@@ -50,6 +50,17 @@ def _make_workout(
     )
 
 
+async def _ensure_user(user_id: int) -> None:
+    """Create a users row so FK-constrained inserts for a 2nd tenant succeed."""
+    from data.db import User
+    from data.db.common import get_session
+
+    async with get_session() as session:
+        if not await session.get(User, user_id):
+            session.add(User(id=user_id, chat_id=f"test_user_{user_id}", role="athlete"))
+            await session.commit()
+
+
 # ---------------------------------------------------------------------------
 # save_scheduled_workouts — last_synced_at
 # ---------------------------------------------------------------------------
@@ -267,6 +278,37 @@ class TestGetScheduledWorkoutsRange:
         rows, _ = await ScheduledWorkout.get_range(1, date(2026, 3, 23), date(2026, 3, 29))
         dates = [r.start_date_local for r in rows]
         assert dates == sorted(dates)
+
+
+# ---------------------------------------------------------------------------
+# get_last_scheduled_date — fitness-projection chart upper bound
+# ---------------------------------------------------------------------------
+
+
+class TestGetLastScheduledDate:
+    async def test_returns_max_start_date(self):
+        base = _uid(50)
+        ScheduledWorkout.save_bulk(
+            1,
+            [
+                _make_workout(id=base, dt=date(2026, 5, 10)),
+                _make_workout(id=base + 1, dt=date(2026, 5, 29)),  # latest
+                _make_workout(id=base + 2, dt=date(2026, 5, 18)),
+            ],
+        )
+
+        assert await ScheduledWorkout.get_last_scheduled_date(1) == "2026-05-29"
+
+    async def test_returns_none_when_no_workouts(self):
+        assert await ScheduledWorkout.get_last_scheduled_date(_uid(55)) is None
+
+    async def test_scoped_per_user(self):
+        """A later workout owned by another user must not leak into the max."""
+        await _ensure_user(2)
+        ScheduledWorkout.save_bulk(2, [_make_workout(id=_uid(60), dt=date(2027, 1, 1))])
+        ScheduledWorkout.save_bulk(1, [_make_workout(id=_uid(61), dt=date(2026, 5, 5))])
+
+        assert await ScheduledWorkout.get_last_scheduled_date(1) == "2026-05-05"
 
 
 # ---------------------------------------------------------------------------

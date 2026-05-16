@@ -79,9 +79,25 @@ class FitnessProjection(Base):
 
     @classmethod
     @dual
-    def get_projection(cls, user_id: int, *, session: Session) -> list[FitnessProjection]:
-        """Get all projection records for a user, ordered by date."""
-        result = session.execute(select(cls).where(cls.user_id == user_id).order_by(cls.date))
+    def get_projection(
+        cls,
+        user_id: int,
+        *,
+        oldest: str | None = None,
+        newest: str | None = None,
+        session: Session,
+    ) -> list[FitnessProjection]:
+        """Projection records for a user, ordered by date.
+
+        ``oldest`` / ``newest`` (inclusive, "YYYY-MM-DD") window the result.
+        Both default to None → full series (race-plan service relies on this).
+        """
+        conditions = [cls.user_id == user_id]
+        if oldest is not None:
+            conditions.append(cls.date >= oldest)
+        if newest is not None:
+            conditions.append(cls.date <= newest)
+        result = session.execute(select(cls).where(*conditions).order_by(cls.date))
         return list(result.scalars().all())
 
     @classmethod
