@@ -1,12 +1,13 @@
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import Layout from '../components/Layout'
+import { TopBar } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import ZoneBar from '../components/ZoneBar'
 import { useApi } from '../hooks/useApi'
 import { fmtDateShort, fmtDuration, fmtPace, sportLabel, stripWorkoutPrefix } from '../lib/formatters'
-import { SPORT_ICONS, ZONE_COLORS } from '../lib/constants'
+import { ZONE_COLORS } from '../lib/constants'
 import type {
   ScheduledWorkoutDetail,
   WorkoutDetailThresholds,
@@ -26,135 +27,134 @@ export default function ScheduledWorkout() {
 
   if (!numericId) {
     return (
-      <Layout backTo="/plan" backLabel={t('plan.back_to_list')} hideBottomTabs>
+      <Layout backTo="/calendar" backLabel={t('plan.back_to_list')} hideBottomTabs>
         <ErrorMessage message={t('plan.load_workout_error')} />
       </Layout>
     )
   }
-  if (loading) return <Layout backTo="/plan" backLabel={t('plan.back_to_list')} hideBottomTabs><LoadingSpinner /></Layout>
+  if (loading) return <Layout backTo="/calendar" backLabel={t('plan.back_to_list')} hideBottomTabs><LoadingSpinner /></Layout>
   if (error || !data) {
     return (
-      <Layout backTo="/plan" backLabel={t('plan.back_to_list')} hideBottomTabs>
+      <Layout backTo="/calendar" backLabel={t('plan.back_to_list')} hideBottomTabs>
         <ErrorMessage message={t('plan.load_workout_error')} />
       </Layout>
     )
   }
 
-  const icon = SPORT_ICONS[data.type || ''] || '\u{1F3C6}'
   const name = stripWorkoutPrefix(data.name)
-
-  return (
-    <Layout backTo="/plan" backLabel={t('plan.back_to_list')} hideBottomTabs>
-      <div className="py-4 pb-3">
-        <div className="text-xl font-bold flex items-center gap-2">
-          <span>{icon}</span>
-          <span>{name}</span>
-          <span className="text-sm text-text-dim ml-1">{sportLabel(data.type)}</span>
-        </div>
-        <div className="text-[13px] text-text-dim mt-1">{fmtDateShort(data.date, i18n.language)}</div>
-      </div>
-
-      <PrimaryStats data={data} t={t} />
-
-      <SecondaryCards enrichment={data.enrichment} />
-
-      <ZoneTimes enrichment={data.enrichment} sport={data.type} />
-
-      {data.steps && data.steps.length > 0 ? (
-        <>
-          <TimelineChart
-            steps={data.steps}
-            sport={data.type}
-            thresholds={data.thresholds}
-            zones={data.zones}
-            title={t('plan.timeline_title')}
-          />
-          <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-4">
-            <div className="text-sm font-bold mb-2 pb-1 border-b border-border">{t('plan.steps_title')}</div>
-            <StepList steps={data.steps} sport={data.type} thresholds={data.thresholds} />
-          </div>
-        </>
-      ) : data.description ? (
-        <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-4">
-          <div className="text-sm font-bold mb-2 pb-1 border-b border-border">{t('plan.description_title')}</div>
-          <pre className="font-mono text-xs leading-relaxed text-text-dim whitespace-pre-wrap break-words m-0">
-            {data.description}
-          </pre>
-        </div>
-      ) : (
-        <ErrorMessage message={t('plan.no_steps')} />
-      )}
-
-      {data.rationale && (
-        <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-4">
-          <div className="text-sm font-bold mb-2 pb-1 border-b border-border">{t('plan.rationale_title')}</div>
-          <p className="text-[13px] leading-relaxed text-text-dim m-0 whitespace-pre-wrap">{data.rationale}</p>
-        </div>
-      )}
-    </Layout>
-  )
-}
-
-/**
- * Top-of-page metric strip mirroring Intervals.icu's workout-detail header.
- * Four labels in one row: Duration · Distance · Load (TSS) · Intensity (IF%).
- * Cells with no data render as «—» so the layout doesn't shift across workouts.
- */
-function PrimaryStats({
-  data,
-  t,
-}: {
-  data: ScheduledWorkoutDetail
-  t: (key: string) => string
-}) {
   const e = data.enrichment
-  const cells: { label: string; value: string }[] = [
-    { label: t('plan.stat_duration'), value: data.duration || '—' },
-    { label: t('plan.stat_distance'), value: data.distance_km != null ? `${data.distance_km.toFixed(1)} km` : '—' },
-    { label: t('plan.stat_load'), value: e.tss != null ? e.tss.toFixed(0) : '—' },
-    {
-      label: t('plan.stat_intensity'),
-      value: e.intensity_pct != null ? `${Math.round(e.intensity_pct)}%` : '—',
-    },
+  const blocks = data.steps?.length ?? 0
+  const totalMin = data.duration_secs != null ? Math.round(data.duration_secs / 60) : null
+  const subParts = [
+    data.duration,
+    data.distance_km != null ? `${data.distance_km.toFixed(1)} km` : null,
+    blocks > 0 ? t('plan.blocks', { count: blocks }) : null,
+  ].filter(Boolean)
+  const heroStats: { k: string; v: string }[] = [
+    { k: 'TSS', v: e.tss != null ? e.tss.toFixed(0) : '—' },
+    { k: 'NP', v: e.normalized_power != null && e.normalized_power > 0 ? `${Math.round(e.normalized_power)} W` : '—' },
+    { k: t('plan.stat_intensity'), v: e.intensity_pct != null ? `${Math.round(e.intensity_pct)} %` : '—' },
   ]
-  return (
-    <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-3 grid grid-cols-4 gap-2">
-      {cells.map(c => (
-        <div key={c.label} className="min-w-0">
-          <div className="text-[11px] text-text-dim uppercase tracking-wide truncate">{c.label}</div>
-          <div className="text-base font-bold mt-0.5">{c.value}</div>
-        </div>
-      ))}
-    </div>
-  )
-}
 
-/**
- * Secondary derived metrics (NP / VI / PI) — kept separate from the primary
- * strip because they're sport-specific and analysis-oriented; an athlete
- * scanning the page wants Load/Intensity prominent, NP/VI/PI on-demand.
- */
-function SecondaryCards({ enrichment: e }: { enrichment: WorkoutEnrichment }) {
-  const cards: { label: string; value: string }[] = []
-  if (e.normalized_power != null && e.normalized_power > 0) {
-    cards.push({ label: 'NP', value: `${Math.round(e.normalized_power)}W` })
-  }
-  if (e.variability_index != null) {
-    cards.push({ label: 'VI', value: e.variability_index.toFixed(2) })
-  }
-  if (e.polarization_index != null && e.polarization_index > 0) {
-    cards.push({ label: 'PI', value: e.polarization_index.toFixed(2) })
-  }
-  if (cards.length === 0) return null
   return (
-    <div className="grid grid-cols-3 gap-2 mb-4">
-      {cards.map(c => (
-        <div key={c.label} className="bg-surface border border-border rounded-xl px-3 py-2">
-          <div className="text-[10px] text-text-dim uppercase tracking-wide">{c.label}</div>
-          <div className="text-base font-bold">{c.value}</div>
+    <Layout backTo="/calendar" backLabel={t('plan.back_to_list')} hideBottomTabs>
+      <div className="-mx-4 -mt-4 -mb-8 min-h-screen bg-halo-bg px-4 md:px-9 font-sans text-halo-ink">
+        <TopBar title={t('plan.workout_title')} right={fmtDateShort(data.date, i18n.language)} />
+
+        <div className="flex flex-col gap-3.5 pb-4">
+          {/* Reverse breadcrumb — links to the activity executed against this
+              workout. Symmetric to the Activity page's «ПЛАН | <name> ›» pill;
+              hidden when the workout hasn't been executed yet (no paired
+              activity). Tap target opens `/activity/:id`. */}
+          {data.paired_activity && (
+            <Link
+              to={`/activity/${data.paired_activity.id}`}
+              aria-label={t('plan.open_actual_activity')}
+              className="inline-flex items-center gap-2.5 self-start rounded-pill border border-halo-border bg-halo-surface px-3 py-1.5 text-[13px] text-halo-ink no-underline shadow-card hover:bg-halo-surface-2"
+            >
+              <span className="text-[9px] font-bold uppercase tracking-[0.7px] text-halo-ink-dimmer">
+                {t('plan.actual_breadcrumb')}
+              </span>
+              <span className="h-3 w-px bg-halo-border" />
+              <span className="font-semibold tracking-[-0.1px]">
+                {sportLabel(data.paired_activity.type)}
+                {data.paired_activity.duration ? ` · ${data.paired_activity.duration}` : ''}
+              </span>
+              <span aria-hidden="true" className="ml-0.5 leading-none text-halo-ink-dim">›</span>
+            </Link>
+          )}
+
+          {/* Hero */}
+          <div className="rounded-card bg-halo-brand p-[18px] text-white">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-white/70">
+              {sportLabel(data.type)}
+              {data.category ? ` · ${data.category}` : ''}
+            </div>
+            <h1 className="mb-1 mt-1.5 text-[26px] font-semibold tracking-[-0.6px]">{name}</h1>
+            {subParts.length > 0 && <div className="text-sm text-white/85">{subParts.join(' · ')}</div>}
+            <div className="mt-[18px] grid grid-cols-3 gap-3.5 border-t border-white/20 pt-3.5">
+              {heroStats.map(s => (
+                <div key={s.k}>
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-white/70">{s.k}</div>
+                  <div className="mt-0.5 text-[22px] font-semibold">{s.v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {data.steps && data.steps.length > 0 ? (
+            <>
+              <TimelineChart
+                steps={data.steps}
+                sport={data.type}
+                thresholds={data.thresholds}
+                zones={data.zones}
+                title={t('plan.structure')}
+                totalLabel={totalMin != null ? t('plan.min_total', { min: totalMin }) : null}
+              />
+              <div className="rounded-card border border-halo-border bg-halo-surface px-3.5 py-3 shadow-card">
+                <div className="mb-2 border-b border-halo-border pb-1 text-sm font-semibold">{t('plan.steps_title')}</div>
+                <StepList steps={data.steps} sport={data.type} thresholds={data.thresholds} />
+              </div>
+            </>
+          ) : data.description ? (
+            <div className="rounded-card border border-halo-border bg-halo-surface px-3.5 py-3 shadow-card">
+              <div className="mb-2 border-b border-halo-border pb-1 text-sm font-semibold">{t('plan.description_title')}</div>
+              <pre className="m-0 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-halo-ink-dim">
+                {data.description}
+              </pre>
+            </div>
+          ) : (
+            <ErrorMessage message={t('plan.no_steps')} />
+          )}
+
+          <ZoneTimes enrichment={data.enrichment} sport={data.type} />
+
+          {data.rationale && (
+            <div className="rounded-card bg-halo-brand-light p-4">
+              <div className="flex items-start gap-2.5">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-halo-brand text-sm font-semibold text-white">
+                  AI
+                </span>
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.4px] text-halo-brand-dark">
+                    {t('plan.why_workout')}
+                  </div>
+                  <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-halo-ink">
+                    {data.rationale}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* «Start workout» button removed 2026-05-23 — there's no webapp
+              endpoint that actually starts execution (Intervals.icu / Garmin
+              own that flow), so the button was a literal-port placeholder
+              with no action. */}
         </div>
-      ))}
-    </div>
+      </div>
+    </Layout>
   )
 }
 
@@ -193,7 +193,7 @@ function ZoneTimes({
   const labelKey =
     sport === 'Ride' ? 'plan.power_zones' : sport === 'Run' ? 'plan.hr_zones' : 'plan.pace_zones'
   return (
-    <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-4">
+    <div className="bg-halo-surface border border-halo-border rounded-card px-3.5 py-3 mb-4">
       <ZoneBar zones={secs} label={t(labelKey)} size="detail" />
     </div>
   )
@@ -239,7 +239,7 @@ function RepeatGroup({
 }) {
   return (
     <div>
-      <div className="font-semibold text-text-dim">{step.reps}&times;</div>
+      <div className="font-semibold text-halo-ink-dim">{step.reps}&times;</div>
       <StepList steps={step.steps || []} sport={sport} thresholds={thresholds} depth={depth + 1} />
     </div>
   )
@@ -487,12 +487,14 @@ function TimelineChart({
   thresholds,
   zones,
   title,
+  totalLabel,
 }: {
   steps: WorkoutStep[]
   sport: string | null
   thresholds: WorkoutDetailThresholds
   zones: WorkoutDetailZones
   title: string
+  totalLabel?: string | null
 }) {
   const flat = flattenSteps(steps)
   if (flat.length === 0) return null
@@ -602,8 +604,11 @@ function TimelineChart({
   const ariaLabel = `${title}: ${flat.length} steps, ${fmtDuration(totalSec)}`
 
   return (
-    <div className="bg-surface border border-border rounded-xl px-3.5 py-3 mb-4">
-      <div className="text-sm font-bold mb-2 pb-1 border-b border-border">{title}</div>
+    <div className="rounded-card border border-halo-border bg-halo-surface px-3.5 py-3 shadow-card">
+      <div className="mb-2 flex items-baseline justify-between border-b border-halo-border pb-1">
+        <span className="text-sm font-semibold">{title}</span>
+        {totalLabel && <span className="text-xs text-halo-ink-dim">{totalLabel}</span>}
+      </div>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         className="w-full h-auto block"
@@ -614,8 +619,8 @@ function TimelineChart({
         {/* Y-axis grid + labels */}
         {tickValues.map((v, i) => (
           <g key={i}>
-            <line x1={padL} x2={W - padR} y1={yOf(v)} y2={yOf(v)} stroke="var(--border)" strokeDasharray="2,3" />
-            <text x={padL - 4} y={yOf(v) + 3} fontSize="9" textAnchor="end" fill="var(--text-dim)">
+            <line x1={padL} x2={W - padR} y1={yOf(v)} y2={yOf(v)} stroke="var(--color-border)" strokeDasharray="2,3" />
+            <text x={padL - 4} y={yOf(v) + 3} fontSize="9" textAnchor="end" fill="var(--color-ink-dim)">
               {formatY(v)}
             </text>
           </g>
@@ -632,7 +637,7 @@ function TimelineChart({
               y={H - 6}
               fontSize="9"
               textAnchor={sec === totalSec ? 'end' : 'middle'}
-              fill="var(--text-dim)"
+              fill="var(--color-ink-dim)"
             >
               {fmtTime(sec)}
             </text>
@@ -667,7 +672,7 @@ function TimelineChart({
           // Fall back to a neutral grey so we don't silently miscolour as Z1.
           const fill =
             zoneIdx === -1
-              ? 'var(--text-dim)'
+              ? 'var(--color-ink-dim)'
               : ZONE_COLORS[Math.min(zoneIdx, ZONE_COLORS.length - 1)]
           const corridorH = Math.max(yLow - yHigh, 2)
           return (

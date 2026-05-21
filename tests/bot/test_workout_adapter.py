@@ -342,8 +342,11 @@ class TestComputeConstraints:
         assert f <= 0.75
 
     def test_tsb_override(self):
-        z, f = compute_constraints(self._recovery(85, "excellent"), "green", tsb=-30)
-        assert z <= 2  # TSB < -25 caps at Z2
+        # 5-band model: Z2-cap fires only in the `risk` zone (TSB < -30).
+        # TSB = -35 is strictly below the boundary; -30 itself would map to
+        # `optimal` and skip the cap.
+        z, f = compute_constraints(self._recovery(85, "excellent"), "green", tsb=-35)
+        assert z <= 2  # TSB < -30 caps at Z2
 
     def test_ra_decline_additional_reduction(self):
         z, f = compute_constraints(self._recovery(75, "good"), "green", tsb=0, ra=-8)

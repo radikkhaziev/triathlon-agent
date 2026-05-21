@@ -722,7 +722,13 @@ class TestActorSendUserMorningReport:
         assert call_kwargs["text"] == "Morning summary"
 
     def test_reply_markup_contains_webapp_link(self):
-        """reply_markup sent to Telegram contains a web_app button."""
+        """reply_markup contains a web_app button → /coach?date=<wellness.date>.
+
+        The first row of the keyboard is the «open report» button. It must point
+        at `/coach` for the wellness row's date — that page renders the full
+        `ai_recommendation` markdown. Root-URL or `/wellness` would land the
+        athlete on metrics, not the AI prose they tapped to read.
+        """
         from tasks.actors.reports import _actor_send_user_morning_report
 
         user = _user(id=1)
@@ -739,9 +745,9 @@ class TestActorSendUserMorningReport:
         call_kwargs = mock_tg.send_message.call_args[1]
         keyboard = call_kwargs["reply_markup"]
         assert "inline_keyboard" in keyboard
-        # At least one button with web_app
-        buttons = [btn for row in keyboard["inline_keyboard"] for btn in row]
-        assert any("web_app" in btn for btn in buttons)
+        first_btn = keyboard["inline_keyboard"][0][0]
+        assert "web_app" in first_btn
+        assert first_btn["web_app"]["url"].endswith(f"/coach?date={wellness.date}")
 
     def test_threshold_pace_drift_renders_pace_units_not_bpm(self):
         """Regression: pre-2026-05-08 the morning-report drift line was hardcoded

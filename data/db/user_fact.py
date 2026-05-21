@@ -327,13 +327,14 @@ class UserFact(Base):
     @classmethod
     @dual
     def count_active(cls, user_id: int, *, session: Session) -> int:
+        """Public wrapper around ``_count_active`` — used by tests verifying
+        cap behaviour (expired-row exclusion, soft/hard cap math)."""
         return _count_active(cls, user_id, session)
 
 
 def _count_active(cls, user_id: int, session: Session) -> int:
-    """Shared count helper — pulled out so internal ``save_with_cap`` paths
-    and the public ``count_active`` hit the same query shape. Mirrors the
-    reader-side filter (``list_active``) so expired-but-not-yet-deactivated
+    """Shared count helper — used by internal ``save_with_cap`` paths. Mirrors
+    the reader-side filter (``list_active``) so expired-but-not-yet-deactivated
     rows don't inflate soft/hard cap decisions.
     """
     return int(

@@ -28,15 +28,19 @@ def _format_plan_response(row: RacePlan) -> dict:
     """Shape the JSON for ``GET /api/race-plan`` and the post-generate response.
 
     Pull ``confidence_tier`` out of the payload to the top level so the UI
-    doesn't have to dig into the JSONB blob to render the badge.
+    doesn't have to dig into the JSONB blob to render the badge. Strip the
+    inner ``race`` snapshot and ``regen_count_today`` — the service writes
+    them as goal-deletion / rate-limit bookkeeping; UI reads only the inner
+    ``plan`` block plus the top-level fields above.
     """
+    payload = dict(row.payload or {})
+    payload.pop("race", None)
+    payload.pop("regen_count_today", None)
     return {
-        "id": row.id,
-        "goal_id": row.goal_id,
         "model_version": row.model_version,
         "generated_at": row.generated_at.isoformat() if row.generated_at else None,
-        "confidence_tier": (row.payload or {}).get("confidence_tier", "mid"),
-        "payload": row.payload,
+        "confidence_tier": payload.get("confidence_tier", "mid"),
+        "payload": payload,
     }
 
 

@@ -116,11 +116,12 @@ def register_resources(mcp: FastMCP) -> None:
         for Intervals.icu impulse-response model, NOT TrainingPeaks PMC.
         """
         return (
-            "TSB Zones (Intervals.icu calibrated):\n"
-            "  > +10: under-training\n"
-            "  -10 to +10: optimal\n"
-            "  -10 to -25: productive overreach\n"
-            "  < -25: overtraining risk\n"
+            "TSB Zones (Intervals.icu calibrated, 5-band model):\n"
+            "  < -30:      risk        (high risk — warn user, Z2-cap applies on adapted workouts)\n"
+            "  -30 to -10: optimal     (productive training zone)\n"
+            "  -10 to +5:  gray        (neutral / maintenance)\n"
+            "  +5 to +25:  fresh       (well-rested)\n"
+            "  >= +25:     transition  (under-training / peaked)\n"
             "\n"
             "Ramp Rate:\n"
             "  <= 7 TSS/week: safe\n"

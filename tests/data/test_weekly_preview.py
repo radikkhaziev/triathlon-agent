@@ -1,15 +1,18 @@
-"""Unit tests for ``extract_weekly_preview`` — the headline-extraction helper.
+"""Unit tests for the weekly-report markdown extractors.
 
-Powers the ``/api/weekly-reports`` list cards (PR2) and, eventually, the
-Sunday actor's chat preview (parked until PR3 webapp route exists). It must:
+``extract_weekly_preview`` — the prose-preview helper. Powers the
+``/api/weekly-reports`` list cards. It must:
 - target the «📊 Итог недели» paragraph when present at line-start
 - ignore inline ``📊`` mentions mid-paragraph (false-anchor guard)
 - fall back to the first non-heading paragraph when the anchor is absent
 - strip bold/italic markdown so previews read cleanly in any context
 - truncate at a word boundary with an ellipsis so we never overflow the cap
+
+``extract_weekly_headline`` — the short-title helper. Pulls the leading ``# ``
+H1 the weekly prompt now emits; ``None`` for legacy reports without one.
 """
 
-from data.weekly_preview import extract_weekly_preview
+from data.weekly_preview import extract_weekly_headline, extract_weekly_preview
 
 
 class TestAnchorPath:
@@ -100,3 +103,49 @@ class TestTruncation:
         assert extract_weekly_preview(md, max_chars=200) == "Коротко."
         # No trailing ellipsis when under the cap.
         assert not extract_weekly_preview(md, max_chars=200).endswith("…")
+
+
+class TestHeadline:
+    """``extract_weekly_headline`` — only a *leading* ``# `` H1 counts; legacy
+    reports written before the prompt change return ``None`` so the API can
+    fall back to ``extract_weekly_preview``."""
+
+    def test_extracts_leading_h1(self):
+        md = "# Брик-блок, подводка к гонке\n\n📊 **Итог недели**\n\nВыполнено 5 из 5."
+        assert extract_weekly_headline(md) == "Брик-блок, подводка к гонке"
+
+    def test_tolerates_leading_blank_lines(self):
+        md = "\n\n# Recovery week\n\nbody"
+        assert extract_weekly_headline(md) == "Recovery week"
+
+    def test_strips_bold_inside_headline(self):
+        md = "# **Threshold** focus\n\nbody"
+        assert extract_weekly_headline(md) == "Threshold focus"
+
+    def test_strips_atx_closing_hashes(self):
+        """``# Title #`` — ATX-closed form; the trailing run is dropped."""
+        md = "# Big bike block #\n\nbody"
+        assert extract_weekly_headline(md) == "Big bike block"
+
+    def test_strips_markdown_link(self):
+        """A link would otherwise render its raw ``[...](...)`` syntax in the
+        plain-text card title — backstop for an unlikely model output."""
+        md = "# [Brick block](http://x) tune-up\n\nbody"
+        assert extract_weekly_headline(md) == "Brick block tune-up"
+
+    def test_legacy_report_without_h1_returns_none(self):
+        # Pre-prompt-change report — starts straight with the 📊 section.
+        md = "📊 **Итог недели**\n\nВыполнено 5 из 5."
+        assert extract_weekly_headline(md) is None
+
+    def test_hash_without_space_is_not_a_headline(self):
+        # ``#tag`` — no space after ``#``, not an ATX H1.
+        assert extract_weekly_headline("#notaheading\n\nbody") is None
+
+    def test_mid_body_heading_is_not_picked_up(self):
+        # Only a *leading* H1 counts — a ``# `` deeper in the doc is ignored.
+        md = "📊 Итог\n\nтекст\n\n# Late heading\n\nещё"
+        assert extract_weekly_headline(md) is None
+
+    def test_empty_h1_returns_none(self):
+        assert extract_weekly_headline("# \n\nbody") is None

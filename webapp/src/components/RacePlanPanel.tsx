@@ -1,45 +1,40 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ApiError, apiFetch } from '../api/client'
-import type { ConfidenceTier, InheritableRace, RaceConditionsInput, RacePlanLeg, RacePlanResponse } from '../api/types'
+import type { InheritableRace, RaceConditionsInput, RacePlanLeg, RacePlanResponse } from '../api/types'
 import RaceConditionsForm from './RaceConditionsForm'
 
-// Tier → visual cue. Spec §3 cutoffs: final <7d / late 7-14d / mid 14-60d / early 60-200d.
-// Color says "how much should the athlete trust this": green = settled, amber = preliminary,
-// dimmer = early-stage. Tier labels stay English-only — race-day terminology is universal,
-// and short ALL-CAPS reads at a glance regardless of UI language (review M1 carve-out).
-const TIER_BADGE: Record<ConfidenceTier, { label: string; cls: string; tooltip: string }> = {
-  final: {
-    label: 'FINAL',
-    cls: 'bg-green-100 text-green-700 border-green-300',
-    tooltip: 'Race within 7 days — corridors are settled.',
-  },
-  late: {
-    label: 'LATE',
-    cls: 'bg-blue-100 text-blue-700 border-blue-300',
-    tooltip: 'Race within 2 weeks — minor tweaks possible.',
-  },
-  mid: {
-    label: 'MID',
-    cls: 'bg-amber-100 text-amber-700 border-amber-300',
-    tooltip: 'Race 2-8 weeks out — corridors will tighten closer to race day.',
-  },
-  early: {
-    label: 'EARLY',
-    cls: 'bg-zinc-100 text-zinc-600 border-zinc-300',
-    tooltip: 'Race more than 2 months out — structure is useful, corridors are placeholder.',
-  },
+// Refresh icon for the "Recalculate plan" CTA (prototype `RacePlanCard`).
+function RefreshIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 12a9 9 0 0 1 15.5-6.4L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15.5 6.4L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  )
 }
 
-function ConfidenceBadge({ tier }: { tier: ConfidenceTier }) {
-  const info = TIER_BADGE[tier] ?? TIER_BADGE.mid
+// Small inline button spinner — matches the design's generating state.
+function Spinner({ light }: { light?: boolean }) {
   return (
     <span
-      className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold border ${info.cls}`}
-      title={info.tooltip}
-    >
-      {info.label}
-    </span>
+      className={`h-3.5 w-3.5 animate-spin rounded-full border-2 ${
+        light ? 'border-white/40 border-t-white' : 'border-halo-ink-dimmer border-t-halo-ink'
+      }`}
+      aria-hidden="true"
+    />
   )
 }
 
@@ -48,22 +43,22 @@ function LegRow({ leg }: { leg: RacePlanLeg }) {
   // pacing is JSON-schema-required but legacy plans may lack it — guard.
   const pacing = leg.pacing
   return (
-    <div className="border-l-2 border-border pl-2 py-1">
+    <div className="rounded-[10px] border-l-[3px] border-halo-brand bg-halo-surface-2 px-3 py-2.5">
       <div className="flex items-baseline gap-2 text-sm">
         <span className="font-semibold capitalize">{leg.leg}</span>
-        {leg.distance && <span className="text-text-dim">{leg.distance}</span>}
+        {leg.distance && <span className="text-halo-ink-dim">{leg.distance}</span>}
       </div>
       {pacing && (pacing.low || pacing.target || pacing.cap) && (
-        <div className="text-xs tabular-nums mt-0.5">
-          {pacing.low} <span className="text-text-dim">→</span>{' '}
+        <div className="mt-0.5 text-xs tabular-nums">
+          {pacing.low} <span className="text-halo-ink-dim">→</span>{' '}
           <span className="font-semibold">{pacing.target}</span>{' '}
-          <span className="text-text-dim">→</span> {pacing.cap}
+          <span className="text-halo-ink-dim">→</span> {pacing.cap}
           {leg.hr_ceiling_bpm && (
-            <span className="text-text-dim ml-2">{t('race_plan.leg_hr_cap', { value: leg.hr_ceiling_bpm })}</span>
+            <span className="ml-2 text-halo-ink-dim">{t('race_plan.leg_hr_cap', { value: leg.hr_ceiling_bpm })}</span>
           )}
         </div>
       )}
-      {leg.notes && <div className="text-[11px] text-text-dim mt-1">{leg.notes}</div>}
+      {leg.notes && <div className="mt-1 text-[11px] text-halo-ink-dim">{leg.notes}</div>}
     </div>
   )
 }
@@ -106,7 +101,30 @@ function RateLimitNotice({
   return <span>{t('race_plan.rate_limit_generic')}</span>
 }
 
-export default function RacePlanPanel({ goalId }: { goalId: number }) {
+// Card pill — days-to-race (prototype `RacePlanCard`), or "EARLY" once a plan
+// exists and the backend tier says it's early-stage (race > ~8 weeks out, so
+// the corridors are provisional). English-only "EARLY" — race-day terminology
+// is universal and short ALL-CAPS reads at a glance regardless of UI language.
+function RacePill({ daysRemaining, isEarly }: { daysRemaining: number; isEarly: boolean }) {
+  const { t } = useTranslation()
+  if (isEarly) {
+    return (
+      <span
+        className="shrink-0 whitespace-nowrap rounded-pill px-2 py-[3px] text-[10px] font-bold tracking-[0.5px]"
+        style={{ background: 'color-mix(in srgb, var(--color-amber) 16%, transparent)', color: 'var(--color-amber)' }}
+      >
+        EARLY
+      </span>
+    )
+  }
+  return (
+    <span className="shrink-0 whitespace-nowrap rounded-pill bg-halo-surface-2 px-2 py-[3px] text-[10px] font-bold tracking-[0.5px] text-halo-ink-dim">
+      {t('race_plan.days_to_race', { days: daysRemaining })}
+    </span>
+  )
+}
+
+export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: number; daysRemaining: number }) {
   const { t } = useTranslation()
   const formatErrorMessage = useErrorMessage()
 
@@ -186,7 +204,7 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
 
   if (loading) {
     return (
-      <div className="bg-surface border border-border rounded-[14px] p-3 mb-3 text-center text-sm text-text-dim">
+      <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] text-center text-sm text-halo-ink-dim shadow-card">
         {t('race_plan.loading')}
       </div>
     )
@@ -195,18 +213,19 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
   // No plan yet → invite generation. Surface inline error from a failed prior attempt.
   if (!plan) {
     return (
-      <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm font-semibold">{t('race_plan.title')}</div>
+      <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[15px] font-semibold tracking-[-0.2px]">{t('race_plan.title')}</div>
+            <div className="mt-1 max-w-[280px] text-xs leading-relaxed text-halo-ink-dim">{t('race_plan.intro')}</div>
+          </div>
+          <RacePill daysRemaining={daysRemaining} isEarly={false} />
         </div>
-        <div className="text-xs text-text-dim mb-3">{t('race_plan.intro')}</div>
         {error && (
-          <div className="text-[11px] text-red-600 mb-2" role="status">
+          <div className="mt-2 text-[11px] text-halo-coral" role="status">
             <span aria-hidden="true">⚠ </span>
             {error.status === 429 ? (
-              <RateLimitNotice
-                detail={error.detail as { retry_after_sec?: number; next_available_at?: string }}
-              />
+              <RateLimitNotice detail={error.detail as { retry_after_sec?: number; next_available_at?: string }} />
             ) : (
               formatErrorMessage(error)
             )}
@@ -224,8 +243,9 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
         <button
           onClick={() => generate(false)}
           disabled={generating}
-          className="w-full mt-3 py-2 bg-accent text-white rounded-md text-sm font-semibold disabled:opacity-50"
+          className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-[12px] bg-halo-brand py-3 text-sm font-semibold text-white disabled:opacity-60"
         >
+          {generating && <Spinner light />}
           {generating ? t('race_plan.generating') : t('race_plan.generate_cta')}
         </button>
       </div>
@@ -242,21 +262,21 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
   const transitions = inner.transitions ?? []
   const contingencies = inner.contingencies ?? []
   return (
-    <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-semibold">{t('race_plan.title')}</div>
-        <ConfidenceBadge tier={plan.confidence_tier} />
+    <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-[15px] font-semibold tracking-[-0.2px]">{t('race_plan.title')}</div>
+        <RacePill daysRemaining={daysRemaining} isEarly={plan.confidence_tier === 'early'} />
       </div>
 
       {inner.headline && (
-        <div className="text-sm italic text-text-dim mb-3 border-l-2 border-accent pl-2">
+        <div className="mb-3 mt-3 border-l-2 border-halo-brand pl-2 text-sm italic text-halo-ink-dim">
           "{inner.headline}"
         </div>
       )}
 
       {inner.warmup && (
         <>
-          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+          <div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
             {t('race_plan.section_warmup')}
           </div>
           <div className="text-xs">{inner.warmup}</div>
@@ -265,7 +285,7 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
 
       {legs.length > 0 && (
         <>
-          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+          <div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
             {t('race_plan.section_legs')}
           </div>
           <div className="space-y-2">
@@ -279,7 +299,7 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
 
       {fueling && fueling.carbs_g_per_hour != null && (
         <>
-          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+          <div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
             {t('race_plan.section_fueling')}
           </div>
           <div className="text-xs">
@@ -287,23 +307,23 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
               {t('race_plan.fueling_carbs', { value: fueling.carbs_g_per_hour })}
             </span>
             {fueling.fluid_ml_per_hour != null && (
-              <span className="text-text-dim">
+              <span className="text-halo-ink-dim">
                 {t('race_plan.fueling_fluid', { value: fueling.fluid_ml_per_hour })}
               </span>
             )}
             {fueling.sodium_mg_per_hour != null && (
-              <span className="text-text-dim">
+              <span className="text-halo-ink-dim">
                 {t('race_plan.fueling_sodium', { value: fueling.sodium_mg_per_hour })}
               </span>
             )}
-            {fueling.notes && <div className="text-[11px] text-text-dim mt-1">{fueling.notes}</div>}
+            {fueling.notes && <div className="mt-1 text-[11px] text-halo-ink-dim">{fueling.notes}</div>}
           </div>
         </>
       )}
 
       {transitions.length > 0 && (
         <>
-          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+          <div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
             {t('race_plan.section_transitions')}
           </div>
           <div className="space-y-1 text-xs">
@@ -311,7 +331,7 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
               <div key={i}>
                 <span className="font-semibold">{tx.name}:</span> {(tx.checklist ?? []).join(' · ')}
                 {tx.target_time_sec != null && (
-                  <span className="text-text-dim">
+                  <span className="text-halo-ink-dim">
                     {t('race_plan.leg_transition_target', { value: tx.target_time_sec })}
                   </span>
                 )}
@@ -323,7 +343,7 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
 
       {contingencies.length > 0 && (
         <>
-          <div className="text-[11px] uppercase font-semibold text-text-dim mt-3 mb-1">
+          <div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
             {t('race_plan.section_contingencies')}
           </div>
           <div className="space-y-1 text-xs">
@@ -337,7 +357,7 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
         </>
       )}
 
-      <div className="flex items-center justify-between text-[10px] text-text-dim mt-4 pt-2 border-t border-bg">
+      <div className="mt-4 flex items-center justify-between border-t border-halo-border pt-2 text-[10px] text-halo-ink-dim">
         <span>
           {t('race_plan.footer_generated', {
             when: plan.generated_at
@@ -355,7 +375,7 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
 
       {/* L1: surface the service-emitted note (e.g. "regenerated in place 1/1 today") so
           the athlete gets confirmation text, not just a silently-updated panel. */}
-      {plan.note && <div className="text-[11px] text-text-dim mt-1 italic">{plan.note}</div>}
+      {plan.note && <div className="mt-1 text-[11px] italic text-halo-ink-dim">{plan.note}</div>}
 
       <RaceConditionsForm
         goalId={goalId}
@@ -368,12 +388,10 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
       />
 
       {error && (
-        <div className="text-[11px] text-red-600 mt-2" role="status">
+        <div className="mt-2 text-[11px] text-halo-coral" role="status">
           <span aria-hidden="true">⚠ </span>
           {error.status === 429 ? (
-            <RateLimitNotice
-              detail={error.detail as { retry_after_sec?: number; next_available_at?: string }}
-            />
+            <RateLimitNotice detail={error.detail as { retry_after_sec?: number; next_available_at?: string }} />
           ) : (
             formatErrorMessage(error)
           )}
@@ -383,8 +401,9 @@ export default function RacePlanPanel({ goalId }: { goalId: number }) {
       <button
         onClick={() => generate(true)}
         disabled={generating || error?.status === 429}
-        className="w-full mt-3 py-2 border border-border rounded-md text-sm disabled:opacity-50 hover:bg-bg"
+        className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-[12px] border border-halo-border py-3 text-sm font-semibold text-halo-ink hover:bg-halo-surface-2 disabled:opacity-50"
       >
+        {generating ? <Spinner /> : <RefreshIcon />}
         {generating ? t('race_plan.regenerating') : t('race_plan.regenerate_cta')}
       </button>
     </div>

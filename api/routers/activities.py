@@ -6,22 +6,10 @@ from sqlalchemy import exists, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import (
-    Activity,
-    ActivityDetail,
-    ActivityHrv,
-    ActivityWeather,
-    FitnessProjection,
-    Race,
-    ScheduledWorkout,
-    User,
-    get_session,
-)
-from data.ml.progression import get_latest_analysis
+from data.db import Activity, ActivityDetail, ActivityHrv, ActivityWeather, Race, ScheduledWorkout, User, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.tools.polarization import get_polarization_multi_window
 from mcp_server.tools.progress import compute_efficiency_trend
-from tasks.dto import local_today
 
 router = APIRouter()
 
@@ -61,6 +49,16 @@ async def activities_week(
                     "icu_training_load": round(a.icu_training_load, 1) if a.icu_training_load is not None else None,
                     "average_hr": round(a.average_hr) if a.average_hr is not None else None,
                     "is_race": a.is_race,
+                    # Intervals.icu's planned-vs-actual compliance (0-100 %).
+                    # Surfaced on the Week tab as the «N% on plan» chip on
+                    # past activity rows (design direction-b-halo.jsx:1489).
+                    # NULL when the activity wasn't paired with a planned event.
+                    "compliance": round(a.compliance, 1) if a.compliance is not None else None,
+                    # FK-less reference to `scheduled_workouts.id` (Intervals'
+                    # native pairing). Drives the day-card merge logic: a
+                    # planned session whose id appears here is «covered» by the
+                    # actual and shouldn't render twice on multi-session days.
+                    "paired_event_id": a.paired_event_id,
                 }
             )
         days.append({"date": d_str, "weekday": _WEEKDAYS[i], "activities": day_activities})
@@ -73,13 +71,8 @@ async def activities_week(
         has_prev = prev_result.scalar_one()
 
     return {
-        "week_start": str(monday),
-        "week_end": str(sunday),
-        "week_offset": week_offset,
         "today": str(today),
-        "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
         "has_prev": has_prev,
-        "role": user.role,
         "days": days,
     }
 
@@ -107,6 +100,24 @@ async def activity_details(
                 await session.execute(select(Race).where(Race.user_id == uid, Race.activity_id == activity_id))
             ).scalar_one_or_none()
 
+        # Paired planned workout — surfaced for the Activity detail page's
+        # «PLAN | <name> ›» breadcrumb (design BActivityWorkout, direction-b-
+        # halo.jsx:2081-2096). Lets the user jump back to the workout the
+        # activity executed without a second roundtrip. NULL when Intervals
+        # didn't pair or the paired workout was deleted.
+        paired_workout = None
+        if activity.paired_event_id is not None:
+            paired = await session.get(ScheduledWorkout, activity.paired_event_id)
+            if paired is not None and paired.user_id == uid:
+                paired_workout = {
+                    "id": paired.id,
+                    "name": paired.name,
+                    "duration_secs": paired.moving_time,
+                    "icu_training_load": (
+                        round(paired.icu_training_load, 1) if paired.icu_training_load is not None else None
+                    ),
+                }
+
     return {
         "activity_id": activity.id,
         "type": activity.type,
@@ -124,11 +135,14 @@ async def activity_details(
         # activity detail page. NULL when Intervals didn't pair or pairing was
         # cleaned up (planned event deleted).
         "paired_event_id": activity.paired_event_id,
+        # Resolved paired workout (name + planned duration + planned TSS) for
+        # the «PLAN | <name> ›» breadcrumb and Plan vs Actual mini-table. NULL
+        # when paired_event_id is null OR the pointed-at workout was deleted.
+        "paired_workout": paired_workout,
         "is_race": activity.is_race,
         "race": (
             {
                 "name": race.name,
-                "race_type": race.race_type,
                 "distance_km": round(race.distance_m / 1000, 2) if race.distance_m else None,
                 "finish_time_sec": race.finish_time_sec,
                 "goal_time_sec": race.goal_time_sec,
@@ -141,7 +155,6 @@ async def activity_details(
                 "rpe": race.rpe,
                 "notes": race.notes,
                 "race_day_ctl": race.race_day_ctl,
-                "race_day_atl": race.race_day_atl,
                 "race_day_tsb": race.race_day_tsb,
                 "race_day_recovery_score": race.race_day_recovery_score,
                 "race_day_hrv_status": race.race_day_hrv_status,
@@ -156,14 +169,10 @@ async def activity_details(
         "weather": (
             {
                 "avg_temp_c": weather.avg_temp_c,
-                "min_temp_c": weather.min_temp_c,
-                "max_temp_c": weather.max_temp_c,
                 "avg_feels_like_c": weather.avg_feels_like_c,
                 "avg_wind_speed_mps": weather.avg_wind_speed_mps,
-                "avg_wind_gust_mps": weather.avg_wind_gust_mps,
                 "prevailing_wind_deg": weather.prevailing_wind_deg,
                 "headwind_pct": weather.headwind_pct,
-                "tailwind_pct": weather.tailwind_pct,
                 "avg_clouds": weather.avg_clouds,
                 "max_rain_mm": weather.max_rain_mm,
                 "max_snow_mm": weather.max_snow_mm,
@@ -197,57 +206,8 @@ async def polarization(
 ) -> dict:
     """Get Polarization Index with multi-window analysis and trend signals."""
     windows, signals = await get_polarization_multi_window(get_data_user_id(user), sport)
-    primary = windows.get(days, windows[28])
 
     return {
-        "sport": sport,
-        "primary_window": days,
-        **primary,
         "windows": {str(d): w for d, w in windows.items()},
         "signals": signals,
-    }
-
-
-@router.get("/api/progression")
-async def progression(
-    sport: str = Query(default="Ride", description="Ride only for now"),
-    user: User = Depends(require_viewer),
-) -> dict:
-    """Get ML progression analysis — SHAP feature importance."""
-    result = get_latest_analysis(get_data_user_id(user), sport)
-    if not result:
-        return {"status": "no_model"}
-    return {"status": "ok", **result}
-
-
-@router.get("/api/fitness-projection")
-async def fitness_projection(
-    days: int = Query(default=90, ge=1, le=365),
-    user: User = Depends(require_viewer),
-) -> dict:
-    """Get fitness projection (CTL/ATL curve from Intervals.icu).
-
-    Windowed to ``[today - days, last planned workout]``. ``days`` is the
-    history length the UI toggles (1m/3m/6m → 30/90/180). The upper bound is
-    the last scheduled workout: Intervals' forward curve *does* fold in
-    planned-workout load, but past the last workout it's only decay (nothing
-    more to show). Falls back to ``today`` when no future workout is planned.
-    """
-    uid = get_data_user_id(user)
-    today = local_today()
-
-    oldest = (today - timedelta(days=days)).isoformat()
-    last_planned = await ScheduledWorkout.get_last_scheduled_date(uid)
-    # ISO "YYYY-MM-DD" sorts lexicographically == chronologically, so max() picks
-    # the later of {last planned workout, today} — the chart always reaches at
-    # least today even if every planned workout is already in the past.
-    newest = max(last_planned, today.isoformat()) if last_planned else today.isoformat()
-
-    rows = await FitnessProjection.get_projection(user_id=uid, oldest=oldest, newest=newest)
-    return {
-        "count": len(rows),
-        "dates": [str(r.date) for r in rows],
-        "ctl": [r.ctl for r in rows],
-        "atl": [r.atl for r in rows],
-        "ramp_rate": [r.ramp_rate for r in rows],
     }

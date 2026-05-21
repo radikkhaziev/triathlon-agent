@@ -1,23 +1,24 @@
 """Dashboard API routes — real per-user data for the Mini App Dashboard.
 
-Backs the **Load**, **Goal**, and **Week** tabs. The legacy mocks in
-``api/dashboard_routes.py`` (``/api/dashboard`` + job-trigger stubs) are still
-in place for the Today tab and the as-yet-unwired job buttons; the path
-collisions that existed during the END-12/13 cut-over are gone.
+Backs the **Load**, **Goal**, and **Week** tabs, plus the Wellness page's
+manual refresh job (``POST /api/jobs/refresh-wellness``). The legacy mock
+router (``api/dashboard_routes.py``) was deleted in the Halo cleanup pass —
+all dashboard endpoints now live here.
 """
 
 import json
 import logging
+import time
 import zoneinfo
 from datetime import date, datetime, timedelta
 
 import sentry_sdk
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 
-from api.deps import get_data_user_id, require_viewer
+from api.deps import get_data_user_id, require_athlete, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, AthleteGoal, Race, User, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, Race, User, UserDTO, Wellness, get_session
 from data.db.dto import AthleteGoalDTO
 from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivity, calculate_marathon_shape
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
@@ -25,18 +26,27 @@ from data.ml.race_predict import predict_splits_with_ci
 from data.redis_client import get_redis
 from data.utils import extract_sport_ctl, normalize_sport
 from mcp_server.tools.progress import compute_efficiency_trend
+from tasks.actors import actor_user_wellness
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Per-user cooldown between manual wellness-refresh calls (the Wellness page
+# "Refresh" button). Guards against spam → wasted Intervals.icu API calls plus
+# downstream fan-out. In-process dict — same multi-worker caveat as
+# ``_retry_backfill_last_success`` in auth.py (migrate to Redis INCR+EXPIRE
+# when scaling to multi-worker uvicorn).
+_REFRESH_COOLDOWN_SEC = 60
+_refresh_last: dict[int, float] = {}
+
 
 # Canonical Intervals.icu type → React-tab sport key. Anything that doesn't
 # normalize into Swim/Ride/Run gets dropped (matches the stacked-TSS chart,
-# which only has three series). Knock-on for `/api/weekly-recap`: an "Other"
-# bucket — yoga, hike, weights, mobility — never lands in `by_sport`, so its
-# TSS is also missing from the per-week total the frontend sums client-side.
-# Acceptable trade-off for triathletes; revisit when adding a strength tab.
+# which only has three series): an "Other" bucket — yoga, hike, weights,
+# mobility — never lands in `by_sport`. Acceptable trade-off for triathletes;
+# revisit when adding a strength tab. `weekly_reports.py:_SPORT_BUCKET` mirrors
+# this map for the Recap tab's per-week volume.
 _SPORT_MAP = {
     "Swim": "swimming",
     "Ride": "cycling",
@@ -59,32 +69,19 @@ def _ttl_until_midnight_local() -> int:
     return max(60, int((midnight - now).total_seconds()))
 
 
-def _nearest_wellness(
-    wellness_by_date: dict[str, tuple[float | None, float | None]],
-    anchor: date,
-    *,
-    back_days: int,
-) -> tuple[float | None, float | None]:
-    """Return the most recent (ctl, atl) on/before anchor within back_days."""
-    for delta in range(back_days + 1):
-        key = (anchor - timedelta(days=delta)).isoformat()
-        row = wellness_by_date.get(key)
-        if row is not None and row[0] is not None and row[1] is not None:
-            return row
-    return None, None
-
-
 @router.get("/api/training-load")
 async def training_load(
     days: int = Query(default=84, ge=1, le=365),
     user: User = Depends(require_viewer),
 ) -> dict:
-    """CTL/ATL/TSB time series from the user's wellness rows.
+    """CTL/ATL/TSB time series + per-sport CTL from the user's wellness rows.
 
-    Per-sport CTL keys (``ctl_swim`` / ``ctl_ride`` / ``ctl_run``) are
-    intentionally omitted: GoalTab takes the latest snapshot from
-    ``wellness.sport_info``, not a time series — re-add only if a future
-    tab needs the 84d trend.
+    ``ctl_swim`` / ``ctl_ride`` / ``ctl_run`` carry the per-discipline CTL
+    trend (parsed from ``wellness.sport_info``) for the Wellness "Training
+    load" detail screen's by-sport breakdown — ``null`` on days a sport has
+    no CTL recorded. GoalTab still reads only the latest snapshot; the Load
+    tab consumes only the overall ``ctl``/``atl``/``tsb`` — the extra keys
+    are additive.
     """
     today = _today_local()
     start = today - timedelta(days=days - 1)
@@ -92,7 +89,7 @@ async def training_load(
     uid = get_data_user_id(user)
     async with get_session() as session:
         result = await session.execute(
-            select(Wellness.date, Wellness.ctl, Wellness.atl)
+            select(Wellness.date, Wellness.ctl, Wellness.atl, Wellness.sport_info)
             .where(
                 Wellness.user_id == uid,
                 Wellness.date >= start.isoformat(),
@@ -108,18 +105,33 @@ async def training_load(
     ctl: list[float] = []
     atl: list[float] = []
     tsb: list[float] = []
-    for d, c, a in rows:
+    ctl_swim: list[float | None] = []
+    ctl_ride: list[float | None] = []
+    ctl_run: list[float | None] = []
+    for d, c, a, sport_info in rows:
         dates.append(d)
         ctl.append(round(float(c), 1))
         atl.append(round(float(a), 1))
         tsb.append(round(float(c) - float(a), 1))
+        per = extract_sport_ctl(sport_info)
+        ctl_swim.append(per["swim"])
+        ctl_ride.append(per["ride"])
+        ctl_run.append(per["run"])
 
-    return {"dates": dates, "ctl": ctl, "atl": atl, "tsb": tsb}
+    return {
+        "dates": dates,
+        "ctl": ctl,
+        "atl": atl,
+        "tsb": tsb,
+        "ctl_swim": ctl_swim,
+        "ctl_ride": ctl_ride,
+        "ctl_run": ctl_run,
+    }
 
 
 @router.get("/api/activities")
 async def activities(
-    days: int = Query(default=28, ge=1, le=180),
+    days: int = Query(default=28, ge=1, le=365),
     user: User = Depends(require_viewer),
 ) -> dict:
     """Per-activity TSS bars for the stacked-by-sport chart.
@@ -156,142 +168,6 @@ async def activities(
     return {"activities": out}
 
 
-@router.get("/api/weekly-recap")
-async def weekly_recap(
-    weeks: int = Query(default=4, ge=1, le=12),
-    offset: int = Query(default=0, ge=-52, le=0),
-    user: User = Depends(require_viewer),
-) -> dict:
-    """Weekly training recap — N weeks of completed activity, freshest first.
-
-    The window's most-recent week is ``today + offset*7``'s Mon–Sun (offset is
-    non-positive: 0 = current week, -1 = week ending last Sunday, …). The
-    response carries ``weeks`` buckets ending at that week, plus a Wellness
-    snapshot at each week's bookends (CTL on the day before the week starts vs
-    CTL on the week's last day) so the frontend can render a compact load
-    card without a second round-trip. ``has_prev`` lets the UI hide the back
-    button when the user has scrolled to before their first activity.
-    """
-    today = _today_local()
-    anchor_monday = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
-    window_start = anchor_monday - timedelta(weeks=weeks - 1)
-    window_end = anchor_monday + timedelta(days=6)
-    # _nearest_wellness walks back up to 6 days from each bookend (covers
-    # bootstrap-day gaps), so the cache must reach 7 days before window_start
-    # for the oldest week's "entering CTL" to fall back correctly.
-    wellness_start = window_start - timedelta(days=7)
-
-    uid = get_data_user_id(user)
-    async with get_session() as session:
-        result = await session.execute(
-            select(
-                Activity.start_date_local,
-                Activity.type,
-                Activity.moving_time,
-                Activity.icu_training_load,
-                ActivityDetail.distance,
-            )
-            .outerjoin(ActivityDetail, ActivityDetail.activity_id == Activity.id)
-            .where(
-                Activity.user_id == uid,
-                Activity.start_date_local >= window_start.isoformat(),
-                Activity.start_date_local <= window_end.isoformat(),
-            )
-        )
-        rows = result.all()
-
-        wellness_result = await session.execute(
-            select(Wellness.date, Wellness.ctl, Wellness.atl).where(
-                Wellness.user_id == uid,
-                Wellness.date >= wellness_start.isoformat(),
-                Wellness.date <= window_end.isoformat(),
-            )
-        )
-        wellness_rows = wellness_result.all()
-
-        prev_result = await session.execute(
-            select(Activity.id)
-            .where(
-                Activity.user_id == uid,
-                Activity.start_date_local < window_start.isoformat(),
-            )
-            .limit(1)
-        )
-        has_prev = prev_result.first() is not None
-
-    # date string → (ctl, atl). Wellness rows can have NULL ctl/atl on bootstrap
-    # gaps; we keep them so the frontend can still render the row, just with
-    # "—" for the load card.
-    wellness_by_date: dict[str, tuple[float | None, float | None]] = {
-        d: (float(c) if c is not None else None, float(a) if a is not None else None) for d, c, a in wellness_rows
-    }
-
-    # Pre-bucket activities by week index (0 = oldest, weeks-1 = newest).
-    buckets: list[dict[str, dict[str, float]]] = [{} for _ in range(weeks)]
-    for dt_str, raw_type, mt, tss, dist in rows:
-        sport = _SPORT_MAP.get(normalize_sport(raw_type) or "")
-        if not sport:
-            continue
-        try:
-            dt = date.fromisoformat(dt_str)
-        except (TypeError, ValueError):
-            continue
-        idx = (dt - window_start).days // 7
-        if idx < 0 or idx >= weeks:
-            continue
-        bucket = buckets[idx].setdefault(sport, {"duration_sec": 0.0, "distance_m": 0.0, "tss": 0.0})
-        if mt is not None:
-            bucket["duration_sec"] += float(mt)
-        if dist is not None:
-            bucket["distance_m"] += float(dist)
-        if tss is not None:
-            bucket["tss"] += float(tss)
-
-    weeks_out: list[dict] = []
-    for i in range(weeks):
-        wk_start = window_start + timedelta(weeks=i)
-        wk_end = wk_start + timedelta(days=6)
-        # CTL/ATL "entering" the week = day before week_start (Sunday of prior week).
-        # "Exiting" = day == week_end (Sunday). Walk back from each anchor up to
-        # 6 days to absorb missing wellness rows on the exact bookends — Intervals
-        # backfills wellness daily, but bootstrap can leave one-day gaps.
-        ctl_start, _ = _nearest_wellness(wellness_by_date, wk_start - timedelta(days=1), back_days=6)
-        ctl_end, atl_end = _nearest_wellness(wellness_by_date, wk_end, back_days=6)
-
-        by_sport = {}
-        for sport, totals in buckets[i].items():
-            by_sport[sport] = {
-                "duration_sec": int(totals["duration_sec"]),
-                "distance_m": round(totals["distance_m"], 1),
-                "tss": round(totals["tss"], 1),
-            }
-
-        ctl_delta = round(ctl_end - ctl_start, 1) if ctl_start is not None and ctl_end is not None else None
-        tsb_end = round(ctl_end - atl_end, 1) if ctl_end is not None and atl_end is not None else None
-
-        weeks_out.append(
-            {
-                "week_start": wk_start.isoformat(),
-                "week_end": wk_end.isoformat(),
-                "by_sport": by_sport,
-                "ctl_start": round(ctl_start, 1) if ctl_start is not None else None,
-                "ctl_end": round(ctl_end, 1) if ctl_end is not None else None,
-                "ctl_delta": ctl_delta,
-                "tsb_end": tsb_end,
-            }
-        )
-
-    # Newest first — matches the wake-comment ask ("видеть последние 4 недели").
-    weeks_out.reverse()
-
-    return {
-        "weeks": weeks_out,
-        "offset": offset,
-        "today": today.isoformat(),
-        "has_prev": has_prev,
-    }
-
-
 def _goal_progress_dict(
     g: AthleteGoalDTO,
     today: date,
@@ -323,10 +199,8 @@ def _goal_progress_dict(
 
     block: dict = {
         "id": g.id,
-        "category": g.category,
         "event_name": g.event_name,
         "event_date": str(g.event_date),
-        "sport_type": g.sport_type,
         "weeks_remaining": weeks_remaining,
         "days_remaining": days_remaining,
         "ctl_current": round(current_ctl, 1) if current_ctl is not None else None,
@@ -426,17 +300,22 @@ async def goal(user: User = Depends(require_viewer)) -> dict:
 
 @router.get("/api/recovery-trend")
 async def recovery_trend(
-    days: int = Query(default=21, ge=1, le=90),
+    days: int = Query(default=21, ge=1, le=365),
     user: User = Depends(require_viewer),
 ) -> dict:
-    """Recovery score + RMSSD trend, used by the Load tab's small chart."""
+    """Recovery score + RMSSD + RHR trend.
+
+    Used by the Dashboard Load tab's small chart (``days=21``) and the
+    Wellness "Recovery trend" detail screen (``days`` up to 180 — the 6m
+    range pill).
+    """
     today = _today_local()
     start = today - timedelta(days=days - 1)
 
     uid = get_data_user_id(user)
     async with get_session() as session:
         result = await session.execute(
-            select(Wellness.date, Wellness.recovery_score, Wellness.hrv)
+            select(Wellness.date, Wellness.recovery_score, Wellness.hrv, Wellness.resting_hr)
             .where(
                 Wellness.user_id == uid,
                 Wellness.date >= start.isoformat(),
@@ -449,17 +328,128 @@ async def recovery_trend(
     dates: list[str] = []
     recovery: list[float | None] = []
     hrv: list[float | None] = []
-    for d, rec, h in rows:
-        # Skip days with neither recovery nor HRV — they'd render as gaps anyway
-        # and the contract is "omit dates without a wellness row." A wellness
-        # row with both fields NULL is functionally the same as no row.
-        if rec is None and h is None:
+    rhr: list[int | None] = []
+    for d, rec, h, r in rows:
+        # Intervals.icu reports restingHR = 0 on days it never captured a
+        # reading — a sentinel, not a measurement. Normalise it to None so the
+        # chart doesn't plot a phantom 0-bpm point (same convention as
+        # Wellness.recent_resting_hr, which filters resting_hr > 0).
+        rhr_val = r or None
+        # Skip days with no metric at all — they'd render as gaps anyway and
+        # the contract is "omit dates without a wellness row." A wellness row
+        # with every charted field NULL is functionally the same as no row.
+        if rec is None and h is None and rhr_val is None:
             continue
         dates.append(d)
         recovery.append(round(float(rec), 1) if rec is not None else None)
         hrv.append(round(float(h), 1) if h is not None else None)
+        rhr.append(rhr_val)
 
-    return {"dates": dates, "recovery": recovery, "hrv": hrv}
+    return {"dates": dates, "recovery": recovery, "hrv": hrv, "rhr": rhr}
+
+
+@router.get("/api/sleep-trend")
+async def sleep_trend(
+    days: int = Query(default=90, ge=1, le=365),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Sleep duration + score trend for the Wellness "Sleep trend" detail screen.
+
+    ``duration_min`` is whole minutes (the screen's bar chart works in minutes
+    against an 8h = 480-min goal line). ``days`` covers the 1m/3m/6m range
+    pills (30/90/180).
+    """
+    today = _today_local()
+    start = today - timedelta(days=days - 1)
+
+    uid = get_data_user_id(user)
+    async with get_session() as session:
+        result = await session.execute(
+            select(Wellness.date, Wellness.sleep_secs, Wellness.sleep_score)
+            .where(
+                Wellness.user_id == uid,
+                Wellness.date >= start.isoformat(),
+                Wellness.date <= today.isoformat(),
+            )
+            .order_by(Wellness.date.asc())
+        )
+        rows = result.all()
+
+    dates: list[str] = []
+    duration_min: list[int | None] = []
+    score: list[float | None] = []
+    for d, secs, sc in rows:
+        # Intervals.icu writes sleep_secs = 0 for a night it never captured —
+        # a no-data sentinel, not a real measurement (cf. resting_hr = 0).
+        secs_val = secs or None
+        if secs_val is None and sc is None:
+            continue
+        dates.append(d)
+        duration_min.append(round(secs_val / 60) if secs_val is not None else None)
+        score.append(round(float(sc), 1) if sc is not None else None)
+
+    return {"dates": dates, "duration_min": duration_min, "score": score}
+
+
+@router.get("/api/body-trend")
+async def body_trend(
+    days: int = Query(default=90, ge=1, le=365),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Weight / body-fat / VO₂max / steps trend for the Wellness "Body trend"
+    detail screen. ``days`` covers the 1m/3m/6m range pills (30/90/180)."""
+    today = _today_local()
+    start = today - timedelta(days=days - 1)
+
+    uid = get_data_user_id(user)
+    async with get_session() as session:
+        result = await session.execute(
+            select(
+                Wellness.date,
+                Wellness.weight,
+                Wellness.body_fat,
+                Wellness.vo2max,
+                Wellness.steps,
+            )
+            .where(
+                Wellness.user_id == uid,
+                Wellness.date >= start.isoformat(),
+                Wellness.date <= today.isoformat(),
+            )
+            .order_by(Wellness.date.asc())
+        )
+        rows = result.all()
+
+    dates: list[str] = []
+    weight: list[float | None] = []
+    body_fat: list[float | None] = []
+    vo2max: list[float | None] = []
+    steps: list[int | None] = []
+    # Unlike /api/recovery-trend (resting_hr=0) and /api/sleep-trend
+    # (sleep_secs=0), body metrics get NO 0-sentinel normalisation — only NULL
+    # is "missing". This matches Wellness.get_latest_weight / get_latest_vo2max
+    # (both `isnot(None)` only), and is semantically correct: weight / body_fat
+    # / VO₂max are physically impossible at 0 (Intervals stores them NULL when
+    # absent, never 0), and steps = 0 is a *real* value — a genuine rest day —
+    # that must not be hidden.
+    for d, wt, bf, vo, st in rows:
+        # Omit days with no body metric at all — same contract as the other
+        # *-trend endpoints (a row with every charted field NULL == no row).
+        if wt is None and bf is None and vo is None and st is None:
+            continue
+        dates.append(d)
+        weight.append(round(float(wt), 1) if wt is not None else None)
+        body_fat.append(round(float(bf), 1) if bf is not None else None)
+        vo2max.append(round(float(vo), 1) if vo is not None else None)
+        steps.append(int(st) if st is not None else None)
+
+    return {
+        "dates": dates,
+        "weight": weight,
+        "body_fat": body_fat,
+        "vo2max": vo2max,
+        "steps": steps,
+    }
 
 
 def _vo2max_at(
@@ -573,6 +563,7 @@ async def marathon_shape(
     vo2max_by_date: dict[str, float | None] = {d: float(v) if v is not None else None for d, v in vo2_rows}
 
     weeks_out: list[dict] = []
+    current_components: dict | None = None
     for i in range(weeks):
         wk_start = window_start + timedelta(weeks=i)
         wk_end = wk_start + timedelta(days=6)
@@ -583,46 +574,35 @@ async def marathon_shape(
                     "week_start": wk_start.isoformat(),
                     "week_end": wk_end.isoformat(),
                     "shape_pct": None,
-                    "vo2max_used": None,
-                    "components": None,
                 }
             )
             continue
         result = calculate_marathon_shape(all_runs, vo2max=vo2, reference_date=wk_end)
-        # Per spec §3 + D2.A: `target_longjog_km` (scoring-internal, ln(V/4)*12-13)
-        # is the value used in the shape_pct quadratic term. UI shows
-        # `displayed_target_long_run_km = target_longjog_km + 13 = ln(V/4)*12`,
-        # which matches Runalyze «Required Long Run» column on the «Other
-        # distances» table. Verified for V=37: scoring=13.7, displayed=26.7 ≈
-        # «ca. 26 km» in upstream screenshot.
+        # Per spec §3 + D2.A: scoring uses `target_longjog_km` (ln(V/4)*12-13);
+        # UI shows `displayed_target_long_run_km = target_longjog_km + 13 =
+        # ln(V/4)*12` (Runalyze parity). For V=37: scoring=13.7, displayed=26.7
+        # ≈ «ca. 26 km» upstream.
         displayed_long_run = result.target_longjog_km + MIN_KM_FOR_LONGJOG
         weeks_out.append(
             {
                 "week_start": wk_start.isoformat(),
                 "week_end": wk_end.isoformat(),
                 "shape_pct": result.shape_pct,
-                "vo2max_used": round(result.vo2max_used, 1),
-                "components": {
-                    "actual_weekly_km": result.actual_weekly_km,
-                    "target_weekly_km": result.target_weekly_km,
-                    "longjog_score": result.longjog_score,
-                    "target_longjog_km": result.target_longjog_km,
-                    "displayed_target_long_run_km": round(displayed_long_run, 1),
-                    "actual_longjog_km": result.actual_longjog_km,
-                },
             }
         )
+        # Last iteration produces the newest week → snapshot for `current_components`.
+        # Frontend reads only these five fields (DashboardLoadTab.tsx).
+        if i == weeks - 1:
+            current_components = {
+                "actual_weekly_km": result.actual_weekly_km,
+                "target_weekly_km": result.target_weekly_km,
+                "displayed_target_long_run_km": round(displayed_long_run, 1),
+                "actual_longjog_km": result.actual_longjog_km,
+                "vo2max": round(result.vo2max_used, 1),
+            }
 
-    # Newest first — consistent with `/api/weekly-recap` ordering.
+    # Newest first — freshest week leads the list.
     weeks_out.reverse()
-
-    current_components: dict | None = None
-    if weeks_out and weeks_out[0]["components"] is not None:
-        c = weeks_out[0]["components"]
-        current_components = {
-            **c,
-            "vo2max": weeks_out[0]["vo2max_used"],
-        }
 
     # ── Phase 1.5: ML-based Predicted time + pace per distance.
     today_iso = today.isoformat()
@@ -826,7 +806,7 @@ async def bike_readiness(
                 "ctl_bike": _ctl_bike_at(wk_end),
             }
         )
-    # Newest first — consistent with `/api/marathon-shape` and `/api/weekly-recap`.
+    # Newest first — consistent with `/api/marathon-shape` ordering.
     weeks_out.reverse()
 
     longest_ride_hours: float | None = None
@@ -882,3 +862,38 @@ async def bike_readiness(
         "weeks": weeks_out,
         "current_components": current_components,
     }
+
+
+@router.post("/api/jobs/refresh-wellness", status_code=202)
+async def job_refresh_wellness(user: User = Depends(require_athlete)) -> dict:
+    """Trigger an out-of-band wellness refresh for the authed athlete.
+
+    Fire-and-forget: dispatches ``actor_user_wellness`` for today via Dramatiq
+    with ``force=True`` so the downstream fan-out (HRV/RHR/recovery/banister)
+    runs even if the source row hasn't changed. The frontend polls
+    ``/api/wellness-day`` after a brief delay to surface the new state.
+
+    Per-user 60s cooldown — protects Intervals.icu API quota and the worker
+    queue from button-mash spam. 429 on hit; client just shows the disabled
+    state until the next allowed call.
+
+    ``require_athlete`` (not viewer) — refresh writes to *this* user's data,
+    not a tenant they're viewing read-only; demo/viewer should not be able to
+    burn the owner's API budget.
+    """
+    now = time.monotonic()
+    last = _refresh_last.get(user.id, 0.0)
+    remaining = int(_REFRESH_COOLDOWN_SEC - (now - last))
+    if remaining > 0:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": "cooldown", "retry_after_sec": remaining},
+            headers={"Retry-After": str(remaining)},
+        )
+    _refresh_last[user.id] = now
+
+    user_dto = UserDTO.model_validate(user)
+    today = _today_local().isoformat()
+    actor_user_wellness.send(user=user_dto, dt=today, force=True)
+    logger.info("Wellness refresh dispatched for user %s (dt=%s)", user.id, today)
+    return {"status": "accepted", "job": "refresh-wellness", "dt": today}

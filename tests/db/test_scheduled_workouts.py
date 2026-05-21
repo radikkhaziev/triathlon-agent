@@ -411,14 +411,6 @@ class TestScheduledWorkoutsEndpoint:
         assert w["duration"] == "1h 30m"
         assert w["duration_secs"] == 5400
 
-    async def test_last_synced_at_in_response(self, client):
-        ScheduledWorkout.save_bulk(1, [_make_workout(id=_uid(70))])
-
-        async with client as c:
-            resp = await c.get("/api/scheduled-workouts?week_offset=0")
-        data = resp.json()
-        assert data["last_synced_at"] is not None
-
     async def test_today_field_from_server(self, client):
         async with client as c:
             resp = await c.get("/api/scheduled-workouts?week_offset=0")

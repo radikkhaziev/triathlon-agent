@@ -166,6 +166,72 @@ class Wellness(Base):
         return result.scalar_one_or_none()
 
     @classmethod
+    @dual
+    def get_latest_weight(cls, user_id: int, *, session: Session) -> float | None:
+        """Most recent non-null body weight (kg) for the user, if any."""
+        result = session.execute(
+            select(cls.weight)
+            .where(
+                cls.user_id == user_id,
+                cls.weight.isnot(None),
+            )
+            .order_by(cls.date.desc())
+            .limit(1)
+        )
+        value = result.scalar_one_or_none()
+        return float(value) if value is not None else None
+
+    @classmethod
+    @dual
+    def get_latest_vo2max(cls, user_id: int, *, session: Session) -> float | None:
+        """Most recent non-null VO₂max for the user, if any (Garmin-sourced)."""
+        result = session.execute(
+            select(cls.vo2max)
+            .where(
+                cls.user_id == user_id,
+                cls.vo2max.isnot(None),
+            )
+            .order_by(cls.date.desc())
+            .limit(1)
+        )
+        value = result.scalar_one_or_none()
+        return float(value) if value is not None else None
+
+    @classmethod
+    @dual
+    def get_sleep_series(
+        cls,
+        user_id: int,
+        end_date: str,
+        days: int,
+        *,
+        session: Session,
+    ) -> list[float | None]:
+        """Sleep scores over ``[end_date − (days−1), end_date]``, oldest first
+        (today last). The list length is exactly ``days`` — missing days are
+        filled with ``None`` so the frontend can render a "missed night" bar
+        without the array indices drifting from the calendar.
+
+        Backs the Sleep card's last-N-nights bar-strip on /wellness.
+        """
+        end = _dt.date.fromisoformat(end_date)
+        start = end - _dt.timedelta(days=days - 1)
+        result = session.execute(
+            select(cls.date, cls.sleep_score).where(
+                cls.user_id == user_id,
+                cls.date >= start.isoformat(),
+                cls.date <= end.isoformat(),
+            )
+        )
+        rows = {str(d): (float(s) if s is not None else None) for d, s in result.all()}
+        out: list[float | None] = []
+        cur = start
+        while cur <= end:
+            out.append(rows.get(cur.isoformat()))
+            cur += _dt.timedelta(days=1)
+        return out
+
+    @classmethod
     def _apply_intervals_fields(cls, row: "Wellness", wellness: WellnessDTO) -> None:
         # Apply non-None Intervals.icu fields onto a wellness row. ``sport_info``
         # is merged (not replaced) so locally-tracked sport CTL survives.

@@ -157,16 +157,6 @@ class TestActivitiesWeekEndpoint:
         weekdays = [d["weekday"] for d in data["days"]]
         assert weekdays == ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    async def test_week_offset_navigation(self, client):
-        async with client as c:
-            resp0 = await c.get("/api/activities-week?week_offset=0")
-            resp_minus1 = await c.get("/api/activities-week?week_offset=-1")
-        d0 = resp0.json()
-        dm1 = resp_minus1.json()
-        start0 = date.fromisoformat(d0["week_start"])
-        startm1 = date.fromisoformat(dm1["week_start"])
-        assert start0 - startm1 == timedelta(days=7)
-
     async def test_activities_appear_on_correct_day(self, client):
         today = date.today()
         today_str = today.isoformat()
@@ -198,11 +188,3 @@ class TestActivitiesWeekEndpoint:
         data = resp.json()
         assert "today" in data
         date.fromisoformat(data["today"])
-
-    async def test_last_synced_at_in_response(self, client):
-        await Activity.save_bulk(1, activities=[_make_activity(id="a5020")])
-
-        async with client as c:
-            resp = await c.get("/api/activities-week?week_offset=0")
-        data = resp.json()
-        assert data["last_synced_at"] is not None

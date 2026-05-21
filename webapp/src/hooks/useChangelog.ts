@@ -4,9 +4,9 @@ import type { ChangelogLatest } from '../api/types'
 import { useAuth } from '../auth/useAuth'
 
 /**
- * Shared changelog state — Sidebar (desktop) и BottomTabs More-menu (mobile)
- * показывают одну и ту же ссылку. Без shared-promise каждый компонент дёргал
- * бы /api/changelog/latest на mount, давая 2× GitHub-нагрузку.
+ * Shared changelog state — сейчас единственный потребитель `HaloSidebar`
+ * (desktop), но shared-promise/TTL-кэш сохранены: long-lived tab + future
+ * surfaces не должны дёргать /api/changelog/latest повторно на каждый mount.
  *
  * Module-level singleton: первый компонент инициирует fetch, все последующие
  * подписываются на тот же Promise. Кэш с TTL — long-lived tab (атлет открыл

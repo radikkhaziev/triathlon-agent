@@ -41,8 +41,7 @@ Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any a
 ## API Endpoints
 
 ```
-GET  /api/report                        — full morning report (today)
-GET  /api/wellness-day?date=YYYY-MM-DD  — wellness for any date (navigable)
+GET  /api/wellness-day?date=YYYY-MM-DD  — wellness for any date (today by default; navigable)
 GET  /api/scheduled-workouts?week_offset=0 — weekly plan (Mon-Sun)
 GET  /api/activities-week?week_offset=0 — weekly activities
 GET  /api/activity/{id}/details         — full activity stats + zones + DFA

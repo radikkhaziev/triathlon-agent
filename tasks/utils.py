@@ -99,8 +99,7 @@ class RampTrainingSuggestion:
         Picks the **nearest upcoming** active goal — not just RACE_A — so an
         athlete with «RACE_A in 200d + RACE_B in 7d» correctly enters
         peak/taper for the close-by B-race rather than build phase for the
-        far-future A. ``AthleteGoal.get_active`` returns RACE_A first by
-        category which would miss this.
+        far-future A. A category-first sort would miss this.
         """
         goals = AthleteGoal.get_all(user_id=self.user.id)
         today = local_today()

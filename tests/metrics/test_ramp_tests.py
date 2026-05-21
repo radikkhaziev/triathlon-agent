@@ -242,12 +242,12 @@ class TestMorningMessage:
             recovery_category="moderate",
             readiness_level="yellow",
             ctl=50.0,
-            atl=80.0,  # TSB = -30
+            atl=85.0,  # TSB = -35, inside the `risk` zone (< -30)
             sleep_score=70,
             sleep_secs=25200,
         )
         msg = build_morning_message(row)
-        assert "overtraining" in msg.lower()
+        assert "high risk" in msg.lower()
 
     def test_no_drift_no_block(self):
         """build_morning_message no longer renders drift inline (moved to actor)."""

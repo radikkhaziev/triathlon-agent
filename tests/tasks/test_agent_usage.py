@@ -359,7 +359,6 @@ class TestChatUsageTracking:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
             patch("bot.agent.sentry_sdk"),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock()) as mock_increment,
         ):
@@ -383,7 +382,6 @@ class TestChatUsageTracking:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
             patch("bot.agent.sentry_sdk"),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock()) as mock_increment,
         ):
@@ -409,7 +407,6 @@ class TestChatUsageTracking:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
             patch("bot.agent.sentry_sdk"),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock(side_effect=RuntimeError("DB down"))),
         ):
@@ -439,7 +436,6 @@ class TestChatUsageTracking:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
             patch("bot.agent.sentry_sdk"),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock()),
         ):
@@ -461,7 +457,6 @@ class TestChatUsageTracking:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
             patch("bot.agent.sentry_sdk"),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock()) as mock_increment,
         ):
@@ -483,7 +478,6 @@ class TestChatUsageTracking:
 
         with (
             patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
             patch("bot.agent.sentry_sdk"),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock()) as mock_increment,
         ):

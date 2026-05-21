@@ -241,7 +241,7 @@ class TestTracesSampler:
         assert _traces_sampler(ctx) == 0.0
 
     def test_samples_other_transactions(self):
-        ctx = {"transaction_context": {"name": "GET /api/report"}}
+        ctx = {"transaction_context": {"name": "GET /api/wellness-day"}}
         assert _traces_sampler(ctx) == 0.1  # default from settings
 
     def test_samples_empty_context(self):

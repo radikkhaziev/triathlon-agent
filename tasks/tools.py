@@ -77,7 +77,8 @@ MORNING_TOOLS = [
         "description": (
             "Get CTL/ATL/TSB and per-sport CTL for a given date. "
             "All values from Intervals.icu (tau_CTL=42d, tau_ATL=7d). "
-            "TSB zones: >+10 under-training, -10..+10 optimal, -10..-25 productive overreach, <-25 overtraining risk."
+            "TSB zones (5-band): <-30 risk (high risk, warn user), -30..-10 optimal (productive), "
+            "-10..+5 gray (neutral), +5..+25 fresh (well-rested), >=+25 transition (under-training)."
         ),
         "input_schema": {
             "type": "object",
@@ -395,8 +396,6 @@ CREATE_GITHUB_ISSUE_TOOL = {
     },
 }
 
-CHAT_TOOLS = [*MORNING_TOOLS, SAVE_MOOD_CHECKIN_TOOL, GET_GITHUB_ISSUES_TOOL, CREATE_GITHUB_ISSUE_TOOL]
-
 
 _BOLD_RE = re.compile(r"\*\*([^\n*][^\n]*?)\*\*")
 _BOLD_UNDERSCORE_RE = re.compile(r"__([^\n_][^\n]*?)__")
@@ -620,56 +619,6 @@ class TelegramTool:
             payload["reply_markup"] = json.dumps(reply_markup)
 
         return self._post_with_retries("sendMessage", _chat_id, timeout=15.0, json=payload)
-
-    def send_photo(
-        self,
-        photo: bytes,
-        caption: str = "",
-        reply_markup: dict | None = None,
-        chat_id: int | str | None = None,
-    ) -> dict | None:
-        """Send a photo via Telegram Bot API. Skips if user is_silent."""
-        if self._suppress():
-            return None
-
-        _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
-        if not _chat_id:
-            raise ValueError("chat_id required: pass it or provide user to TelegramTool")
-
-        data: dict = {"chat_id": _chat_id}
-        if caption:
-            data["caption"] = caption
-        if reply_markup:
-            data["reply_markup"] = json.dumps(reply_markup)
-
-        files = {"photo": ("card.png", photo, "image/png")}
-        return self._post_with_retries("sendPhoto", _chat_id, timeout=30.0, data=data, files=files)
-
-    def send_document(
-        self,
-        document: bytes,
-        filename: str,
-        mime_type: str = "application/octet-stream",
-        caption: str = "",
-        reply_markup: dict | None = None,
-        chat_id: int | str | None = None,
-    ) -> dict | None:
-        """Send a document via Telegram Bot API. Preserves PNG transparency. Skips if user is_silent."""
-        if self._suppress():
-            return None
-
-        _chat_id = str(chat_id or (self.user.chat_id if self.user else ""))
-        if not _chat_id:
-            raise ValueError("chat_id required: pass it or provide user to TelegramTool")
-
-        data: dict = {"chat_id": _chat_id}
-        if caption:
-            data["caption"] = caption
-        if reply_markup:
-            data["reply_markup"] = json.dumps(reply_markup)
-
-        files = {"document": (filename, document, mime_type)}
-        return self._post_with_retries("sendDocument", _chat_id, timeout=30.0, data=data, files=files)
 
 
 @dataclass

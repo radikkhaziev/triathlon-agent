@@ -16,7 +16,7 @@ class TestToolDefinitions:
             assert tool["input_schema"]["type"] == "object"
 
     def test_tool_count(self):
-        assert len(MORNING_TOOLS) == 15
+        assert len(MORNING_TOOLS) == 19
 
     def test_core_tools_present(self):
         names = {t["name"] for t in MORNING_TOOLS}

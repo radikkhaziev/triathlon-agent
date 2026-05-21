@@ -6,15 +6,11 @@ from datetime import date
 
 # Re-export shared constants, helpers, and report builders from tasks.formatter
 from tasks.formatter import (  # noqa: F401
-    CATEGORY_DISPLAY,
-    RECOMMENDATION_TEXT,
     STATUS_EMOJI,
     build_evening_message,
     build_morning_message,
     build_post_activity_message,
     format_duration,
-    get_category_display,
-    get_recommendation_text,
     sport_emoji,
 )
 

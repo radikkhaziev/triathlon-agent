@@ -442,21 +442,6 @@ class TrainingLog(Base):
 
     @classmethod
     @dual
-    def delete_for_date(
-        cls,
-        user_id: int,
-        dt: date | str,
-        *,
-        session: Session,
-    ) -> int:
-        """Delete all training log entries for a given date. Returns deleted count."""
-        date_str = dt if isinstance(dt, str) else dt.isoformat()
-        result = session.execute(delete(cls).where(cls.user_id == user_id, cls.date == date_str))
-        session.commit()
-        return result.rowcount
-
-    @classmethod
-    @dual
     def get_range(
         cls,
         user_id: int,
@@ -468,29 +453,6 @@ class TrainingLog(Base):
         from_date = str(date.today() - timedelta(days=days_back - 1))
         result = session.execute(
             select(cls).where(cls.user_id == user_id, cls.date >= from_date).order_by(cls.date.desc())
-        )
-        return list(result.scalars().all())
-
-    @classmethod
-    @dual
-    def get_unfilled_actual(
-        cls,
-        user_id: int,
-        dt: str | date,
-        *,
-        session: Session,
-    ) -> list[TrainingLog]:
-        """Fetch log entries with no actual data yet (compliance is NULL)."""
-        cutoff = dt if isinstance(dt, str) else dt.isoformat()
-
-        result = session.execute(
-            select(cls)
-            .where(
-                cls.user_id == user_id,
-                cls.compliance.is_(None),
-                cls.date < cutoff,
-            )
-            .order_by(cls.date.asc())
         )
         return list(result.scalars().all())
 

@@ -31,7 +31,6 @@ _RAW_TO_CANONICAL: dict[str, str] = {
     "TrailRun": "Run",
 }
 
-CANONICAL_TYPES = frozenset({"Ride", "Run", "Swim", "Other"})
 HRV_ELIGIBLE_TYPES = frozenset({"Ride", "Run"})
 
 
@@ -50,10 +49,6 @@ def is_run(t: str | None) -> bool:
     return t == "Run"
 
 
-def is_swim(t: str | None) -> bool:
-    return t == "Swim"
-
-
 # Legacy alias: lowercase sport key for CTL extraction.
 # After normalization, activity types are already canonical — just .lower().
 SPORT_MAP: dict[str, str] = {v.lower(): v.lower() for v in _RAW_TO_CANONICAL.values()}
@@ -62,20 +57,32 @@ SPORT_MAP.update({"bike": "ride", "cycling": "ride", "swimming": "swim", "runnin
 
 
 def tsb_zone(tsb: float | None) -> str | None:
-    """Classify TSB value into a training zone.
+    """Classify TSB value into a 5-band training zone.
 
-    Zones (calibrated for Intervals.icu):
-    >+10 under_training, -10..+10 optimal, -10..-25 productive_overreach, <-25 overtraining_risk.
+    Source of truth: ``webapp/src/pages/LoadDetail.tsx::TSB_ZONES``. Ids mirror
+    the frontend constant exactly so cross-stack discussion uses one vocabulary.
+
+    Zones (calibrated for Intervals.icu, not TrainingPeaks):
+        < -30     risk        High risk — gates Z2-cap on adapted workouts
+        -30..-10  optimal     Productive training zone (no warning)
+        -10..+5   gray        Neutral / maintenance
+        +5..+25   fresh       Well-rested
+        >= +25    transition  Under-training / peaked
+
+    Boundary semantics match ``tsbZoneOf`` on the frontend: upper bound is
+    EXCLUSIVE (`v < hi`), so TSB = +25 maps to ``transition``, not ``fresh``.
     """
     if tsb is None:
         return None
-    if tsb > 10:
-        return "under_training"
-    if tsb >= -10:
+    if tsb < -30:
+        return "risk"
+    if tsb < -10:
         return "optimal"
-    if tsb >= -25:
-        return "productive_overreach"
-    return "overtraining_risk"
+    if tsb < 5:
+        return "gray"
+    if tsb < 25:
+        return "fresh"
+    return "transition"
 
 
 def extract_sport_ctl(sport_info: list[dict] | None) -> dict[str, float | None]:
@@ -164,7 +171,6 @@ def serialize_activity_hrv(hrv: ActivityHrv) -> dict:
     """Convert ActivityHrv to a plain dict for JSON response."""
     return {
         "dfa_a1_mean": hrv.dfa_a1_mean,
-        "dfa_a1_warmup": hrv.dfa_a1_warmup,
         "hrv_quality": hrv.hrv_quality,
         "ra_pct": hrv.ra_pct,
         "da_pct": hrv.da_pct,
@@ -172,5 +178,4 @@ def serialize_activity_hrv(hrv: ActivityHrv) -> dict:
         "hrvt1_power": hrv.hrvt1_power,
         "hrvt1_pace": hrv.hrvt1_pace,
         "hrvt2_hr": hrv.hrvt2_hr,
-        "processing_status": hrv.processing_status,
     }

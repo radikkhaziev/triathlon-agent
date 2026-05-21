@@ -11,8 +11,9 @@
 | `tasks/actors/changelog.py` | Dramatiq actor `actor_publish_weekly_changelog` |
 | `api/routers/changelog.py` | REST `GET /api/changelog/latest` |
 | `bot/scheduler.py:scheduler_publish_weekly_changelog_job` | Sun 15:00 Belgrade cron |
-| `webapp/src/components/Sidebar.tsx` + `BottomTabs.tsx` | Unread-badge link (dual viewport placement) |
-| `webapp/src/hooks/useChangelog.ts` | Singleton fetch hook (shared между Sidebar и BottomTabs) |
+| `webapp/src/components/halo/HaloSidebar.tsx` | Unread-badge link (desktop sidebar) |
+| `webapp/src/pages/Wellness.tsx` | Mobile unread teaser (после Halo-port карточка `BotChatBanner`-like) |
+| `webapp/src/hooks/useChangelog.ts` | Singleton fetch hook (shared между HaloSidebar и Wellness teaser) |
 | `data/github.py:LATEST_DISCUSSION_QUERY` | Shared GraphQL query (actor + endpoint) — single source of truth |
 | `mcp_server/tools/github.py:create_github_issue` | Reference — паттерн использования `GITHUB_TOKEN` |
 
@@ -51,7 +52,7 @@ Pull-модель через GitHub Discussion + sidebar link:
 
 `Sun 15:00 Belgrade cron → actor_publish_weekly_changelog.send() (no-arg, не per-user) → 8 шагов`:
 
-1. **Idempotency lookup** — `fetch_latest_discussion()` (`data/github.py`). Если последний Discussion ≤ 7d 12h → `skipped_already_published`.
+1. **Idempotency lookup** — `fetch_latest_discussion()` (`data/github.py`). Если последний Discussion создан в пределах текущей недели (`created_at ≥ week_start = now − 6d`) → `skipped_already_published`. Окно **строго короче** периода cron (7d), иначе прошлонедельный Discussion (~7d) подавлял бы текущий запуск — см. §14, инцидент 2026-05-17.
 2. **Fetch merged PRs** — REST `pulls?state=closed&base=main`, paginated, stop когда `updated_at < since`.
 3. **Pre-filter** (cheap, без Claude — §4).
 4. **Empty?** → log + return (`skipped_no_prs` / `skipped_all_filtered`).
@@ -151,13 +152,13 @@ CLI: `python -m cli publish-changelog [--force]`. `--force` обходит idemp
 
 Постоянная эмодзи-ссылка для атлета, который changelogs не читает = visual debt. Рендерим **только** если `cl.url !== localStorage["changelog.last_seen_url"]`. Клик → write localStorage + `setUnread(false)` → ссылка исчезает в этой же сессии.
 
-Показывается в **обоих viewport'ах** ровно после строки «📋 План»:
+**Halo redesign update (Phase J/M1/M2):** legacy `Sidebar.tsx` + emoji
+`BottomTabs.tsx` More-menu удалены. Новые точки размещения:
 
 | Где | Файл | Когда |
 |---|---|---|
-| Desktop sidebar (≥768px) | `Sidebar.tsx` | После `/plan` в основном nav |
-| Mobile More-меню (<768px / Telegram Mini App) | `BottomTabs.tsx` | После `/plan` в выпадающем More-меню |
-| Mobile More-button индикатор | `BottomTabs.tsx` | Маленькая `●` точка поверх ⚙️ когда unread + меню закрыто |
+| Desktop sidebar (≥md, 240px) | `components/halo/HaloSidebar.tsx` | После `/plan` в основном nav, как было — `flatMap` injection сохранён byte-identical |
+| Mobile Wellness teaser | `pages/Wellness.tsx` | Inline ink-card после `TopBar` (только сегодня, только при `unread && changelog`) — заменил мобильный More-menu, которого больше нет в Halo `HaloBottomTabs` (4-tab strip без More) |
 
 ### Singleton hook
 
@@ -220,7 +221,8 @@ Body wrapper становится `## 🇷🇺 Русский / <!--LANG-SEPARAT
 | >100 PRs за неделю | Top-50 по `merged_at desc` |
 | Webapp: cache miss + GitHub down | 503, sidebar link скрыт |
 | Cron misfired | `misfire_grace_time=7200` (2h grace), `coalesce=True` (no double-publish) |
-| Manual `publish-changelog` Wed + Sun cron | Idempotency-by-week: actor дёргает `fetch_latest_discussion`; если ≤ **7d 12h** назад → `skipped_already_published`. Padding 12h в past — против late-jitter cron'а. `--force` обходит |
+| Manual `publish-changelog` Wed + Sun cron | Idempotency-by-week: actor дёргает `fetch_latest_discussion`; если Discussion создан **в пределах текущей недели** (`created_at ≥ now − 6d`) → `skipped_already_published`. `--force` обходит |
+| Прошлонедельный Discussion vs текущий cron | Окно идемпотентности (`now − 6d`) **строго короче** периода cron (7d) → Discussion возрастом ~7d читается как «прошлая неделя», публикация **не** подавляется. Регресс при окне ≥ 7d: дайджест молча деградирует в biweekly (инцидент #338, см. §14) |
 | `fetch_latest_discussion` упал (transient GraphQL 5xx) | Best-effort guard — log warning, продолжаем публикацию. Худший случай: дубль за неделю (поправляется руками через `gh`) |
 | Discussion создан с дубликатом title | GitHub разрешает дубли — не блокируем; следующая неделя перезапишет в кэше |
 
@@ -260,3 +262,5 @@ Body wrapper становится `## 🇷🇺 Русский / <!--LANG-SEPARAT
 | 2026-05-10 | §8 | `LATEST_DISCUSSION_QUERY` вынесен в `data/github.py` | Single source of truth между actor (idempotency) и endpoint; API-процесс не тянет `dramatiq`/`anthropic` ради импорта строки (Copilot review #335) |
 | 2026-05-10 | §9 | Dual placement: Sidebar + BottomTabs More-menu, обе после `/plan` | Mobile-first атлеты живут в bottom-tabs; sidebar-only был desktop-bias и невидим в Telegram Mini App |
 | 2026-05-10 | §9 | `useChangelog` singleton hook | Sidebar и BottomTabs читают changelog → без singleton'а двойной fetch + рассинхрон localStorage; `_inFlight` Promise + reset на `.catch()` (M3) для retry после transient 503 |
+| 2026-05-19 | §9 | Halo-port: `Sidebar` → `HaloSidebar` (desktop), `BottomTabs` More-menu → Wellness inline teaser (mobile) | Halo `HaloBottomTabs` — 4-tab strip без More-меню (F1/F16 IA decision); мобильная changelog-ссылка переехала в inline teaser на Wellness home. Singleton hook + `flatMap` injection после `/plan` сохранены byte-identical |
+| 2026-05-17 | §3/§12 | Idempotency window `7d 12h` → `week_start` (`now − 6d`) | **Инцидент:** `7d 12h` шире 7d-периода cron → каждый Sun ловил прошлый Sun Discussion (~7d) как «уже было» и скипал → дайджест де-факто biweekly. #338 создан Sun 07:06Z подавил следующий Sun 13:00Z (7d6h < 7d12h). Окно должно быть строго < периода cron; `now − 6d` даёт ~1 сутки запаса над джиттером и ловит внутринедельный ручной run. Тесты-регрессии: `test_consecutive_weekly_run_not_suppressed`, `test_idempotency_window_is_one_day_short_of_cron_period` |

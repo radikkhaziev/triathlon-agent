@@ -54,11 +54,6 @@ def target_longjog_km(vo2max: float) -> float:
     return log(max(vo2max, MINIMAL_EFFECTIVE_VO2MAX) / 4) * 12 - 13
 
 
-def required_shape_for_distance(distance_km: float) -> float:
-    """Marathon (42.195) ≈ 100, HM (21.0975) ≈ 42.5, 10K ≈ 17."""
-    return distance_km**1.23
-
-
 def calculate_marathon_shape(
     runs: Sequence[RunActivity],
     vo2max: float,

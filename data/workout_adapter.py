@@ -294,8 +294,9 @@ def compute_constraints(
     score = recovery.score
     category = recovery.category
 
-    # TSB override — strongest constraint
-    if tsb < -25:
+    # TSB override — strongest constraint. Fires only in the `risk` zone
+    # (TSB < -30) per the 5-band model; see `data/utils.py:tsb_zone`.
+    if tsb < -30:
         max_zone = min(max_zone, 2)
         duration_factor = min(duration_factor, 0.80)
 

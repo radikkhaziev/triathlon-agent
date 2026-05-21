@@ -135,10 +135,11 @@ class TestGetRacePlan:
             resp = await c.get("/api/race-plan", params={"goal_id": 1})
         assert resp.status_code == 200
         body = resp.json()
-        assert body["goal_id"] == 1
         assert body["model_version"] == "v1-test"
         assert body["confidence_tier"] == "mid"  # surfaced from payload
         assert body["payload"]["plan"]["warmup"] == "10 min easy"
+        # `race` snapshot is stripped from payload by `_format_plan_response`.
+        assert "race" not in body["payload"]
         assert body["generated_at"] is not None
 
     async def test_returns_400_when_goal_id_missing(self):

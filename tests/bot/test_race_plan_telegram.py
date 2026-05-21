@@ -163,9 +163,9 @@ class TestOpenInWebappKeyboard:
         button = rows[0][0]
         # Mini-App button (web_app), not URL — keeps athlete inside Telegram client
         assert "web_app" in button
-        assert button["web_app"]["url"] == "https://bot.endurai.me/dashboard"
+        assert button["web_app"]["url"] == "https://bot.endurai.me/trends"
         assert "text" in button
 
     def test_handles_trailing_slash_in_base_url(self):
         kb = build_open_in_webapp_keyboard("https://bot.endurai.me/")
-        assert kb["inline_keyboard"][0][0]["web_app"]["url"] == "https://bot.endurai.me/dashboard"
+        assert kb["inline_keyboard"][0][0]["web_app"]["url"] == "https://bot.endurai.me/trends"

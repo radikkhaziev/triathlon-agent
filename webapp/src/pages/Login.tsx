@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/useAuth'
 import type { AuthRole } from '../auth/AuthProvider'
 import { apiFetch } from '../api/client'
-import EnduraiLogo from '../components/EnduraiLogo'
+import { SegmentedCodeInput } from '../components/halo'
 import type { AuthMeResponse } from '../api/types'
 
 interface TelegramUser {
@@ -36,6 +36,9 @@ export default function Login() {
   const widgetContainerRef = useRef<HTMLDivElement>(null)
   const [demoPassword, setDemoPassword] = useState('')
   const [demoSubmitting, setDemoSubmitting] = useState(false)
+  // Presentational only: the prototype surfaces demo as a text link that
+  // reveals the (password-gated) demo form. Does not touch auth logic.
+  const [showDemo, setShowDemo] = useState(false)
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -142,110 +145,132 @@ export default function Login() {
     }
   }
 
+  const handleDemo = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!demoPassword.trim()) return
+    setDemoSubmitting(true)
+    setMessage('')
+    try {
+      const data = await apiFetch<{ token: string; role: string }>('/api/auth/demo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: demoPassword }),
+      })
+      setJwt(data.token, data.role as 'demo')
+      setMessage(t('login.success'))
+      setMsgType('success')
+      setTimeout(() => navigate('/'), 500)
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : t('common.error'))
+      setMsgType('error')
+    } finally {
+      setDemoSubmitting(false)
+    }
+  }
+
+  // Halo BLogin: 3-zone column (brand / sign-in card / legal footer) over a
+  // radial cobalt-light backdrop. Auth handlers above are byte-identical.
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="bg-surface border border-border rounded-2xl px-8 py-10 max-w-[400px] w-full text-center">
-        <div className="flex justify-center mb-6">
-          <EnduraiLogo height={56} />
+    <div
+      className="flex min-h-screen flex-col justify-between font-sans text-halo-ink"
+      style={{ background: 'radial-gradient(ellipse at top, var(--color-brand-light) 0%, var(--color-bg) 60%)' }}
+    >
+      {/* Brand */}
+      <div className="px-6 pt-14 text-center">
+        <img
+          src="/endurai-icon.png"
+          alt="Endurai"
+          className="mx-auto block h-[88px] w-[88px] rounded-[22px]"
+          style={{ boxShadow: '0 10px 30px rgba(10,13,24,0.18)' }}
+        />
+        <div className="mt-[18px] text-[34px] font-semibold tracking-[-1.2px]">Endurai</div>
+        <div className="mx-auto mt-2 max-w-[280px] text-sm leading-relaxed text-halo-ink-dim">
+          {t('login.brand_tagline')}
         </div>
-        <p className="text-text-dim text-sm mb-6 leading-relaxed">
-          {t('login.instructions')}
-        </p>
+      </div>
 
-        {botUsername && (
-          <div className="mb-6">
-            <div ref={widgetContainerRef} className="flex justify-center" />
+      {/* Sign-in card */}
+      <div className="mx-auto w-full max-w-[400px] px-4 pt-5">
+        <div className="rounded-[24px] border border-halo-border bg-halo-surface p-[18px] shadow-card">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
+            {t('login.sign_in')}
           </div>
-        )}
 
-        <details className="text-left">
-          <summary className="text-text-dim text-sm cursor-pointer mb-4 select-none hover:text-text transition">
-            {t('login.or_use_code')}
-          </summary>
+          {botUsername && <div ref={widgetContainerRef} className="mt-3 flex justify-center" />}
+
+          <div className="my-3.5 flex items-center gap-2.5 text-halo-ink-dimmer">
+            <div className="h-px flex-1 bg-halo-border" />
+            <span className="text-[11px] font-semibold uppercase tracking-[0.6px]">{t('login.divider_or')}</span>
+            <div className="h-px flex-1 bg-halo-border" />
+          </div>
+
           <form onSubmit={handleSubmit}>
-            <input
-              type="text"
+            <div className="mb-1.5 text-xs font-semibold text-halo-ink-dim">{t('login.have_code')}</div>
+            <SegmentedCodeInput
               value={code}
-              onChange={e => {
-                setCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+              onChange={v => {
+                setCode(v)
                 setMessage('')
                 setMsgType('')
               }}
-              maxLength={6}
-              inputMode="numeric"
-              placeholder="000000"
-              className="w-full py-3.5 px-4 text-2xl font-semibold tracking-[8px] text-center bg-surface-2 border border-border rounded-xl text-text outline-none transition-colors focus:border-accent placeholder:tracking-[4px] placeholder:text-base placeholder:font-normal placeholder:text-text-dim"
+              length={6}
+              ariaLabel={t('login.enter_code')}
             />
             <button
               type="submit"
               disabled={submitting}
-              className="w-full py-3.5 mt-4 text-[15px] font-semibold bg-accent text-white border-none rounded-xl cursor-pointer transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed font-sans"
+              className="mt-3 w-full rounded-chip border-none bg-halo-ink py-3 text-sm font-semibold text-white disabled:opacity-50"
             >
-              {submitting ? t('login.checking') : t('login.submit')}
+              {submitting ? t('login.checking') : t('login.verify_code')}
             </button>
           </form>
-          <div className="mt-6 pt-4 border-t border-border">
-            <p className="text-text-dim text-[13px] mb-2">{t('login.step1')}</p>
-            <p className="text-text-dim text-[13px] mb-2">{t('login.step2')}</p>
-            <p className="text-text-dim text-[13px] mb-2">{t('login.step3')}</p>
-            <p className="text-text-dim text-[13px]">{t('login.code_expires')}</p>
-          </div>
-        </details>
 
-        <div className="mt-6 pt-4 border-t border-border">
-          <p className="text-text-dim text-sm mb-3">{t('login.demo_title')}</p>
-          <form onSubmit={async (e) => {
-            e.preventDefault()
-            if (!demoPassword.trim()) return
-            setDemoSubmitting(true)
-            setMessage('')
-            try {
-              const data = await apiFetch<{ token: string; role: string }>('/api/auth/demo', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password: demoPassword }),
-              })
-              setJwt(data.token, data.role as 'demo')
-              setMessage(t('login.success'))
-              setMsgType('success')
-              setTimeout(() => navigate('/'), 500)
-            } catch (err) {
-              setMessage(err instanceof Error ? err.message : t('common.error'))
-              setMsgType('error')
-            } finally {
-              setDemoSubmitting(false)
-            }
-          }} className="flex gap-2">
+          {message && (
+            <div className={`mt-3 text-center text-sm ${msgType === 'error' ? 'text-halo-coral' : 'text-halo-status-green'}`}>
+              {message}
+            </div>
+          )}
+          {alreadyAuth && (
+            <div className="mt-3 text-center text-[13px] text-halo-ink-dim">
+              {t('login.already_auth')}{' '}
+              <a href="/" className="text-halo-brand no-underline">{t('login.go_home')}</a>
+            </div>
+          )}
+        </div>
+
+        {showDemo ? (
+          <form onSubmit={handleDemo} className="mt-3.5 flex gap-2">
             <input
               type="password"
               value={demoPassword}
               onChange={e => setDemoPassword(e.target.value)}
               placeholder={t('login.demo_placeholder')}
-              className="flex-1 py-2.5 px-3 text-sm bg-surface-2 border border-border rounded-lg text-text outline-none focus:border-accent font-sans"
+              className="flex-1 rounded-chip border border-halo-border bg-halo-surface px-3 py-2.5 text-sm text-halo-ink outline-none focus:border-halo-brand font-sans"
             />
             <button
               type="submit"
               disabled={demoSubmitting}
-              className="py-2.5 px-4 text-sm font-semibold bg-surface-2 border border-border text-text rounded-lg cursor-pointer hover:bg-border disabled:opacity-50 font-sans"
+              className="rounded-chip border border-halo-border bg-halo-surface-2 px-4 py-2.5 text-sm font-semibold text-halo-ink disabled:opacity-50 font-sans"
             >
               {demoSubmitting ? t('login.demo_checking') : t('login.demo_submit')}
             </button>
           </form>
-        </div>
-
-        {message && (
-          <div className={`mt-4 text-sm ${msgType === 'error' ? 'text-red' : 'text-green'}`}>
-            {message}
-          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowDemo(true)}
+            className="mt-3.5 w-full border-none bg-transparent py-3 text-[13px] font-semibold text-halo-ink-dim"
+          >
+            {t('login.try_demo')}
+          </button>
         )}
+      </div>
 
-        {alreadyAuth && (
-          <div className="mt-4 text-[13px] text-text-dim">
-            {t('login.already_auth')}{' '}
-            <a href="/" className="text-accent no-underline">{t('login.go_home')}</a>
-          </div>
-        )}
-
+      {/* Legal footer */}
+      <div className="px-6 pb-7 pt-[18px] text-center text-[11px] leading-relaxed tracking-[0.3px] text-halo-ink-dimmer">
+        {t('login.legal_1')}
+        <br />
+        {t('login.legal_2')}
       </div>
     </div>
   )

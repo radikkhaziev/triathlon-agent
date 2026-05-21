@@ -170,7 +170,7 @@ def build_open_in_webapp_keyboard(api_base_url: str) -> dict[str, Any]:
             [
                 {
                     "text": _("📊 Open full plan"),
-                    "web_app": {"url": f"{api_base_url.rstrip('/')}/dashboard"},
+                    "web_app": {"url": f"{api_base_url.rstrip('/')}/trends"},
                 }
             ]
         ]
