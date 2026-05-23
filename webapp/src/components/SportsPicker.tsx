@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Layout from './Layout'
+import { ToggleTile } from './halo'
 import { apiFetch } from '../api/client'
 import type { SportTag } from '../api/types'
 
-const ALL_SPORTS: { tag: SportTag; emoji: string }[] = [
-  { tag: 'swim', emoji: '🏊' },
-  { tag: 'ride', emoji: '🚴' },
-  { tag: 'run', emoji: '🏃' },
+const ALL_SPORTS: { tag: SportTag; color: string }[] = [
+  { tag: 'swim', color: 'var(--color-amber)' },
+  { tag: 'ride', color: 'var(--color-brand)' },
+  { tag: 'run', color: 'var(--color-coral)' },
 ]
 
 interface Props {
@@ -17,14 +18,14 @@ interface Props {
 }
 
 /**
- * Multi-select gate prompt — vertical checkbox buttons for swim/ride/run.
+ * Multi-select gate prompt (prototype `BSportsPicker`): step eyebrow,
+ * left-aligned heading, sport ToggleTiles, hint, dynamic-count CTA.
  * Hides bottom tabs because the user is in pre-data state and tab navigation
- * would just bounce them back here. Mirrors OnboardingPrompt's full-screen
- * empty-state pattern.
+ * would just bounce them back here.
  *
  * Starts with empty selection so the «pick a sport» action is visually
- * unambiguous: all buttons inactive, Save disabled until user clicks at
- * least one. Re-edit flow lives on the Settings page.
+ * unambiguous: all tiles off, CTA disabled until at least one. Re-edit flow
+ * lives on the Settings page. Logic (toggle/submit/onSaved/error) unchanged.
  */
 export default function SportsPicker({ onSaved }: Props) {
   const { t } = useTranslation()
@@ -71,50 +72,60 @@ export default function SportsPicker({ onSaved }: Props) {
     }
   }
 
+  const count = selected.size
+
   return (
     <Layout maxWidth="480px" hideBottomTabs>
-      <div className="flex flex-col items-center text-center px-6 py-12">
-        <div aria-hidden="true" className="text-5xl mb-4">🏊‍♂️ 🚴 🏃</div>
-        <h1 className="text-xl font-bold mb-3">{t('sports_picker.title')}</h1>
-        <p className="text-sm text-text-dim leading-relaxed mb-8 max-w-[320px]">
-          {t('sports_picker.description')}
-        </p>
+      <div className="-mx-4 -mt-4 -mb-8 flex min-h-screen flex-col bg-halo-bg px-4 font-sans text-halo-ink">
+        <div className="px-5 pt-10">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-brand-dark">
+            {t('sports_picker.step')}
+          </div>
+          <h1 className="mt-2 text-[26px] font-semibold leading-tight tracking-[-0.6px] text-halo-ink">
+            {t('sports_picker.title')}
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-halo-ink-dim">
+            {t('sports_picker.description')}
+          </p>
+        </div>
 
-        <div className="flex flex-col gap-2 w-full max-w-[320px] mb-8">
-          {ALL_SPORTS.map(({ tag, emoji }) => {
-            const active = selected.has(tag)
+        <div className="flex flex-col gap-2.5 px-4 pt-6">
+          {ALL_SPORTS.map(({ tag, color }) => {
+            const label = t(`settings.sports.${tag}`)
             return (
-              <button
+              <ToggleTile
                 key={tag}
-                type="button"
-                onClick={() => toggle(tag)}
-                aria-pressed={active}
-                className={`w-full py-3 rounded-xl text-[15px] font-semibold border cursor-pointer transition-colors font-sans ${
-                  active
-                    ? 'bg-accent text-white border-accent'
-                    : 'bg-surface border-border text-text hover:bg-surface-2'
-                }`}
-              >
-                <span className="mr-2">{emoji}</span>
-                {t(`settings.sports.${tag}`)}
-              </button>
+                label={label}
+                color={color}
+                on={selected.has(tag)}
+                onToggle={() => toggle(tag)}
+                initial={label.charAt(0).toUpperCase()}
+                disabled={busy}
+              />
             )
           })}
         </div>
 
-        <button
-          type="button"
-          onClick={submit}
-          disabled={selected.size === 0 || busy}
-          className="flex items-center justify-center gap-2 w-full max-w-[320px] py-3.5 bg-accent text-white text-center rounded-xl text-[15px] font-semibold border-none cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          {busy && <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-          {busy ? t('sports_picker.saving') : t('sports_picker.cta')}
-        </button>
+        <div className="px-4 pt-2.5 text-center text-xs leading-relaxed text-halo-ink-dim">
+          {t('sports_picker.hint')}
+        </div>
 
-        {error && (
-          <p className="text-[12px] text-red mt-3 max-w-[320px]">{error}</p>
-        )}
+        <div className="mt-auto px-4 pb-7 pt-5">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={count === 0 || busy}
+            className="flex w-full items-center justify-center gap-2 rounded-card border-none bg-halo-ink py-3.5 text-[15px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60 font-sans"
+          >
+            {busy && <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />}
+            {busy
+              ? t('sports_picker.saving')
+              : count === 0
+                ? t('sports_picker.cta')
+                : t('sports_picker.cta_count', { count })}
+          </button>
+          {error && <p className="mt-3 text-center text-[12px] text-halo-coral">{error}</p>}
+        </div>
       </div>
     </Layout>
   )

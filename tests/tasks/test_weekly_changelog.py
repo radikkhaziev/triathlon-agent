@@ -417,8 +417,11 @@ class TestWeeklyIdempotency:
     def test_skipped_when_fresh_discussion_already_exists(
         self, enabled_settings: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Discussion created 2 days ago (within 7-day window) → cron should skip.
-        recent = (_NOW - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        # Discussion created 2 days ago (well inside this week's window) → skip.
+        # ``now``-relative, not anchored to a fixed ``_NOW``: the actor compares
+        # against real ``datetime.now()``, so a fixed timestamp time-bombs the
+        # test once wall-clock drifts past the window.
+        recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat().replace("+00:00", "Z")
         monkeypatch.setattr(
             cl,
             "fetch_latest_discussion",
@@ -452,8 +455,8 @@ class TestWeeklyIdempotency:
         monkeypatch: pytest.MonkeyPatch,
         patched_publish: dict[str, Any],
     ) -> None:
-        # Last Discussion is 10 days old → well outside the idempotency window → publish.
-        old = (_NOW - timedelta(days=10)).isoformat().replace("+00:00", "Z")
+        # Last Discussion is 20 days old → a prior week, outside the window → publish.
+        old = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat().replace("+00:00", "Z")
         monkeypatch.setattr(
             cl,
             "fetch_latest_discussion",
@@ -465,52 +468,77 @@ class TestWeeklyIdempotency:
         result = cl.publish_weekly_changelog()
         assert result["status"] == "published"
 
-    def test_idempotency_window_padded_against_late_cron_jitter(
-        self, enabled_settings: None, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """M2 — Discussion exactly 7 days old must still skip.
-
-        Cron firing N seconds LATE makes ``now`` slide forward, so a flat
-        ``-7d`` cutoff would push last week's Discussion (``created_at = scheduled - 7d``)
-        to ``< now - 7d`` by N seconds → duplicate publish. With cutoff
-        widened to ``-7d 12h`` (further into the past), any Discussion up
-        to 7d 12h old is still caught.
-
-        Test ``ts = actor_now - 7d - 1m`` — would slip past flat ``-7d``,
-        skipped by the padded window.
-        """
-        actor_now = datetime.now(timezone.utc)
-        ts = (actor_now - timedelta(days=7, minutes=1)).isoformat().replace("+00:00", "Z")
-        monkeypatch.setattr(
-            cl,
-            "fetch_latest_discussion",
-            lambda **kw: {"url": "u", "title": "t", "created_at": ts},
-        )
-        monkeypatch.setattr(cl, "fetch_merged_prs", lambda *a, **kw: [_make_pr(1)])
-        result = cl.publish_weekly_changelog()
-        assert result["status"] == "skipped_already_published"
-
-    def test_publishes_just_outside_padded_window(
+    def test_consecutive_weekly_run_not_suppressed(
         self,
         enabled_settings: None,
         monkeypatch: pytest.MonkeyPatch,
         patched_publish: dict[str, Any],
     ) -> None:
-        """Boundary — Discussion 7d 13h old is outside the padded
-        idempotency window (cutoff 7d 12h) → publish proceeds. Locks the
-        ``-12h`` padding constant; if someone bumps it to 24h this test
-        flips and forces the discussion."""
+        """Regression for the #338 incident: the previous Sunday's Discussion
+        must NOT suppress this Sunday's run.
+
+        #338 was created Sun 07:06Z; the next Sunday cron at 13:00Z saw it
+        ~7d6h old. The old ``now - 7d 12h`` window (wider than the 7d cron
+        period) caught it → ``skipped_already_published`` → the week's digest
+        never shipped and cadence silently halved to biweekly. With the
+        window anchored to ``week_start`` (now - 6d) anything ~7d old is a
+        *prior* week and must publish.
+        """
         actor_now = datetime.now(timezone.utc)
-        ts = (actor_now - timedelta(days=7, hours=13)).isoformat().replace("+00:00", "Z")
+        # Mirror #338 exactly: previous weekly run, created earlier in the day.
+        ts = (actor_now - timedelta(days=7, hours=6)).isoformat().replace("+00:00", "Z")
         monkeypatch.setattr(
             cl,
             "fetch_latest_discussion",
-            lambda **kw: {"url": "u", "title": "t", "created_at": ts},
+            lambda **kw: {"url": "https://x/338", "title": "prev week", "created_at": ts},
         )
         monkeypatch.setattr(cl, "fetch_merged_prs", lambda *a, **kw: [_make_pr(1)])
         monkeypatch.setattr(cl, "call_claude", lambda prompt: "## 🎯\n- bullet")
         result = cl.publish_weekly_changelog()
         assert result["status"] == "published"
+
+    def test_same_week_manual_run_still_suppresses_cron(
+        self, enabled_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A mid-week manual ``publish-changelog`` (≈4d ago, inside the 6d
+        window) still makes the Sun cron a no-op — the fix must not regress
+        the original double-publish guard."""
+        ts = (datetime.now(timezone.utc) - timedelta(days=4)).isoformat().replace("+00:00", "Z")
+        monkeypatch.setattr(
+            cl,
+            "fetch_latest_discussion",
+            lambda **kw: {"url": "u", "title": "this week", "created_at": ts},
+        )
+        monkeypatch.setattr(cl, "fetch_merged_prs", lambda *a, **kw: [_make_pr(1)])
+        result = cl.publish_weekly_changelog()
+        assert result["status"] == "skipped_already_published"
+
+    def test_idempotency_window_is_one_day_short_of_cron_period(
+        self,
+        enabled_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        patched_publish: dict[str, Any],
+    ) -> None:
+        """Locks the invariant: window == 6d, strictly < the 7d cron period.
+
+        5d23h old → still this week → skip; 6d1h old → prior week → publish.
+        If anyone widens the window back toward/over 7d, the 6d1h leg flips
+        to skip and the biweekly-suppression regression returns.
+        """
+        monkeypatch.setattr(cl, "fetch_merged_prs", lambda *a, **kw: [_make_pr(1)])
+        monkeypatch.setattr(cl, "call_claude", lambda prompt: "## 🎯\n- bullet")
+
+        inside = (datetime.now(timezone.utc) - timedelta(days=5, hours=23)).isoformat().replace("+00:00", "Z")
+        monkeypatch.setattr(
+            cl, "fetch_latest_discussion", lambda **kw: {"url": "u", "title": "t", "created_at": inside}
+        )
+        assert cl.publish_weekly_changelog()["status"] == "skipped_already_published"
+
+        outside = (datetime.now(timezone.utc) - timedelta(days=6, hours=1)).isoformat().replace("+00:00", "Z")
+        monkeypatch.setattr(
+            cl, "fetch_latest_discussion", lambda **kw: {"url": "u", "title": "t", "created_at": outside}
+        )
+        assert cl.publish_weekly_changelog()["status"] == "published"
 
     def test_force_overrides_idempotency(
         self,

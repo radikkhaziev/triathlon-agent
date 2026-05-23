@@ -55,7 +55,8 @@ class TestChatNudgeBoundary:
 
         with (
             patch("bot.agent.MCPClient") as MockMCP,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
+            patch("bot.agent.get_static_system_prompt", return_value="sys"),
+            patch("bot.agent.render_athlete_block", new=AsyncMock(return_value="athlete")),
             patch("bot.agent.select_tool_groups", return_value={"core"}),
             patch("bot.agent.filter_tools", return_value=[]),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock(return_value=SimpleNamespace(request_count=5))),
@@ -76,7 +77,8 @@ class TestChatNudgeBoundary:
 
         with (
             patch("bot.agent.MCPClient") as MockMCP,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
+            patch("bot.agent.get_static_system_prompt", return_value="sys"),
+            patch("bot.agent.render_athlete_block", new=AsyncMock(return_value="athlete")),
             patch("bot.agent.select_tool_groups", return_value={"core"}),
             patch("bot.agent.filter_tools", return_value=[]),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock(return_value=SimpleNamespace(request_count=3))),
@@ -95,7 +97,8 @@ class TestChatNudgeBoundary:
 
         with (
             patch("bot.agent.MCPClient") as MockMCP,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
+            patch("bot.agent.get_static_system_prompt", return_value="sys"),
+            patch("bot.agent.render_athlete_block", new=AsyncMock(return_value="athlete")),
             patch("bot.agent.select_tool_groups", return_value={"core"}),
             patch("bot.agent.filter_tools", return_value=[]),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock(side_effect=RuntimeError("db down"))),
@@ -122,7 +125,8 @@ class TestChatNudgeBoundary:
 
         with (
             patch("bot.agent.MCPClient") as MockMCP,
-            patch("bot.agent.get_system_prompt_chat", new=AsyncMock(return_value="sys")),
+            patch("bot.agent.get_static_system_prompt", return_value="sys"),
+            patch("bot.agent.render_athlete_block", new=AsyncMock(return_value="athlete")),
             patch("bot.agent.select_tool_groups", return_value={"core"}),
             patch("bot.agent.filter_tools", return_value=[]),
             patch("bot.agent.ApiUsageDaily.increment", new=AsyncMock(return_value=SimpleNamespace(request_count=1))),

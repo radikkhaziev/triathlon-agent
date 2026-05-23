@@ -28,55 +28,6 @@ def _category_display() -> dict:
     }
 
 
-def _recommendation_text() -> dict:
-    return {
-        "zone2_ok": _("тренировка Z2 — полный объём"),
-        "zone1_long": _("только аэробная база, Z1-Z2"),
-        "zone1_short": _("лёгкая активность, 30-45 мин"),
-        "skip": _("отдых — не тренироваться"),
-    }
-
-
-# Keep static refs for code that doesn't need i18n (e.g. MCP tools) — Russian default
-CATEGORY_DISPLAY = {
-    "excellent": ("🟢", "ОТЛИЧНОЕ ВОССТАНОВЛЕНИЕ"),
-    "good": ("🟢", "ГОТОВ К НАГРУЗКЕ"),
-    "moderate": ("🟡", "УМЕРЕННАЯ НАГРУЗКА"),
-    "low": ("🔴", "РЕКОМЕНДОВАН ОТДЫХ"),
-}
-
-RECOMMENDATION_TEXT = {
-    "zone2_ok": "тренировка Z2 — полный объём",
-    "zone1_long": "только аэробная база, Z1-Z2",
-    "zone1_short": "лёгкая активность, 30-45 мин",
-    "skip": "отдых — не тренироваться",
-}
-
-_CATEGORY_DISPLAY_EN = {
-    "excellent": ("🟢", "EXCELLENT RECOVERY"),
-    "good": ("🟢", "READY TO TRAIN"),
-    "moderate": ("🟡", "MODERATE LOAD"),
-    "low": ("🔴", "REST RECOMMENDED"),
-}
-
-_RECOMMENDATION_TEXT_EN = {
-    "zone2_ok": "Z2 training — full volume",
-    "zone1_long": "aerobic base only, Z1-Z2",
-    "zone1_short": "light activity, 30-45 min",
-    "skip": "rest day — no training",
-}
-
-
-def get_category_display(category: str, language: str = "ru") -> tuple[str, str]:
-    table = _CATEGORY_DISPLAY_EN if language == "en" else CATEGORY_DISPLAY
-    return table.get(category, ("⚪", "UNKNOWN" if language == "en" else "СТАТУС НЕИЗВЕСТЕН"))
-
-
-def get_recommendation_text(key: str, language: str = "ru") -> str:
-    table = _RECOMMENDATION_TEXT_EN if language == "en" else RECOMMENDATION_TEXT
-    return table.get(key, key)
-
-
 STATUS_EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴", "insufficient_data": "⚪"}
 
 
@@ -1000,11 +951,13 @@ def build_morning_message(row: Wellness) -> str:
     hrv_emoji = STATUS_EMOJI.get(row.readiness_level or "", "⚪")
     lines.append(f"Recovery {score:.0f} ({cat_display}), HRV {hrv_emoji}")
 
+    # 5-band model (see `data/utils.py:tsb_zone`): only the `risk` zone
+    # surfaces in the morning message. `optimal` / `gray` / `fresh` /
+    # `transition` are informational on the frontend and don't warrant a
+    # Telegram line.
     tsb = (row.ctl - row.atl) if row.ctl and row.atl else None
-    if tsb is not None and tsb < -25:
-        lines.append(f"TSB: {tsb:+.0f} 🔴 (overtraining risk)")
-    elif tsb is not None and tsb < -10:
-        lines.append(f"TSB: {tsb:+.0f} ⚠️ (productive overreach)")
+    if tsb is not None and tsb < -30:
+        lines.append(f"TSB: {tsb:+.0f} 🔴 (high risk)")
 
     return "\n".join(lines)
 

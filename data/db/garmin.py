@@ -348,7 +348,7 @@ class GarminRacePredictions(Base):
 
 
 class GarminBioMetrics(Base):
-    """Weight / LT history (sparse, ~1/week). Use get_latest_before for fill-forward."""
+    """Weight / LT history (sparse, ~1/week)."""
 
     __tablename__ = "garmin_bio_metrics"
     __table_args__ = (UniqueConstraint("user_id", "calendar_date", name="uq_garmin_bio_user_date"),)
@@ -363,19 +363,6 @@ class GarminBioMetrics(Base):
     lactate_threshold_speed: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    @classmethod
-    @dual
-    def get_latest_before(cls, user_id: int, dt: date | str, *, session: Session) -> GarminBioMetrics | None:
-        """Get most recent bio metrics on or before the given date."""
-        _dt = dt if isinstance(dt, str) else dt.isoformat()
-        result = session.execute(
-            select(cls)
-            .where(cls.user_id == user_id, cls.calendar_date <= _dt)
-            .order_by(cls.calendar_date.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
 
     @classmethod
     @dual

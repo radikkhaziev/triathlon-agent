@@ -86,14 +86,14 @@ Thresholds are detected by finding the HR values where the α1 timeseries crosse
 
 ### Detection Strategy
 
-Detection requires a **ramp segment** — a period of progressively increasing HR (warm-up, step test, ramp test). Implementation gates on minimum sample count (~100 s of paired α1/HR points) and an α1 range that spans from above 1.0 down to below the HRVT crossings — strict monotonicity is not enforced, so progressive efforts with brief plateaus are still detectable. Steady-state workouts do not yield threshold estimates, but Ra/Da metrics are still computed.
+Detection requires a **ramp segment** — a period of progressively increasing HR (warm-up, step test, ramp test). Implementation gates on minimum sample count (~100 s of paired α1/HR points) and an α1 range that brackets the HRVT crossings — concretely `max(α1) ≥ 0.9` and `min(α1) ≤ 0.80` (`data/hrv_activity.py:_detect_thresholds`). The gate is intentionally looser than the canonical 1.0 / 0.75 crossings so a noisy session that only just reaches the ramp endpoints still produces a fit. Strict monotonicity is not enforced, so progressive efforts with brief plateaus are still detectable. Steady-state workouts do not yield threshold estimates, but Ra/Da metrics are still computed.
 
 Steps:
 1. Find a candidate ramp segment (sufficient duration + α1 range covering the thresholds).
 2. Fit a linear regression: `DFA_α1 = f(HR)`.
 3. **Slope-sign sanity:** physiology dictates α1 falls monotonically as HR rises (parasympathetic withdrawal + sympathetic activation both reduce α1). A non-negative regression slope is treated as broken-sensor evidence (corrupt RR, BLE fragmentation, windowing artifact) — short-circuit with a Sentry warning, no thresholds returned.
 4. Interpolate the HR values where α1 crosses 0.75 (HRVT1) and 0.50 (HRVT2).
-5. Validate: **reject when R² < 0.5** (low-confidence fit). The α1 range must include values above 1.0 and below the crossings.
+5. Validate: **reject when R² < 0.5** (low-confidence fit). The α1 range must satisfy the bracket gate (`max ≥ 0.9` and `min ≤ 0.80`); see «Detection Strategy» for rationale on the looser-than-canonical bounds.
 
 ### Confidence Levels
 

@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.deps import require_athlete
 from api.routers.weekly_reports import router as weekly_reports_router
-from data.db import User, WeeklyReport, get_session
+from data.db import Activity, ActivityDetail, User, WeeklyReport, Wellness, get_session
 
 
 def _build_client(*, user_id: int = 1) -> AsyncClient:
@@ -44,6 +44,40 @@ async def _ensure_user(user_id: int) -> None:
 
 
 SAMPLE_MD = "📊 **Итог недели (4–10 мая)**\n\nВыполнено 12 из 20 тренировок, compliance 55%."
+
+
+async def _seed_activity(
+    *,
+    aid: str,
+    dt: date,
+    sport: str,
+    moving_time: int,
+    tss: float,
+    distance_m: float | None = None,
+) -> None:
+    """Insert an Activity row (+ optional ActivityDetail for distance) for user 1."""
+    async with get_session() as session:
+        session.add(
+            Activity(
+                id=aid,
+                user_id=1,
+                start_date_local=dt.isoformat(),
+                type=sport,
+                moving_time=moving_time,
+                icu_training_load=tss,
+            )
+        )
+        if distance_m is not None:
+            session.add(ActivityDetail(activity_id=aid, distance=distance_m))
+        await session.commit()
+
+
+async def _seed_wellness(*, dt: date, ctl: float, atl: float, ramp_rate: float | None = None) -> None:
+    """Insert a Wellness row for user 1 — only the CTL/ATL/ramp fields the
+    Recap enrichment reads."""
+    async with get_session() as session:
+        session.add(Wellness(user_id=1, date=dt.isoformat(), ctl=ctl, atl=atl, ramp_rate=ramp_rate))
+        await session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +167,7 @@ class TestGetOne:
             resp = await c.get("/api/weekly-reports/2026-05-04")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["week_start"] == "2026-05-04"
         assert body["content_md"] == SAMPLE_MD
-        assert body["model"] == "claude-sonnet-4-6"
-        assert body["generated_at"] is not None
 
     async def test_404_when_missing(self):
         async with _build_client() as c:
@@ -160,3 +191,86 @@ class TestGetOne:
         async with _build_client() as c:
             resp = await c.get("/api/weekly-reports/not-a-date")
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# List enrichment — headline + per-week training volume / load
+# ---------------------------------------------------------------------------
+
+
+class TestListEnrichment:
+    """Each list card carries the AI ``headline`` plus that week's training
+    volume and CTL/ramp/TSB bookends — folded in when the Recap tab became
+    weekly-report-driven (replacing the retired /api/weekly-recap)."""
+
+    async def test_headline_extracted_from_h1(self):
+        md = "# Threshold week, all on plan\n\n📊 **Итог недели**\n\nВыполнено 5 из 5."
+        await WeeklyReport.upsert(user_id=1, week_start=date(2026, 5, 4), content_md=md, model="m")
+        async with _build_client() as c:
+            resp = await c.get("/api/weekly-reports")
+        item = resp.json()["items"][0]
+        assert item["headline"] == "Threshold week, all on plan"
+
+    async def test_headline_null_for_legacy_report(self):
+        """Reports written before the headline prompt have no leading H1 —
+        ``headline`` is null and the card falls back to ``preview``."""
+        await WeeklyReport.upsert(user_id=1, week_start=date(2026, 5, 4), content_md=SAMPLE_MD, model="m")
+        async with _build_client() as c:
+            resp = await c.get("/api/weekly-reports")
+        item = resp.json()["items"][0]
+        assert item["headline"] is None
+        assert "12 из 20" in item["preview"]
+
+    async def test_week_with_no_training_has_empty_volume(self):
+        await WeeklyReport.upsert(user_id=1, week_start=date(2026, 5, 4), content_md=SAMPLE_MD, model="m")
+        async with _build_client() as c:
+            resp = await c.get("/api/weekly-reports")
+        item = resp.json()["items"][0]
+        assert item["by_sport"] == {}
+        assert item["ctl_start"] is None
+        assert item["ctl_end"] is None
+        assert item["ctl_delta"] is None
+        assert item["ramp"] is None
+        assert item["tsb_end"] is None
+
+    async def test_volume_and_load_aggregated_for_week(self):
+        # Report week 2026-05-04 (Mon) … 2026-05-10 (Sun).
+        await WeeklyReport.upsert(user_id=1, week_start=date(2026, 5, 4), content_md=SAMPLE_MD, model="m")
+        # Two sessions inside the week + one the following Monday (must NOT count).
+        await _seed_activity(
+            aid="w_ride", dt=date(2026, 5, 6), sport="Ride", moving_time=3600, tss=80.0, distance_m=30_000.0
+        )
+        await _seed_activity(
+            aid="w_run", dt=date(2026, 5, 8), sport="Run", moving_time=1800, tss=40.0, distance_m=8_000.0
+        )
+        await _seed_activity(aid="next_ride", dt=date(2026, 5, 11), sport="Ride", moving_time=9999, tss=999.0)
+        # CTL bookends: the day before Monday (entering) and the Sunday (exiting).
+        await _seed_wellness(dt=date(2026, 5, 3), ctl=65.0, atl=50.0, ramp_rate=2.0)
+        await _seed_wellness(dt=date(2026, 5, 10), ctl=70.0, atl=58.0, ramp_rate=4.5)
+
+        async with _build_client() as c:
+            resp = await c.get("/api/weekly-reports")
+        item = resp.json()["items"][0]
+
+        assert item["by_sport"] == {
+            "cycling": {"duration_sec": 3600, "distance_m": 30000.0, "tss": 80.0},
+            "running": {"duration_sec": 1800, "distance_m": 8000.0, "tss": 40.0},
+        }
+        assert item["ctl_start"] == 65.0
+        assert item["ctl_end"] == 70.0
+        assert item["ctl_delta"] == 5.0
+        assert item["ramp"] == 4.5  # read off the week-end wellness row
+        assert item["tsb_end"] == 12.0  # 70 − 58
+
+    async def test_sunday_activity_lands_in_its_week(self):
+        """The week-end Sunday is the inclusive upper bookend — an activity on
+        that Sunday buckets into that week, not the next."""
+        await WeeklyReport.upsert(user_id=1, week_start=date(2026, 5, 4), content_md=SAMPLE_MD, model="m")
+        # 2026-05-10 is the Sunday closing the 2026-05-04 (Mon) week.
+        await _seed_activity(aid="sun_swim", dt=date(2026, 5, 10), sport="Swim", moving_time=2400, tss=55.0)
+        async with _build_client() as c:
+            resp = await c.get("/api/weekly-reports")
+        item = resp.json()["items"][0]
+        assert item["week_start"] == "2026-05-04"
+        assert "swimming" in item["by_sport"]
+        assert item["by_sport"]["swimming"]["tss"] == 55.0

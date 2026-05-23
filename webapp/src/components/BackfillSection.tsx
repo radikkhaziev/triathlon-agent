@@ -54,12 +54,14 @@ function cooldownRemainingSec(s: BackfillStatus, now: number): number {
   return Math.max(0, Math.ceil(remainingMs / 1000))
 }
 
-function formatCountdown(totalSec: number, t: TFunction): string {
+// Button label — literal English, no i18n (matches the original mock; by
+// request the Intervals-card buttons are not localized).
+function formatCountdown(totalSec: number): string {
   if (totalSec <= 0) return ''
-  if (totalSec < 60) return t('settings.backfill.available_in_seconds', { seconds: totalSec })
-  if (totalSec < 3600) return t('settings.backfill.available_in_minutes', { minutes: Math.ceil(totalSec / 60) })
-  if (totalSec < 86400) return t('settings.backfill.available_in_hours', { hours: Math.ceil(totalSec / 3600) })
-  return t('settings.backfill.available_in_days', { days: Math.ceil(totalSec / 86400) })
+  if (totalSec < 60) return `Available in ${totalSec}s`
+  if (totalSec < 3600) return `Available in ${Math.ceil(totalSec / 60)}m`
+  if (totalSec < 86400) return `Available in ${Math.ceil(totalSec / 3600)}h`
+  return `Available in ${Math.ceil(totalSec / 86400)}d`
 }
 
 export default function BackfillSection() {
@@ -143,16 +145,16 @@ export default function BackfillSection() {
     const pct = Math.round(status.progress_pct ?? 0)
     return (
       <div>
-        <p className="text-[12px] text-text-dim mb-2 leading-snug">
+        <p className="text-[12px] text-halo-ink-dim mb-2 leading-snug">
           {t('settings.backfill.in_progress_desc')}
         </p>
-        <div className="w-full h-2 bg-surface-2 rounded-full overflow-hidden">
+        <div className="w-full h-2 bg-halo-surface-2 rounded-full overflow-hidden">
           <div
-            className="h-full bg-accent transition-all duration-300"
+            className="h-full bg-halo-brand transition-all duration-300"
             style={{ width: `${pct}%` }}
           />
         </div>
-        <div className="flex justify-between mt-1.5 text-[11px] text-text-dim font-mono">
+        <div className="flex justify-between mt-1.5 text-[11px] text-halo-ink-dim font-mono">
           <span>{pct}%</span>
           <span>{t('settings.backfill.chunks_done', { done: status.chunks_done ?? 0 })}</span>
         </div>
@@ -163,7 +165,7 @@ export default function BackfillSection() {
   // --- Completed + data + <7d: quiet success, no button --------------------
   if (status.status === 'completed' && !isEmptyImport(status) && countdownSec > 0) {
     return (
-      <div className="text-[13px] text-green">
+      <div className="text-[13px] text-halo-status-green">
         ✅ {t('settings.backfill.completed')}
       </div>
     )
@@ -174,30 +176,35 @@ export default function BackfillSection() {
   let variant: 'primary' | 'secondary' | 'danger' | 'disabled'
   let tooltip: string | undefined
 
+  // Button labels — literal English, no i18n (matches the original mock;
+  // by request the Intervals-card buttons are not localized). The mock has
+  // a single "Sync now"; "Retry" signals the failed state.
   if (status.status === 'none') {
-    label = t('settings.backfill.button_first')
+    label = 'Sync now'
     variant = 'primary'
   } else if (status.status === 'failed') {
-    label = t('settings.backfill.button_failed')
+    label = 'Retry'
     variant = 'danger'
     tooltip = explainLastError(status.last_error, t) || undefined
   } else if (isEmptyImport(status) && countdownSec > 0) {
-    label = formatCountdown(countdownSec, t)
+    label = formatCountdown(countdownSec)
     variant = 'disabled'
   } else if (isEmptyImport(status)) {
-    label = t('settings.backfill.button_empty_retry')
+    label = 'Sync now'
     variant = 'primary'
   } else {
     // completed + data + ≥7d — resync allowed
-    label = t('settings.backfill.button_resync')
+    label = 'Sync now'
     variant = 'secondary'
   }
 
+  // Prototype Intervals card: neutral bordered buttons (no solid fill,
+  // "Sync now" look). Failed keeps a coral hint.
   const classes = {
-    primary: 'bg-accent text-white border-accent',
-    secondary: 'bg-surface border-border text-text hover:bg-surface-2',
-    danger: 'bg-surface border-red text-red hover:bg-red/5',
-    disabled: 'bg-surface-2 border-border text-text-dim cursor-not-allowed',
+    primary: 'bg-halo-surface border-halo-border text-halo-ink hover:bg-halo-surface-2',
+    secondary: 'bg-halo-surface border-halo-border text-halo-ink hover:bg-halo-surface-2',
+    danger: 'bg-halo-surface border-halo-coral text-halo-coral hover:bg-halo-surface-2',
+    disabled: 'bg-halo-surface-2 border-halo-border text-halo-ink-dim cursor-not-allowed',
   }[variant]
 
   return (
@@ -207,7 +214,7 @@ export default function BackfillSection() {
         onClick={handleRetry}
         disabled={busy || variant === 'disabled'}
         title={tooltip}
-        className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-sm font-semibold border cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed ${classes}`}
+        className={`flex items-center justify-center gap-2 w-full py-2 rounded-[10px] text-[13px] font-semibold border cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed ${classes}`}
       >
         {busy && (
           <span className="inline-block w-3.5 h-3.5 border-2 border-current/30 border-t-current rounded-full animate-spin" />
@@ -215,10 +222,10 @@ export default function BackfillSection() {
         {label}
       </button>
       {error && (
-        <p className="text-[11px] text-red mt-2">{error}</p>
+        <p className="text-[11px] text-halo-coral mt-2">{error}</p>
       )}
       {variant === 'danger' && (
-        <p className="text-[11px] text-text-dim mt-2 leading-snug">
+        <p className="text-[11px] text-halo-ink-dim mt-2 leading-snug">
           {explainLastError(status.last_error, t)}
         </p>
       )}

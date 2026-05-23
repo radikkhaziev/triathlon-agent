@@ -425,17 +425,22 @@ def publish_weekly_changelog(*, force: bool = False) -> dict:
     week_end = now
     week_start = now - timedelta(days=6)
 
-    # Weekly idempotency: a manual `publish-changelog` on Wed creates a Discussion;
-    # the Sun cron then finds it and skips. ``force=True`` overrides for the
-    # rare case the owner actually wants a second digest in the same week.
+    # Weekly idempotency: a manual `publish-changelog` mid-week creates a
+    # Discussion; the Sun cron then finds it and skips. ``force=True`` overrides
+    # for the rare case the owner wants a second digest in the same week.
     #
-    # Padding direction matters: cron firing N seconds LATE makes ``now`` slide
-    # forward, so a flat ``-7d`` cutoff would let last week's Discussion fall
-    # JUST outside the window (`created_at < now - 7d` by N seconds) → duplicate
-    # publish. We widen the cutoff EARLIER (further into the past) by 12h so
-    # any Discussion ≤ 7d 12h old is caught — covers cron jitter + GraphQL
-    # latency without needing minute-level scheduler precision.
-    idempotency_since = now - timedelta(days=7, hours=12)
+    # The window MUST be strictly shorter than the cron period (7d). It used to
+    # be ``now - 7d 12h`` — WIDER than the gap between two consecutive Sunday
+    # runs, so every Sunday caught the *previous* Sunday's Discussion (~7d old)
+    # as "already published" and skipped. The digest silently degraded to
+    # biweekly. Real incident: #338 created Sun 07:06Z made the next Sunday's
+    # 13:00Z run see it 7d6h old (< 7d12h) → suppressed. Anchoring to
+    # ``week_start`` (now - 6d, the digest's own Mon-Sun window) keeps a full
+    # ~1-day margin over cron jitter while still catching a same-week manual
+    # run. Trade-off: a manual run >6d before the Sunday cron (rare — would
+    # need a Mon-or-earlier manual publish) could double-publish; acceptable
+    # and recoverable by hand within the 4h buffer to the 19:00 weekly report.
+    idempotency_since = week_start
     if not force:
         try:
             latest = fetch_latest_discussion(

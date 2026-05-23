@@ -52,10 +52,11 @@ export default function OnboardingPrompt() {
       : null
     return (
       <Layout maxWidth="480px">
+        <div className="-mx-4 -mt-4 md:-mb-8 min-h-screen bg-halo-bg px-4 font-sans text-halo-ink">
         <div className="flex flex-col items-center text-center px-6 py-12">
           <div aria-hidden="true" className="text-5xl mb-4">💬</div>
-          <h1 className="text-xl font-bold mb-3">{t('onboarding.start_bot_title')}</h1>
-          <p className="text-sm text-text-dim leading-relaxed mb-8 max-w-[320px]">
+          <h1 className="text-2xl font-semibold tracking-tight mb-3 text-halo-ink">{t('onboarding.start_bot_title')}</h1>
+          <p className="text-sm text-halo-ink-dim leading-relaxed mb-8 max-w-[320px]">
             {t('onboarding.start_bot_description')}
           </p>
           {href ? (
@@ -63,54 +64,131 @@ export default function OnboardingPrompt() {
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 w-full max-w-[320px] py-3.5 bg-accent text-white text-center rounded-xl text-[15px] font-semibold no-underline font-sans"
+              className="flex items-center justify-center gap-2 w-full max-w-[320px] py-3.5 bg-halo-ink text-white text-center rounded-chip text-[15px] font-semibold no-underline font-sans"
             >
               {t('onboarding.start_bot_cta')}
             </a>
           ) : (
-            <p className="text-[12px] text-text-dim">{t('onboarding.start_bot_no_username')}</p>
+            <p className="text-[12px] text-halo-ink-dim">{t('onboarding.start_bot_no_username')}</p>
           )}
-          <p className="text-[11px] text-text-dim mt-6 max-w-[320px] leading-snug">
+          <p className="text-[11px] text-halo-ink-dim mt-6 max-w-[320px] leading-snug">
             {t('onboarding.start_bot_after_hint')}
           </p>
+        </div>
         </div>
       </Layout>
     )
   }
 
+  // Prototype `BIntervalsConnect` (direction-b-extras.jsx :726-805): step
+  // indicator, service card + scope checklist, privacy note, Connect CTA.
+  // `startOAuth`/`busy`/`error`/`needsBotStart` logic unchanged. The mock's
+  // "try demo mode" sub-CTA is intentionally dropped — the user is already
+  // authed (not demo); "try demo" would be a misleading dead action here.
+  const scopes: [string, string][] = [
+    ['activity:write', t('onboarding.scope_activity')],
+    ['wellness:read', t('onboarding.scope_wellness')],
+    ['calendar:write', t('onboarding.scope_calendar')],
+    ['settings:write', t('onboarding.scope_settings')],
+  ]
   return (
     <Layout maxWidth="480px">
-      <div className="flex flex-col items-center text-center px-6 py-12">
-        <div aria-hidden="true" className="text-5xl mb-4">🏊‍♂️ 🚴 🏃</div>
-        <h1 className="text-xl font-bold mb-3">{t('onboarding.title')}</h1>
-        <p className="text-sm text-text-dim leading-relaxed mb-8 max-w-[320px]">
-          {t('onboarding.description')}
-        </p>
-        <button
-          type="button"
-          onClick={startOAuth}
-          disabled={busy}
-          className="flex items-center justify-center gap-2 w-full max-w-[320px] py-3.5 bg-accent text-white text-center rounded-xl text-[15px] font-semibold border-none cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          {busy && <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-          {busy ? t('onboarding.redirecting') : t('onboarding.cta')}
-        </button>
-        {error && (
-          <p className="text-[12px] text-red mt-3 max-w-[320px]">
-            {t('onboarding.error')}
-          </p>
-        )}
-        <p className="text-[11px] text-text-dim mt-6 max-w-[320px] leading-snug">
-          {t('onboarding.no_account_hint')}{' '}
-          <a
-            href="https://intervals.icu"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-accent no-underline"
+      <div
+        className="-mx-4 -mt-4 md:-mb-8 flex min-h-screen flex-col bg-halo-bg px-4 font-sans text-halo-ink"
+        style={{ background: 'radial-gradient(ellipse at top, var(--color-brand-light) 0%, var(--color-bg) 60%)' }}
+      >
+        <div className="flex items-center justify-between px-1 pt-[18px]">
+          <div className="text-[11px] font-bold uppercase tracking-[0.6px] text-halo-brand-dark">
+            {t('onboarding.step')}
+          </div>
+          <div className="flex gap-1">
+            {[1, 2, 3].map(i => (
+              <div
+                key={i}
+                className={`h-1 rounded-sm ${i === 2 ? 'w-[22px] bg-halo-brand' : i < 2 ? 'w-2.5 bg-halo-brand' : 'w-2.5 bg-halo-surface-2'}`}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="px-5 pb-3 pt-6">
+          <h1 className="text-[26px] font-semibold leading-tight tracking-[-0.6px] text-halo-ink">
+            {t('onboarding.connect_title')}
+          </h1>
+          <p className="mt-2.5 text-sm leading-relaxed text-halo-ink-dim">{t('onboarding.connect_intro')}</p>
+        </div>
+
+        <div className="flex flex-col gap-3 px-4">
+          <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
+            <div className="flex items-center gap-3.5">
+              <span
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-chip text-[22px] font-bold tracking-[-0.5px] text-white"
+                style={{ background: '#f97316' }}
+              >
+                i.
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] font-semibold text-halo-ink">Intervals.icu</div>
+                <div className="mt-0.5 text-[12px] text-halo-ink-dim">{t('onboarding.service_sub')}</div>
+              </div>
+              <span className="rounded-pill bg-halo-surface-2 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.4px] text-halo-ink-dim">
+                {t('onboarding.not_connected')}
+              </span>
+            </div>
+            <div className="mt-4 border-t border-halo-border pt-3.5">
+              <div className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.5px] text-halo-ink-dim">
+                {t('onboarding.scope_title')}
+              </div>
+              {scopes.map(([code, desc]) => (
+                <div key={code} className="flex items-start gap-2.5 py-1.5">
+                  <span className="shrink-0 text-sm leading-snug text-halo-brand">✓</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-semibold text-halo-ink">{desc}</div>
+                    <code className="font-mono text-[10px] tracking-[0.2px] text-halo-ink-dimmer">{code}</code>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5 rounded-card border border-dashed border-halo-border p-3.5 text-[12px] leading-relaxed text-halo-ink-dim">
+            <span aria-hidden="true" className="text-sm">🔒</span>
+            <span>{t('onboarding.privacy')}</span>
+          </div>
+        </div>
+
+        <div className="mt-auto flex flex-col gap-2.5 px-4 pb-6 pt-5">
+          <button
+            type="button"
+            onClick={startOAuth}
+            disabled={busy}
+            className="flex items-center justify-center gap-2.5 rounded-card border-none bg-halo-ink py-3.5 text-[15px] font-semibold text-white cursor-pointer font-sans disabled:cursor-not-allowed disabled:opacity-60"
           >
-            intervals.icu
-          </a>
-        </p>
+            {busy ? (
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            ) : (
+              <span
+                className="inline-flex h-[18px] w-[18px] items-center justify-center rounded text-[11px] font-bold text-white"
+                style={{ background: '#f97316' }}
+              >
+                i.
+              </span>
+            )}
+            {busy ? t('onboarding.redirecting') : t('onboarding.cta')}
+          </button>
+          {error && <p className="text-center text-[12px] text-halo-coral">{t('onboarding.error')}</p>}
+          <div className="text-center text-[11px] text-halo-ink-dimmer">
+            {t('onboarding.signup_prefix')}{' '}
+            <a
+              href="https://intervals.icu"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold text-halo-brand-dark no-underline"
+            >
+              {t('onboarding.signup_link')}
+            </a>
+          </div>
+        </div>
       </div>
     </Layout>
   )

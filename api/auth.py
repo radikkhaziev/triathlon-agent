@@ -24,9 +24,6 @@ _PENDING_CODES: dict[str, dict] = {}
 
 CODE_TTL_SECONDS = 300  # 5 minutes
 
-RATE_LIMIT_MAX_ATTEMPTS = 5
-RATE_LIMIT_WINDOW_SECONDS = 300  # 5 minutes
-
 
 def _get_jwt_secret() -> bytes:
     """Get JWT signing secret — JWT_SECRET if set, else TELEGRAM_BOT_TOKEN."""

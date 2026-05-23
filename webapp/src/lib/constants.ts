@@ -1,9 +1,13 @@
-export const SPORT_ICONS: Record<string, string> = {
-  Swim: '\u{1F3CA}',
-  Ride: '\u{1F6B4}',
-  Run: '\u{1F3C3}',
-  Other: '\u{1F3CB}\uFE0F',
+// Halo per-sport accent (prototype `sportColor` map: Run=coral, Ride=brand
+// cobalt, Swim=amber). Returns a CSS var so it composes with color-mix tints.
+const SPORT_COLOR: Record<string, string> = {
+  Run: 'var(--color-coral)',
+  Ride: 'var(--color-brand)',
+  Swim: 'var(--color-amber)',
 }
+
+export const sportColor = (sport: string | null | undefined): string =>
+  SPORT_COLOR[sport || ''] || 'var(--color-ink-dim)'
 
 export const MONTHS: Record<string, string[]> = {
   ru: ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'],
@@ -18,20 +22,6 @@ export const MONTHS: Record<string, string[]> = {
 export const ZONE_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#8b5cf6']
 export const ZONE_LABELS = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5', 'Z6', 'Z7']
 
-export const CATEGORY_COLORS: Record<string, string> = {
-  excellent: '#22c55e',
-  good: '#22c55e',
-  moderate: '#f59e0b',
-  low: '#ef4444',
-}
-
-export const STATUS_BADGE_MAP: Record<string, { cls: string; labelKey: string }> = {
-  green: { cls: 'bg-[#22c55e20] text-green', labelKey: 'status.green' },
-  yellow: { cls: 'bg-[#f59e0b20] text-yellow', labelKey: 'status.yellow' },
-  red: { cls: 'bg-[#ef444420] text-red', labelKey: 'status.red' },
-  insufficient_data: { cls: 'bg-[#88888820] text-text-dim', labelKey: 'status.insufficient_data' },
-}
-
 // Hex (not rgb()) so call sites can append a 2-char alpha suffix —
 // e.g. `CHART_COLORS.ctl + '20'` → `'#3b82f620'` (valid 8-digit hex with
 // ~12% opacity). Appending the same suffix to an `rgb(...)` string yields
@@ -41,17 +31,12 @@ export const CHART_COLORS = {
   ctl: '#3b82f6',
   atl: '#ef4444',
   tsb: '#22c55e',
-  swim: '#3b82f6',
-  ride: '#22c55e',
-  run: '#f59e0b',
+  // Per-sport — the single canonical palette: Swim amber / Ride cobalt / Run
+  // coral (design `SPORT_COLOR`, `sportColor()` above, CLAUDE.md sport-colour
+  // rule). Hex (not var()) so Chart.js call sites can append a 2-char alpha
+  // suffix; values mirror the `--color-amber/brand/coral` CSS tokens that the
+  // var()-based call sites use. Keep all three in sync.
+  swim: '#d18b00',
+  ride: '#3b6dff',
+  run: '#d94640',
 }
-
-// TSB zone hex palette — solid (not rgba) because we render these as inline
-// SVG/text fills, not Chart.js datasets. Bands match `data/utils.py:tsb_zone`:
-// >+10 under, -10..+10 optimal, -25..-10 productive, <-25 risk.
-export const TSB_ZONE_COLORS = {
-  under: '#3b82f6',
-  optimal: '#22c55e',
-  productive: '#f59e0b',
-  risk: '#ef4444',
-} as const

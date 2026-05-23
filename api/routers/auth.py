@@ -18,7 +18,7 @@ from api.dto import (
     VerifyCodeRequest,
 )
 from config import settings
-from data.db import AthleteGoal, AthleteSettings, User, UserBackfillState, UserDTO, get_session
+from data.db import AthleteGoal, AthleteSettings, User, UserBackfillState, UserDTO, Wellness, get_session
 from tasks.actors import actor_bootstrap_step
 
 logger = logging.getLogger(__name__)
@@ -219,10 +219,31 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     t = await AthleteSettings.get_thresholds(data_uid)
     g = await AthleteGoal.get_goal_dto(data_uid)
 
+    # G1=B: Personal card shows per-sport HR-max (read-only, Intervals-synced)
+    # + latest body weight. ``get_thresholds`` only keeps one aggregate
+    # ``max_hr``; the prototype wants Swim/Bike/Run separately.
+    all_settings = await AthleteSettings.get_all(data_uid)
+    hr_max = {"run": None, "bike": None, "swim": None}
+    for s in all_settings:
+        if s.sport == "Run":
+            hr_max["run"] = s.max_hr
+        elif s.sport == "Ride":
+            hr_max["bike"] = s.max_hr
+        elif s.sport == "Swim":
+            hr_max["swim"] = s.max_hr
+    weight = await Wellness.get_latest_weight(data_uid)
+    vo2max = await Wellness.get_latest_vo2max(data_uid)
+
     result = {
         "role": user.role,
         "authenticated": True,
         "language": user.language,
+        # Identity is the *authenticated* user (NOT data_uid) — a viewer/demo
+        # browsing the owner's data still sees their own name in the header.
+        # Telegram first+last is stored as `display_name` on create
+        # (bot /start → `tg_user.full_name`; Login Widget → "first last").
+        "display_name": user.display_name,
+        "username": user.username,
         # Frontend uses this to gate the "Connect Intervals.icu" CTA — Login
         # Widget signups land with ``false`` and must press /start in the bot
         # before OAuth (see issue #266 + /api/intervals/auth/init's 412).
@@ -241,6 +262,9 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
             "ftp": t.ftp,
             "css": t.css,
             "threshold_pace_run": t.threshold_pace_run,
+            "weight": weight,
+            "vo2max": vo2max,
+            "hr_max": hr_max,
         },
         "goal": (
             {
@@ -261,6 +285,15 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         # Demo browses owner data read-only and never triggers Telegram I/O.
         # Pin to True so the frontend doesn't show a meaningless /start CTA.
         result["bot_chat_initialized"] = True
+        # Demo JWT mints with the owner's chat_id (auth_demo:147), so
+        # `get_current_user` returns the OWNER User row and its real Telegram
+        # identity. Without this scrub, every demo session would render the
+        # owner's first+last name and @username in Settings / sidebar / the
+        # PersonalCard header — a direct PII leak triggered by handing out the
+        # demo password. Pin to None (frontend falls back to "Profile" / no
+        # @handle), matching how `intervals.athlete_id` is set to "demo".
+        result["display_name"] = None
+        result["username"] = None
         # Pin sports for demo so the gate never blocks the read-only tour.
         # PUT /sports rejects demo separately so no actual write reaches DB.
         #

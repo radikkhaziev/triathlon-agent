@@ -5,34 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tasks.tools import CHAT_TOOLS, MORNING_TOOLS
-
-# ---------------------------------------------------------------------------
-# CHAT_TOOLS
-# ---------------------------------------------------------------------------
-
-
-class TestChatTools:
-    def test_chat_tools_extends_morning_tools(self):
-        assert len(CHAT_TOOLS) > len(MORNING_TOOLS)
-        morning_names = {t["name"] for t in MORNING_TOOLS}
-        chat_names = {t["name"] for t in CHAT_TOOLS}
-        assert morning_names.issubset(chat_names)
-
-    def test_save_mood_checkin_in_chat_only(self):
-        morning_names = {t["name"] for t in MORNING_TOOLS}
-        chat_names = {t["name"] for t in CHAT_TOOLS}
-        assert "save_mood_checkin" in chat_names
-        assert "save_mood_checkin" not in morning_names
-
-    def test_chat_tools_independent(self):
-        """Modifying CHAT_TOOLS doesn't affect MORNING_TOOLS."""
-        original_len = len(MORNING_TOOLS)
-        CHAT_TOOLS.append({"name": "test_tool", "description": "test", "input_schema": {"type": "object"}})
-        assert len(MORNING_TOOLS) == original_len
-        CHAT_TOOLS.pop()  # cleanup
-
-
 # ---------------------------------------------------------------------------
 # ClaudeAgent.chat()
 # ---------------------------------------------------------------------------
@@ -58,10 +30,7 @@ class TestClaudeAgentChat:
         text_response = _make_text_response("Z2 — это аэробная зона, 72-82% от LTHR.")
         agent.client.messages.create = AsyncMock(return_value=text_response)
 
-        with (
-            patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
-        ):
+        with (patch("bot.agent.MCPClient") as mock_mcp_cls,):
             mock_mcp = MagicMock()
             mock_mcp.list_tools = AsyncMock(return_value=[])
             mock_mcp_cls.return_value = mock_mcp
@@ -83,10 +52,7 @@ class TestClaudeAgentChat:
         text_response = _make_text_response("Ответ")
         agent.client.messages.create = AsyncMock(return_value=text_response)
 
-        with (
-            patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
-        ):
+        with (patch("bot.agent.MCPClient") as mock_mcp_cls,):
             mock_mcp = MagicMock()
             mock_mcp.list_tools = AsyncMock(return_value=[])
             mock_mcp_cls.return_value = mock_mcp
@@ -112,10 +78,7 @@ class TestClaudeAgentChat:
         response = SimpleNamespace(stop_reason="end_turn", content=[], usage=usage)
         agent.client.messages.create = AsyncMock(return_value=response)
 
-        with (
-            patch("bot.agent.MCPClient") as mock_mcp_cls,
-            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
-        ):
+        with (patch("bot.agent.MCPClient") as mock_mcp_cls,):
             mock_mcp = MagicMock()
             mock_mcp.list_tools = AsyncMock(return_value=[])
             mock_mcp_cls.return_value = mock_mcp
@@ -272,10 +235,7 @@ class TestClaudeAgentMCPWiring:
         mock_mcp.list_tools = AsyncMock(return_value=[])
         mock_mcp.call_tool = AsyncMock()
 
-        with (
-            patch("bot.agent.MCPClient", return_value=mock_mcp) as mock_cls,
-            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
-        ):
+        with (patch("bot.agent.MCPClient", return_value=mock_mcp) as mock_cls,):
             await agent.chat("Вопрос", mcp_token="user_token_123")
 
         mock_cls.assert_called_once_with(token="user_token_123")
@@ -295,10 +255,7 @@ class TestClaudeAgentMCPWiring:
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(return_value=[])
 
-        with (
-            patch("bot.agent.MCPClient", return_value=mock_mcp) as mock_cls,
-            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
-        ):
+        with (patch("bot.agent.MCPClient", return_value=mock_mcp) as mock_cls,):
             await agent.chat("Вопрос", mcp_token=None)
 
         mock_cls.assert_called_once_with(token=None)
@@ -318,10 +275,7 @@ class TestClaudeAgentMCPWiring:
         mock_mcp = MagicMock()
         mock_mcp.list_tools = AsyncMock(return_value=[])
 
-        with (
-            patch("bot.agent.MCPClient", return_value=mock_mcp),
-            patch("bot.agent.get_system_prompt_chat", new_callable=AsyncMock, return_value="You are a coach."),
-        ):
+        with (patch("bot.agent.MCPClient", return_value=mock_mcp),):
             result = await agent.chat(
                 "Что тут?",
                 image_data=b"\x89PNG",

@@ -6,55 +6,6 @@ function normLang(lang: string): string {
   return base in MONTHS ? base : 'en'
 }
 
-const _WEEKDAYS_FULL: Record<string, string[]> = {
-  ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'],
-  en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
-}
-
-export function formatDate(dateStr: string, lang: string = 'ru'): string {
-  const l = normLang(lang)
-  const d = new Date(dateStr + 'T00:00:00')
-  const days = _WEEKDAYS_FULL[l] || _WEEKDAYS_FULL.en
-  return `${days[d.getDay()]}, ${d.getDate()} ${(MONTHS[l] || MONTHS.en)[d.getMonth()]}`
-}
-
-export function formatWeekLabel(start: string, end: string, lang: string = 'ru'): string {
-  const l = normLang(lang)
-  const s = new Date(start + 'T00:00:00')
-  const e = new Date(end + 'T00:00:00')
-  const months = MONTHS[l] || MONTHS.en
-  const sm = months[s.getMonth()]
-  const em = months[e.getMonth()]
-  if (sm === em) {
-    return `${sm} ${s.getDate()} \u2013 ${e.getDate()}, ${s.getFullYear()}`
-  }
-  return `${sm} ${s.getDate()} \u2013 ${em} ${e.getDate()}, ${e.getFullYear()}`
-}
-
-const _WEEKDAYS: Record<string, Record<string, string>> = {
-  ru: { Mon: 'пн', Tue: 'вт', Wed: 'ср', Thu: 'чт', Fri: 'пт', Sat: 'сб', Sun: 'вс' },
-  en: { Mon: 'Mon', Tue: 'Tue', Wed: 'Wed', Thu: 'Thu', Fri: 'Fri', Sat: 'Sat', Sun: 'Sun' },
-}
-
-const _WEEKDAYS_SHORT: Record<string, string[]> = {
-  ru: ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'],
-  en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
-}
-
-export function formatDayDate(dateStr: string, weekday: string, lang: string = 'ru'): string {
-  const l = normLang(lang)
-  const d = new Date(dateStr + 'T00:00:00')
-  const wd = (_WEEKDAYS[l] || _WEEKDAYS.en)[weekday] || weekday
-  return `${wd} ${d.getDate()}`
-}
-
-export function formatDateDisplay(d: Date, lang: string = 'ru'): string {
-  const l = normLang(lang)
-  const days = _WEEKDAYS_SHORT[l] || _WEEKDAYS_SHORT.en
-  const months = MONTHS[l] || MONTHS.en
-  return `${days[d.getDay()]}, ${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`
-}
-
 export function fmtDateShort(dateStr: string, lang: string = 'ru'): string {
   const l = normLang(lang)
   const d = new Date(dateStr + 'T00:00:00')

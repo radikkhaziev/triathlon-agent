@@ -1,8 +1,9 @@
 import { type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
-import BottomTabs from './BottomTabs'
-import Sidebar from './Sidebar'
+import HaloBottomTabs from './halo/BottomTabs'
+import HaloSidebar from './halo/HaloSidebar'
+import { HALO_BOTTOM_TABS } from '../lib/navItems'
 
 interface LayoutProps {
   children: ReactNode
@@ -26,11 +27,18 @@ export default function Layout({
   const showNav = !hideBottomTabs
   return (
     <>
-      {showNav && <Sidebar />}
-      <div className={`${showNav ? 'md:pl-56' : ''}`}>
-        <div className={`px-4 pt-4 mx-auto ${hideBottomTabs ? 'pb-8' : 'pb-20 md:pb-8'}`} style={{ maxWidth }}>
+      {showNav && <HaloSidebar />}
+      <div className={`${showNav ? 'md:pl-60' : ''}`}>
+        {/* Mobile: page-supplied maxWidth (inline style). Desktop: the
+            prototype `BdShell` canvas — 1180px (≈1100 content + 36px gutters),
+            left-aligned beside the sidebar (no mx-auto). The `md:!max-w`
+            !important beats the non-important inline mobile cap. */}
+        <div
+          className={`px-4 pt-4 mx-auto md:mx-0 md:!max-w-[1180px] ${hideBottomTabs ? 'pb-8' : 'pb-20 md:pb-8'}`}
+          style={{ maxWidth }}
+        >
           {backTo && (
-            <Link to={backTo} className="inline-flex items-center gap-1 text-[13px] text-accent no-underline pt-3">
+            <Link to={backTo} className="inline-flex items-center gap-1 text-[13px] text-halo-ink-dim no-underline pt-3">
               &larr; {label}
             </Link>
           )}
@@ -42,7 +50,12 @@ export default function Layout({
           {children}
         </div>
       </div>
-      {showNav && <BottomTabs />}
+      {showNav && (
+        <HaloBottomTabs
+          items={HALO_BOTTOM_TABS}
+          className="fixed bottom-0 left-0 right-0 z-50 md:hidden"
+        />
+      )}
     </>
   )
 }

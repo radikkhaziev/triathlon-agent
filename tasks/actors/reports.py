@@ -105,13 +105,19 @@ def _actor_send_user_morning_report(
 
     set_language(user.language or "ru")
     summary = build_morning_message(wellness)
-    webapp_url = settings.API_BASE_URL
+    # Deep-link to /coach for the day this wellness row covers — that page
+    # renders the full `ai_recommendation` markdown that Claude generated.
+    # Telegram text is just the deterministic summary; the AI prose lives in
+    # the webapp. Date param pins the view to the report's day so a Sunday
+    # morning report opened Monday still shows Sunday's note (the /coach
+    # default ("today") would otherwise drift to Monday).
+    coach_url = f"{settings.API_BASE_URL.rstrip('/')}/coach?date={wellness.date}"
     keyboard = {
         "inline_keyboard": [
             [
                 {
                     "text": _("Открыть отчёт"),
-                    "web_app": {"url": webapp_url},
+                    "web_app": {"url": coach_url},
                 }
             ]
         ]

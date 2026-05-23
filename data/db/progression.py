@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, select
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from data.db.common import Base, Session
@@ -53,11 +53,3 @@ class ProgressionModelRun(Base):
         session.add(row)
         session.commit()
         return row
-
-    @classmethod
-    @dual
-    def get_latest(cls, user_id: int, sport: str, *, session: Session) -> ProgressionModelRun | None:
-        result = session.execute(
-            select(cls).where(cls.user_id == user_id, cls.sport == sport).order_by(cls.trained_at.desc()).limit(1)
-        )
-        return result.scalar_one_or_none()

@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from api.deps import get_data_user_id, require_viewer
 from config import settings
-from data.db import AthleteSettings, ScheduledWorkout, User, get_session
+from data.db import Activity, AthleteSettings, ScheduledWorkout, User, get_session
 from data.utils import format_duration
 
 router = APIRouter()
@@ -43,12 +43,17 @@ async def scheduled_workouts(
                     "id": w.id,
                     "type": w.type,
                     "name": w.name,
-                    "category": w.category,
                     "duration": format_duration(w.moving_time),
                     "duration_secs": w.moving_time,
                     # Stored in METERS (Intervals native) — convert for the UI.
                     "distance_km": w.distance / 1000 if w.distance is not None else None,
                     "description": w.description,
+                    # Planned TSS — Intervals' enrichment field (same source as
+                    # `/api/scheduled-workout/{id}` detail's `enrichment.tss`).
+                    # Drives the «Plan vs Actual» TSS roll-up on the Week tab
+                    # without a second roundtrip per workout. NULL until Intervals
+                    # enriches the event (HumanGo events arrive un-enriched).
+                    "icu_training_load": (round(w.icu_training_load, 1) if w.icu_training_load is not None else None),
                 }
             )
         days.append({"date": d_str, "weekday": _WEEKDAYS[i], "workouts": day_workouts})
@@ -74,12 +79,9 @@ async def scheduled_workouts(
     return {
         "week_start": str(monday),
         "week_end": str(sunday),
-        "week_offset": week_offset,
         "today": str(today),
-        "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
         "has_prev": has_prev,
         "has_next": has_next,
-        "role": user.role,
         "days": days,
     }
 
@@ -108,6 +110,39 @@ async def scheduled_workout_detail(
         if w is None or w.user_id != uid:
             raise HTTPException(status_code=404, detail="Workout not found")
 
+        # Reverse pairing — find the activity (if any) Intervals.icu paired
+        # against this planned workout. Symmetric to the activity → workout
+        # link surfaced in `/api/activity/{id}` as `paired_workout`, drives the
+        # «ФАКТ | <activity>» breadcrumb on the workout detail page. NULL when
+        # the workout hasn't been executed yet (typical for today/future), or
+        # Intervals never paired the activity to this event.
+        # `.first()` rather than `.scalar_one_or_none()` — there's no UNIQUE
+        # constraint on `(user_id, paired_event_id)` so in pathological cases
+        # Intervals could pair multiple activities to the same workout. Pick
+        # the most recent so the breadcrumb points to the latest run. `.limit(1)`
+        # makes the intent explicit and lets the planner stop after one row.
+        paired = (
+            (
+                await session.execute(
+                    select(Activity)
+                    .where(Activity.user_id == uid, Activity.paired_event_id == workout_id)
+                    .order_by(Activity.start_date_local.desc())
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        paired_activity = (
+            {
+                "id": paired.id,
+                "type": paired.type,
+                "duration": format_duration(paired.moving_time),
+            }
+            if paired is not None
+            else None
+        )
+
     t = await AthleteSettings.get_thresholds(uid)
     sport_settings = await AthleteSettings.get(uid, w.type) if w.type else None
 
@@ -133,8 +168,6 @@ async def scheduled_workout_detail(
             # activities. Verified empirically 2026-05-13.
             "tss": w.icu_training_load,
             "normalized_power": wd.get("normalized_power") or None,
-            "variability_index": wd.get("variability_index"),
-            "polarization_index": wd.get("polarization_index"),
             # icu_intensity is emitted as event top-level by Intervals.icu
             # (NOT inside workout_doc — see ScheduledWorkoutDTO docstring).
             # Value is 0-100 percent; frontend renders verbatim with %.
@@ -153,4 +186,7 @@ async def scheduled_workout_detail(
             "power": sport_settings.power_zones if sport_settings else None,
             "pace": sport_settings.pace_zones if sport_settings else None,
         },
+        # Paired activity (reverse of `/api/activity/{id}`'s `paired_workout`).
+        # NULL when the workout hasn't been executed yet.
+        "paired_activity": paired_activity,
     }

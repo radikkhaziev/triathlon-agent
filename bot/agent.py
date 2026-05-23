@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 import anthropic
 import sentry_sdk
 
-from bot.prompts import get_system_prompt_chat  # noqa: F401 — kept for tests that patch this symbol
 from bot.prompts import get_static_system_prompt, render_athlete_block
 from bot.tool_filter import filter_tools, select_tool_groups
 from bot.tools import MCPClient

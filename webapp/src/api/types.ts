@@ -1,10 +1,4 @@
 // Auth
-export interface AuthVerifyCodeResponse {
-  token: string
-  role: 'owner' | 'viewer' | 'demo'
-  expires_in_days: number
-}
-
 export interface IntervalsStatus {
   method: 'oauth' | 'api_key' | 'none'
   athlete_id: string | null
@@ -55,6 +49,10 @@ export interface AuthMeResponse {
   role: 'owner' | 'viewer' | 'demo' | 'anonymous'
   authenticated: boolean
   language?: string
+  // Telegram identity of the authenticated user (first+last → display_name).
+  // null for legacy rows created before the column / via CLI.
+  display_name?: string | null
+  username?: string | null
   intervals?: IntervalsStatus
   // Issue #266: false means the user authed via Login Widget but never
   // pressed /start in the bot, so Telegram has no chat to receive messages.
@@ -74,18 +72,11 @@ export interface AuthMeResponse {
 // Recovery
 export interface RecoveryData {
   score: number | null
-  category: string | null
-  emoji: string
-  title: string
-  recommendation: string
-  readiness_score: number | null
-  readiness_level: string | null
 }
 
 // HRV
 export interface HRVTrend {
   direction: string | null
-  slope: number | null
   r_squared: number | null
 }
 
@@ -100,12 +91,18 @@ export interface HRVBlock {
   delta_pct: number | null
   lower_bound: number | null
   upper_bound: number | null
-  swc: number | null
   swc_verdict: string | null
   cv_7d: number | null
   cv_verdict: string | null
-  days_available: number
   trend: HRVTrend | null
+  // Consecutive days (including today) where wellness.hrv > rmssd_60d. Server-
+  // computed over the last 7 days; backs the «N утра подряд» prefix in `meaning`
+  // when status='green'. 0 for any other status / cold-start.
+  streak_above_baseline?: number
+  // Pre-localized one-sentence interpretation for the «what this means» card
+  // on `/wellness/:metric`. Rule-based (status × streak), NOT AI — see
+  // `api/routers/wellness.py:_hrv_meaning`. Always rendered verbatim.
+  meaning: string | null
 }
 
 // RHR
@@ -124,8 +121,11 @@ export interface RHRBlock {
   upper_bound: number | null
   cv_7d: number | null
   cv_verdict: string | null
-  days_available: number
   trend: HRVTrend | null
+  // Consecutive days where rhr_today < rhr_30d (RHR is inverted: lower = better).
+  streak_below_baseline?: number
+  // Pre-localized one-sentence interpretation, same contract as HRV.meaning.
+  meaning: string | null
 }
 
 // Sleep
@@ -133,6 +133,9 @@ export interface SleepData {
   score: number | null
   duration: string | null
   duration_secs: number | null
+  // Last 7 nights' sleep scores, oldest → newest (target day = last item).
+  // `null` slots = missing wellness row for that day (sync gap, cold start).
+  last_7_nights: (number | null)[]
 }
 
 // Training Load
@@ -158,18 +161,34 @@ export interface BodyData {
 
 // Stress
 export interface StressData {
-  ess_today: number | null
   banister_recovery: number | null
 }
 
-// Wellness / Report response
-export interface WellnessResponse {
+// Wellness / Report response — discriminated union on `has_data`. The backend
+// (`api/routers/wellness.py`) omits every metric block when the day's wellness
+// row hasn't synced yet, so a flat interface would be lying about which fields
+// are present. Splitting on `has_data` lets `data.has_data` narrow the type:
+// inside a `data.has_data` guard the metric blocks are guaranteed.
+
+// Nav / identity fields present regardless of `has_data`. `is_today` /
+// `has_prev` / `has_next` come only from `/api/wellness-day` (not `/api/report`),
+// hence optional.
+interface WellnessResponseBase {
   date: string
-  has_data: boolean
   is_today?: boolean
   has_prev?: boolean
   has_next?: boolean
-  role?: 'owner' | 'viewer' | 'anonymous'
+}
+
+// `has_data: false` — the wellness row for this day hasn't synced. Only the
+// nav/identity fields exist; every metric block is absent.
+export interface WellnessResponseEmpty extends WellnessResponseBase {
+  has_data: false
+}
+
+// `has_data: true` — full metric payload (`_build_wellness_response`).
+export interface WellnessResponseData extends WellnessResponseBase {
+  has_data: true
   recovery: RecoveryData
   hrv: HRVBlock
   rhr: RHRBlock
@@ -181,16 +200,21 @@ export interface WellnessResponse {
   updated_at?: string | null
 }
 
+export type WellnessResponse = WellnessResponseEmpty | WellnessResponseData
+
 // Scheduled Workouts
 export interface ScheduledWorkout {
   id: number
   type: string | null
   name: string | null
-  category: string
   duration: string | null
   duration_secs: number | null
   distance_km: number | null
   description: string | null
+  // Planned TSS from Intervals.icu enrichment. NULL until the event is
+  // enriched (fresh HumanGo events arrive un-enriched). Drives Plan vs
+  // Actual TSS roll-up on the Week tab.
+  icu_training_load: number | null
 }
 
 // One step in a structured workout. Mirrors WorkoutStepDTO (data/intervals/dto.py).
@@ -232,8 +256,6 @@ export interface WorkoutDetailThresholds {
 export interface WorkoutEnrichment {
   tss: number | null
   normalized_power: number | null
-  variability_index: number | null
-  polarization_index: number | null
   intensity_pct: number | null
   zone_times: { id: string; secs: number | null }[] | null
 }
@@ -261,6 +283,11 @@ export interface ScheduledWorkoutDetail {
   enrichment: WorkoutEnrichment
   thresholds: WorkoutDetailThresholds
   zones: WorkoutDetailZones
+  paired_activity: {
+    id: number
+    type: string | null
+    duration: string | null
+  } | null
 }
 
 export interface ScheduledWorkoutsDay {
@@ -272,12 +299,9 @@ export interface ScheduledWorkoutsDay {
 export interface ScheduledWorkoutsResponse {
   week_start: string
   week_end: string
-  week_offset: number
   today: string
-  last_synced_at: string | null
   has_prev: boolean
   has_next: boolean
-  role: 'owner' | 'viewer' | 'anonymous'
   days: ScheduledWorkoutsDay[]
 }
 
@@ -290,6 +314,13 @@ export interface ActivityItem {
   icu_training_load: number | null
   average_hr: number | null
   is_race?: boolean
+  // Intervals.icu planned-vs-actual compliance (0-100 %). NULL when the
+  // activity wasn't paired with a planned workout.
+  compliance: number | null
+  // Intervals' native pairing — FK-less reference to `scheduled_workouts.id`.
+  // NULL when the activity wasn't paired. Drives the Week-tab merge logic so
+  // a planned session covered by an actual doesn't render twice.
+  paired_event_id: number | null
 }
 
 export interface ActivitiesDay {
@@ -299,13 +330,8 @@ export interface ActivitiesDay {
 }
 
 export interface ActivitiesWeekResponse {
-  week_start: string
-  week_end: string
-  week_offset: number
   today: string
-  last_synced_at: string | null
   has_prev: boolean
-  role: 'owner' | 'viewer' | 'anonymous'
   days: ActivitiesDay[]
 }
 
@@ -358,12 +384,10 @@ export interface ActivityHRV {
   hrvt1_power: number | null
   hrvt1_pace: string | null
   hrvt2_hr: number | null
-  processing_status: string
 }
 
 export interface RaceInfo {
   name: string
-  race_type: string | null
   distance_km: number | null
   finish_time_sec: number | null
   goal_time_sec: number | null
@@ -376,7 +400,6 @@ export interface RaceInfo {
   rpe: number | null
   notes: string | null
   race_day_ctl: number | null
-  race_day_atl: number | null
   race_day_tsb: number | null
   race_day_recovery_score: number | null
   race_day_hrv_status: string | null
@@ -386,14 +409,10 @@ export interface RaceInfo {
 // `dto.has_weather=True`. Indoor / virtual rides return `weather: null`.
 export interface ActivityWeatherInfo {
   avg_temp_c: number | null
-  min_temp_c: number | null
-  max_temp_c: number | null
   avg_feels_like_c: number | null
   avg_wind_speed_mps: number | null
-  avg_wind_gust_mps: number | null
   prevailing_wind_deg: number | null
   headwind_pct: number | null
-  tailwind_pct: number | null
   avg_clouds: number | null
   max_rain_mm: number | null
   max_snow_mm: number | null
@@ -414,6 +433,15 @@ export interface ActivityDetailsResponse {
   // Intervals.icu native pairing — scheduled_workouts.id of the planned event
   // this activity was matched against. Drives the «open planned workout» link.
   paired_event_id: number | null
+  // Resolved paired workout — name + planned duration + planned TSS — used
+  // for the «PLAN | <name> ›» breadcrumb pill on the Activity detail screen
+  // and the Plan vs Actual mini-table. NULL when no pairing.
+  paired_workout: {
+    id: number
+    name: string | null
+    duration_secs: number | null
+    icu_training_load: number | null
+  } | null
   is_race?: boolean
   race?: RaceInfo | null
   details: ActivityDetails | null
@@ -421,26 +449,17 @@ export interface ActivityDetailsResponse {
   weather: ActivityWeatherInfo | null
 }
 
-// Dashboard
-export interface DashboardResponse {
-  has_data: boolean
-  readiness_level: string
-  readiness_score: number
-  hrv_last: number
-  hrv_baseline: number
-  sleep_score: number
-  resting_hr: number
-  ctl: number
-  atl: number
-  tsb: number
-  ai_recommendation: string
-}
-
 export interface TrainingLoadSeries {
   dates: string[]
   ctl: number[]
   atl: number[]
   tsb: number[]
+  // Per-discipline CTL trend (Wellness "Training load" detail by-sport
+  // breakdown) — null on days a sport has no CTL. Additive: the Dashboard
+  // Load tab reads only the overall ctl/atl/tsb.
+  ctl_swim: (number | null)[]
+  ctl_ride: (number | null)[]
+  ctl_run: (number | null)[]
 }
 
 export interface ActivitiesSeries {
@@ -474,10 +493,8 @@ export interface GoalSportProgress {
 // decision — don't fake per-sport bars from a single overall target).
 export interface GoalProgress {
   id: number
-  category: GoalCategory
   event_name: string
   event_date: string
-  sport_type: SportType
   weeks_remaining: number
   days_remaining: number
   ctl_current: number | null
@@ -501,28 +518,29 @@ export interface GoalResponse {
   goals: GoalProgress[]
 }
 
-export interface WeeklyRecapBucket {
-  week_start: string
-  week_end: string
-  by_sport: Record<string, { duration_sec: number; distance_m: number; tss: number }>
-  ctl_start: number | null
-  ctl_end: number | null
-  ctl_delta: number | null
-  tsb_end: number | null
-}
-
-export interface WeeklyRecapResponse {
-  weeks: WeeklyRecapBucket[]
-  offset: number
-  today: string
-  has_prev: boolean
-}
-
-// Recovery Trend (Dashboard)
+// Recovery Trend — Dashboard Load tab chart + Wellness "Recovery trend" detail.
 export interface RecoveryTrendSeries {
   dates: string[]
   recovery: (number | null)[]
   hrv: (number | null)[]
+  rhr: (number | null)[]
+}
+
+// Sleep Trend — Wellness "Sleep trend" detail screen. `duration_min` is whole
+// minutes; `score` is the raw 0-100 sleep score.
+export interface SleepTrendSeries {
+  dates: string[]
+  duration_min: (number | null)[]
+  score: (number | null)[]
+}
+
+// Body Trend — Wellness "Body trend" detail screen.
+export interface BodyTrendSeries {
+  dates: string[]
+  weight: (number | null)[]
+  body_fat: (number | null)[]
+  vo2max: (number | null)[]
+  steps: (number | null)[]
 }
 
 // Progress / Efficiency Trends
@@ -637,32 +655,18 @@ export interface RacePlanInner {
 
 export interface RacePlanPayload {
   plan: RacePlanInner
-  // Inline race-block (spec §11.3 — accepted as snapshot for goal-deletion resilience).
-  race: Record<string, unknown>
   confidence_tier: ConfidenceTier
-  // generated_at / model_version are mirrored on the top-level RacePlanResponse
-  // (sourced from the row columns by api/routers/race_plan.py:_format_plan_response).
-  // The service writes them into payload too, but UI should read the top-level
-  // fields — declare them optional here so test fixtures and any future
-  // payload-only-or-top-level-only response shapes both type-check.
-  generated_at?: string
-  model_version?: string
-  // PR2.3: tracks per-day force_regen quota (resets implicitly per UTC day).
-  regen_count_today?: number
 }
 
 // Shape returned by GET /api/race-plan and POST /api/race-plan/generate.
 // confidence_tier is surfaced to the top level so UI can render a badge
 // without digging into payload (matches _format_plan_response in the router).
 export interface RacePlanResponse {
-  id: number | null
-  goal_id?: number | null
   model_version: string
   generated_at?: string | null
   confidence_tier: ConfidenceTier
   payload: RacePlanPayload
-  // dry_run / note / regen status surface in some responses; UI treats them as optional.
-  dry_run?: boolean
+  // note surfaces on regenerate / cached responses; UI renders it as a hint.
   note?: string
 }
 
@@ -688,14 +692,25 @@ export interface InheritableConditionsResponse {
   races: InheritableRace[]
 }
 
-// Weekly report archive (PR2/PR3 of weekly-report feature).
-// `preview` is server-rendered (`tasks/actors/reports.py:extract_weekly_preview`)
-// — the headline paragraph stripped of markdown markers, ≤220 chars. Detail
-// view fetches the full markdown via `WeeklyReportDetail` only on click.
+// Weekly report archive (PR2/PR3 of weekly-report feature). Backs both the
+// `/weekly` list page and the Dashboard Recap tab.
+// `headline` is the report's leading `# ` H1 (`extract_weekly_headline`) —
+// `null` for legacy reports written before the prompt change; the card falls
+// back to `preview` (`extract_weekly_preview` — first body paragraph stripped
+// of markdown, ≤220 chars). `by_sport` + the CTL/ramp/TSB fields are that
+// week's training volume + load bookends, so the Recap card renders without a
+// second round-trip. Detail view fetches full markdown via `WeeklyReportDetail`.
 export interface WeeklyReportListItem {
   week_start: string  // ISO Monday, e.g. "2026-05-04"
+  headline: string | null
   preview: string
   generated_at: string  // ISO timestamp
+  by_sport: Record<string, { duration_sec: number; distance_m: number; tss: number }>
+  ctl_start: number | null
+  ctl_end: number | null
+  ctl_delta: number | null
+  ramp: number | null
+  tsb_end: number | null
 }
 
 export interface WeeklyReportListResponse {
@@ -728,20 +743,16 @@ export interface ChangelogLatest {
 export interface MarathonShapeComponents {
   actual_weekly_km: number
   target_weekly_km: number               // raw marathon-baseline = V^1.135
-  longjog_score: number
-  target_longjog_km: number              // scoring-internal = ln(V/4)*12 − 13
-  displayed_target_long_run_km: number   // UI = target_longjog_km + 13 = ln(V/4)*12 (Runalyze parity)
+  displayed_target_long_run_km: number   // UI = ln(V/4)*12 (Runalyze parity)
   actual_longjog_km: number
 }
 
 export interface MarathonShapeWeek {
   week_start: string
   week_end: string
-  // shape_pct / vo2max_used / components are null together — vo2max gates the
-  // entire week's computation (see `_vo2max_at` in api/routers/dashboard.py).
+  // null when `wellness.vo2max` is missing for week_end — gates the entire
+  // week's computation (see `_vo2max_at` in api/routers/dashboard.py).
   shape_pct: number | null
-  vo2max_used: number | null
-  components: MarathonShapeComponents | null
 }
 
 // Phase 1.5 — ML-predicted finish time + pace per distance. Each value is

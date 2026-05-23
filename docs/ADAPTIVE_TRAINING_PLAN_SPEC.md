@@ -137,7 +137,7 @@ Recovery low (<40) OR HRV red:
   → Длительность: -25% или max 45 min
   → Интервалы → лёгкая аэробная работа
 
-TSB < -25 (overtraining risk):
+TSB < -30 (zone `risk`, high risk):
   → Max zone: Z2 cap (независимо от recovery)
   → Длительность: -20%
 
@@ -281,7 +281,7 @@ Telegram — компактный summary, детали в webapp. Формат:
 ```
 Recovery 72 (good), HRV 🟢
 🏃 Tempo Run 40min
-TSB: -22 ⚠️ (productive overreach)
+TSB: -35 🔴 (high risk)
 
 🔔 ПОРОГИ — РАССМОТРИ ОБНОВЛЕНИЕ
 ━━━━━━━━━━━━━━━━━━━━━
@@ -296,7 +296,7 @@ HRVT2 172 bpm
 
 1. **Recovery + HRV** — всегда. Score, category, HRV emoji (🟢/🟡/🔴).
 2. **Тренировка на сегодня** — если есть. Название + ` (adapted)` если адаптирована.
-3. **TSB** — если < −10 (⚠️ productive overreach) или < −25 (🔴 overtraining risk).
+3. **TSB** — только если < −30 (🔴 high risk). Зоны `optimal`/`gray`/`fresh`/`transition` (TSB ≥ −30) — без отдельной строки в утреннем сообщении.
 4. **Threshold drift** — только если обнаружен сдвиг. Яркий блок с разделителем + inline-кнопка `Обновить зоны` (видна при медиум R²-tier).
 5. **Кнопка** «Открыть отчёт» — InlineKeyboardButton с web_app URL.
 

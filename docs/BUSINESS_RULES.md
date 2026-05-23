@@ -13,7 +13,12 @@
 **All CTL/ATL/TSB/ramp rate values come directly from the Intervals.icu API.** We do NOT recalculate them — Intervals.icu applies its own impulse-response model (τ_CTL=42d, τ_ATL=7d) and sport-specific TSS formulas. This is important because TrainingPeaks PMC uses different normalization coefficients, so the same athlete's TSB can differ by 5-15 points between platforms. All thresholds in this project are calibrated for Intervals.icu values.
 
 - CTL = 42-day EMA of TSS ("fitness"), ATL = 7-day EMA ("fatigue"), TSB = CTL - ATL ("form")
-- TSB > +10: under-training | -10..+10: optimal | -10..-25: productive overreach | < -25: overtraining risk
+- TSB zones (5-band, PMC-style; source of truth: `webapp/src/pages/LoadDetail.tsx::TSB_ZONES`, mirrored in `data/utils.py:tsb_zone`):
+  - `< −30`: **risk** (high risk) — Z2-cap on adapted workouts, 🔴 warning in morning report
+  - `−30..−10`: **optimal** — productive training zone, no warning
+  - `−10..+5`: **gray** — neutral / maintenance
+  - `+5..+25`: **fresh** — well-rested
+  - `≥ +25`: **transition** — under-training / peaked
 
 ## HRV Recovery — Flatt & Esco baseline
 
@@ -113,10 +118,10 @@ Intervals + soft-delete local row).
 
 | Condition | Allowed Training |
 |---|---|
-| Recovery = `excellent` + TSB > 0 | Any intensity, key workout (Z3-Z4, intervals) |
-| Recovery = `good`, TSB −10..+10 | Z2 full volume |
+| Recovery = `excellent` + TSB > 0 (zones `gray`/`fresh`/`transition`) | Any intensity, key workout (Z3-Z4, intervals) |
+| Recovery = `good`, TSB −10..+25 (zones `gray`/`fresh`) | Z2 full volume |
 | Recovery = `moderate` or sleep < 50 | Z1-Z2 only, 45-60 min |
 | Recovery = `low` or RMSSD = `red` | Rest or Z1 ≤30 min |
-| TSB < −25 | Z1-Z2 cap, flag overreaching |
+| TSB < −30 (zone `risk`) | Z1-Z2 cap, flag high risk |
 | HRV delta < −15% | Z1-Z2 max |
 | Ramp rate > 7 TSS/week | Flag risk, low-stress session |

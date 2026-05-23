@@ -273,28 +273,10 @@ class GarminFitnessMetricsDTO(BaseModel):
     source_activity_id: str | None = None
 
     @classmethod
-    def from_vo2max(cls, raw: dict) -> GarminFitnessMetricsDTO:
-        sport = raw.get("sport", "")
-        return cls(
-            calendar_date=raw["calendarDate"],
-            vo2max_running=raw.get("vo2MaxValue") if "RUNNING" in sport else None,
-            vo2max_cycling=raw.get("vo2MaxValue") if "CYCLING" in sport else None,
-            source_activity_id=str(raw["activityId"]) if raw.get("activityId") else None,
-        )
-
-    @classmethod
     def from_endurance(cls, raw: dict) -> GarminFitnessMetricsDTO:
         return cls(
             calendar_date=_ms_to_date(raw["calendarDate"]),
             endurance_score=raw.get("overallScore"),
-        )
-
-    @classmethod
-    def from_max_met(cls, raw: dict) -> GarminFitnessMetricsDTO:
-        return cls(
-            calendar_date=raw["calendarDate"],
-            max_met=raw.get("maxMet"),
-            fitness_age=raw.get("fitnessAge"),
         )
 
 
