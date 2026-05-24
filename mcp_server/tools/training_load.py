@@ -3,10 +3,12 @@
 from sqlalchemy import select
 
 from data.db import Wellness, get_session
+from data.metrics import recompute_today_loads
 from data.utils import extract_sport_ctl
 from data.utils import tsb_zone as _tsb_zone
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+from tasks.dto import local_today
 
 
 @mcp.tool()
@@ -20,13 +22,22 @@ async def get_training_load(date: str) -> dict:
     if not row:
         return {"error": f"No data for {date}"}
 
-    tsb = round(row.ctl - row.atl, 1) if row.ctl is not None and row.atl is not None else None
+    ctl, atl = row.ctl, row.atl
+    # Intervals.icu bakes today's planned workouts into ctl/atl, so morning
+    # reads look as if today's session is already done. Recompute from
+    # yesterday + actually-completed activities. sport_ctl/ramp_rate untouched.
+    if date == local_today().isoformat():
+        recomputed = await recompute_today_loads(user_id)
+        if recomputed is not None:
+            ctl, atl, _ = recomputed
+
+    tsb = round(ctl - atl, 1) if ctl is not None and atl is not None else None
     sport_ctl = extract_sport_ctl(row.sport_info)
 
     return {
         "date": date,
-        "ctl": row.ctl,
-        "atl": row.atl,
+        "ctl": ctl,
+        "atl": atl,
         "tsb": tsb,
         "ramp_rate": row.ramp_rate,
         "sport_ctl": sport_ctl,

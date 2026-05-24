@@ -9,6 +9,7 @@ from api.deps import get_data_user_id, require_viewer
 from bot.formatter import STATUS_EMOJI
 from config import settings
 from data.db import HrvAnalysis, RhrAnalysis, User, Wellness, get_session
+from data.metrics import recompute_today_loads
 from data.utils import extract_sport_ctl
 
 router = APIRouter()
@@ -427,6 +428,16 @@ async def wellness_day(
         }
 
     result = await _build_wellness_response(row, target, uid, language=user.language or "ru")
+    # Intervals.icu bakes today's planned workouts into ctl/atl, so the
+    # morning view looks as if the day's session is already done. Recompute
+    # from yesterday's loads + actually-completed activities.
+    if target == today:
+        recomputed = await recompute_today_loads(uid)
+        if recomputed is not None:
+            ctl, atl, tsb = recomputed
+            result["training_load"]["ctl"] = ctl
+            result["training_load"]["atl"] = atl
+            result["training_load"]["tsb"] = tsb
     result["is_today"] = target == today
     result["has_prev"] = has_prev
     result["has_next"] = has_next

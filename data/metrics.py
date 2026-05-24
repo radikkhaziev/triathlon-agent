@@ -13,9 +13,10 @@ from datetime import timedelta
 
 import numpy as np
 
-from data.db import Activity, HrvAnalysis, RhrAnalysis
+from data.db import Activity, HrvAnalysis, RhrAnalysis, Wellness
 from data.intervals.dto import RecoveryScoreDTO, RecoveryStateDTO, RmssdStatusDTO, TrendResultDTO
 from data.utils import is_bike, is_run
+from tasks.dto import local_today
 
 # ---------------------------------------------------------------------------
 # Trend Analysis
@@ -388,6 +389,50 @@ def calculate_sport_atl(
 ) -> dict[str, float]:
     """Per-sport ATL (Acute Training Load) — EMA with τ=7, matching Intervals.icu."""
     return _calculate_sport_load_ema(activities, tau, as_of=as_of)
+
+
+def _project_loads_one_day(
+    prev_ctl: float,
+    prev_atl: float,
+    tss_today: float,
+    *,
+    tau_ctl: int = 42,
+    tau_atl: int = 7,
+) -> tuple[float, float, float]:
+    """Roll yesterday's (CTL, ATL) forward one day with `tss_today` actual load.
+
+    Pure-math sibling of `recompute_today_loads` — split out so unit tests
+    don't need DB fixtures. Returns (ctl, atl, tsb) rounded to 1 decimal.
+    """
+    decay_ctl = math.exp(-1.0 / tau_ctl)
+    decay_atl = math.exp(-1.0 / tau_atl)
+    ctl = prev_ctl * decay_ctl + tss_today * (1 - decay_ctl)
+    atl = prev_atl * decay_atl + tss_today * (1 - decay_atl)
+    return round(ctl, 1), round(atl, 1), round(ctl - atl, 1)
+
+
+async def recompute_today_loads(user_id: int) -> tuple[float, float, float] | None:
+    """Today's (CTL, ATL, TSB) from yesterday's wellness + today's completed TSS.
+
+    Intervals.icu reports today's CTL/ATL with **planned** workouts baked in,
+    so morning-time reads look as if the day's session is already done.
+    This helper rolls yesterday's loads forward by one day and adds only
+    activities that actually appear in `activities` for today.
+
+    Returns None if yesterday's wellness row is missing or has no CTL/ATL —
+    caller should fall back to whatever Intervals.icu reported.
+    """
+    today = local_today()
+    yesterday = today - timedelta(days=1)
+
+    prev = await Wellness.get(user_id, yesterday)
+    if prev is None or prev.ctl is None or prev.atl is None:
+        return None
+
+    activities = await Activity.get_for_date(user_id, today)
+    tss_today = sum(a.icu_training_load or 0.0 for a in activities)
+
+    return _project_loads_one_day(prev.ctl, prev.atl, tss_today)
 
 
 def project_sport_load_forward(

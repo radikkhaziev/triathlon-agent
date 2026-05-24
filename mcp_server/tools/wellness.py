@@ -3,8 +3,10 @@
 from sqlalchemy import select
 
 from data.db import Wellness, get_session
+from data.metrics import recompute_today_loads
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+from tasks.dto import local_today
 
 
 def _row_to_dict(row: Wellness) -> dict:
@@ -35,6 +37,21 @@ def _row_to_dict(row: Wellness) -> dict:
     }
 
 
+async def _apply_today_loads_override(user_id: int, record: dict) -> None:
+    """Replace `ctl`/`atl` in a wellness dict with the actual-only recompute.
+
+    Intervals.icu bakes today's planned workouts into ctl/atl, so morning-time
+    reads look as if today's session is already done. Mutates `record` in
+    place. No-op if yesterday's wellness row is missing.
+    """
+    recomputed = await recompute_today_loads(user_id)
+    if recomputed is None:
+        return
+    ctl, atl, _ = recomputed
+    record["ctl"] = ctl
+    record["atl"] = atl
+
+
 @mcp.tool()
 async def get_wellness(date: str) -> dict:
     """Get all wellness fields: CTL, ATL, HRV, sleep, body metrics, recovery score, readiness."""
@@ -44,7 +61,10 @@ async def get_wellness(date: str) -> dict:
         row = result.scalar_one_or_none()
     if not row:
         return {"error": f"No data for {date}"}
-    return _row_to_dict(row)
+    record = _row_to_dict(row)
+    if date == local_today().isoformat():
+        await _apply_today_loads_override(user_id, record)
+    return record
 
 
 @mcp.tool()
@@ -62,9 +82,16 @@ async def get_wellness_range(from_date: str, to_date: str) -> dict:
     if not rows:
         return {"error": f"No data for range {from_date} to {to_date}", "count": 0}
 
+    records = [_row_to_dict(r) for r in rows]
+    today_iso = local_today().isoformat()
+    for record in records:
+        if record["date"] == today_iso:
+            await _apply_today_loads_override(user_id, record)
+            break
+
     return {
         "from_date": from_date,
         "to_date": to_date,
         "count": len(rows),
-        "data": [_row_to_dict(r) for r in rows],
+        "data": records,
     }

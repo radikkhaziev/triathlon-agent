@@ -34,7 +34,7 @@
 - `get_efficiency_trend` — последние 5 похожих, медиана decoupling
 - `get_workout_compliance` — план vs факт
 - `get_thresholds_history` — drift зон
-- `get_garmin_race_predictions` — прогноз времени на 5km/10km/HM
+- `get_race_projection` — прогноз времени на целевую дистанцию (ML)
 - `get_training_load` + `predict_ctl` — где это на decay-кривой к гонке
 - `get_personal_patterns` — индивидуальные ритмы восстановления
 - `athlete_goals` — целевая race + целевое время
@@ -275,12 +275,12 @@ async def get_workout_progress_summary(
       (skipped for Ride — uses power_at_hr instead)
     - threshold_drift: { current_lthr, measured_lthr_p7d, current_ftp, measured_ftp_p7d }
     - race_projection_delta: { sport, distance, prediction_now, prediction_4w_ago, delta_sec }
-      from get_garmin_race_predictions, only when active RACE_A goal exists
+      from get_race_projection (ML), only when active RACE_A goal exists
     - sample_size: count of source activities in the window
     """
 ```
 
-**Почему в Phase 1, а не отрезать через комбинацию tools:** если Claude собирает sparkline руками из `get_efficiency_trend` + `get_thresholds_history` + `get_garmin_race_predictions`, он добавит ошибки на склейке (разные окна, разные единицы, путает медиану и среднее). Один детерминированный tool с готовым свёрнутым объектом — дешевле (1 round-trip вместо 3) и надёжнее (нет LLM-математики). Тесты покрывают именно склейку, а не текст.
+**Почему в Phase 1, а не отрезать через комбинацию tools:** если Claude собирает sparkline руками из `get_efficiency_trend` + `get_thresholds_history` + `get_race_projection`, он добавит ошибки на склейке (разные окна, разные единицы, путает медиану и среднее). Один детерминированный tool с готовым свёрнутым объектом — дешевле (1 round-trip вместо 3) и надёжнее (нет LLM-математики). Тесты покрывают именно склейку, а не текст.
 
 ---
 
@@ -674,8 +674,7 @@ POST_WORKOUT_TOOLS = [
     "get_zones",
     # цель и projection
     "get_goal_progress",
-    "get_garmin_race_predictions",
-    "get_garmin_vo2max_trend",
+    "get_race_projection",
     # контекст нагрузки
     "get_training_load",
     "predict_ctl",

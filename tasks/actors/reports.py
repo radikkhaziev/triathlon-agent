@@ -35,6 +35,7 @@ from tasks.dto import local_today
 from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message, format_pace
 from tasks.tools import MCPTool, TelegramTool
 
+from ._constants import MORNING_REPORT_DELAY_SEC
 from .workout import actor_enrich_humango_workout
 
 logger = logging.getLogger(__name__)
@@ -290,15 +291,21 @@ def actor_compose_user_morning_report(
         if not _wellness_row or not _wellness_row.sleep_score:
             return
 
-        # Sentinel format: "__generating__:1713520800" (unix timestamp).
-        # Allow retry if sentinel is stuck >10 min (worker crash).
+        # Sentinel formats:
+        #   "__scheduled__:{eligible_at}" — wellness cron deferred the report
+        #     via dramatiq delay; this delayed run is the rightful owner, so
+        #     just fall through to claim it as __generating__.
+        #   "__generating__:{set_at}"     — another actor is currently running;
+        #     skip if fresh (< 10 min), else assume worker crash and retry.
         if _wellness_row.ai_recommendation:
-            if _wellness_row.ai_recommendation.startswith("__generating__"):
+            if _wellness_row.ai_recommendation.startswith("__scheduled__"):
+                pass
+            elif _wellness_row.ai_recommendation.startswith("__generating__"):
                 parts = _wellness_row.ai_recommendation.split(":", 1)
                 if len(parts) == 2:
                     try:
                         set_at = float(parts[1])
-                        if time.time() - set_at < 600:
+                        if time.time() - set_at < MORNING_REPORT_DELAY_SEC:
                             return
                     except ValueError:
                         pass

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from data.metrics import calculate_sport_atl, calculate_sport_ctl, project_sport_load_forward
+from data.metrics import _project_loads_one_day, calculate_sport_atl, calculate_sport_ctl, project_sport_load_forward
 
 
 def _act(sport: str, dt: date, load: float):
@@ -258,3 +258,162 @@ class TestProjectSportLoadForward:
         atl_at_horizon = atl_series[-1][1]
         assert atl_on_burst > 20.0
         assert atl_at_horizon < atl_on_burst / 3  # ~10 days decay
+
+
+class TestProjectLoadsOneDay:
+    """One-day forward projection used by `recompute_today_loads` — the
+    morning-report fix that strips Intervals.icu's planned-workout bake-in
+    from today's CTL/ATL."""
+
+    def test_zero_tss_pure_decay(self):
+        ctl, atl, tsb = _project_loads_one_day(prev_ctl=50.0, prev_atl=60.0, tss_today=0.0)
+        # CTL ≈ 50 * e^(-1/42) ≈ 48.8 ; ATL ≈ 60 * e^(-1/7) ≈ 52.0
+        assert ctl == pytest.approx(50.0 * math.exp(-1.0 / 42), abs=0.05)
+        assert atl == pytest.approx(60.0 * math.exp(-1.0 / 7), abs=0.05)
+        assert tsb == round(ctl - atl, 1)
+        # ATL drops faster than CTL → TSB more positive than prev (50-60=-10).
+        assert tsb > -10
+
+    def test_completed_tss_bumps_atl_more_than_ctl(self):
+        """ATL is more responsive (τ=7 vs τ=42) — a hard session should
+        push ATL up sharply while CTL nudges only slightly."""
+        no_load = _project_loads_one_day(50.0, 50.0, tss_today=0.0)
+        with_load = _project_loads_one_day(50.0, 50.0, tss_today=100.0)
+        # CTL gain ≈ 100 * (1 - e^(-1/42)) ≈ 2.35  → rounded delta ~2.4
+        # ATL gain ≈ 100 * (1 - e^(-1/7))  ≈ 13.35 → rounded delta ~13.3
+        assert with_load[0] - no_load[0] == pytest.approx(2.35, abs=0.15)
+        assert with_load[1] - no_load[1] == pytest.approx(13.35, abs=0.15)
+        # ATL must jump 5x harder than CTL — that's the whole point of τ split.
+        assert (with_load[1] - no_load[1]) > 5 * (with_load[0] - no_load[0])
+        # TSB drops because ATL jumps more than CTL.
+        assert with_load[2] < no_load[2]
+
+    def test_equilibrium_tss_holds_loads_constant(self):
+        """If today's TSS equals yesterday's CTL exactly, CTL stays flat —
+        you're training right at chronic load."""
+        ctl, _, _ = _project_loads_one_day(prev_ctl=50.0, prev_atl=50.0, tss_today=50.0)
+        assert ctl == pytest.approx(50.0, abs=0.05)
+
+    def test_rounded_to_one_decimal(self):
+        ctl, atl, tsb = _project_loads_one_day(50.123, 60.987, 42.5)
+        assert ctl == round(ctl, 1)
+        assert atl == round(atl, 1)
+        assert tsb == round(tsb, 1)
+
+
+# ---------------------------------------------------------------------------
+# DB-integration: recompute_today_loads
+# ---------------------------------------------------------------------------
+
+
+_TODAY = date(2026, 4, 30)
+_YESTERDAY = _TODAY - timedelta(days=1)
+
+
+async def _seed_yesterday_wellness(user_id: int, *, ctl: float | None, atl: float | None) -> None:
+    """Plant yesterday's wellness row directly via SQLAlchemy — bypassing
+    `Wellness.save`'s `_apply_intervals_fields` which expects a full WellnessDTO.
+    We only care about ctl/atl as the baseline."""
+    from datetime import datetime, timezone
+
+    from data.db import Wellness, get_session
+
+    async with get_session() as s:
+        s.add(
+            Wellness(
+                user_id=user_id,
+                date=_YESTERDAY.isoformat(),
+                ctl=ctl,
+                atl=atl,
+                updated=datetime.now(timezone.utc),
+            )
+        )
+        await s.commit()
+
+
+async def _seed_today_activity(user_id: int, *, activity_id: str, tss: float) -> None:
+    from data.db import Activity
+    from data.intervals.dto import ActivityDTO
+
+    dto = ActivityDTO(
+        id=activity_id,
+        start_date_local=_TODAY,
+        type="Ride",
+        icu_training_load=tss,
+        moving_time=3600,
+    )
+    await Activity.save_bulk(user_id, [dto])
+
+
+class TestRecomputeTodayLoads:
+    """DB-integration: `recompute_today_loads` reads yesterday's wellness +
+    today's activities and rolls forward by one day. Multi-tenant scoping
+    and edge-case handling matter for the morning-report fix that consumes it."""
+
+    async def test_returns_none_when_no_yesterday_wellness(self, monkeypatch):
+        from data import metrics
+
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert await metrics.recompute_today_loads(1) is None
+
+    async def test_returns_none_when_yesterday_has_no_ctl_atl(self, monkeypatch):
+        """Sleep-only row (CTL/ATL not yet computed by Intervals) is the same
+        as 'no baseline'. Caller falls back to whatever Intervals reported."""
+        from data import metrics
+
+        await _seed_yesterday_wellness(1, ctl=None, atl=None)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert await metrics.recompute_today_loads(1) is None
+
+    async def test_pure_decay_when_no_activities(self, monkeypatch):
+        """Yesterday baked, no work today → pure exponential decay."""
+        from data import metrics
+
+        await _seed_yesterday_wellness(1, ctl=50.0, atl=60.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        result = await metrics.recompute_today_loads(1)
+
+        assert result is not None
+        ctl, atl, tsb = result
+        # CTL ≈ 50 * e^(-1/42), ATL ≈ 60 * e^(-1/7).
+        assert ctl == pytest.approx(50.0 * math.exp(-1.0 / 42), abs=0.05)
+        assert atl == pytest.approx(60.0 * math.exp(-1.0 / 7), abs=0.05)
+        assert tsb == round(ctl - atl, 1)
+
+    async def test_single_activity_today_contributes_to_loads(self, monkeypatch):
+        from data import metrics
+
+        await _seed_yesterday_wellness(1, ctl=50.0, atl=50.0)
+        await _seed_today_activity(1, activity_id="a1", tss=100.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+
+        result = await metrics.recompute_today_loads(1)
+        assert result is not None
+        expected = metrics._project_loads_one_day(50.0, 50.0, 100.0)
+        assert result == expected
+
+    async def test_multiple_activities_today_sum_tss(self, monkeypatch):
+        """Two completed sessions on the same day → TSS adds. The fix exists
+        precisely because Intervals bakes in *planned* TSS — our recompute
+        must include all *completed* sessions, not just one."""
+        from data import metrics
+
+        await _seed_yesterday_wellness(1, ctl=50.0, atl=50.0)
+        await _seed_today_activity(1, activity_id="m1", tss=40.0)
+        await _seed_today_activity(1, activity_id="m2", tss=60.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+
+        result = await metrics.recompute_today_loads(1)
+        assert result == metrics._project_loads_one_day(50.0, 50.0, 100.0)
+
+    async def test_activity_with_null_tss_treated_as_zero(self, monkeypatch):
+        """Some imported activities (e.g. WeightTraining without HR) carry
+        ``icu_training_load=None``. Mustn't crash — treat as 0 TSS."""
+        from data import metrics
+
+        await _seed_yesterday_wellness(1, ctl=50.0, atl=50.0)
+        await _seed_today_activity(1, activity_id="zero", tss=None)  # type: ignore[arg-type]
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+
+        result = await metrics.recompute_today_loads(1)
+        assert result == metrics._project_loads_one_day(50.0, 50.0, 0.0)

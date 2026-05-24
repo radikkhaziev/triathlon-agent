@@ -21,7 +21,7 @@ from config import settings
 from data.db import Activity, ActivityDetail, AthleteGoal, Race, ScheduledWorkout, User, UserDTO, Wellness, get_session
 from data.db.dto import AthleteGoalDTO
 from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivity, calculate_marathon_shape
-from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target, project_sport_load_forward
+from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target, project_sport_load_forward, recompute_today_loads
 from data.ml.race_predict import predict_splits_with_ci
 from data.redis_client import get_redis
 from data.utils import extract_sport_atl, extract_sport_ctl, normalize_sport
@@ -193,6 +193,18 @@ async def training_load(
         atl_swim.append(per_atl["swim"])
         atl_ride.append(per_atl["ride"])
         atl_run.append(per_atl["run"])
+
+    # Intervals.icu bakes today's planned workouts into ctl/atl, so the
+    # in-progress day's marker (and the forecast anchor) look as if the
+    # session is already done. Override with yesterday-decayed + actually
+    # completed TSS. Per-sport arrays are intentionally left untouched —
+    # ``recompute_today_loads`` only returns overall ctl/atl/tsb, the
+    # sport_info recompute is deferred (would need per-sport TSS attribution
+    # of today's activities). Frontend renders the visible split.
+    if dates and dates[-1] == today_iso:
+        recomputed = await recompute_today_loads(uid)
+        if recomputed is not None:
+            ctl[-1], atl[-1], tsb[-1] = recomputed
 
     # ``min(today_iso, dates[-1])`` clamps any future-dated wellness row (edge
     # case, shouldn't happen — but if it does, anchoring forecast on a future
