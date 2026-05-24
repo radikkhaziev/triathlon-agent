@@ -2,11 +2,13 @@
 
 import logging
 import statistics
+import time
 from datetime import date
 
 import dramatiq
 from dramatiq import group, pipeline
 from pydantic import validate_call
+from sqlalchemy import select
 
 from data.db import HrvAnalysis, RhrAnalysis, UserDTO, Wellness, get_sync_session
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
@@ -14,6 +16,7 @@ from data.intervals.dto import RecoveryScoreDTO, RhrStatusDTO, RmssdStatusDTO, W
 from data.metrics import TREND_THRESHOLDS, calculate_trend, combined_recovery_score, rmssd_flatt_esco
 from tasks.dto import ORMDTO, DateDTO, local_today
 
+from ._constants import MORNING_REPORT_DELAY_SEC
 from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update
 
 logger = logging.getLogger(__name__)
@@ -345,8 +348,50 @@ def actor_user_wellness(
     # which can either skip or double-fire the morning-report dispatch.
     if (
         _dt == today.isoformat()
-        and not _row.ai_recommendation
+        and _is_free_for_morning_report(_row.ai_recommendation)
         and _row.sleep_score is not None
         and _row.recovery_score is not None
     ):
-        actor_compose_user_morning_report.send(user=user)
+        # Intervals.icu sometimes recomputes yesterday's CTL/ATL shortly after
+        # wake-up (late activities, late HRV). `recompute_today_loads` uses
+        # yesterday's value as the baseline, so we delay the compose by
+        # 10 min to let Intervals settle. Re-firing cron in this window sees
+        # ai_recommendation = "__scheduled__:..." and `_is_free_for_morning_report`
+        # returns False → skip re-dispatch. The compose actor has a matching
+        # `__scheduled__` branch that lets the delayed run claim the slot.
+        with get_sync_session() as session:
+            locked = session.execute(
+                select(Wellness).where(Wellness.user_id == user.id, Wellness.date == _dt).with_for_update()
+            ).scalar_one_or_none()
+            if not locked or not _is_free_for_morning_report(locked.ai_recommendation):
+                return
+            # Sentinel stores SET-time (not eligibility) to keep the format
+            # symmetric with ``__generating__:{set_at}`` and avoid easy mix-ups
+            # in future fixes. Eligibility is derived in `_is_free_for_morning_report`.
+            locked.ai_recommendation = f"__scheduled__:{time.time():.0f}"
+            session.commit()
+
+        actor_compose_user_morning_report.send_with_options(
+            kwargs={"user": user}, delay=MORNING_REPORT_DELAY_SEC * 1000
+        )
+
+
+def _is_free_for_morning_report(ai_recommendation: str | None) -> bool:
+    """True if the wellness row can accept a new morning-report dispatch.
+
+    Free = null, or a stale ``__scheduled__:{set_at}`` sentinel whose delayed
+    message never arrived (Redis loss / broker eviction). A sentinel is stale
+    if it's older than 2× ``MORNING_REPORT_DELAY_SEC`` — one delay buys the
+    delayed message its scheduled fire-time, the second buys grace if the
+    broker hiccupped. Sentinels with corrupt timestamps are also treated as
+    free so a single broken row doesn't permanently lock the slot.
+    """
+    if not ai_recommendation:
+        return True
+    if ai_recommendation.startswith("__scheduled__:"):
+        try:
+            set_at = float(ai_recommendation.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return True
+        return time.time() - set_at > 2 * MORNING_REPORT_DELAY_SEC
+    return False

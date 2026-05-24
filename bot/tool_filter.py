@@ -10,14 +10,6 @@ TOOL_GROUPS: dict[str, list[str]] = {
         "get_scheduled_workouts",
         "get_activities",
     ],
-    "garmin": [
-        "get_garmin_sleep",
-        "get_garmin_readiness",
-        "get_garmin_daily_metrics",
-        "get_garmin_race_predictions",
-        "get_garmin_vo2max_trend",
-        "get_garmin_abnormal_hr_events",
-    ],
     "workouts": [
         "suggest_workout",
         "remove_ai_workout",
@@ -84,16 +76,6 @@ TOOL_GROUPS: dict[str, list[str]] = {
 ALWAYS_INCLUDE = {"core", "tracking", "workouts"}
 
 KEYWORD_TO_GROUPS: dict[str, list[str]] = {
-    # Garmin
-    "garmin": ["garmin"],
-    "sleep": ["garmin"],
-    "сон": ["garmin"],
-    "body battery": ["garmin"],
-    "readiness": ["garmin"],
-    "vo2max": ["garmin"],
-    "vo2": ["garmin"],
-    "race prediction": ["garmin"],
-    "прогноз": ["garmin"],
     # Workouts
     "тренировк": ["workouts"],
     "workout": ["workouts"],

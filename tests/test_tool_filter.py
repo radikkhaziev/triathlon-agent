@@ -13,18 +13,6 @@ class TestSelectToolGroups:
         groups = select_tool_groups("как дела?")
         assert groups == ALWAYS_INCLUDE
 
-    def test_garmin_sleep(self):
-        assert "garmin" in select_tool_groups("как мой сон?")
-
-    def test_garmin_readiness(self):
-        assert "garmin" in select_tool_groups("garmin readiness")
-
-    def test_garmin_body_battery(self):
-        assert "garmin" in select_tool_groups("body battery низкий")
-
-    def test_garmin_vo2(self):
-        assert "garmin" in select_tool_groups("покажи vo2max")
-
     def test_workout_keywords(self):
         groups = select_tool_groups("создай тренировку на велосипед")
         assert "workouts" in groups
@@ -66,12 +54,13 @@ class TestSelectToolGroups:
         assert "tracking" in select_tool_groups("сколько стиков сегодня?")
 
     def test_multiple_groups(self):
-        groups = select_tool_groups("покажи сон и тренд дрифта")
-        assert "garmin" in groups
+        # Two non-always groups in one message: `тренд` → analysis, `issue` → admin.
+        groups = select_tool_groups("создай issue про серую зону и покажи тренд")
         assert "analysis" in groups
+        assert "admin" in groups
 
     def test_case_insensitive(self):
-        assert "garmin" in select_tool_groups("Покажи GARMIN данные")
+        assert "analysis" in select_tool_groups("Покажи DECOUPLING данные")
 
     def test_empty_message(self):
         groups = select_tool_groups("")
@@ -80,7 +69,7 @@ class TestSelectToolGroups:
 
 class TestFilterTools:
     def test_filters_to_core_only(self):
-        all_tools = [{"name": "get_wellness"}, {"name": "get_garmin_sleep"}, {"name": "suggest_workout"}]
+        all_tools = [{"name": "get_wellness"}, {"name": "get_efficiency_trend"}, {"name": "suggest_workout"}]
         filtered = filter_tools(all_tools, {"core"})
         assert len(filtered) == 1
         assert filtered[0]["name"] == "get_wellness"
@@ -88,14 +77,14 @@ class TestFilterTools:
     def test_multiple_groups(self):
         all_tools = [
             {"name": "get_wellness"},
-            {"name": "get_garmin_sleep"},
+            {"name": "get_efficiency_trend"},
             {"name": "suggest_workout"},
             {"name": "save_mood_checkin_tool"},
         ]
-        filtered = filter_tools(all_tools, {"core", "garmin"})
+        filtered = filter_tools(all_tools, {"core", "analysis"})
         names = {t["name"] for t in filtered}
         assert "get_wellness" in names
-        assert "get_garmin_sleep" in names
+        assert "get_efficiency_trend" in names
         assert "suggest_workout" not in names
 
     def test_empty_groups(self):
@@ -122,10 +111,10 @@ class TestToolGroupIntegrity:
         all_names: set[str] = set()
         for tools in TOOL_GROUPS.values():
             all_names.update(tools)
-        # 56 tools total (7 core + 6 garmin + 10 workouts + 7 tracking + 21 analysis + 5 admin)
-        # +1 vs 55: `get_race_projection` added to analysis (ML race-day splits MCP tool).
+        # 53 tools total (7 core + 10 workouts + 7 tracking + 24 analysis + 5 admin).
+        # `garmin` group removed — see CLAUDE.md changelog for the deletion.
         expected = sum(len(t) for t in TOOL_GROUPS.values())
-        assert len(all_names) == expected == 56
+        assert len(all_names) == expected == 53
 
     def test_core_has_essential_tools(self):
         core = set(TOOL_GROUPS["core"])

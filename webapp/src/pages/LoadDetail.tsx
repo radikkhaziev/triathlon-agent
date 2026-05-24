@@ -62,13 +62,6 @@ const fmtMd = (ymd: string) => {
   return `${p[1]}/${p[2]}`
 }
 const fmtSigned = (v: number) => (v > 0 ? '+' : '') + v
-// Walk from the tail looking for the most recent non-null entry. Overall
-// arrays carry trailing nulls past `today_date` (the forecast region is
-// per-sport-only), so a naive `arr[arr.length - 1]` would render "—".
-const lastValid = (arr: (number | null)[]): number | null => {
-  for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return arr[i]
-  return null
-}
 
 export default function LoadDetail() {
   const { t } = useTranslation()
@@ -125,9 +118,13 @@ export default function LoadDetail() {
     bucket[k] += p.tss
   }
 
-  const ctlToday = load ? lastValid(load.ctl) : null
-  const atlToday = load ? lastValid(load.atl) : null
-  const tsbToday = load ? lastValid(load.tsb) : null
+  // Indexed lookup, not `lastValid` — `/api/training-load` returns past
+  // values + forecast extension up to the planned horizon, so the array's
+  // last entry is end-of-forecast, not today. The headline must read today.
+  const todayIdx = load ? load.dates.indexOf(load.today_date) : -1
+  const ctlToday = load && todayIdx >= 0 ? load.ctl[todayIdx] : null
+  const atlToday = load && todayIdx >= 0 ? load.atl[todayIdx] : null
+  const tsbToday = load && todayIdx >= 0 ? load.tsb[todayIdx] : null
 
   const headline: { k: string; sub: string; val: number | null; color: string; signed?: boolean }[] = [
     { k: 'Fitness', sub: 'CTL', val: ctlToday, color: LOAD_COLOR.ctl },
@@ -328,8 +325,10 @@ export default function LoadDetail() {
                     { key: 'ride', label: 'Ride', ctlValues: load.ctl_ride, atlValues: load.atl_ride, color: SPORT_COLOR.ride },
                     { key: 'run', label: 'Run', ctlValues: load.ctl_run, atlValues: load.atl_run, color: SPORT_COLOR.run },
                   ] as const).map(sp => {
-                    const sportCtl = lastValid(sp.ctlValues)
-                    const sportAtl = lastValid(sp.atlValues)
+                    // Same indexed-today lookup as headline — forecast tail
+                    // would otherwise be shown as the per-sport "current".
+                    const sportCtl = todayIdx >= 0 ? sp.ctlValues[todayIdx] : null
+                    const sportAtl = todayIdx >= 0 ? sp.atlValues[todayIdx] : null
                     // Hide the whole card if a sport has no CTL trend at all —
                     // ATL is meaningless without it. Pre-Step-1.5 backfill rows
                     // carry only CTL → ATL stays absent on legacy days.

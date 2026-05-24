@@ -797,7 +797,7 @@ class MCPTool:
     # the ``_TG_400_PERMANENT_SUBSTRINGS`` precedent above).
     WEEKLY_MODEL: ClassVar[str] = "claude-sonnet-4-6"
 
-    # Tools allowed in weekly report (no Garmin, no workout creation, no admin).
+    # Tools allowed in weekly report (no workout creation, no admin).
     # Some entries (get_activities, get_hrv_analysis, get_recovery, get_rhr_analysis,
     # get_wellness_range) aren't named in SYSTEM_PROMPT_WEEKLY explicitly — Claude
     # discovers them via tools/list and uses them as fallback context. Don't trim

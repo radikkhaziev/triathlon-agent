@@ -5,9 +5,11 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import select
 
 from data.db import Activity, IqosDaily, MoodCheckin, ScheduledWorkout, Wellness, get_session
+from data.metrics import recompute_today_loads
 from data.utils import extract_sport_ctl
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
+from tasks.dto import local_today
 
 # Recovery category thresholds (same as data/metrics.py)
 _RECOVERY_CATEGORIES = {"excellent": "green", "good": "green", "moderate": "yellow", "low": "red"}
@@ -55,10 +57,13 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
             )
         ).all()
 
-        # Wellness (full row for recovery + weight + sport_info)
+        # Wellness (full row for recovery + weight + sport_info). `date` is
+        # carried so we can detect today's row and override its CTL — the
+        # Intervals.icu-reported value bakes in planned workouts.
         wellness_rows = (
             await session.execute(
                 select(
+                    Wellness.date,
                     Wellness.hrv,
                     Wellness.resting_hr,
                     Wellness.sleep_score,
@@ -134,15 +139,28 @@ async def get_weekly_summary(week_start_date: str = "") -> dict:
     compliance_pct = round(matched / sessions_planned * 100) if sessions_planned else 0
 
     # --- Wellness averages ---
-    hrvs = [r[0] for r in wellness_rows if r[0] is not None]
-    rhrs = [r[1] for r in wellness_rows if r[1] is not None]
-    sleep_scores = [r[2] for r in wellness_rows if r[2] is not None]
-    sleep_secs = [r[3] for r in wellness_rows if r[3] is not None]
-    ctls = [r[4] for r in wellness_rows if r[4] is not None]
-    recovery_scores = [r[5] for r in wellness_rows if r[5] is not None]
-    recovery_cats = [r[6] for r in wellness_rows if r[6] is not None]
-    weights = [r[7] for r in wellness_rows if r[7] is not None]
-    sport_infos = [r[8] for r in wellness_rows if r[8] is not None]
+    hrvs = [r[1] for r in wellness_rows if r[1] is not None]
+    rhrs = [r[2] for r in wellness_rows if r[2] is not None]
+    sleep_scores = [r[3] for r in wellness_rows if r[3] is not None]
+    sleep_secs = [r[4] for r in wellness_rows if r[4] is not None]
+    ctls = [r[5] for r in wellness_rows if r[5] is not None]
+    recovery_scores = [r[6] for r in wellness_rows if r[6] is not None]
+    recovery_cats = [r[7] for r in wellness_rows if r[7] is not None]
+    weights = [r[8] for r in wellness_rows if r[8] is not None]
+    sport_infos = [r[9] for r in wellness_rows if r[9] is not None]
+
+    # Override today's CTL with the actual-only recompute — Intervals' value
+    # bakes in planned workouts. Guarded on `today_has_ctl`: ``ctls`` is
+    # already filtered for non-null, so `ctls[-1]` is NOT guaranteed to be
+    # today's row. Without the guard, an early-morning request (today's
+    # wellness arrived but CTL not yet computed → ctl=None) would silently
+    # overwrite the previous non-null day's value and poison ``ctl_avg``.
+    today_iso = local_today().isoformat()
+    today_has_ctl = wellness_rows and wellness_rows[-1][0] == today_iso and wellness_rows[-1][5] is not None
+    if today_has_ctl:
+        recomputed = await recompute_today_loads(user_id)
+        if recomputed is not None:
+            ctls[-1] = recomputed[0]
 
     hrv_avg = round(sum(hrvs) / len(hrvs), 1) if hrvs else None
     hrv_cv = (

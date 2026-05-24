@@ -13,7 +13,6 @@ import mcp_server.tools.ai_workouts  # noqa: F401
 import mcp_server.tools.compliance  # noqa: F401
 import mcp_server.tools.ctl_prediction  # noqa: F401
 import mcp_server.tools.exercise_guidelines  # noqa: F401
-import mcp_server.tools.garmin  # noqa: F401
 import mcp_server.tools.github  # noqa: F401
 import mcp_server.tools.goal  # noqa: F401
 import mcp_server.tools.hrv  # noqa: F401
