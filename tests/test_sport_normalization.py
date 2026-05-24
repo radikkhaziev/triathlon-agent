@@ -2,7 +2,7 @@
 
 import pytest
 
-from data.utils import HRV_ELIGIBLE_TYPES, extract_sport_ctl, is_bike, is_run, normalize_sport
+from data.utils import HRV_ELIGIBLE_TYPES, extract_sport_atl, extract_sport_ctl, is_bike, is_run, normalize_sport
 
 
 class TestNormalizeSport:
@@ -78,6 +78,35 @@ class TestExtractSportCtl:
     def test_empty(self):
         assert extract_sport_ctl(None) == {"swim": None, "ride": None, "run": None}
         assert extract_sport_ctl([]) == {"swim": None, "ride": None, "run": None}
+
+    def test_legacy_ctl_load_key(self):
+        """Older Intervals.icu payloads used 'ctlLoad' — extractor falls back."""
+        result = extract_sport_ctl([{"type": "Run", "ctlLoad": 18.7}])
+        assert result["run"] == 18.7
+
+
+class TestExtractSportAtl:
+    def test_all_sports(self):
+        sport_info = [
+            {"type": "Swim", "atl": 5.0, "ctl": 10.0},
+            {"type": "Ride", "atl": 28.0, "ctl": 30.0},
+            {"type": "Run", "atl": 22.0, "ctl": 20.0},
+        ]
+        result = extract_sport_atl(sport_info)
+        assert result == {"swim": 5.0, "ride": 28.0, "run": 22.0}
+
+    def test_empty(self):
+        assert extract_sport_atl(None) == {"swim": None, "ride": None, "run": None}
+        assert extract_sport_atl([]) == {"swim": None, "ride": None, "run": None}
+
+    def test_legacy_atl_load_key(self):
+        result = extract_sport_atl([{"type": "Ride", "atlLoad": 33.1}])
+        assert result["ride"] == 33.1
+
+    def test_atl_independent_from_ctl(self):
+        """Entry with only ctl set → atl extraction returns None for that sport."""
+        sport_info = [{"type": "Run", "ctl": 20.0}]
+        assert extract_sport_atl(sport_info) == {"swim": None, "ride": None, "run": None}
 
 
 class TestDTONormalization:

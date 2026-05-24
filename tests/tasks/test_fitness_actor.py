@@ -67,7 +67,10 @@ class TestActorSaveFitnessProjection:
             assert [r["id"] for r in kwargs["records"]] == [_TODAY_ISO, "2026-05-21", "2026-09-15"]
 
     def test_updates_wellness_for_today_from_payload(self):
-        """Wellness.update_loads is called with today's record values — no API roundtrip."""
+        """Wellness.update_loads is called with today's record values — no API roundtrip.
+        ``dt`` must be a ``date`` (not a string) — the method calls ``dt.isoformat()``
+        and would AttributeError on a str (regression: caught in prod 2026-05-24).
+        """
         with (
             _patch_today(),
             patch("tasks.actors.fitness.FitnessProjection.save_bulk"),
@@ -76,13 +79,17 @@ class TestActorSaveFitnessProjection:
             actor_save_fitness_projection(user=_user(), records=_RECORDS)
             upd.assert_called_once_with(
                 user_id=42,
-                dt=_TODAY_ISO,
+                dt=_TODAY,
                 ctl=18.94,
                 atl=38.27,
                 ramp_rate=4.23,
                 ctl_load=41.0,
                 atl_load=44.0,
             )
+            # Type-contract guard: ``Wellness.update_loads`` invokes
+            # ``dt.isoformat()``; pass-through of a raw str would explode at
+            # runtime under @with_sync_session (no Pydantic coercion there).
+            assert hasattr(upd.call_args.kwargs["dt"], "isoformat")
 
     def test_no_wellness_update_when_today_absent(self):
         """If today isn't in records (edge case), skip the wellness update."""

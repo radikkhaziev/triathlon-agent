@@ -310,67 +310,84 @@ def calculate_banister_for_date(
 # ---------------------------------------------------------------------------
 
 
-def calculate_sport_ctl(
+def _calculate_sport_load_ema(
     activities: list[Activity],
-    tau: int = 42,
+    tau: int,
+    as_of: date_type | None = None,
 ) -> dict[str, float]:
-    """Calculate per-sport CTL (Chronic Training Load) from activity history.
+    """Per-sport exponential moving average of daily TSS with constant `tau`.
 
-    Uses exponential moving average (EMA) with tau=42 days, matching Intervals.icu's
-    impulse-response model. Activities must span at least 42+ days for reliable values.
+    Shared core for `calculate_sport_ctl` (τ=42) and `calculate_sport_atl` (τ=7).
+    Iterates one date at a time so days without activities contribute zero load —
+    necessary for the EMA to decay correctly during rest periods.
 
-    Args:
-        activities: Objects with attrs: type (str|None), icu_training_load (float|None),
-                    start_date_local (str|date). Accepts Activity model or Activity ORM.
-        tau: Time constant in days (default 42, matching Intervals.icu CTL).
-
-    Returns:
-        {"swim": float, "ride": float, "run": float} — CTL per sport.
-        Returns 0.0 for sports with no activities.
+    `as_of` is the target evaluation date. The EMA runs from the first activity
+    up to and including `as_of`, so a rest gap between the last activity and
+    `as_of` still decays. Default `None` uses the last activity date (legacy
+    behavior — only safe when caller guarantees recent activity).
     """
     if not activities:
         return {"swim": 0.0, "ride": 0.0, "run": 0.0}
 
-    # Group daily load by sport (types are already canonical: Ride/Run/Swim/Other)
     daily_load: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for act in activities:
         sport = (act.type or "").lower()
         if sport not in ("swim", "ride", "run"):
             continue
-
         if act.icu_training_load is None:
             continue
-
         daily_load[sport][str(act.start_date_local)] += act.icu_training_load
 
     if not daily_load:
         return {"swim": 0.0, "ride": 0.0, "run": 0.0}
 
-    # Find date range across all sports
-    all_dates = set()
+    all_dates: set[str] = set()
     for sport_dates in daily_load.values():
         all_dates.update(sport_dates.keys())
 
     min_date = date_type.fromisoformat(min(all_dates))
-    max_date = date_type.fromisoformat(max(all_dates))
+    last_activity_date = date_type.fromisoformat(max(all_dates))
+    end_date = as_of if as_of is not None else last_activity_date
+    if end_date < min_date:
+        end_date = min_date
 
-    # Calculate EMA for each sport day by day
-    k = 1.0 / tau  # rate constant
-    decay = math.exp(-k)
+    decay = math.exp(-1.0 / tau)
 
-    result = {}
+    result: dict[str, float] = {}
     for sport in ("swim", "ride", "run"):
-        ctl = 0.0
+        value = 0.0
         sport_loads = daily_load.get(sport, {})
         current = min_date
-        while current <= max_date:
-            ds = current.strftime("%Y-%m-%d")
-            tss = sport_loads.get(ds, 0.0)
-            ctl = ctl * decay + tss * (1 - decay)
+        while current <= end_date:
+            tss = sport_loads.get(current.strftime("%Y-%m-%d"), 0.0)
+            value = value * decay + tss * (1 - decay)
             current += timedelta(days=1)
-        result[sport] = round(ctl, 1)
+        result[sport] = round(value, 1)
 
     return result
+
+
+def calculate_sport_ctl(
+    activities: list[Activity],
+    tau: int = 42,
+    as_of: date_type | None = None,
+) -> dict[str, float]:
+    """Per-sport CTL (Chronic Training Load) — EMA with τ=42, matching Intervals.icu.
+
+    Caller must supply enough history for the EMA to warm up: at least ~3τ (126 days)
+    for <5% bias, ideally 5τ (210 days) for <1%. Pass `as_of` so the EMA decays
+    correctly through any rest gap between the last activity and the target date.
+    """
+    return _calculate_sport_load_ema(activities, tau, as_of=as_of)
+
+
+def calculate_sport_atl(
+    activities: list[Activity],
+    tau: int = 7,
+    as_of: date_type | None = None,
+) -> dict[str, float]:
+    """Per-sport ATL (Acute Training Load) — EMA with τ=7, matching Intervals.icu."""
+    return _calculate_sport_load_ema(activities, tau, as_of=as_of)
 
 
 # ---------------------------------------------------------------------------

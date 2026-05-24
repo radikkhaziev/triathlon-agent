@@ -94,22 +94,34 @@ def extract_sport_ctl(sport_info: list[dict] | None) -> dict[str, float | None]:
     Works with both the original Intervals.icu format (type + eftp/wPrime/pMax)
     enriched with 'ctl' field by our pipeline, and any legacy formats.
     """
+    return _extract_sport_field(sport_info, "ctl", legacy_key="ctlLoad")
+
+
+def extract_sport_atl(sport_info: list[dict] | None) -> dict[str, float | None]:
+    """Extract per-sport ATL from sport_info JSON. Symmetric to extract_sport_ctl."""
+    return _extract_sport_field(sport_info, "atl", legacy_key="atlLoad")
+
+
+def _extract_sport_field(
+    sport_info: list[dict] | None,
+    key: str,
+    *,
+    legacy_key: str | None = None,
+) -> dict[str, float | None]:
     result: dict[str, float | None] = {"swim": None, "ride": None, "run": None}
-    if not sport_info:
-        return result
-    if not isinstance(sport_info, list):
+    if not sport_info or not isinstance(sport_info, list):
         return result
     for entry in sport_info:
         raw_type = (entry.get("type") or entry.get("sport") or "").lower()
         sport = SPORT_MAP.get(raw_type)
         if not sport:
             continue
-        ctl_val = entry.get("ctl")
-        if ctl_val is None:
-            ctl_val = entry.get("ctlLoad")
-        if ctl_val is None:
+        val = entry.get(key)
+        if val is None and legacy_key is not None:
+            val = entry.get(legacy_key)
+        if val is None:
             continue
-        result[sport] = round(float(ctl_val), 1)
+        result[sport] = round(float(val), 1)
     return result
 
 

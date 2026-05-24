@@ -593,6 +593,14 @@ def humango_to_intervals_steps(
                     step_kind = sub.text.lower().replace("-", "")
                     if step_kind in ("cooldown", "cool down"):
                         break  # cooldown belongs to outer level
+                    # Two consecutive Rest blocks → the second one is the
+                    # rest between sets, not part of the repeat body. Leave
+                    # ``i`` pointing at it so the outer loop picks it up as
+                    # an outer-level step instead of multiplying it ``reps``
+                    # times inside the group. Case-insensitive — label
+                    # capitalization may drift in future variants.
+                    if step_kind == "rest" and sub_steps and (sub_steps[-1].text or "").lower() == "rest":
+                        break
                     sub_steps.append(sub)
                 i += 1
             if sub_steps:

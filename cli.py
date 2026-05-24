@@ -135,6 +135,18 @@ def main() -> None:
     )
     p_trm.add_argument("user_id", type=int)
 
+    p_rsl = sub.add_parser(
+        "recalc-sport-load",
+        help="Backfill per-sport CTL+ATL across all active athletes for the last N days. "
+        "Dispatches actor_user_wellness(force=True) per (user, day), which re-pulls wellness "
+        "from Intervals (creates row if missing for inactive users) and re-runs the pipeline — "
+        "including _actor_enrich_wellness_sport_info that recomputes sport_info[].ctl/atl. "
+        "See docs/PER_SPORT_LOAD_SPEC.md §Step 1.5.",
+    )
+    p_rsl.add_argument("--user-id", type=int, default=None, help="Specific user; default: all active athletes")
+    p_rsl.add_argument("--days", type=int, default=200, help="Window in days (default: 200, matches CTL EMA 5τ)")
+    p_rsl.add_argument("--dry-run", action="store_true", help="List users + dates without dispatching")
+
     p_cn = sub.add_parser(
         "classify-noise",
         help="Backfill activities.noise_reason for Run activities — Phase 1.6 "
@@ -181,6 +193,8 @@ def main() -> None:
         _train_race_models(args.user_id)
     elif args.command == "classify-noise":
         _classify_noise(user_id=args.user_id, since_days=args.since_days, dry_run=args.dry_run)
+    elif args.command == "recalc-sport-load":
+        _recalc_sport_load(user_id=args.user_id, days=args.days, dry_run=args.dry_run)
 
 
 def _resolve_user(user_id: int) -> UserDTO:
@@ -817,6 +831,73 @@ def _train_race_models(user_id: int) -> None:
             print(f"  {discipline:5s}: skip — {e}")
         except Exception as e:
             print(f"  {discipline:5s}: FAILED — {type(e).__name__}: {e}")
+
+
+def _recalc_sport_load(*, user_id: int | None, days: int, dry_run: bool) -> None:
+    """Backfill per-sport CTL+ATL for the last `days` days across active athletes.
+
+    For each (user, day) → `actor_user_wellness(force=True)`. The actor re-pulls
+    wellness from Intervals (creates row if missing), then dispatches
+    `actor_after_activity_update` which re-runs `_actor_enrich_wellness_sport_info`
+    on the 200-day window — recomputing per-sport CTL/ATL with the new algorithm.
+
+    Sequential per user: user `i` starts at `i * days * 20s`. The 20s/day pacing
+    mirrors `_sync_wellness` and stays under Intervals.icu's rate limit.
+    """
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+
+    with get_sync_session() as session:
+        if user_id is not None:
+            user = session.get(User, user_id)
+            if not user or not user.is_active or not user.athlete_id:
+                raise SystemExit(f"User {user_id} not active or has no athlete_id")
+            users = [user]
+        else:
+            users = list(
+                session.execute(
+                    select(User).where(User.is_active.is_(True), User.athlete_id.isnot(None)).order_by(User.id)
+                )
+                .scalars()
+                .all()
+            )
+
+    if not users:
+        print("No active athletes found")
+        return
+
+    # 60s/day vs sync-wellness's 20s: actor_user_wellness fans out HRV/RHR/Banister/
+    # recovery analyses that walk rolling 7/60d baselines. 20s can be tight under
+    # API retries and risks the cross-day race OAUTH_BOOTSTRAP_SYNC_SPEC §17 warns
+    # about. 60s is a 3× margin — one-shot backfill, wall-time cost is acceptable.
+    delay_per_day_ms = 60_000
+    days_per_user = days
+    per_user_window_ms = days_per_user * delay_per_day_ms
+
+    total_msgs = len(users) * days_per_user
+    wall_minutes = (len(users) * per_user_window_ms) / 60_000
+    print(
+        f"recalc-sport-load: {len(users)} user(s), {days_per_user} day(s) each "
+        f"({start} → {today}) → {total_msgs} dispatches, "
+        f"~{wall_minutes:.0f} min wall time"
+    )
+
+    if dry_run:
+        for u in users:
+            print(f"  user_id={u.id} chat_id={u.chat_id} @{u.username or '-'}")
+        print("Dry run — no messages queued.")
+        return
+
+    for i, u in enumerate(users):
+        user_dto = UserDTO.model_validate(u)
+        user_offset_ms = i * per_user_window_ms
+        for j in range(days_per_user):
+            day = (start + timedelta(days=j)).isoformat()
+            actor_user_wellness.send_with_options(
+                kwargs={"user": user_dto, "dt": day, "force": True},
+                delay=user_offset_ms + j * delay_per_day_ms,
+            )
+        print(f"  user_id={u.id} queued {days_per_user} days, " f"starts at +{user_offset_ms // 60_000} min")
 
 
 def _classify_noise(*, user_id: int | None, since_days: int, dry_run: bool) -> None:

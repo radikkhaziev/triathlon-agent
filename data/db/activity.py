@@ -159,11 +159,16 @@ class Activity(Base):
         *,
         filters: tuple[ColumnElement, ...] = (),
         as_of: DateDTO | None = None,
+        days: int = 90,
         session: Session,
     ) -> list[Activity]:
-        """Return activities within a date window with extra SA filters."""
+        """Return activities within a date window with extra SA filters.
+
+        Default 90d window covers Banister ESS (τ=7, hears only the last ~14d) with
+        a wide safety margin. Callers needing reliable CTL/ATL EMAs (τ=42 / τ=7)
+        should pass `days=200` — see `data/metrics.py:calculate_sport_ctl`.
+        """
         ref = as_of or date.today()
-        days = 90
 
         cutoff = (ref - timedelta(days=days)).isoformat()
         newest = ref.isoformat()
