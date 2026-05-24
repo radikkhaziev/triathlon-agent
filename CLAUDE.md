@@ -93,9 +93,9 @@ See `.env.example` for full list. Key vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_
 **CTL/ATL/TSB** — All values from Intervals.icu API (τ_CTL=42d, τ_ATL=7d). NOT recalculated. Thresholds calibrated for Intervals.icu, not TrainingPeaks.
 TSB zones (5-band, mirrors frontend `LoadDetail.tsx::TSB_ZONES`): `<−30 risk (high risk) | −30..−10 optimal (productive) | −10..+5 gray | +5..+25 fresh | ≥+25 transition`. Source of truth lives on the frontend; `data/utils.py:tsb_zone` returns the same five ids (`risk`/`optimal`/`gray`/`fresh`/`transition`). Only the «risk» zone produces a user-facing warning; the other four are informational. Reversal of the 2026-05-17 conform-to-4-zones decision — see `docs/WEBAPP_HALO_REDESIGN_SPEC.md` Decisions log 2026-05-23.
 
-**HRV — Flatt & Esco** baseline (today's RMSSD vs 7d mean, asymmetric bounds −1/+0.5 SD, fast response). Status: green (full load) / yellow (monitor) / red (reduce) / insufficient_data (<14 days). The AIEndurance algorithm was retired in #307 — historical `algorithm='ai_endurance'` rows in `hrv_analysis` are preserved but never read; `algorithm` column kept in PK so the schema stays addressable.
+**HRV — Flatt & Esco** baseline (3-day-smoothed RMSSD vs 7-day baseline, asymmetric bounds −1/+0.5 SD). The baseline window is shifted by the smoothing length (`history[-(7+smooth):-smooth]`) so today's noise doesn't leak into the comparator. DTO exposes `rmssd_today_smoothed` for status explanations — raw `today` in `rmssd_7d` may sit in-band while the smoothed value drifts. Status: green (full load) / yellow (monitor) / red (reduce) / insufficient_data (<14 days). The AIEndurance algorithm was retired in #307 — historical `algorithm='ai_endurance'` rows in `hrv_analysis` are preserved but never read; `algorithm` column kept in PK so the schema stays addressable.
 
-**RHR** — Inverted vs HRV: elevated RHR = red. Bounds: ±0.5 SD of 30d mean.
+**RHR** — Inverted vs HRV: elevated RHR = red. 3-day-smoothed RHR vs 30-day baseline (also shifted by the smoothing length), ±0.5 SD. DTO exposes `rhr_today_smoothed` alongside raw `rhr_today` so dashboards can show "smoothed 62 (raw 70)" when classifying.
 
 **Recovery Score (0-100)** — Weights: RMSSD 35%, Banister 25%, RHR 20%, Sleep 20%.
 Categories: excellent >85, good 70-85, moderate 40-70, low <40.

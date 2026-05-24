@@ -22,7 +22,7 @@
 
 ## HRV Recovery — Flatt & Esco baseline
 
-Stored in `hrv_analysis`. Compares today's RMSSD against the 7-day rolling mean with asymmetric bounds (−1 SD lower / +0.5 SD upper). Fast response — detects acute changes within 1–2 days. Minimum 14 days of data required; below that the recovery score falls back to the readiness signal.
+Stored in `hrv_analysis`. Compares the **3-day-smoothed RMSSD** against a 7-day baseline of the days BEFORE the smoothing window (so today's noise doesn't leak into the comparator), with asymmetric bounds (−1 SD lower / +0.5 SD upper). Fast response — detects acute changes within 1–2 days. The smoothed value is exposed as `rmssd_today_smoothed`; the recency `rmssd_7d` (last 7 days inclusive) is reported separately for delta calculations and is **not** the comparator the bounds use. Minimum 14 days of data required; below that the recovery score falls back to the readiness signal.
 
 The AIEndurance algorithm (7d mean vs 60d mean, symmetric ±0.5 SD) was retired in #307 — historical `algorithm='ai_endurance'` rows in `hrv_analysis` are preserved but never read; the `algorithm` column stays in the PK so existing data remains addressable.
 
@@ -38,12 +38,12 @@ The AIEndurance algorithm (7d mean vs 60d mean, symmetric ±0.5 SD) was retired 
 
 ## Resting HR Analysis
 
-Stored in `rhr_analysis` table. Baselines computed at 3 windows:
+Stored in `rhr_analysis` table. **Status classification** compares the 3-day-smoothed RHR (`rhr_today_smoothed`) against a 30-day baseline of the days BEFORE the smoothing window, ±0.5 SD. The raw last reading is preserved as `rhr_today`. Additional recency windows reported for context:
 - **7-day** — short-term state + CV + trend
-- **30-day** — primary bounds (±0.5 SD), status classification
+- **30-day** — recency mean (`rhr_30d` — inclusive, may differ from the shifted baseline used for bounds)
 - **60-day** — long-term context
 
-Inverted vs RMSSD: elevated RHR = under-recovered (red), low RHR = well-recovered (green).
+Inverted vs RMSSD: elevated smoothed RHR = under-recovered (red), low = well-recovered (green).
 
 ## ESS (External Stress Score)
 

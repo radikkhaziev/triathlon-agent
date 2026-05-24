@@ -14,7 +14,7 @@ from datetime import timedelta
 import numpy as np
 
 from data.db import Activity, HrvAnalysis, RhrAnalysis, Wellness
-from data.intervals.dto import RecoveryScoreDTO, RecoveryStateDTO, RmssdStatusDTO, TrendResultDTO
+from data.intervals.dto import RecoveryScoreDTO, RecoveryStateDTO, RhrStatusDTO, RmssdStatusDTO, TrendResultDTO
 from data.utils import is_bike, is_run
 from tasks.dto import local_today
 
@@ -105,22 +105,53 @@ def _classify_recovery(
         return "green"
 
 
-def rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatusDTO:
+RMSSD_MIN_DAYS = 14
+RMSSD_SMOOTH_DAYS = 3
+
+
+def rmssd_flatt_esco(hrv_history: list[float], smooth: int = RMSSD_SMOOTH_DAYS) -> RmssdStatusDTO:
     """Flatt & Esco (2016) — today's RMSSD vs 7-day baseline, asymmetric bounds.
 
-    Fast response — detects acute changes within 1-2 days.
+    Optical RMSSD is noisy day-to-day (sleep position, sensor contact, hydration),
+    so the value used for status classification is `mean(last `smooth` days)`, and
+    the baseline window is shifted to the 7 days BEFORE the smoothing window to
+    avoid leakage. The smoothed-today value and bounds are used internally only;
+    the DTO exposes recency-7d stats (last 7 days inclusive) for downstream
+    consumers' delta calculations.
     """
     n = len(hrv_history)
+    if n < RMSSD_MIN_DAYS:
+        return RmssdStatusDTO(
+            status="insufficient_data",
+            days_available=n,
+            days_needed=RMSSD_MIN_DAYS - n,
+        )
+
+    if smooth < 1:
+        raise ValueError(f"smooth must be >= 1, got {smooth}")
+    smooth = min(smooth, n - 7)  # leave ≥7 days for the shifted baseline
+
+    # Smoothed "today" — rolling mean of last `smooth` days. Exposed in the DTO
+    # as ``rmssd_today_smoothed`` so consumers can explain status decisions.
+    today_smoothed = statistics.mean(hrv_history[-smooth:])
+
+    # Baseline: 7 days BEFORE the smoothing window (no leakage with today).
+    # Guard above ensures n >= 14 so this slice has 7 elements.
+    baseline_window = hrv_history[-(7 + smooth) : -smooth]
+    mean_baseline = statistics.mean(baseline_window)
+    std_baseline = statistics.stdev(baseline_window)
+
+    lower_bound = mean_baseline - 1.0 * std_baseline
+    upper_bound = mean_baseline + 0.5 * std_baseline
+
+    status = _classify_recovery(today_smoothed, mean_baseline, lower_bound, upper_bound)
+
+    # DTO stats — recency (last 7 days inclusive). Different window than the
+    # bounds: rmssd_7d describes the recent week, bounds classify against the
+    # pre-smoothing baseline. See DTO comment.
     last_7 = hrv_history[-7:]
-
     mean_7 = statistics.mean(last_7)
-    std_7 = statistics.stdev(last_7) if len(last_7) >= 2 else 1.0
-
-    lower_bound = mean_7 - 1.0 * std_7
-    upper_bound = mean_7 + 0.5 * std_7
-
-    today_rmssd = hrv_history[-1]
-    status = _classify_recovery(today_rmssd, mean_7, lower_bound, upper_bound)
+    std_7 = statistics.stdev(last_7)
 
     # Long-term baseline (needs 60 days) — context only
     last_60 = hrv_history[-60:]
@@ -135,14 +166,106 @@ def rmssd_flatt_esco(hrv_history: list[float]) -> RmssdStatusDTO:
         status=status,
         days_available=n,
         days_needed=0,
+        rmssd_today_smoothed=round(today_smoothed, 1),
         rmssd_7d=round(mean_7, 1),
         rmssd_sd_7d=round(std_7, 2),
-        rmssd_60d=round(rmssd_60d, 1) if rmssd_60d else None,
-        rmssd_sd_60d=round(rmssd_sd_60d, 2) if rmssd_sd_60d else None,
+        rmssd_60d=round(rmssd_60d, 1) if rmssd_60d is not None else None,
+        rmssd_sd_60d=round(rmssd_sd_60d, 2) if rmssd_sd_60d is not None else None,
         lower_bound=round(lower_bound, 1),
         upper_bound=round(upper_bound, 1),
         cv_7d=round(cv_7d, 1) if cv_7d is not None else None,
         swc=round(swc, 2) if swc is not None else None,
+        trend=trend,
+    )
+
+
+# ---------------------------------------------------------------------------
+# RHR Baseline
+# ---------------------------------------------------------------------------
+
+
+RHR_MIN_DAYS = 7
+RHR_SMOOTH_DAYS = 3
+
+
+def rhr_baseline(rhr_history: list[float], smooth: int = RHR_SMOOTH_DAYS) -> RhrStatusDTO:
+    """Resting HR baseline — smoothed today vs 30-day baseline (shifted).
+
+    Optical RHR is noisy night-to-night (sleep position, sensor contact). Status
+    is computed against `mean(last `smooth` days)` vs a baseline of the
+    `(30 - smooth)` days that come BEFORE the smoothing window — shifted to
+    avoid leakage of today's noise into the comparator. Inverted vs RMSSD:
+    elevated smoothed RHR = under-recovered = red.
+
+    DTO stats are recency (last 7 / 30 / 60 days inclusive), NOT the shifted
+    baseline — downstream consumers read `rhr_30d` as "average of the last
+    30 days", and `lower_bound`/`upper_bound` as classification thresholds.
+    """
+    n = len(rhr_history)
+    if n < RHR_MIN_DAYS:
+        return RhrStatusDTO(
+            status="insufficient_data",
+            days_available=n,
+            days_needed=RHR_MIN_DAYS - n,
+        )
+
+    if smooth < 1:
+        raise ValueError(f"smooth must be >= 1, got {smooth}")
+    smooth = min(smooth, n - 1)  # always leave ≥1 day for the baseline window
+
+    today_smoothed = statistics.mean(rhr_history[-smooth:])
+
+    # Baseline window: up to 30 days BEFORE the smoothing window. For early-
+    # athlete histories (RHR_MIN_DAYS=7, smooth=3 → only 4 days available),
+    # the slice will have fewer than 30 elements — accept the narrower bounds.
+    # `RHR_MIN_DAYS` + the `smooth=min(smooth, n-1)` clamp above together
+    # guarantee `len(baseline_window) >= 1`; ``stdev`` needs ≥2 so we still
+    # have a defensive fallback to sd=0 (single sample → degenerate band).
+    baseline_window = rhr_history[-(30 + smooth) : -smooth]
+    mean_baseline = statistics.mean(baseline_window)
+    sd_baseline = statistics.stdev(baseline_window) if len(baseline_window) >= 2 else 0.0
+
+    lower_bound = mean_baseline - 0.5 * sd_baseline
+    upper_bound = mean_baseline + 0.5 * sd_baseline
+
+    # Inverted: high RHR = red, low RHR = green
+    if today_smoothed > upper_bound:
+        status = "red"
+    elif today_smoothed < lower_bound:
+        status = "green"
+    else:
+        status = "yellow"
+
+    # DTO recency stats — last 7 / 30 / 60 days inclusive
+    last_7 = rhr_history[-7:]
+    mean_7 = statistics.mean(last_7)
+    sd_7 = statistics.stdev(last_7)
+
+    last_30 = rhr_history[-30:] if n >= 30 else rhr_history
+    mean_30 = statistics.mean(last_30)
+    sd_30 = statistics.stdev(last_30) if len(last_30) >= 2 else 1.0
+
+    rhr_60d = statistics.mean(rhr_history[-60:]) if n >= 60 else None
+    rhr_sd_60d = statistics.stdev(rhr_history[-60:]) if n >= 60 else None
+
+    cv_7d = (sd_7 / mean_7 * 100) if mean_7 > 0 else None
+    trend = calculate_trend(last_7, window=7, **TREND_THRESHOLDS["resting_hr"])
+
+    return RhrStatusDTO(
+        status=status,
+        days_available=n,
+        days_needed=0,
+        rhr_today=round(rhr_history[-1], 1),
+        rhr_today_smoothed=round(today_smoothed, 1),
+        rhr_7d=round(mean_7, 1),
+        rhr_sd_7d=round(sd_7, 2),
+        rhr_30d=round(mean_30, 1),
+        rhr_sd_30d=round(sd_30, 2),
+        rhr_60d=round(rhr_60d, 1) if rhr_60d is not None else None,
+        rhr_sd_60d=round(rhr_sd_60d, 2) if rhr_sd_60d is not None else None,
+        lower_bound=round(lower_bound, 1),
+        upper_bound=round(upper_bound, 1),
+        cv_7d=round(cv_7d, 1) if cv_7d is not None else None,
         trend=trend,
     )
 

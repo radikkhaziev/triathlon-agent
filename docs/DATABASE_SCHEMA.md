@@ -29,9 +29,9 @@ Eight tables in PostgreSQL 16 (async via SQLAlchemy + Alembic).
 | `date` | String PK, FK → wellness | |
 | `algorithm` | String PK | always `"flatt_esco"` for new rows; legacy `"ai_endurance"` rows preserved (issue #307) but never read |
 | `status` | String | green/yellow/red/insufficient_data |
-| `rmssd_7d`, `rmssd_sd_7d` | Float | 7-day baseline |
-| `rmssd_60d`, `rmssd_sd_60d` | Float | 60-day baseline |
-| `lower_bound`, `upper_bound` | Float | decision bounds |
+| `rmssd_7d`, `rmssd_sd_7d` | Float | recency mean of last 7 days (NOT the comparator for bounds — see below) |
+| `rmssd_60d`, `rmssd_sd_60d` | Float | 60-day baseline (long-term context) |
+| `lower_bound`, `upper_bound` | Float | asymmetric (-1 SD / +0.5 SD) of the *shifted* 7-day baseline (7 days before the 3-day smoothing window); `data.metrics.rmssd_flatt_esco` is canonical |
 | `cv_7d` | Float | coefficient of variation % |
 | `swc` | Float | smallest worthwhile change |
 | `days_available` | Integer | data points used |
@@ -44,11 +44,11 @@ Single algorithm (Flatt & Esco) feeds the recovery score. The `algorithm` column
 |---|---|---|
 | `date` | String PK, FK → wellness | |
 | `status` | String | green/yellow/red (inverted: high RHR = red) |
-| `rhr_today` | Float | today's value |
-| `rhr_7d`, `rhr_sd_7d` | Float | 7-day baseline |
-| `rhr_30d`, `rhr_sd_30d` | Float | 30-day baseline (used for bounds) |
-| `rhr_60d`, `rhr_sd_60d` | Float | 60-day baseline (context) |
-| `lower_bound`, `upper_bound` | Float | ±0.5 SD of 30d |
+| `rhr_today` | Float | today's raw last reading |
+| `rhr_7d`, `rhr_sd_7d` | Float | recency mean of last 7 days |
+| `rhr_30d`, `rhr_sd_30d` | Float | recency mean of last 30 days (NOT the comparator for bounds — see below) |
+| `rhr_60d`, `rhr_sd_60d` | Float | recency mean of last 60 days (long-term context) |
+| `lower_bound`, `upper_bound` | Float | ±0.5 SD of the *shifted* 30-day baseline (the 30 days before the 3-day smoothing window); `data.metrics.rhr_baseline` is canonical |
 | `cv_7d` | Float | coefficient of variation % |
 | `days_available` | Integer | data points used |
 | `trend_direction`, `trend_slope`, `trend_r_squared` | nullable | 7d trend |
