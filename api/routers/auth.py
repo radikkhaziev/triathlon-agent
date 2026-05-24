@@ -1,10 +1,12 @@
 import hmac
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
 import sentry_sdk
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import TypeAdapter
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
@@ -18,6 +20,7 @@ from api.dto import (
     VerifyCodeRequest,
 )
 from config import settings
+from data.avatar_storage import avatar_path
 from data.db import AthleteGoal, AthleteSettings, User, UserBackfillState, UserDTO, Wellness, get_session
 from tasks.actors import actor_bootstrap_step
 
@@ -203,6 +206,27 @@ async def auth_telegram_widget_config() -> dict:
     return {"bot_username": settings.TELEGRAM_BOT_USERNAME}
 
 
+# Stable URL — `GET /api/auth/avatar` resolves the file to the SESSION'S user
+# (no chat_id in the URL). Direct /static/avatar/* access is blocked at the
+# server layer (see `api/server.py`) so we don't leak Telegram photos to
+# anyone who can guess a chat_id.
+_AVATAR_ENDPOINT_URL = "/api/auth/avatar"
+
+
+def _avatar_url_if_exists(chat_id: str | None) -> str | None:
+    """Returns the avatar endpoint URL when the cached file is present, else None.
+
+    Gating on file existence here saves the frontend a request for users who
+    have no avatar — the UI can render initials immediately without a 404
+    roundtrip. URL itself is constant; the served bytes come from the session.
+    """
+    if not chat_id:
+        return None
+    if not os.path.isfile(avatar_path(chat_id)):
+        return None
+    return _AVATAR_ENDPOINT_URL
+
+
 @router.get("/api/auth/me")
 async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     """Check current auth status.
@@ -244,6 +268,7 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         # (bot /start → `tg_user.full_name`; Login Widget → "first last").
         "display_name": user.display_name,
         "username": user.username,
+        "avatar_url": _avatar_url_if_exists(user.chat_id),
         # Frontend uses this to gate the "Connect Intervals.icu" CTA — Login
         # Widget signups land with ``false`` and must press /start in the bot
         # before OAuth (see issue #266 + /api/intervals/auth/init's 412).
@@ -294,6 +319,11 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         # @handle), matching how `intervals.athlete_id` is set to "demo".
         result["display_name"] = None
         result["username"] = None
+        # Demo browses the owner's data; we already scrub display_name +
+        # @username for PII reasons (line above). Apply the same scrub to
+        # the avatar URL — otherwise demo sessions would show the owner's
+        # Telegram profile photo.
+        result["avatar_url"] = None
         # Pin sports for demo so the gate never blocks the read-only tour.
         # PUT /sports rejects demo separately so no actual write reaches DB.
         #
@@ -309,6 +339,31 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         # NULL or document the override before enabling the demo path.
         result["sports"] = ["ride", "run", "swim"]
     return result
+
+
+@router.get("/api/auth/avatar")
+async def auth_avatar(user: User | None = Depends(get_current_user)) -> FileResponse:
+    """Serve the cached Telegram avatar for the authenticated session's user.
+
+    Demo session → 404: the demo password mints a JWT against the owner's
+    chat_id (see `auth_me`), so serving from chat_id would leak the owner's
+    photo. Same scrub as `display_name` / `username` / `avatar_url` in
+    `/auth/me`.
+
+    `private` cache (browser only, never CDN) for 5 min — avatar changes
+    are daily at most (morning report sync); a stale 5-min cache is fine
+    and saves dashboard polls from re-reading the file.
+    """
+    if not user or user.role == "demo":
+        raise HTTPException(status_code=404, detail="Not found")
+    path = avatar_path(user.chat_id)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 
 
 @router.put("/api/auth/language")

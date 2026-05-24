@@ -27,6 +27,11 @@ class UserDTO(BaseModel):
     athlete_id: str | None = None
     language: str = "ru"
     is_silent: bool = False
+    # DEPRECATED 2026-05-24 — UI now reads avatars from `static/avatar/{chat_id}.png`
+    # (see tasks/actors/avatars.py). Field kept as a compat shim so old in-flight
+    # dramatiq messages serialized before the deploy still validate under
+    # `extra="forbid"`. Safe to remove once the broker has been drained for
+    # >2 weeks (no message TTL is longer than that in production).
     avatar_url: str | None = None
     # See User.bot_chat_initialized — false means TelegramTool must skip sends
     # to avoid the 400 chat-not-found Sentry storm (issue #266). Default True

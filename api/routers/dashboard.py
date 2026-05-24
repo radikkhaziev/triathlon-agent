@@ -18,15 +18,16 @@ from sqlalchemy import func, select
 
 from api.deps import get_data_user_id, require_athlete, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, AthleteGoal, Race, User, UserDTO, Wellness, get_session
+from data.db import Activity, ActivityDetail, AthleteGoal, Race, ScheduledWorkout, User, UserDTO, Wellness, get_session
 from data.db.dto import AthleteGoalDTO
 from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivity, calculate_marathon_shape
-from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target
+from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target, project_sport_load_forward
 from data.ml.race_predict import predict_splits_with_ci
 from data.redis_client import get_redis
-from data.utils import extract_sport_ctl, normalize_sport
+from data.utils import extract_sport_atl, extract_sport_ctl, normalize_sport
 from mcp_server.tools.progress import compute_efficiency_trend
 from tasks.actors import actor_user_wellness
+from tasks.dto import local_today
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,13 @@ _SPORT_MAP = {
 }
 
 
+# When the user has no future workouts scheduled, the per-sport forecast still
+# draws forward as zero-load decay over this window. 28 days covers a full ATL
+# collapse (4×τ_ATL) and ~half a CTL half-life — visible answer to "what if
+# I stop training" without bloating the chart axis.
+_FORECAST_FALLBACK_DAYS = 28
+
+
 def _today_local() -> date:
     return datetime.now(zoneinfo.ZoneInfo(settings.TIMEZONE)).date()
 
@@ -74,17 +82,24 @@ async def training_load(
     days: int = Query(default=84, ge=1, le=365),
     user: User = Depends(require_viewer),
 ) -> dict:
-    """CTL/ATL/TSB time series + per-sport CTL from the user's wellness rows.
+    """CTL/ATL/TSB time series + per-sport CTL/ATL, with plan-aware forward
+    forecast for the per-sport arrays.
 
-    ``ctl_swim`` / ``ctl_ride`` / ``ctl_run`` carry the per-discipline CTL
-    trend (parsed from ``wellness.sport_info``) for the Wellness "Training
-    load" detail screen's by-sport breakdown — ``null`` on days a sport has
-    no CTL recorded. GoalTab still reads only the latest snapshot; the Load
-    tab consumes only the overall ``ctl``/``atl``/``tsb`` — the extra keys
-    are additive.
+    Past arrays come from ``wellness.sport_info`` (filled by the enrich actor).
+    Future segment is computed on read by extending each sport's EMA forward
+    using planned TSS from ``scheduled_workouts`` — natural decay on days
+    without a workout. Horizon is the globally latest future workout date;
+    sports with no plan beyond that just decay to it. If there are no future
+    workouts at all, the response stays past-only and ``today_date`` equals
+    the last past date.
+
+    ``today_date`` (ISO) lets the frontend locate the actual/forecast split
+    without depending on array order. See ``docs/PER_SPORT_LOAD_SPEC.md``
+    Step 3.5 — why compute-on-read instead of persist.
     """
-    today = _today_local()
+    today = local_today()
     start = today - timedelta(days=days - 1)
+    today_iso = today.isoformat()
 
     uid = get_data_user_id(user)
     async with get_session() as session:
@@ -93,7 +108,7 @@ async def training_load(
             .where(
                 Wellness.user_id == uid,
                 Wellness.date >= start.isoformat(),
-                Wellness.date <= today.isoformat(),
+                Wellness.date <= today_iso,
                 Wellness.ctl.isnot(None),
                 Wellness.atl.isnot(None),
             )
@@ -101,32 +116,169 @@ async def training_load(
         )
         rows = result.all()
 
+        # Horizon ignores sport — any planned workout extends the chart axis.
+        # If the athlete plans a strength session 10 days after their last Run,
+        # the overall TSB forecast must reach it (strength still drives fatigue).
+        horizon_row = await session.execute(
+            select(func.max(ScheduledWorkout.start_date_local)).where(
+                ScheduledWorkout.user_id == uid,
+                ScheduledWorkout.start_date_local > today_iso,
+                ScheduledWorkout.icu_training_load.isnot(None),
+            )
+        )
+        planned_horizon_iso: str | None = horizon_row.scalar()
+
+        # Forecast horizon: either the last scheduled workout (plan-aware) or a
+        # 28-day window (zero-load decay fallback — "what happens if I stop").
+        # 28d ≈ one mesocycle; covers full ATL collapse (4×τ_ATL) and ~half a
+        # CTL half-life so the decay is visible without being a wall of noise.
+        fallback_horizon = today + timedelta(days=_FORECAST_FALLBACK_DAYS)
+        horizon_iso = planned_horizon_iso or fallback_horizon.isoformat()
+
+        # Per-sport planned TSS — gated to Swim/Ride/Run only because per-sport
+        # CTL/ATL is only defined for those three (`extract_sport_*`).
+        planned_by_sport: dict[str, dict[date, float]] = {"swim": {}, "ride": {}, "run": {}}
+        # Overall planned TSS — INCLUDES every sport (WeightTraining, Hike,
+        # Yoga, …) with non-null TSS. Past CTL/ATL from Intervals.icu sums all
+        # sports; the forecast must mirror that scope or it'll underestimate
+        # fatigue for athletes with a regular strength block (code-review W2,
+        # 2026-05-24).
+        planned_overall: dict[date, float] = {}
+        if planned_horizon_iso is not None:
+            planned_rows = await session.execute(
+                select(
+                    ScheduledWorkout.start_date_local,
+                    ScheduledWorkout.type,
+                    func.sum(ScheduledWorkout.icu_training_load),
+                )
+                .where(
+                    ScheduledWorkout.user_id == uid,
+                    ScheduledWorkout.start_date_local > today_iso,
+                    ScheduledWorkout.start_date_local <= planned_horizon_iso,
+                    ScheduledWorkout.icu_training_load.isnot(None),
+                )
+                .group_by(ScheduledWorkout.start_date_local, ScheduledWorkout.type)
+            )
+            for date_str, sport_type, tss_sum in planned_rows.all():
+                dt_key = date.fromisoformat(date_str)
+                tss = float(tss_sum)
+                planned_overall[dt_key] = planned_overall.get(dt_key, 0.0) + tss
+                sport_key = (sport_type or "").lower()
+                if sport_key in planned_by_sport:
+                    planned_by_sport[sport_key][dt_key] = tss
+
     dates: list[str] = []
-    ctl: list[float] = []
-    atl: list[float] = []
-    tsb: list[float] = []
+    # Past values are concrete floats; the forecast extension below pads with
+    # ``None`` for the overall (non-per-sport) series, so the annotations have
+    # to allow nulls. Without this `extend([None] * N)` needs a type-ignore.
+    ctl: list[float | None] = []
+    atl: list[float | None] = []
+    tsb: list[float | None] = []
     ctl_swim: list[float | None] = []
     ctl_ride: list[float | None] = []
     ctl_run: list[float | None] = []
+    atl_swim: list[float | None] = []
+    atl_ride: list[float | None] = []
+    atl_run: list[float | None] = []
     for d, c, a, sport_info in rows:
         dates.append(d)
         ctl.append(round(float(c), 1))
         atl.append(round(float(a), 1))
         tsb.append(round(float(c) - float(a), 1))
-        per = extract_sport_ctl(sport_info)
-        ctl_swim.append(per["swim"])
-        ctl_ride.append(per["ride"])
-        ctl_run.append(per["run"])
+        per_ctl = extract_sport_ctl(sport_info)
+        per_atl = extract_sport_atl(sport_info)
+        ctl_swim.append(per_ctl["swim"])
+        ctl_ride.append(per_ctl["ride"])
+        ctl_run.append(per_ctl["run"])
+        atl_swim.append(per_atl["swim"])
+        atl_ride.append(per_atl["ride"])
+        atl_run.append(per_atl["run"])
+
+    # ``min(today_iso, dates[-1])`` clamps any future-dated wellness row (edge
+    # case, shouldn't happen — but if it does, anchoring forecast on a future
+    # date would produce a negative-length extension).
+    today_date_iso = min(today_iso, dates[-1]) if dates else today_iso
+
+    # Forecast — always computed, even without scheduled workouts (decay-only
+    # fallback shows "what if I stop training"). Skipped only when the anchor
+    # is already at/past the horizon (empty extension).
+    per_sport_series: dict[str, tuple[list[float | None], list[float | None]]] = {
+        "swim": (ctl_swim, atl_swim),
+        "ride": (ctl_ride, atl_ride),
+        "run": (ctl_run, atl_run),
+    }
+    horizon_dt = date.fromisoformat(horizon_iso)
+    anchor_dt = date.fromisoformat(today_date_iso)
+    if horizon_dt > anchor_dt:
+        # Extend dates axis to horizon (one entry per calendar day).
+        cur = anchor_dt + timedelta(days=1)
+        while cur <= horizon_dt:
+            dates.append(cur.isoformat())
+            cur += timedelta(days=1)
+        future_len = (horizon_dt - anchor_dt).days
+
+        # Overall CTL/ATL/TSB forecast — same EMA math as per-sport but driven
+        # by total daily TSS across ALL sports (`planned_overall`). The TSB
+        # chart needs this so the Form line continues into the forecast
+        # region; without it the line just disappears after today.
+        today_overall_ctl = ctl[-1] if ctl else None
+        today_overall_atl = atl[-1] if atl else None
+        if today_overall_ctl is not None and today_overall_atl is not None:
+            ctl_proj_overall, atl_proj_overall = project_sport_load_forward(
+                today_ctl=today_overall_ctl,
+                today_atl=today_overall_atl,
+                daily_planned_load=planned_overall,
+                horizon=horizon_dt,
+                today=anchor_dt,
+            )
+            for (_, cv), (_, av) in zip(ctl_proj_overall, atl_proj_overall):
+                ctl.append(cv)
+                atl.append(av)
+                tsb.append(round(cv - av, 1))
+        else:
+            # No past wellness rows to anchor from → null-pad to keep arrays
+            # length-aligned with dates. Frontend's chart skips null entries.
+            ctl.extend([None] * future_len)
+            atl.extend([None] * future_len)
+            tsb.extend([None] * future_len)
+
+        for sport, (ctl_arr, atl_arr) in per_sport_series.items():
+            today_ctl = _last_non_null(ctl_arr)
+            today_atl = _last_non_null(atl_arr)
+            if today_ctl is None or today_atl is None:
+                ctl_arr.extend([None] * future_len)
+                atl_arr.extend([None] * future_len)
+                continue
+            ctl_proj, atl_proj = project_sport_load_forward(
+                today_ctl=today_ctl,
+                today_atl=today_atl,
+                daily_planned_load=planned_by_sport[sport],
+                horizon=horizon_dt,
+                today=anchor_dt,
+            )
+            ctl_arr.extend(v for _, v in ctl_proj)
+            atl_arr.extend(v for _, v in atl_proj)
 
     return {
         "dates": dates,
+        "today_date": today_date_iso,
         "ctl": ctl,
         "atl": atl,
         "tsb": tsb,
         "ctl_swim": ctl_swim,
         "ctl_ride": ctl_ride,
         "ctl_run": ctl_run,
+        "atl_swim": atl_swim,
+        "atl_ride": atl_ride,
+        "atl_run": atl_run,
     }
+
+
+def _last_non_null(values: list[float | None]) -> float | None:
+    for v in reversed(values):
+        if v is not None:
+            return v
+    return None
 
 
 @router.get("/api/activities")
@@ -134,15 +286,22 @@ async def activities(
     days: int = Query(default=28, ge=1, le=365),
     user: User = Depends(require_viewer),
 ) -> dict:
-    """Per-activity TSS bars for the stacked-by-sport chart.
+    """Per-activity TSS bars for the stacked-by-sport chart, plus planned
+    future workouts for the forecast region.
 
-    Drops activities with NULL TSS or with sports that don't bucket into
+    Past activities (`activities`) come from completed Activity rows; planned
+    future workouts (`planned`) come from ScheduledWorkout rows strictly past
+    today. Both arrays use the same `{date, sport, tss}` shape so the
+    frontend can render forecast bars distinctly without a different schema.
+
+    Drops entries with NULL TSS or with sports that don't bucket into
     swim/ride/run (yoga, hike, weights, etc.) — they don't show on the chart
     and would only add a hidden "other" bucket the frontend ignores.
     Races are kept; race TSS is real load.
     """
-    today = _today_local()
+    today = local_today()
     start = today - timedelta(days=days - 1)
+    today_iso = today.isoformat()
 
     uid = get_data_user_id(user)
     async with get_session() as session:
@@ -151,21 +310,44 @@ async def activities(
             .where(
                 Activity.user_id == uid,
                 Activity.start_date_local >= start.isoformat(),
-                Activity.start_date_local <= today.isoformat(),
+                Activity.start_date_local <= today_iso,
                 Activity.icu_training_load.isnot(None),
             )
             .order_by(Activity.start_date_local.asc(), Activity.id.asc())
         )
-        rows = result.all()
+        past_rows = result.all()
 
-    out: list[dict] = []
-    for dt, raw_type, tss in rows:
+        planned_result = await session.execute(
+            select(
+                ScheduledWorkout.start_date_local,
+                ScheduledWorkout.type,
+                ScheduledWorkout.icu_training_load,
+            )
+            .where(
+                ScheduledWorkout.user_id == uid,
+                ScheduledWorkout.start_date_local > today_iso,
+                ScheduledWorkout.type.in_(("Swim", "Ride", "Run")),
+                ScheduledWorkout.icu_training_load.isnot(None),
+            )
+            .order_by(ScheduledWorkout.start_date_local.asc(), ScheduledWorkout.id.asc())
+        )
+        planned_rows = planned_result.all()
+
+    activities_out: list[dict] = []
+    for dt, raw_type, tss in past_rows:
         sport = _SPORT_MAP.get(normalize_sport(raw_type) or "")
         if not sport:
             continue
-        out.append({"date": dt, "sport": sport, "tss": round(float(tss), 1)})
+        activities_out.append({"date": dt, "sport": sport, "tss": round(float(tss), 1)})
 
-    return {"activities": out}
+    planned_out: list[dict] = []
+    for dt, raw_type, tss in planned_rows:
+        sport = _SPORT_MAP.get(normalize_sport(raw_type) or "")
+        if not sport:
+            continue
+        planned_out.append({"date": dt, "sport": sport, "tss": round(float(tss), 1)})
+
+    return {"activities": activities_out, "planned": planned_out}
 
 
 def _goal_progress_dict(

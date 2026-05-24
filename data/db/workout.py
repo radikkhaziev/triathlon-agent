@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 class ScheduledWorkout(Base):
     __tablename__ = "scheduled_workouts"
+    # Composite index for dashboard hot paths that filter by both columns
+    # (e.g. `/api/training-load` forecast, `get_last_scheduled_date`). The
+    # single-column `index=True` on `user_id` below is kept for FK joins.
+    __table_args__ = (Index("ix_scheduled_workouts_user_date", "user_id", "start_date_local"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)  # Intervals.icu event ID
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)

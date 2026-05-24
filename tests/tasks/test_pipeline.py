@@ -34,7 +34,6 @@ def _make_user(*, id: int = 1, chat_id: str = "111", athlete_id: str = "i001"):
     user.is_active = True
     # UserDTO requires concrete values (not MagicMock auto-attrs) for these
     # nullable / typed fields under pydantic from_attributes mode.
-    user.avatar_url = None
     user.bot_chat_initialized = True
     return user
 

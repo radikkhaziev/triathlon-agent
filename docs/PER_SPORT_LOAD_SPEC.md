@@ -1,6 +1,7 @@
 # Per-Sport CTL/ATL + Plan-Aware Forecast — Spec
 
-> Status: **planned, not started**. Bookmark of the design discussion 2026-05-24.
+> Status: **implemented 2026-05-24** (Steps 1, 1.5, 2, 3, 3.5, 4 all shipped).
+> Origin: design discussion 2026-05-24.
 
 ## Goal
 
@@ -22,6 +23,9 @@
 | 8 | Compute-on-read (НЕ persist) | Один consumer (LoadDetail chart). Persist потребовал бы хуки в 4+ триггера (CALENDAR_UPDATED, suggest_workout, save_workout, enrich-actor) — invalidation hell |
 | 9 | `fitness_projection` НЕ трогаем | Это зеркало Intervals (zero-load), наша per-sport проекция — plan-aware, другая семантика |
 | 10 | Горизонт **общий для всех спортов** = `max(scheduled_workouts.date)` глобально | Одна X-ось на 3 графика; спорт без планов после последнего своего workout'а decay'ит до общего горизонта |
+| 11 | Horizon query narrowing: `type IN (Swim/Ride/Run) AND icu_training_load IS NOT NULL` | WeightTraining и workouts без TSS не контрибьютят в per-sport CTL — не имеет смысла растягивать ось из-за них. Code-review 2026-05-24 |
+| 12 | Overall `ctl/atl/tsb` тоже проецируются вперёд (через `project_sport_load_forward` поверх суммарной планируемой TSS) | Изначально планировалось null-padding'ом, но Form/TSB чарт без продолжения линии терялся в forecast-зоне. Используем ту же EMA-модель что и per-sport, anchor — последний past-value. Если past пустой (новый юзер) — null-pad как fallback. Reversal of original 2026-05-24 decision; see code-review W1. |
+| 13 | Fallback горизонт **28 дней** zero-load decay когда нет scheduled future workouts | Q1 closed 2026-05-24: «что будет если перестану тренироваться» — полезная информация. 28d ≈ один мезоцикл, покрывает 4×τ_ATL (полный collapse) и ~half-life CTL |
 
 ## Implementation plan
 
@@ -133,8 +137,14 @@
 
 ## Open questions при возврате к работе
 
-- Стоит ли при отсутствии цели всё-таки рисовать zero-load decay-forecast на N дней вперёд? Сейчас договорились: «нет цели — нет forecast». Можно пересмотреть.
-- Если расход растёт за счёт плана с большим количеством будущих workouts — стоит ли пагинировать `scheduled_workouts` запрос? Сейчас не нужно (горизонт ≤ race_date обычно < 26 недель).
+Все закрыты к моменту реализации:
+
+- ~~Стоит ли при отсутствии цели всё-таки рисовать zero-load decay-forecast?~~ → **Да** (decision #13). 28-дневный decay fallback в `api/routers/dashboard.py:_FORECAST_FALLBACK_DAYS`.
+- ~~Стоит ли пагинировать `scheduled_workouts` запрос?~~ → **Нет**, горизонт обычно < 26 недель × ~10 workouts/week. Пагинация уже есть в Week-tab consumer'е, наш SELECT в endpoint не нуждается.
+
+## Known limitation
+
+Если последняя wellness-row отстаёт от реальной даты (юзер не синхронизировался N дней), `today_date` указывает на дату той row'ы, и первые N дней forecast получают zero-load decay даже если в этом промежутке были workouts. Edge case для забросивших юзеров. Code-review M-warning от 2026-05-24, не блокер — fix при необходимости через `anchor_dt = min(today_iso_as_date, last_past_date)` + расширение planned-workouts WHERE до anchor.
 
 ## Key file references
 

@@ -62,7 +62,9 @@ const fmtMd = (ymd: string) => {
   return `${p[1]}/${p[2]}`
 }
 const fmtSigned = (v: number) => (v > 0 ? '+' : '') + v
-const lastNum = (arr: number[]): number | null => (arr.length ? arr[arr.length - 1] : null)
+// Walk from the tail looking for the most recent non-null entry. Overall
+// arrays carry trailing nulls past `today_date` (the forecast region is
+// per-sport-only), so a naive `arr[arr.length - 1]` would render "—".
 const lastValid = (arr: (number | null)[]): number | null => {
   for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return arr[i]
   return null
@@ -70,7 +72,9 @@ const lastValid = (arr: (number | null)[]): number | null => {
 
 export default function LoadDetail() {
   const { t } = useTranslation()
-  const [range, setRange] = useState<Range>('3m')
+  // Default 1M — the most actionable window (current mesocycle + 28d forecast).
+  // 3M+ is a drill-down for trend questions, not the entry view.
+  const [range, setRange] = useState<Range>('1m')
   // CTL/ATL toggles for the top chart; at least one stays on.
   const [vis, setVis] = useState({ ctl: true, atl: true })
   const toggle = (k: 'ctl' | 'atl') =>
@@ -102,17 +106,28 @@ export default function LoadDetail() {
 
   // Daily TSS per sport, indexed onto the training-load date axis so the bar
   // chart shares an x-window with the line charts. Days without an activity
-  // stay 0.
+  // stay 0. Past entries come from `activities` (completed Activity rows);
+  // future entries come from `planned` (ScheduledWorkout rows past today) so
+  // the chart can render forecast bars distinctly.
   const tssByDate: Record<string, { swim: number; ride: number; run: number }> = {}
+  const sportKey = (s: string): 'swim' | 'ride' | 'run' | null =>
+    s === 'swimming' ? 'swim' : s === 'cycling' ? 'ride' : s === 'running' ? 'run' : null
   for (const a of acts?.activities ?? []) {
+    const k = sportKey(a.sport)
+    if (!k) continue
     const bucket = (tssByDate[a.date] ??= { swim: 0, ride: 0, run: 0 })
-    const k = a.sport === 'swimming' ? 'swim' : a.sport === 'cycling' ? 'ride' : a.sport === 'running' ? 'run' : null
-    if (k) bucket[k] += a.tss
+    bucket[k] += a.tss
+  }
+  for (const p of acts?.planned ?? []) {
+    const k = sportKey(p.sport)
+    if (!k) continue
+    const bucket = (tssByDate[p.date] ??= { swim: 0, ride: 0, run: 0 })
+    bucket[k] += p.tss
   }
 
-  const ctlToday = load ? lastNum(load.ctl) : null
-  const atlToday = load ? lastNum(load.atl) : null
-  const tsbToday = load ? lastNum(load.tsb) : null
+  const ctlToday = load ? lastValid(load.ctl) : null
+  const atlToday = load ? lastValid(load.atl) : null
+  const tsbToday = load ? lastValid(load.tsb) : null
 
   const headline: { k: string; sub: string; val: number | null; color: string; signed?: boolean }[] = [
     { k: 'Fitness', sub: 'CTL', val: ctlToday, color: LOAD_COLOR.ctl },
@@ -194,6 +209,7 @@ export default function LoadDetail() {
                       ...(vis.atl ? [{ label: 'ATL', values: load.atl, color: LOAD_COLOR.atl }] : []),
                     ]}
                     height={200}
+                    todayIdx={load.dates.indexOf(load.today_date)}
                   />
                   <div className="mt-2 flex flex-wrap justify-center gap-1.5">
                     <LegendToggle on={vis.ctl} color={LOAD_COLOR.ctl} label="CTL · Fitness" onClick={() => toggle('ctl')} />
@@ -223,7 +239,25 @@ export default function LoadDetail() {
                       })()}
                   </div>
                   {openTip === 'tsb' && <InfoPanel>{t('load_detail.tip.tsb')}</InfoPanel>}
-                  <TsbZoneChart dates={load.dates} tsb={load.tsb} />
+                  {/* TSB chart spans past + forecast — backend extends the
+                      tsb array forward via overall CTL/ATL projection (see
+                      api/routers/dashboard.py). We pair date+TSB and drop
+                      interior nulls before passing in so the chart's index
+                      math stays consistent. todayIdx tells the chart where
+                      to split the line (solid actual → dashed forecast). */}
+                  {(() => {
+                    const paired = load.dates
+                      .map((d, i) => ({ d, v: load.tsb[i] }))
+                      .filter((p): p is { d: string; v: number } => p.v != null)
+                    const todayIdxFull = paired.findIndex(p => p.d === load.today_date)
+                    return (
+                      <TsbZoneChart
+                        dates={paired.map(p => p.d)}
+                        tsb={paired.map(p => p.v)}
+                        todayIdx={todayIdxFull >= 0 ? todayIdxFull : null}
+                      />
+                    )
+                  })()}
                   {/* Zone legend — Transition → High risk, top-to-bottom mirrors
                       the band stack. */}
                   <div className="mt-2 grid grid-cols-5 gap-1">
@@ -250,6 +284,7 @@ export default function LoadDetail() {
                     ride={load.dates.map(d => tssByDate[d]?.ride ?? 0)}
                     run={load.dates.map(d => tssByDate[d]?.run ?? 0)}
                     show={sportVis}
+                    todayIdx={load.dates.indexOf(load.today_date)}
                   />
                   <div className="mt-2 flex flex-wrap justify-center gap-1.5">
                     <LegendToggle on={sportVis.swim} color={SPORT_COLOR.swim} label="Swim" square onClick={() => toggleSport('swim')} />
@@ -277,7 +312,7 @@ export default function LoadDetail() {
                 >
                   <span className="inline-flex items-baseline gap-2">
                     <span className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">By sport</span>
-                    <span className="text-[11px] text-halo-ink-dimmer">CTL per discipline</span>
+                    <span className="text-[11px] text-halo-ink-dimmer">CTL + ATL per discipline</span>
                   </span>
                   <span
                     aria-hidden="true"
@@ -289,11 +324,15 @@ export default function LoadDetail() {
 
                 {bySportOpen &&
                   ([
-                    { key: 'swim', label: 'Swim', values: load.ctl_swim, color: SPORT_COLOR.swim },
-                    { key: 'ride', label: 'Ride', values: load.ctl_ride, color: SPORT_COLOR.ride },
-                    { key: 'run', label: 'Run', values: load.ctl_run, color: SPORT_COLOR.run },
+                    { key: 'swim', label: 'Swim', ctlValues: load.ctl_swim, atlValues: load.atl_swim, color: SPORT_COLOR.swim },
+                    { key: 'ride', label: 'Ride', ctlValues: load.ctl_ride, atlValues: load.atl_ride, color: SPORT_COLOR.ride },
+                    { key: 'run', label: 'Run', ctlValues: load.ctl_run, atlValues: load.atl_run, color: SPORT_COLOR.run },
                   ] as const).map(sp => {
-                    const sportCtl = lastValid(sp.values)
+                    const sportCtl = lastValid(sp.ctlValues)
+                    const sportAtl = lastValid(sp.atlValues)
+                    // Hide the whole card if a sport has no CTL trend at all —
+                    // ATL is meaningless without it. Pre-Step-1.5 backfill rows
+                    // carry only CTL → ATL stays absent on legacy days.
                     if (sportCtl == null) return null
                     return (
                       <Card key={sp.key}>
@@ -305,13 +344,26 @@ export default function LoadDetail() {
                           <span className="text-xs text-halo-ink-dim">
                             <span className="font-semibold" style={{ color: LOAD_COLOR.ctl }}>{sportCtl}</span>{' '}
                             <span className="text-[10px] text-halo-ink-dimmer">CTL</span>
+                            {sportAtl != null && (
+                              <>
+                                <span className="mx-1 text-halo-ink-dimmer">·</span>
+                                <span className="font-semibold" style={{ color: LOAD_COLOR.atl }}>{sportAtl}</span>{' '}
+                                <span className="text-[10px] text-halo-ink-dimmer">ATL</span>
+                              </>
+                            )}
                           </span>
                         </div>
                         <div className="mt-2">
                           <LoadLineChart
                             dates={load.dates}
-                            lines={[{ label: 'CTL', values: sp.values, color: LOAD_COLOR.ctl }]}
+                            lines={[
+                              { label: 'CTL', values: sp.ctlValues, color: LOAD_COLOR.ctl },
+                              ...(sportAtl != null
+                                ? [{ label: 'ATL', values: sp.atlValues, color: LOAD_COLOR.atl }]
+                                : []),
+                            ]}
                             height={120}
+                            todayIdx={load.dates.indexOf(load.today_date)}
                           />
                         </div>
                       </Card>
@@ -419,30 +471,45 @@ function LegendToggle({
 }
 
 // Build an SVG polyline through non-null points only (spans gaps).
-function linePath(values: (number | null)[], x: (i: number) => number, y: (v: number) => number): string {
+function linePath(
+  values: (number | null)[],
+  x: (i: number) => number,
+  y: (v: number) => number,
+  from = 0,
+  to = values.length - 1,
+): string {
   let d = ''
   let started = false
-  values.forEach((v, i) => {
-    if (v == null) return
+  for (let i = from; i <= to; i++) {
+    const v = values[i]
+    if (v == null) {
+      started = false  // gap — let the next non-null start a fresh sub-path
+      continue
+    }
     d += (started ? ' L ' : 'M ') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)
     started = true
-  })
+  }
   return d
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CTL/ATL (or per-sport CTL) line chart — auto-fit y range floored at 0,
-// solid lines, no forecast. `preserveAspectRatio="none"` stretches to the
-// card width.
+// CTL/ATL (or per-sport CTL) line chart — auto-fit y range floored at 0.
+// When `todayIdx` is provided and points to an interior index, the chart
+// splits each line into solid (actual) + dashed (forecast) segments, tints
+// the forecast region, and drops a "today" rule. Otherwise renders as a
+// single solid line (legacy overall chart, past-only per-sport series).
+// `preserveAspectRatio="none"` stretches to the card width.
 // ─────────────────────────────────────────────────────────────────────────────
 function LoadLineChart({
   dates,
   lines,
   height = 200,
+  todayIdx = null,
 }: {
   dates: string[]
   lines: { label: string; values: (number | null)[]; color: string }[]
   height?: number
+  todayIdx?: number | null
 }) {
   const W = 320
   const H = height
@@ -506,17 +573,87 @@ function LoadLineChart({
           {Math.round(tick)}
         </text>
       ))}
-      {lines.map((l, i) => (
-        <path
-          key={i}
-          d={linePath(l.values, x, y)}
-          fill="none"
-          stroke={l.color}
-          strokeWidth="1.7"
-          strokeLinejoin="round"
-          strokeLinecap="round"
+      {/* Forecast region — soft tint right of today_rule, before lines so
+          the strokes paint on top. Only when today is strictly interior. */}
+      {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (
+        <rect
+          x={x(todayIdx)}
+          y={pad.t}
+          width={x(N - 1) - x(todayIdx)}
+          height={innerH}
+          fill="var(--color-ink)"
+          opacity="0.04"
         />
-      ))}
+      )}
+      {lines.map((l, i) => {
+        const split = todayIdx != null && todayIdx >= 0 && todayIdx < N - 1
+        if (!split) {
+          return (
+            <path
+              key={i}
+              d={linePath(l.values, x, y)}
+              fill="none"
+              stroke={l.color}
+              strokeWidth="1.7"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          )
+        }
+        return (
+          <g key={i}>
+            {/* Solid actual — overlaps the forecast start at todayIdx so the
+                two segments meet seamlessly without a visible gap. */}
+            <path
+              d={linePath(l.values, x, y, 0, todayIdx)}
+              fill="none"
+              stroke={l.color}
+              strokeWidth="1.7"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            <path
+              d={linePath(l.values, x, y, todayIdx, N - 1)}
+              fill="none"
+              stroke={l.color}
+              strokeWidth="1.7"
+              strokeDasharray="4 3"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              opacity="0.85"
+            />
+          </g>
+        )
+      })}
+      {/* Today rule — a thin dashed vertical line where actual hands off
+          to forecast. Drawn after lines so it stays visible at intersections.
+          The "TODAY" badge anchors the eye on the split — when forecast tail
+          is short on a 1M window it's the only signal that the dashed segment
+          ahead is the future, not just a render artefact. */}
+      {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (
+        <>
+          <line
+            x1={x(todayIdx)}
+            y1={pad.t}
+            x2={x(todayIdx)}
+            y2={H - pad.b}
+            stroke="var(--color-ink-dim)"
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            opacity="0.55"
+          />
+          <text
+            x={x(todayIdx) + 4}
+            y={pad.t + 8}
+            fontSize="9"
+            fontWeight="600"
+            letterSpacing="0.6"
+            fill="var(--color-ink-dim)"
+          >
+            TODAY
+          </text>
+        </>
+      )}
       {xLabels.map((idx, i) => (
         <text
           key={`x${i}`}
@@ -548,10 +685,20 @@ function LoadLineChart({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Form (TSB) chart — TSB over 5 fixed PMC-style zone bands; the line is split
-// into runs and each run drawn in its band's colour. Fixed y −40…+35. No
-// forecast.
+// into runs and each run drawn in its band's colour. Fixed y −40…+35.
+// When `todayIdx` points to an interior index, each per-zone run is further
+// split into actual + forecast sub-paths — actual stays solid, forecast goes
+// dashed over a soft tint band. Mirrors direction-b-halo.jsx BTsbZoneChart.
 // ─────────────────────────────────────────────────────────────────────────────
-function TsbZoneChart({ dates, tsb }: { dates: string[]; tsb: number[] }) {
+function TsbZoneChart({
+  dates,
+  tsb,
+  todayIdx = null,
+}: {
+  dates: string[]
+  tsb: number[]
+  todayIdx?: number | null
+}) {
   const W = 320
   const H = 160
   const pad = { l: 28, r: 10, t: 8, b: 22 }
@@ -619,6 +766,18 @@ function TsbZoneChart({ dates, tsb }: { dates: string[]; tsb: number[] }) {
         if (hi <= lo) return null
         return <rect key={z.id} x={pad.l} y={y(hi)} width={innerW} height={y(lo) - y(hi)} fill={z.fill} />
       })}
+      {/* Forecast tint — soft overlay right of today_rule. Painted BEFORE
+          the colored line strokes so they still read on top. */}
+      {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (
+        <rect
+          x={x(todayIdx)}
+          y={pad.t}
+          width={x(N - 1) - x(todayIdx)}
+          height={innerH}
+          fill="var(--color-ink)"
+          opacity="0.04"
+        />
+      )}
       {/* Zero line */}
       <line x1={pad.l} y1={y(0)} x2={pad.l + innerW} y2={y(0)} stroke="var(--color-ink-dim)" strokeWidth="0.8" opacity="0.4" />
       {yLabels.map(v => (
@@ -626,17 +785,62 @@ function TsbZoneChart({ dates, tsb }: { dates: string[]; tsb: number[] }) {
           {v}
         </text>
       ))}
-      {runs.map((r, ri) => (
-        <path
-          key={`r${ri}`}
-          d={runPath(r.from, r.to)}
-          fill="none"
-          stroke={TSB_ZONES[r.zone].line}
-          strokeWidth="1.6"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      ))}
+      {/* TSB line — per-zone runs split at todayIdx into actual+forecast
+          sub-paths. Forecast goes dashed; both keep the zone colour so the
+          eye reads zone transitions identically on either side of today.
+          Mirrors design's buildPaths (direction-b-halo.jsx:4703). */}
+      {runs.flatMap((r, ri) => {
+        const subs: { kind: 'actual' | 'forecast'; d: string }[] = []
+        if (todayIdx == null || todayIdx >= N - 1) {
+          subs.push({ kind: 'actual', d: runPath(r.from, r.to) })
+        } else {
+          const aTo = Math.min(r.to, todayIdx)
+          const fFrom = Math.max(r.from, todayIdx)
+          if (aTo >= r.from) subs.push({ kind: 'actual', d: runPath(r.from, aTo) })
+          if (r.to > todayIdx) subs.push({ kind: 'forecast', d: runPath(fFrom, r.to) })
+        }
+        return subs
+          .filter(s => s.d)
+          .map((s, si) => (
+            <path
+              key={`r${ri}-${si}`}
+              d={s.d}
+              fill="none"
+              stroke={TSB_ZONES[r.zone].line}
+              strokeWidth="1.6"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              strokeDasharray={s.kind === 'forecast' ? '4 3' : undefined}
+              opacity={s.kind === 'forecast' ? 0.9 : 1}
+            />
+          ))
+      })}
+      {/* Today rule + TODAY badge — dashed vertical line at the actual/forecast
+          handoff, with a small uppercase label so the user reads the split. */}
+      {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (
+        <>
+          <line
+            x1={x(todayIdx)}
+            y1={pad.t}
+            x2={x(todayIdx)}
+            y2={H - pad.b}
+            stroke="var(--color-ink-dim)"
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            opacity="0.55"
+          />
+          <text
+            x={x(todayIdx) + 4}
+            y={pad.t + 8}
+            fontSize="9"
+            fontWeight="600"
+            letterSpacing="0.6"
+            fill="var(--color-ink-dim)"
+          >
+            TODAY
+          </text>
+        </>
+      )}
       {xLabels.map((idx, i) => (
         <text
           key={`x${i}`}
@@ -682,12 +886,17 @@ function SportTssChart({
   ride,
   run,
   show,
+  todayIdx = null,
 }: {
   dates: string[]
   swim: number[]
   ride: number[]
   run: number[]
   show: { swim: boolean; ride: boolean; run: boolean }
+  // Bars at index > todayIdx render as forecast (planned workouts): opacity
+  // 0.55 + diagonal-hatched pattern overlay so the eye reads them as "future"
+  // distinct from the solid past actuals. Null → no split (legacy past-only).
+  todayIdx?: number | null
 }) {
   const W = 320
   const H = 200
@@ -696,23 +905,35 @@ function SportTssChart({
   const innerH = H - pad.t - pad.b
   const N = dates.length
 
-  type Bar = { date: string; sw: number; ri: number; rn: number }
+  type Bar = { date: string; sw: number; ri: number; rn: number; isForecast: boolean }
   const bars: Bar[] = []
   if (N > 45) {
+    // Weekly aggregation. A week is forecast only when ALL 7 days are past
+    // todayIdx; mixed weeks (today falls inside) render as actual so we don't
+    // accidentally mark "this week" — partially done — as forecast.
     for (let i = 0; i < N; i += 7) {
       const end = Math.min(i + 6, N - 1)
       let sw = 0
       let ri = 0
       let rn = 0
+      let hasPast = false
       for (let k = i; k <= end; k++) {
         sw += swim[k]
         ri += ride[k]
         rn += run[k]
+        if (todayIdx == null || k <= todayIdx) hasPast = true
       }
-      bars.push({ date: dates[i], sw, ri, rn })
+      bars.push({ date: dates[i], sw, ri, rn, isForecast: !hasPast })
     }
   } else {
-    for (let i = 0; i < N; i++) bars.push({ date: dates[i], sw: swim[i], ri: ride[i], rn: run[i] })
+    for (let i = 0; i < N; i++)
+      bars.push({
+        date: dates[i],
+        sw: swim[i],
+        ri: ride[i],
+        rn: run[i],
+        isForecast: todayIdx != null && i > todayIdx,
+      })
   }
   const M = bars.length
 
@@ -773,6 +994,32 @@ function SportTssChart({
           {tick}
         </text>
       ))}
+      {/* Diagonal-hatched pattern used to overlay forecast bars — mirrors
+          the design's `patternId` pattern (direction-b-halo.jsx:4885). */}
+      <defs>
+        <pattern id="sport-tss-hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
+          <rect width="4" height="4" fill="rgba(255,255,255,0.55)" />
+          <line x1="0" y1="0" x2="0" y2="4" stroke="rgba(0,0,0,0.18)" strokeWidth="1.6" />
+        </pattern>
+      </defs>
+      {/* Forecast tint band right of today rule — soft overlay so the eye
+          gets a continuous "future" cue even on toggled-off-everything bars. */}
+      {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (() => {
+        // For weekly mode todayIdx is in daily-index space, not bar-index
+        // space. Place the rule by daily fraction so it stays anchored to
+        // the actual today regardless of aggregation.
+        const todayBarX = pad.l + ((todayIdx + 1) / N) * innerW
+        return (
+          <rect
+            x={todayBarX}
+            y={pad.t}
+            width={Math.max(0, W - pad.r - todayBarX)}
+            height={innerH}
+            fill="var(--color-ink)"
+            opacity="0.04"
+          />
+        )
+      })()}
       {bars.map((b, i) => {
         const segs = [
           { v: show.swim ? b.sw : 0, c: SPORT_COLOR.swim },
@@ -786,11 +1033,56 @@ function SportTssChart({
               if (seg.v <= 0) return null
               const h = yOf(0) - yOf(seg.v)
               cursor -= h
-              return <rect key={si} x={xOf(i)} y={cursor} width={barW} height={h} rx="1.5" fill={seg.c} />
+              const segY = cursor
+              return (
+                <g key={si}>
+                  <rect
+                    x={xOf(i)}
+                    y={segY}
+                    width={barW}
+                    height={h}
+                    rx="1.5"
+                    fill={seg.c}
+                    opacity={b.isForecast ? 0.55 : 1}
+                  />
+                  {b.isForecast && (
+                    <rect x={xOf(i)} y={segY} width={barW} height={h} rx="1.5" fill="url(#sport-tss-hatch)" />
+                  )}
+                </g>
+              )
             })}
           </g>
         )
       })}
+      {/* Today rule + TODAY badge — same treatment as LoadLineChart/TsbZoneChart
+          so the actual/forecast handoff reads identically across all three. */}
+      {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (() => {
+        const todayBarX = pad.l + ((todayIdx + 1) / N) * innerW
+        return (
+          <>
+            <line
+              x1={todayBarX}
+              y1={pad.t}
+              x2={todayBarX}
+              y2={H - pad.b}
+              stroke="var(--color-ink-dim)"
+              strokeWidth="1"
+              strokeDasharray="3 3"
+              opacity="0.55"
+            />
+            <text
+              x={todayBarX + 4}
+              y={pad.t + 8}
+              fontSize="9"
+              fontWeight="600"
+              letterSpacing="0.6"
+              fill="var(--color-ink-dim)"
+            >
+              TODAY
+            </text>
+          </>
+        )
+      })()}
       {xLabels.map((idx, i) => (
         <text
           key={`x${i}`}
