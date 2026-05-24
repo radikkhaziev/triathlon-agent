@@ -116,9 +116,9 @@ def main() -> None:
         "publish-changelog",
         help="Manually trigger the weekly changelog publisher (debug). "
         "Runs the same code path as the Sun 15:00 cron — fetches PRs, calls Claude, "
-        "creates a Discussion. Idempotent by week: re-running within ~7d 12h of the "
-        "last Discussion is a no-op (12h padding for cron-jitter, see spec §13). "
-        "See docs/WEEKLY_CHANGELOG_SPEC.md §16.",
+        "creates a Discussion. Idempotent by week: a no-op if a Discussion already "
+        "exists within this week's window (now - 6d); a prior week's Discussion does "
+        "NOT block a new one. See docs/WEEKLY_CHANGELOG_SPEC.md §16.",
     )
     p_pc.add_argument(
         "--force",

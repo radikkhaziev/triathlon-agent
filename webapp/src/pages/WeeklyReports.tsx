@@ -5,6 +5,7 @@ import { apiFetch } from '../api/client'
 import type { WeeklyReportListItem, WeeklyReportListResponse } from '../api/types'
 import ErrorMessage from '../components/ErrorMessage'
 import Layout from '../components/Layout'
+import { TopBar } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 
 const PAGE_SIZE = 20
@@ -90,14 +91,24 @@ export default function WeeklyReports() {
     }
   }
 
+  // Current-week Monday (UTC, same basis as formatWeekRange) → "This week" pill.
+  const now = new Date()
+  const dow = (now.getUTCDay() + 6) % 7
+  const thisMonday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dow))
+    .toISOString()
+    .slice(0, 10)
+
   return (
-    <Layout title={t('weekly.title')}>
+    <Layout maxWidth="480px">
+      <div className="-mx-4 -mt-4 md:-mb-8 min-h-screen bg-halo-bg px-4 md:px-9 font-sans text-halo-ink">
+      <TopBar title={t('weekly.title')} />
+      <div className="pb-3 text-[13px] text-halo-ink-dim">{t('weekly.written_by')}</div>
       {loading && <LoadingSpinner />}
 
       {!loading && error && items.length === 0 && <ErrorMessage message={error} />}
 
       {!loading && !error && items.length === 0 && (
-        <p className="text-center text-text-dim text-sm py-8">{t('weekly.empty')}</p>
+        <p className="text-center text-halo-ink-dim text-sm py-8">{t('weekly.empty')}</p>
       )}
 
       {items.length > 0 && (
@@ -106,17 +117,19 @@ export default function WeeklyReports() {
             <Link
               key={item.week_start}
               to={`/weekly/${item.week_start}`}
-              className="block bg-surface border border-border rounded-xl p-4 no-underline text-text hover:bg-surface-2 transition-colors"
+              className="block bg-halo-surface border border-halo-border rounded-card p-4 no-underline text-halo-ink shadow-card hover:bg-halo-surface-2 transition-colors"
             >
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-semibold">
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-bold uppercase tracking-[0.6px] text-halo-ink-dim">
                   {formatWeekRange(item.week_start, i18n.language)}
                 </span>
-                <span className="text-text-dim text-lg leading-none" aria-hidden="true">
-                  ›
-                </span>
+                {item.week_start === thisMonday && (
+                  <span className="rounded-pill bg-halo-brand px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.6px] text-white">
+                    {t('weekly.this_week')}
+                  </span>
+                )}
               </div>
-              <p className="text-[13px] text-text-dim leading-snug line-clamp-3">
+              <p className="mt-2 text-[15px] font-semibold leading-snug line-clamp-3 text-halo-ink">
                 {item.preview}
               </p>
             </Link>
@@ -130,7 +143,7 @@ export default function WeeklyReports() {
             type="button"
             onClick={loadMore}
             disabled={loadingMore}
-            className="w-full py-3 rounded-xl bg-surface border border-border text-sm font-medium text-text hover:bg-surface-2 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full py-3 rounded-card bg-halo-surface border border-halo-border text-sm font-medium text-halo-ink hover:bg-halo-surface-2 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {loadingMore ? t('weekly.loading_more') : t('weekly.load_more')}
           </button>
@@ -145,6 +158,7 @@ export default function WeeklyReports() {
           <ErrorMessage message={error} />
         </div>
       )}
+      </div>
     </Layout>
   )
 }

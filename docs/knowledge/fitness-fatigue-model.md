@@ -62,11 +62,14 @@ Beyond the per-day recovery state R(t) above, Banister's impulse-response model 
 | **ATL** (Acute Training Load) | 7 days | Short-term fatigue — last week's impulse | Intervals.icu API |
 | **TSB** (Training Stress Balance) | — | `CTL − ATL` — «form»; positive = fresh, negative = loaded | Intervals.icu (derived) |
 
-**TSB zones** (calibrated for Intervals.icu, not TrainingPeaks — normalisation differs):
-- `> +10` — under-training / detraining
-- `−10..+10` — optimal
-- `−10..−25` — productive overreach
-- `< −25` — overtraining risk
+**TSB zones** (5-band PMC banding, calibrated for Intervals.icu — normalisation differs from TrainingPeaks). Source of truth: `webapp/src/pages/LoadDetail.tsx::TSB_ZONES`, mirrored on the backend in `data/utils.py:tsb_zone`:
+- `< −30` — **risk** (high risk; backend gates: Z2-cap on adapted workouts + 🔴 morning warning)
+- `−30..−10` — **optimal** (productive training zone — no warning)
+- `−10..+5` — **gray** (neutral / maintenance)
+- `+5..+25` — **fresh** (well-rested)
+- `≥ +25` — **transition** (under-training / peaked)
+
+The −30 boundary is intentionally looser than the prior 4-zone canon (which warned at < −25). See `docs/WEBAPP_HALO_REDESIGN_SPEC.md` Decisions log 2026-05-23 for the rationale.
 
 **Two τ in one file:** the recovery R(t) above uses τ=2 days (recovery kinetics — how fast R drifts back to 100 on rest days, daily granularity). CTL/ATL use τ=42d / 7d (adaptation kinetics — how training stimulus transforms into chronic fitness vs. acute fatigue). Different physiological time-scales, same Banister-EMA math.
 

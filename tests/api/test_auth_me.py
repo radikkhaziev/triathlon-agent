@@ -26,6 +26,8 @@ def _user(
     bot_chat_initialized: bool = True,
     intervals_auth_method: str = "oauth",
     sports: list[str] | None = None,
+    display_name: str | None = "Radik Khaziev",
+    username: str | None = "radik",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=user_id,
@@ -36,6 +38,8 @@ def _user(
         intervals_oauth_scope=None,
         language="ru",
         sports=sports,
+        display_name=display_name,
+        username=username,
     )
 
 
@@ -54,12 +58,16 @@ def _thresholds() -> SimpleNamespace:
 
 @pytest.fixture
 def _stub_athlete_lookups():
-    """``auth_me`` calls AthleteSettings.get_thresholds + AthleteGoal.get_goal_dto.
-    Tests don't care about thresholds/goal — return empty stubs so the body
-    builds."""
+    """``auth_me`` calls get_thresholds + get_goal_dto + get_all +
+    get_latest_weight + get_latest_vo2max. Tests in the bot-chat/sports
+    classes don't care about profile internals — return empty stubs so the
+    body builds without touching the real DB."""
     with (
         patch("api.routers.auth.AthleteSettings.get_thresholds", new=AsyncMock(return_value=_thresholds())),
         patch("api.routers.auth.AthleteGoal.get_goal_dto", new=AsyncMock(return_value=None)),
+        patch("api.routers.auth.AthleteSettings.get_all", new=AsyncMock(return_value=[])),
+        patch("api.routers.auth.Wellness.get_latest_weight", new=AsyncMock(return_value=None)),
+        patch("api.routers.auth.Wellness.get_latest_vo2max", new=AsyncMock(return_value=None)),
     ):
         yield
 
@@ -110,3 +118,86 @@ class TestSportsExposed:
         gate releases immediately on the demo tour."""
         result = await auth_me(user=_user(role="demo", sports=None))
         assert result["sports"] == ["ride", "run", "swim"]
+
+
+class TestIdentityExposed:
+    """`display_name` + `username` drive the Settings identity card. Sourced
+    from the *authenticated* user (Telegram first+last), NOT data_uid."""
+
+    @pytest.mark.asyncio
+    async def test_identity_propagates(self, _stub_athlete_lookups):
+        result = await auth_me(user=_user(display_name="Radik Khaziev", username="radik"))
+        assert result["display_name"] == "Radik Khaziev"
+        assert result["username"] == "radik"
+
+    @pytest.mark.asyncio
+    async def test_identity_null_for_legacy_rows(self, _stub_athlete_lookups):
+        """Legacy rows (created via CLI / before the column) carry no Telegram
+        identity — the field is null and the UI falls back to the id monogram."""
+        result = await auth_me(user=_user(display_name=None, username=None))
+        assert result["display_name"] is None
+        assert result["username"] is None
+
+    @pytest.mark.asyncio
+    async def test_demo_role_scrubs_identity(self, _stub_athlete_lookups):
+        """Демо JWT минтится с owner's chat_id → `get_current_user` возвращает
+        OWNER User row. Без scrub'а демо-сессия отдавала бы реальные
+        owner.display_name/username в /api/auth/me → leak в Settings/Sidebar.
+        Контракт: demo-блок pin'ит identity в None (как `intervals.athlete_id`
+        → "demo")."""
+        result = await auth_me(user=_user(role="demo", display_name="Radik Khaziev", username="radik"))
+        assert result["display_name"] is None
+        assert result["username"] is None
+
+
+class TestProfilePersonalFields:
+    """G1=B: the Halo Personal card reads ``profile.weight`` +
+    ``profile.hr_max`` (per-sport, read-only). If this contract drifts the
+    card silently renders blanks — there's no other backend signal."""
+
+    @pytest.mark.asyncio
+    async def test_hr_max_maps_per_sport(self):
+        rows = [
+            SimpleNamespace(sport="Run", max_hr=190),
+            SimpleNamespace(sport="Ride", max_hr=182),
+            SimpleNamespace(sport="Swim", max_hr=170),
+        ]
+        with (
+            patch("api.routers.auth.AthleteSettings.get_thresholds", new=AsyncMock(return_value=_thresholds())),
+            patch("api.routers.auth.AthleteGoal.get_goal_dto", new=AsyncMock(return_value=None)),
+            patch("api.routers.auth.AthleteSettings.get_all", new=AsyncMock(return_value=rows)),
+            patch("api.routers.auth.Wellness.get_latest_weight", new=AsyncMock(return_value=72.5)),
+            patch("api.routers.auth.Wellness.get_latest_vo2max", new=AsyncMock(return_value=48.5)),
+        ):
+            result = await auth_me(user=_user())
+        assert result["profile"]["hr_max"] == {"run": 190, "bike": 182, "swim": 170}
+        assert result["profile"]["weight"] == 72.5
+        assert result["profile"]["vo2max"] == 48.5
+
+    @pytest.mark.asyncio
+    async def test_missing_sport_and_weight_are_none(self, _stub_athlete_lookups):
+        """Empty ``get_all`` + no weight/vo2max row → all keys present, valued
+        None (frontend renders an em-dash, never KeyErrors)."""
+        result = await auth_me(user=_user())
+        assert result["profile"]["hr_max"] == {"run": None, "bike": None, "swim": None}
+        assert result["profile"]["weight"] is None
+        assert result["profile"]["vo2max"] is None
+
+    @pytest.mark.asyncio
+    async def test_partial_sport_keeps_other_keys_none(self):
+        """Only Run configured → its key fills, Bike/Swim stay None (the
+        frontend per-tile ``?? '—'`` depends on every key always existing)."""
+        with (
+            patch("api.routers.auth.AthleteSettings.get_thresholds", new=AsyncMock(return_value=_thresholds())),
+            patch("api.routers.auth.AthleteGoal.get_goal_dto", new=AsyncMock(return_value=None)),
+            patch(
+                "api.routers.auth.AthleteSettings.get_all",
+                new=AsyncMock(return_value=[SimpleNamespace(sport="Run", max_hr=190)]),
+            ),
+            patch("api.routers.auth.Wellness.get_latest_weight", new=AsyncMock(return_value=None)),
+            patch("api.routers.auth.Wellness.get_latest_vo2max", new=AsyncMock(return_value=None)),
+        ):
+            result = await auth_me(user=_user())
+        assert result["profile"]["hr_max"] == {"run": 190, "bike": None, "swim": None}
+        assert result["profile"]["weight"] is None
+        assert result["profile"]["vo2max"] is None

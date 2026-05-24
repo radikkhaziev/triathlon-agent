@@ -8,7 +8,6 @@ from data.marathon_shape import (
     MINIMAL_EFFECTIVE_VO2MAX,
     RunActivity,
     calculate_marathon_shape,
-    required_shape_for_distance,
     target_longjog_km,
     target_weekly_km,
 )
@@ -49,24 +48,6 @@ class TestTargetLongjogKm:
     def test_clamps_below_minimum(self):
         assert target_longjog_km(20) == target_longjog_km(MINIMAL_EFFECTIVE_VO2MAX)
         assert round(target_longjog_km(20), 2) == 8.99
-
-
-class TestRequiredShapeForDistance:
-    """`required_shape_for_distance(km) = km ** 1.23`. Marathon ≈ 100, HM ≈ 42.5."""
-
-    def test_half_marathon(self):
-        assert round(required_shape_for_distance(21.0975), 1) == 42.5
-
-    def test_marathon(self):
-        assert round(required_shape_for_distance(42.195), 1) == 99.8
-
-    def test_10k(self):
-        assert round(required_shape_for_distance(10.0), 1) == 17.0
-
-    def test_70_3_run_leg_equals_hm(self):
-        # 70.3 run-leg is HM-distance — same input → same output, picker dedup rationale.
-        # Spec §2 explicitly removed 70.3 from the picker because of this identity.
-        assert round(required_shape_for_distance(21.0975), 1) == 42.5
 
 
 class TestCalculateMarathonShape:

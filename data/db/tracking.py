@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as _dt
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func, select, update
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -323,32 +323,3 @@ class StarTransaction(Base):
         row = result.scalar_one_or_none()
         await session.commit()
         return row
-
-    @classmethod
-    @with_session
-    async def get_by_charge_id(cls, charge_id: str, *, session: AsyncSession) -> StarTransaction | None:
-        result = await session.execute(select(cls).where(cls.charge_id == charge_id))
-        return result.scalar_one_or_none()
-
-    @classmethod
-    @with_session
-    async def get_by_user(
-        cls,
-        user_id: int,
-        days_back: int = 30,
-        *,
-        session: AsyncSession,
-    ) -> list[StarTransaction]:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
-        result = await session.execute(
-            select(cls)
-            .where(cls.user_id == user_id, cls.refunded_at.is_(None), cls.created_at >= cutoff)
-            .order_by(cls.created_at.desc())
-        )
-        return list(result.scalars().all())
-
-    @classmethod
-    @with_session
-    async def mark_refunded(cls, charge_id: str, *, session: AsyncSession) -> None:
-        await session.execute(update(cls).where(cls.charge_id == charge_id).values(refunded_at=func.now()))
-        await session.commit()

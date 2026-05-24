@@ -1,29 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, apiFetch } from '../api/client'
 import type { WeeklyReportDetail } from '../api/types'
 import ErrorMessage from '../components/ErrorMessage'
 import Layout from '../components/Layout'
+import { TopBar } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
-/**
- * Add ``days`` to an ISO Monday and return a fresh ISO date.
- *
- * MUST use UTC throughout — without the `Z` suffix the constructor parses
- * as local time, then ``toISOString()`` converts back to UTC and a
- * UTC-positive timezone (Belgrade UTC+02) shifts the calendar day by one,
- * silently turning Monday into the preceding Sunday. That breaks the
- * prev/next navigation and the «next-is-future» guard for any non-UTC user.
- */
-function shiftIsoDate(isoMonday: string, days: number): string {
-  const d = new Date(`${isoMonday}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
+// Where the back-link / not-found CTA returns to — the Trends Recap tab,
+// which is the weekly-reports list this detail page is opened from.
+const RECAP_LIST_PATH = '/trends?tab=recap'
 
 /**
  * URL whitelist for markdown links. ``react-markdown`` v9 ships a default
@@ -40,10 +30,10 @@ function safeUrlTransform(url: string): string {
 }
 
 function formatWeekRange(isoMonday: string, locale: string): string {
-  // Parse + format in UTC for the same TZ-shift reason as ``shiftIsoDate``.
-  // ``Intl.DateTimeFormat`` defaults to the user's local TZ — without the
-  // explicit ``timeZone: 'UTC'`` option, a Monday parsed at 00:00 UTC
-  // would render as the preceding Sunday for users west of UTC.
+  // Parse + format in UTC to dodge the TZ-shift bug: ``Intl.DateTimeFormat``
+  // defaults to the user's local TZ — without the explicit ``timeZone: 'UTC'``
+  // option, a Monday parsed at 00:00 UTC would render as the preceding Sunday
+  // for users west of UTC.
   const monday = new Date(`${isoMonday}T00:00:00Z`)
   const sunday = new Date(monday)
   sunday.setUTCDate(monday.getUTCDate() + 6)
@@ -59,22 +49,18 @@ function formatWeekRange(isoMonday: string, locale: string): string {
 /**
  * Single weekly report rendered from the DB archive.
  *
- * Prev/next navigation just shifts the URL by ±7 days — we don't pre-validate
- * existence (would require either an extra API call or a "neighbours" field
- * on the detail response). If the user lands on a missing week, the page
- * surfaces the empty-state with a back-to-list CTA. Trade-off: one click
- * potentially wasted, in exchange for keeping the API surface minimal.
+ * Reached by tapping a card in the Dashboard Recap tab (or the weekly-report
+ * Telegram message button). A missing or malformed week surfaces the
+ * empty-state with a back-to-list CTA rather than a hard error.
  */
 export default function WeeklyReport() {
   const { weekStart = '' } = useParams<{ weekStart: string }>()
   const { t, i18n } = useTranslation()
-  const navigate = useNavigate()
   const [data, setData] = useState<WeeklyReportDetail | null>(null)
   const [loading, setLoading] = useState(true)
   // ``notFound`` and ``error`` are deliberately separate states. 404 is the
-  // expected outcome for «navigate to a week with no report» — render the
-  // empty-state with prev/next still functional. Anything else is a hard
-  // error and gets the standard ErrorMessage treatment.
+  // expected outcome for a week with no report — render the empty-state.
+  // Anything else is a hard error and gets the standard ErrorMessage treatment.
   const [notFound, setNotFound] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -122,38 +108,10 @@ export default function WeeklyReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekStart])
 
-  const prevWeek = validIso ? shiftIsoDate(weekStart, -7) : null
-  const nextWeek = validIso ? shiftIsoDate(weekStart, 7) : null
-  // Disable «next» when it would land on a future week — those don't exist
-  // yet (the actor only writes after the Sunday cron fires for that week).
-  const todayIso = new Date().toISOString().slice(0, 10)
-  const nextWouldBeFuture = nextWeek !== null && nextWeek > todayIso
-
   return (
-    <Layout title={t('weekly.title')} backTo="/weekly" backLabel={t('weekly.back_to_list')}>
-      <div className="flex items-center justify-between mb-4">
-        <button
-          type="button"
-          onClick={() => prevWeek && navigate(`/weekly/${prevWeek}`)}
-          disabled={!prevWeek}
-          aria-label={t('weekly.prev_week')}
-          className="px-3 py-2 rounded-lg bg-surface border border-border text-sm text-text hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          ← {t('weekly.prev_week')}
-        </button>
-        <span className="text-sm font-semibold text-center px-2">
-          {validIso ? formatWeekRange(weekStart, i18n.language) : weekStart}
-        </span>
-        <button
-          type="button"
-          onClick={() => nextWeek && navigate(`/weekly/${nextWeek}`)}
-          disabled={!nextWeek || nextWouldBeFuture}
-          aria-label={t('weekly.next_week')}
-          className="px-3 py-2 rounded-lg bg-surface border border-border text-sm text-text hover:bg-surface-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {t('weekly.next_week')} →
-        </button>
-      </div>
+    <Layout backTo={RECAP_LIST_PATH} backLabel={t('weekly.back_to_list')}>
+      <div className="-mx-4 -mt-4 md:-mb-8 min-h-screen bg-halo-bg px-4 md:px-9 font-sans text-halo-ink">
+      <TopBar title={validIso ? formatWeekRange(weekStart, i18n.language) : weekStart} />
 
       {loading && <LoadingSpinner />}
 
@@ -161,10 +119,10 @@ export default function WeeklyReport() {
 
       {!loading && notFound && (
         <div className="text-center py-12">
-          <p className="text-text-dim text-sm mb-4">{t('weekly.not_found')}</p>
+          <p className="text-halo-ink-dim text-sm mb-4">{t('weekly.not_found')}</p>
           <Link
-            to="/weekly"
-            className="inline-block px-4 py-2 rounded-lg bg-surface border border-border text-sm text-text no-underline hover:bg-surface-2 transition-colors"
+            to={RECAP_LIST_PATH}
+            className="inline-block px-4 py-2 rounded-chip bg-halo-surface border border-halo-border text-sm text-halo-ink no-underline hover:bg-halo-surface-2 transition-colors"
           >
             {t('weekly.back_to_list')}
           </Link>
@@ -172,29 +130,29 @@ export default function WeeklyReport() {
       )}
 
       {!loading && !error && !notFound && data && (
-        <article className="bg-surface border border-border rounded-xl p-5">
+        <article className="bg-halo-surface border border-halo-border rounded-card p-5 mt-3">
           {/* Tailwind `prose` would be ideal here but the project doesn't ship
               the typography plugin — apply styling per-element via component
               overrides. Same approach as the chat-output formatter. */}
-          <div className="weekly-md text-[14px] leading-relaxed text-text">
+          <div className="weekly-md text-[14px] leading-relaxed text-halo-ink">
             <ReactMarkdown
               urlTransform={safeUrlTransform}
               components={{
-                h1: props => <h2 className="text-base font-bold mt-4 mb-2" {...props} />,
-                h2: props => <h3 className="text-base font-bold mt-4 mb-2" {...props} />,
-                h3: props => <h4 className="text-sm font-bold mt-3 mb-2" {...props} />,
+                h1: props => <h2 className="text-base font-semibold mt-4 mb-2" {...props} />,
+                h2: props => <h3 className="text-base font-semibold mt-4 mb-2" {...props} />,
+                h3: props => <h4 className="text-sm font-semibold mt-3 mb-2" {...props} />,
                 p: props => <p className="mb-3" {...props} />,
                 ul: props => <ul className="list-disc pl-5 mb-3 space-y-1" {...props} />,
                 ol: props => <ol className="list-decimal pl-5 mb-3 space-y-1" {...props} />,
                 li: props => <li className="leading-snug" {...props} />,
                 strong: props => <strong className="font-semibold" {...props} />,
                 em: props => <em className="italic" {...props} />,
-                hr: () => <hr className="my-4 border-border" />,
+                hr: () => <hr className="my-4 border-halo-border" />,
                 code: props => (
-                  <code className="bg-surface-2 rounded px-1 py-0.5 text-[12px]" {...props} />
+                  <code className="bg-halo-surface-2 rounded px-1 py-0.5 text-[12px]" {...props} />
                 ),
                 a: props => (
-                  <a className="text-accent underline" target="_blank" rel="noopener noreferrer" {...props} />
+                  <a className="text-halo-brand underline" target="_blank" rel="noopener noreferrer" {...props} />
                 ),
               }}
             >
@@ -203,6 +161,7 @@ export default function WeeklyReport() {
           </div>
         </article>
       )}
+      </div>
     </Layout>
   )
 }

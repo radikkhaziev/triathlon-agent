@@ -239,18 +239,6 @@ class AthleteGoal(Base):
 
     @classmethod
     @dual
-    def get_active(cls, user_id: int, *, session: Session) -> AthleteGoal | None:
-        """Get the primary active goal (RACE_A first, then by date)."""
-        result = session.execute(
-            select(cls)
-            .where(cls.user_id == user_id, cls.is_active.is_(True))
-            .order_by(cls.category.asc(), cls.event_date.asc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-    @classmethod
-    @dual
     def get_goal_dto(cls, user_id: int, *, session: Session) -> AthleteGoalDTO | None:
         """Return the primary anchor goal as a single DTO. Used by `auth_me.goal`
         (Dashboard tab gate) and `get_goal_progress` MCP tool.

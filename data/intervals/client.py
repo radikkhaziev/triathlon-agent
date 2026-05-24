@@ -208,13 +208,6 @@ class IntervalsClientBase:
             activities.append(ActivityDTO.model_validate(data))
         return activities
 
-    def _parse_events(self, resp: httpx.Response) -> list[ScheduledWorkoutDTO]:
-        events = []
-        for raw in resp.json():
-            data = {to_snake(k): v for k, v in raw.items()}
-            events.append(ScheduledWorkoutDTO.model_validate(data))
-        return events
-
     def _parse_event(self, resp: httpx.Response) -> ScheduledWorkoutDTO:
         data = {to_snake(k): v for k, v in resp.json().items()}
         return ScheduledWorkoutDTO.model_validate(data)
@@ -305,17 +298,6 @@ class IntervalsClientBase:
 
     def _spec_get_activity_detail(self, activity_id: str) -> RequestSpec:
         return RequestSpec("GET", f"/activity/{activity_id}", handle_404=True)
-
-    def _spec_get_activity_streams(self, activity_id: str, types: list[str] | None = None) -> RequestSpec:
-        params: dict = {}
-        if types:
-            params["types"] = ",".join(types)
-        return RequestSpec(
-            "GET",
-            f"/activity/{activity_id}/streams",
-            kwargs={"params": params} if params else {},
-            handle_404=True,
-        )
 
     def _spec_get_activity_intervals(self, activity_id: str) -> RequestSpec:
         return RequestSpec("GET", f"/activity/{activity_id}/intervals", handle_404=True)
@@ -521,9 +503,6 @@ class IntervalsAsyncClient(IntervalsClientBase):
     async def get_activity_detail(self, activity_id: str) -> dict | None:
         return await self._execute(self._spec_get_activity_detail(activity_id))
 
-    async def get_activity_streams(self, activity_id: str, types: list[str] | None = None) -> list[dict] | None:
-        return await self._execute(self._spec_get_activity_streams(activity_id, types))
-
     async def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return await self._execute(self._spec_get_activity_intervals(activity_id))
 
@@ -672,9 +651,6 @@ class IntervalsSyncClient(IntervalsClientBase):
 
     def get_activity_detail(self, activity_id: str) -> dict | None:
         return self._execute(self._spec_get_activity_detail(activity_id))
-
-    def get_activity_streams(self, activity_id: str, types: list[str] | None = None) -> list[dict] | None:
-        return self._execute(self._spec_get_activity_streams(activity_id, types))
 
     def get_activity_intervals(self, activity_id: str) -> list[dict] | None:
         return self._execute(self._spec_get_activity_intervals(activity_id))

@@ -7,8 +7,17 @@ function todayLocal(): Date {
   return d
 }
 
-export function useDayNav() {
-  const [currentDate, setCurrentDate] = useState(() => todayLocal())
+export function useDayNav(initialDate?: Date) {
+  // `initialDate` lets a caller deep-link a specific day — the All-history
+  // calendar passes the tapped day via `?date=`. Clamped to ≤ today; a future
+  // or absent value falls back to today (mirrors `goTo`'s no-future rule).
+  const [currentDate, setCurrentDate] = useState(() => {
+    if (!initialDate) return todayLocal()
+    const d = new Date(initialDate)
+    d.setHours(0, 0, 0, 0)
+    const today = todayLocal()
+    return fmtDateYmd(d) > fmtDateYmd(today) ? today : d
+  })
 
   const dateStr = fmtDateYmd(currentDate)
   const isToday = dateStr === fmtDateYmd(todayLocal())
@@ -33,5 +42,14 @@ export function useDayNav() {
     })
   }, [])
 
-  return { currentDate, dateStr, isToday, prev, next }
+  // Jump to an arbitrary day (Halo date-strip pill). Clamped to ≤ today,
+  // mirroring `next`'s no-future rule. Wellness is the only consumer.
+  const goTo = useCallback((d: Date) => {
+    const day = new Date(d)
+    day.setHours(0, 0, 0, 0)
+    const today = todayLocal()
+    setCurrentDate(fmtDateYmd(day) > fmtDateYmd(today) ? today : day)
+  }, [])
+
+  return { currentDate, dateStr, isToday, prev, next, goTo }
 }

@@ -334,42 +334,6 @@ def _strip_rows_with_prefix(markup: InlineKeyboardMarkup | None, callback_prefix
 
 
 @athlete_required
-async def handle_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
-    """Handle 🎬 Video button — pipeline avatar download → video render request.
-
-    Single-shot: strip the video row so a second tap cannot queue a duplicate
-    render. Pipeline result of `actor_download_user_avatar` feeds
-    `actor_render_workout_video` as its first positional arg.
-    """
-    from dramatiq import pipeline
-
-    from tasks.actors import actor_download_user_avatar, actor_render_workout_video
-
-    query = update.callback_query
-    parts = query.data.split(":")
-    if len(parts) != 2:
-        await query.answer()
-        return
-
-    activity_id = parts[1]
-    await query.answer("🎬 Generating video...")
-
-    remaining_markup = _strip_rows_with_prefix(query.message.reply_markup if query.message else None, "video:")
-    try:
-        await query.edit_message_reply_markup(reply_markup=remaining_markup)
-    except TelegramError:
-        logger.warning("handle_video_callback: failed to strip media row", exc_info=True)
-
-    user_dto = UserDTO.model_validate(user)
-    pipeline(
-        [
-            actor_download_user_avatar.message(user=user_dto),
-            actor_render_workout_video.message(activity_id=activity_id),
-        ]
-    ).run()
-
-
-@athlete_required
 async def web_login(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User) -> None:
     """Handle /web command — generate one-time login code for desktop browser."""
     code = generate_code(str(user.chat_id))
@@ -1791,8 +1755,6 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_update_zones_callback, pattern=r"^update_zones$"))
     app.add_handler(CallbackQueryHandler(handle_lang_callback, pattern=r"^lang:"))
     app.add_handler(CallbackQueryHandler(handle_rpe_callback, pattern=r"^rpe:"))
-    # Temporarily disabled — video render is offline.
-    # app.add_handler(CallbackQueryHandler(handle_video_callback, pattern=r"^video:"))
     # Race creation confirm/cancel — standalone, not inside ConversationHandler.
     # Race is requested via free-form chat (Claude emits suggest_race(dry_run=True)),
     # not through a multi-state /race wizard, so these handlers live outside the

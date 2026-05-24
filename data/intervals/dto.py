@@ -162,14 +162,6 @@ class ScheduledWorkoutDTO(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class HRVDataDTO(BaseModel):
-    date: date
-    hrv_weekly_avg: float
-    hrv_last_night: float
-    hrv_5min_high: float | None = None
-    status: str
-
-
 class ActivityDTO(BaseModel):
     """Completed activity from Intervals.icu activities endpoint."""
 

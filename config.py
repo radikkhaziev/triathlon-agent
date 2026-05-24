@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = SecretStr("")
     TELEGRAM_BOT_USERNAME: str = ""  # without @, used by Telegram Login Widget
-    TELEGRAM_CHAT_ID: str = ""  # Owner chat ID for service notifications
     TELEGRAM_WEBHOOK_URL: str = ""  # empty = polling mode
 
     # Anthropic
@@ -76,11 +75,6 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return {int(x) for x in v.split(",") if x.strip()}
         return v
-
-    # Video render service (video.endurai.me). Empty URL = feature disabled,
-    # bot does not show the "🎬 Video (beta)" button after activities.
-    VIDEO_API_URL: str = ""
-    VIDEO_API_TOKEN: SecretStr = SecretStr("")
 
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"

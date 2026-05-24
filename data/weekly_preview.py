@@ -23,6 +23,11 @@ _DEFAULT_MAX_CHARS = 220
 _ANCHOR_RE = re.compile(r"^[\s#*_>\-]*📊", re.MULTILINE)
 _BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 _ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+# ``[text](url)`` → ``text``. Only ``extract_weekly_headline`` uses it: the
+# headline renders in a plain text node, so a stray link would otherwise show
+# its raw ``[...](...)`` syntax. The prompt asks for a 3-6 word title so this
+# is a backstop, not an expected case.
+_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 # Lines we skip in the no-anchor fallback when scanning for the first body
 # paragraph: markdown headings (``#``), horizontal rules (``---``/``===``),
 # and blank lines. Without this the fallback would render the heading itself
@@ -86,3 +91,34 @@ def extract_weekly_preview(content_md: str, max_chars: int = _DEFAULT_MAX_CHARS)
     if last_space > max_chars * 0.7:
         truncated = truncated[:last_space]
     return truncated.rstrip(" .,;:…—") + "…"
+
+
+def extract_weekly_headline(content_md: str) -> str | None:
+    """Pull the leading ``# `` H1 the weekly-report prompt emits.
+
+    ``SYSTEM_PROMPT_WEEKLY`` instructs Claude to open the report with a single
+    short H1 headline (3-6 words) before the body — the ``/api/weekly-reports``
+    list cards render it as the card title.
+
+    Returns the headline text stripped of bold/italic markers, or ``None`` for
+    legacy reports generated before the prompt change (and for any report that
+    doesn't lead with an H1) — callers fall back to ``extract_weekly_preview``.
+
+    Only a *leading* H1 counts: the prompt forbids ``#`` headings anywhere
+    else, so we anchor on the first non-blank line rather than scanning. That
+    keeps a stray mid-body ``#`` from being mistaken for the title, and stays
+    in lock-step with ``extract_weekly_preview`` (whose fallback path already
+    skips the same leading heading via ``_SKIPPABLE_RE``).
+    """
+    stripped = content_md.lstrip()
+    if not stripped.startswith("# "):
+        return None
+    first_line = stripped.splitlines()[0]
+    # Drop the ``# `` leader; tolerate a trailing ``#`` run (ATX-closed form).
+    text = first_line[2:].strip().rstrip("#").strip()
+    # Link-strip before bold/italic so ``[**text**](url)`` collapses cleanly.
+    text = _LINK_RE.sub(r"\1", text)
+    text = _BOLD_RE.sub(r"\1", text)
+    text = _ITALIC_RE.sub(r"\1", text)
+    text = text.strip()
+    return text or None

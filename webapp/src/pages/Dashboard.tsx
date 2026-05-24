@@ -1,33 +1,41 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Chart, registerables } from 'chart.js'
+import { Link, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
+import { TopBar, SegmentedTabs, Gauge, TaperBar } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
-import { ChartCard, chartOptions } from '../components/ChartCard'
 import { apiFetch } from '../api/client'
-import { CHART_COLORS, SPORT_ICONS, TSB_ZONE_COLORS } from '../lib/constants'
-import type { AuthMeResponse, TrainingLoadSeries, ActivitiesSeries, GoalResponse, GoalProgress, GoalProjection, WeeklyRecapBucket, WeeklyRecapResponse, RecoveryTrendSeries } from '../api/types'
+import { useAuth } from '../auth/useAuth'
+import { CHART_COLORS } from '../lib/constants'
+import type {
+  AuthMeResponse,
+  GoalResponse,
+  GoalProgress,
+  GoalProjection,
+  WeeklyReportListItem,
+  WeeklyReportListResponse,
+} from '../api/types'
 import RacePlanPanel from '../components/RacePlanPanel'
+import LoadTab from './DashboardLoadTab'
 
-Chart.register(...registerables)
-
-type TabKey = 'load' | 'goal' | 'week'
-
-const TAB_LABELS: Record<TabKey, string> = {
-  load: 'Load',
-  goal: 'Goal',
-  week: 'Week',
-}
+// Trends screen tabs. Labels are literal English (de-i18n'd, matching the
+// design's `BDashboard` tabs). The Load tab merges the former /progress
+// screen — Endurance Score placeholder, per-sport trend cards (Decoupling,
+// Zone Distribution, EF/Drift, Bike Readiness / Marathon Shape, swim pace).
+type TabKey = 'goal' | 'load' | 'recap'
+const TAB_LABEL: Record<TabKey, string> = { goal: 'Goal', load: 'Load', recap: 'Recap' }
 
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState<TabKey>('load')
+  const { t } = useTranslation()
+  const { isDemo } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   // null = unknown (still loading OR /api/auth/me failed). We optimistically
-  // render all three tabs in that case so the common path (race set) doesn't
-  // flicker a missing tab in for a frame, and so a flaky network doesn't
-  // strand the user without a Goal tab they actually own. If GoalTab itself
-  // can't fetch, it renders <ErrorMessage/> with a retry path. Only an
-  // explicit `false` from a successful response collapses the tabs to two.
+  // keep the Goal tab in that case so the common path (race set) doesn't
+  // flicker, and a flaky network doesn't strand the user without a Goal tab
+  // they actually own. If GoalTab itself can't fetch, it renders
+  // <ErrorMessage/> with a retry path. Only an explicit `false` from a
+  // successful response drops the Goal tab.
   const [hasGoal, setHasGoal] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -36,287 +44,75 @@ export default function Dashboard() {
       .catch(() => setHasGoal(null))
   }, [])
 
-  useEffect(() => {
-    if (hasGoal === false && activeTab === 'goal') setActiveTab('load')
-  }, [hasGoal, activeTab])
+  // Recap is the weekly-reports archive — own-history-only (/api/weekly-reports
+  // is require_athlete, since reports can mention injuries / personal context).
+  // A demo user would only hit a 403, so drop the tab for them entirely rather
+  // than render a broken error state.
+  const baseTabs: TabKey[] = hasGoal === false ? ['load', 'recap'] : ['goal', 'load', 'recap']
+  const tabKeys = isDemo ? baseTabs.filter(k => k !== 'recap') : baseTabs
+  const tabs = tabKeys.map(k => ({ key: k, label: TAB_LABEL[k] }))
 
-  const tabs: TabKey[] = hasGoal === false ? ['load', 'week'] : ['load', 'goal', 'week']
+  // Active tab lives in the URL (?tab=) so a detail page — e.g. a weekly
+  // report — can deep-link straight back to the Recap tab, and browser-back
+  // restores it. Clamp to an actually-available tab: guards a hand-typed
+  // ?tab=recap for a demo user, or ?tab=goal once the goal is gone.
+  const tabParam = searchParams.get('tab')
+  const requestedTab: TabKey =
+    tabParam === 'load' || tabParam === 'recap' || tabParam === 'goal' ? tabParam : 'goal'
+  const activeTab: TabKey = tabKeys.includes(requestedTab) ? requestedTab : tabKeys[0]
+  const setActiveTab = (key: TabKey) => setSearchParams({ tab: key }, { replace: true })
 
   return (
     <Layout maxWidth="480px">
-      {/* Sticky Tabs */}
-      <div className="flex gap-1 py-3 sticky top-0 bg-bg z-10">
-        {tabs.map(tab => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-2 px-1 border-none rounded-lg text-[13px] font-semibold cursor-pointer transition-all font-sans ${
-              activeTab === tab
-                ? 'bg-[var(--button)] text-[var(--button-text)]'
-                : 'bg-[var(--surface)] text-text-dim'
-            }`}
-          >
-            {TAB_LABELS[tab]}
-          </button>
-        ))}
-      </div>
+      <div className="-mx-4 -mt-4 md:-mb-8 min-h-screen bg-halo-bg px-4 md:px-9 font-sans text-halo-ink">
+        {/* Header matches the bottom-tab name ("Trends"); the Recap tab is the
+            weekly-reports archive, so it gets its own «Weekly reports» title. */}
+        <TopBar
+          title={activeTab === 'recap' ? t('weekly.title') : t('nav.trends')}
+          subtitle={t('dashboard.desktop_subtitle')}
+        />
+        <div className="sticky top-0 z-10 bg-halo-bg py-3 md:static">
+          <SegmentedTabs<TabKey> tabs={tabs} active={activeTab} onChange={setActiveTab} />
+        </div>
 
-      {activeTab === 'load' && <LoadTab />}
-      {activeTab === 'goal' && <GoalTab />}
-      {activeTab === 'week' && <WeekTab />}
+        <div className="flex flex-col gap-3.5 pb-4">
+          {activeTab === 'goal' && <GoalTab />}
+          {activeTab === 'load' && <LoadTab />}
+          {activeTab === 'recap' && <RecapTab />}
+        </div>
+      </div>
     </Layout>
   )
 }
 
-function TsbZoneBadge({ tsb }: { tsb: number | null }) {
-  const { t } = useTranslation()
-  if (tsb === null) return null
-  let label: string, color: string
-  if (tsb > 10) { label = t('dashboard.undertraining'); color = TSB_ZONE_COLORS.under }
-  else if (tsb >= -10) { label = t('dashboard.optimal'); color = TSB_ZONE_COLORS.optimal }
-  else if (tsb >= -25) { label = t('dashboard.productive_overreach'); color = TSB_ZONE_COLORS.productive }
-  else { label = t('dashboard.overtraining_risk'); color = TSB_ZONE_COLORS.risk }
-
-  const tsbStr = tsb > 0 ? `+${tsb.toFixed(0)}` : tsb.toFixed(0)
-  return (
-    <div className="bg-surface border border-border rounded-[14px] p-3 mb-3 flex justify-between items-center">
-      <span className="text-[13px] text-text-dim">{t('dashboard.tsb_zone')}</span>
-      <div className="flex items-center gap-2">
-        <span className="text-[13px] font-mono font-semibold" style={{ color }}>{tsbStr}</span>
-        <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white" style={{ background: color }}>{label}</span>
-      </div>
-    </div>
-  )
+// Sport key → display label + color. `CHART_COLORS` keeps the Goal-tab
+// per-sport bars on the app-wide sport palette.
+const SPORT_META: Record<'swim' | 'ride' | 'run', { label: string; color: string }> = {
+  swim: { label: 'Swim', color: CHART_COLORS.swim },
+  ride: { label: 'Ride', color: CHART_COLORS.ride },
+  run: { label: 'Run', color: CHART_COLORS.run },
 }
 
-type LoadTabData = {
-  load: TrainingLoadSeries
-  activities: ActivitiesSeries
-  recovery: RecoveryTrendSeries | null
+// Short "Jul 5" date for projection captions. UTC parse+format — a local-TZ
+// parse shifts the day by ±1 across DST for a UTC-positive user.
+function fmtProjDate(iso: string): string {
+  return new Date(iso + 'T00:00:00Z').toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })
 }
 
-function LoadTab() {
-  const { t } = useTranslation()
-  const loadChartRef = useRef<HTMLCanvasElement>(null)
-  const tssChartRef = useRef<HTMLCanvasElement>(null)
-  const recoveryChartRef = useRef<HTMLCanvasElement>(null)
-  const chartsRef = useRef<Chart[]>([])
-  const [data, setData] = useState<LoadTabData | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    Promise.all([
-      apiFetch<TrainingLoadSeries>('/api/training-load?days=84'),
-      apiFetch<ActivitiesSeries>('/api/activities?days=28'),
-      apiFetch<RecoveryTrendSeries>('/api/recovery-trend?days=21').catch(() => null),
-    ])
-      .then(([loadData, actData, recData]) => setData({ load: loadData, activities: actData, recovery: recData }))
-      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
-  }, [])
-
-  // Chart creation runs in a separate effect that fires AFTER `data` commits
-  // and the canvases mount. The earlier "create charts inside Promise.then"
-  // shape silently no-op'd because the refs were still null while the spinner
-  // was rendered (END-51). Cleanup (return below) destroys old charts before
-  // each re-run, so we don't need to clear `chartsRef` at the top.
-  useEffect(() => {
-    if (!data) return
-
-    const { load: loadData, activities: actData, recovery: recData } = data
-
-    if (loadChartRef.current && loadData.dates?.length) {
-      const labels = loadData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-      chartsRef.current.push(new Chart(loadChartRef.current, {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [
-            { label: 'CTL', data: loadData.ctl, borderColor: CHART_COLORS.ctl, fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-            { label: 'ATL', data: loadData.atl, borderColor: CHART_COLORS.atl, fill: false, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-            { label: 'TSB', data: loadData.tsb, borderColor: CHART_COLORS.tsb, backgroundColor: CHART_COLORS.tsb + '15', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
-          ],
-        },
-        options: chartOptions(t('dashboard.charts.training_load_12w')),
-      }))
-    }
-
-    if (tssChartRef.current && actData.activities?.length) {
-      const byDate: Record<string, { swim: number; ride: number; run: number }> = {}
-      for (const act of actData.activities) {
-        if (!byDate[act.date]) byDate[act.date] = { swim: 0, ride: 0, run: 0 }
-        const sport = act.sport === 'swimming' ? 'swim' : act.sport === 'cycling' ? 'ride' : act.sport === 'running' ? 'run' : null
-        if (sport && act.tss) byDate[act.date][sport] += act.tss
-      }
-      const dates = Object.keys(byDate).sort()
-      const labels = dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-      chartsRef.current.push(new Chart(tssChartRef.current, {
-        type: 'bar',
-        data: {
-          labels,
-          datasets: [
-            { label: 'Swim', data: dates.map(d => byDate[d].swim), backgroundColor: CHART_COLORS.swim + 'cc', borderRadius: 2 },
-            { label: 'Ride', data: dates.map(d => byDate[d].ride), backgroundColor: CHART_COLORS.ride + 'cc', borderRadius: 2 },
-            { label: 'Run', data: dates.map(d => byDate[d].run), backgroundColor: CHART_COLORS.run + 'cc', borderRadius: 2 },
-          ],
-        },
-        options: {
-          ...chartOptions(t('dashboard.charts.daily_tss_by_sport')),
-          scales: {
-            x: { stacked: true, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
-            y: { stacked: true, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } } },
-          },
-        },
-      }))
-    }
-
-    if (recoveryChartRef.current && recData?.dates?.length) {
-      const labels = recData.dates.map(d => { const p = d.split('-'); return `${p[1]}/${p[2]}` })
-      chartsRef.current.push(new Chart(recoveryChartRef.current, {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [
-            {
-              label: 'Recovery Score',
-              data: recData.recovery,
-              borderColor: '#a855f7',
-              backgroundColor: '#a855f720',
-              fill: true,
-              tension: 0.4,
-              pointRadius: 3,
-              pointBackgroundColor: '#a855f7',
-              borderWidth: 2,
-              yAxisID: 'y',
-            },
-            {
-              label: 'HRV (RMSSD)',
-              data: recData.hrv,
-              borderColor: '#f59e0b',
-              fill: false,
-              tension: 0.4,
-              pointRadius: 2,
-              pointBackgroundColor: '#f59e0b',
-              borderWidth: 1.5,
-              yAxisID: 'y1',
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { position: 'top', labels: { boxWidth: 12, padding: 10, font: { size: 13 } } },
-            title: { display: true, text: t('dashboard.charts.recovery_hrv_21d'), font: { size: 14, weight: 'bold' } },
-          },
-          scales: {
-            x: { grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 10 } },
-            y: { min: 0, max: 100, grid: { color: 'rgba(128,128,128,0.2)' }, ticks: { font: { size: 12 } }, position: 'left' },
-            y1: { min: 30, max: 75, grid: { drawOnChartArea: false }, ticks: { font: { size: 12 } }, position: 'right' },
-          },
-        },
-      }))
-    }
-
-    return () => { chartsRef.current.forEach(c => c.destroy()); chartsRef.current = [] }
-    // ``t`` so chart titles re-render when the user toggles language at runtime.
-  }, [data, t])
-
-  if (error) return <ErrorMessage message={error} />
-  if (!data) return <LoadingSpinner />
-
-  const currentTsb = data.load.tsb?.length ? data.load.tsb[data.load.tsb.length - 1] : null
-
-  return (
-    <>
-      <ChartCard><canvas ref={loadChartRef} /></ChartCard>
-      <TsbZoneBadge tsb={currentTsb} />
-      <ChartCard><canvas ref={tssChartRef} /></ChartCard>
-      <ChartCard><canvas ref={recoveryChartRef} /></ChartCard>
-    </>
-  )
+// Whole weeks the projected target-hit date lands past race day (clamped ≥ 0).
+function weeksPastRace(projectedDate: string, eventDate: string): number {
+  const proj = new Date(projectedDate + 'T00:00:00Z')
+  const ev = new Date(eventDate + 'T00:00:00Z')
+  return Math.max(0, Math.round((proj.getTime() - ev.getTime()) / (7 * 86400e3)))
 }
 
-// Sport key → display label + emoji + color. Reuses CHART_COLORS so the
-// Goal-tab bars match the Load-tab TSS chart, and SPORT_ICONS so the
-// vocabulary lines up with the bot (END-12 visuals decision).
-const SPORT_META: Record<'swim' | 'ride' | 'run', { label: string; emoji: string; color: string }> = {
-  swim: { label: 'Swim', emoji: SPORT_ICONS.Swim, color: CHART_COLORS.swim },
-  ride: { label: 'Ride', emoji: SPORT_ICONS.Ride, color: CHART_COLORS.ride },
-  run: { label: 'Run', emoji: SPORT_ICONS.Run, color: CHART_COLORS.run },
-}
-
-function ProgressBar({
-  label,
-  current,
-  target,
-  pct,
-  color,
-  projection,
-}: {
-  label: React.ReactNode
-  current: number | null
-  target: number | null
-  pct: number | null
-  color: string
-  projection?: GoalProjection | null
-}) {
-  // Bar fill is clamped to 100% so an over-target athlete (pct > 100) doesn't
-  // overflow the row, but the numeric pct is shown as-is so they can see the
-  // overshoot. A null pct (no target or no current CTL) renders an empty bar
-  // and "—" instead of a misleading 0%.
-  const fill = pct === null ? 0 : Math.min(100, Math.max(0, pct))
-  const onTrack = projection?.on_track
-  const offTrack = onTrack === false
-  const onTrackOk = onTrack === true
-  const barColor = offTrack ? '#dc2626' : color
-  // Tri-state pct color: red off-track, green on-track, neutral when null
-  // (insufficient_data / no event_date — we don't know either way).
-  const pctColorClass = offTrack ? 'text-red-600' : onTrackOk ? 'text-green-600' : ''
-  // Show the assumption (ramp + projected_date) inline only when we have a
-  // real projection AND the verdict isn't off-track — for off-track cases the
-  // warnings panel below the card already carries the same date in plainer
-  // language, so showing both duplicates info. Hidden for declining/flat/
-  // insufficient_data (those also route to the warnings panel).
-  const ramp = projection?.ramp_per_week
-  const projectedDate = projection?.projected_date
-  const showAssumption = projectedDate != null && ramp != null && !offTrack
-  return (
-    <div className="mb-2">
-      <div className="flex items-center gap-2">
-        <span className={`w-[72px] text-[13px] font-semibold ${offTrack ? 'text-red-600' : ''}`}>{label}</span>
-        <div className={`flex-1 h-2.5 rounded-full overflow-hidden ${offTrack ? 'bg-red-100' : 'bg-bg'}`}>
-          <div
-            className="h-full rounded-full transition-[width] duration-500"
-            style={{ width: `${fill}%`, background: barColor }}
-          />
-        </div>
-        <span className={`w-12 text-[13px] text-right tabular-nums ${pctColorClass}`}>
-          {pct === null ? '—' : `${pct}%`}
-        </span>
-        <span className="w-16 text-[11px] text-right text-text-dim tabular-nums">
-          {current === null ? '—' : current.toFixed(0)}
-          {target !== null ? ` / ${Math.round(target)}` : ''}
-        </span>
-      </div>
-      {showAssumption && (
-        <div className="text-[10px] text-text-dim ml-[80px] tabular-nums">
-          {ramp >= 0 ? '+' : ''}{ramp.toFixed(1)}/wk · proj. {projectedDate}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// Build the under-card warning string for an off-track projection. Only
-// called when ``on_track === false``; the projected_date branch carries the
-// concrete delta, the null branches surface why we couldn't project.
-//
-// Date math is done in UTC (``T00:00:00Z``) — local-time parsing would shift
-// dates by ±1d across DST boundaries (e.g. user in Europe/Belgrade in late
-// March). Lateness is clamped to ``>= 0``, not ``>= 1``: a same-day projection
-// against on_track=false (rare due to projected_date rounding vs the float
-// predicted_at_event check on the server) reads as "0w late" honestly rather
-// than fake-padding to 1w.
+// Footer warning string for an off-track projection. Only called when
+// ``on_track === false``; the projected_date branch carries the concrete
+// delta, the null branches surface why we couldn't project.
 function formatProjectionWarning(
   label: string,
   p: GoalProjection,
@@ -328,14 +124,104 @@ function formatProjectionWarning(
     if (p.reason === 'flat') return `${label}: CTL is flat — target not reachable at current rate`
     return `${label}: not enough data to project`
   }
-  const proj = new Date(p.projected_date + 'T00:00:00Z')
-  const ev = new Date(eventDate + 'T00:00:00Z')
-  const weeksLate = Math.max(0, Math.round((proj.getTime() - ev.getTime()) / (7 * 86400e3)))
   const tgt = target !== null ? Math.round(target) : '?'
-  return `${label}: at current pace you'll hit ${tgt} on ${p.projected_date} — ${weeksLate}w late`
+  return `${label}: at current pace you'll hit ${tgt} on ${fmtProjDate(p.projected_date)} — ${weeksPastRace(
+    p.projected_date,
+    eventDate,
+  )}w late`
+}
+
+// Per-row projection caption + status pill — Goal-tab "Progress · projection"
+// card (prototype `BDashboard`). The backend (`project_ctl_target`) already
+// computed the ramp / projected date / on_track verdict — we only format it.
+// English-only chrome ("on plan", "proj.", "Nw late") — coaching shorthand,
+// consistent with `formatProjectionWarning` (also literal English).
+type ProjTone = 'on_plan' | 'late' | 'risk'
+const PROJ_TONE_COLOR: Record<ProjTone, string> = {
+  on_plan: 'var(--color-status-green)',
+  late: 'var(--color-amber)',
+  risk: 'var(--color-coral)',
+}
+
+function projectionInfo(
+  p: GoalProjection | null,
+  eventDate: string,
+): { ramp: string | null; tail: string | null; pill: { label: string; tone: ProjTone } | null } {
+  if (!p) return { ramp: null, tail: null, pill: null }
+  const ramp = p.ramp_per_week != null ? `${p.ramp_per_week >= 0 ? '+' : ''}${p.ramp_per_week.toFixed(1)}/wk` : null
+  if (p.reason === 'already_at_target') return { ramp, tail: 'target reached', pill: null }
+  if (p.reason === 'declining' || p.reason === 'flat') {
+    return { ramp, tail: 'stalled — no progress this cycle', pill: null }
+  }
+  if (!p.projected_date) return { ramp, tail: null, pill: null } // insufficient_data
+  const tail = `proj. ${fmtProjDate(p.projected_date)}`
+  if (p.on_track !== false) return { ramp, tail, pill: { label: 'on plan', tone: 'on_plan' } }
+  const wk = weeksPastRace(p.projected_date, eventDate)
+  return { ramp, tail, pill: { label: `${wk}w late`, tone: wk <= 2 ? 'late' : 'risk' } }
+}
+
+// One row of the projection card — name + current/target + taper-aware bar +
+// the ramp/projection caption and status pill.
+function ProjectionRow({
+  name,
+  current,
+  target,
+  color,
+  projection,
+  eventDate,
+  overall,
+}: {
+  name: string
+  current: number | null
+  target: number
+  color: string
+  projection: GoalProjection | null
+  eventDate: string
+  overall?: boolean
+}) {
+  const { t } = useTranslation()
+  const over = current != null && current > target
+  const info = projectionInfo(projection, eventDate)
+  const caption = [info.ramp, info.tail].filter(Boolean).join(' · ')
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className={`text-[13px] ${overall ? 'font-bold tracking-[-0.1px]' : 'font-semibold'}`}>{name}</span>
+        <span className="whitespace-nowrap text-[13px] font-medium text-halo-ink-dim">
+          {current != null ? current.toFixed(1) : '—'} / {Math.round(target)}
+          {over && (
+            <span
+              className="ml-1.5 rounded-pill px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.4px]"
+              style={{ background: 'color-mix(in srgb, var(--color-amber) 22%, transparent)', color: 'var(--color-amber)' }}
+            >
+              {t('dashboard.taper')}
+            </span>
+          )}
+        </span>
+      </div>
+      <TaperBar current={current ?? 0} target={target} color={color} height={overall ? 10 : 8} />
+      {(caption || info.pill) && (
+        <div className="mt-1.5 flex items-baseline justify-between gap-2">
+          <span className="text-[11px] font-medium text-halo-ink-dim">{caption}</span>
+          {info.pill && (
+            <span
+              className="shrink-0 rounded-pill px-[7px] py-0.5 text-[10px] font-bold uppercase tracking-[0.4px]"
+              style={{
+                background: `color-mix(in srgb, ${PROJ_TONE_COLOR[info.pill.tone]} 14%, transparent)`,
+                color: PROJ_TONE_COLOR[info.pill.tone],
+              }}
+            >
+              {info.pill.label}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function GoalTab() {
+  const { t } = useTranslation()
   const [goalsResponse, setGoalsResponse] = useState<GoalResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -355,7 +241,7 @@ function GoalTab() {
   // /api/auth/me, GoalTab reads /api/goal — the goal could be deleted
   // between the two).
   if (!goalsResponse || !goalsResponse.has_goals) {
-    return <div className="text-center py-6 text-text-dim">No race set.</div>
+    return <div className="py-6 text-center text-halo-ink-dim">{t('dashboard.no_race')}</div>
   }
 
   return (
@@ -368,11 +254,12 @@ function GoalTab() {
 }
 
 function GoalCard({ goal: g }: { goal: GoalProgress }) {
+  const { t, i18n } = useTranslation()
   // Collect off-track warnings once so the JSX stays flat. Per-sport bars
   // only contribute when their target is set (block !== undefined).
   const warnings: string[] = []
   if (g.projection && g.projection.on_track === false) {
-    warnings.push(formatProjectionWarning('Overall', g.projection, g.ctl_target, g.event_date))
+    warnings.push(formatProjectionWarning('Overall CTL', g.projection, g.ctl_target, g.event_date))
   }
   if (g.per_sport) {
     for (const sport of ['swim', 'ride', 'run'] as const) {
@@ -383,76 +270,168 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
     }
   }
 
+  const pct = g.overall_pct == null ? null : Math.max(0, Math.min(100, g.overall_pct))
+  const delta =
+    g.ctl_target != null && g.ctl_current != null ? g.ctl_target - g.ctl_current : null
+  const dateStr = new Intl.DateTimeFormat(i18n.language, { weekday: 'short', month: 'short', day: 'numeric' }).format(
+    new Date(g.event_date + 'T00:00:00'),
+  )
+
   return (
     <>
-      <div className="text-center py-4 text-xl font-bold">
-        <span className="text-[var(--button)]">{g.weeks_remaining}</span> weeks to {g.event_name}
+      {/* Mobile: stacked (prototype `BGoal`). Desktop (`BdDashboard`):
+          goal hero + by-sport sit side by side (1fr / 1fr); warnings and
+          the race-plan panel stay full width below. */}
+      <div className="contents md:grid md:grid-cols-2 md:items-start md:gap-[18px]">
+      {/* Goal hero — arc + CTL sidebar */}
+      <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
+          {t('dashboard.race_a')}
+        </div>
+        <div className="mt-1 text-lg font-semibold tracking-[-0.3px]">{g.event_name}</div>
+        <div className="mt-0.5 text-[13px] text-halo-ink-dim">
+          {dateStr} · {t('dashboard.weeks_out', { count: g.weeks_remaining })}
+        </div>
+        <div className="mt-3.5 flex items-center gap-4">
+          <Gauge
+            width={180}
+            height={150}
+            cx={90}
+            cy={90}
+            r={72}
+            strokeWidth={14}
+            value={pct}
+            color="var(--color-brand)"
+            trackColor="var(--color-brand-light)"
+            center={(cx, cy) => (
+              <>
+                <text x={cx} y={cy} textAnchor="middle" fontSize="44" fontWeight="600" fill="var(--color-ink)" letterSpacing="-1.5">
+                  {pct == null ? '—' : pct}
+                  {pct != null && <tspan fontSize="20" fill="var(--color-ink-dim)">%</tspan>}
+                </text>
+                <text x={cx} y={cy + 22} textAnchor="middle" fontSize="11" fill="var(--color-ink-dim)" style={{ textTransform: 'uppercase' }}>
+                  {t('dashboard.to_target')}
+                </text>
+              </>
+            )}
+          />
+          <div className="flex-1">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.4px] text-halo-ink-dim">
+              {t('dashboard.fitness_ctl')}
+            </div>
+            <div className="mt-0.5 flex items-baseline gap-1.5">
+              <span className="text-[32px] font-semibold tracking-[-1px]">
+                {g.ctl_current != null ? g.ctl_current.toFixed(0) : '—'}
+              </span>
+              <span className="text-sm text-halo-ink-dim">/ {g.ctl_target != null ? Math.round(g.ctl_target) : '—'}</span>
+            </div>
+            {delta != null && delta > 0 && (
+              <div className="mt-1 text-xs font-semibold text-halo-brand-dark">
+                {t('dashboard.ctl_needed', { delta: delta.toFixed(1), weeks: g.weeks_remaining })}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
-      <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
-        <ProgressBar
-          label={<span>Overall CTL</span>}
-          current={g.ctl_current}
-          target={g.ctl_target}
-          pct={g.overall_pct}
-          color={CHART_COLORS.ctl}
-          projection={g.projection}
-        />
-
-        {g.per_sport && (
-          <div className="mt-3 pt-3 border-t border-bg">
+      {/* Progress · projection — per-discipline ramp + projected target-hit
+          date vs race day. The backend supplies ramp_per_week + projected_date
+          + on_track per sport and overall; off-track rows collect into the
+          footer alert. */}
+      {g.per_sport && (
+        <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
+              Progress · projection
+            </div>
+            <span className="text-[11px] font-medium text-halo-ink-dim">race in {g.days_remaining}d</span>
+          </div>
+          <div className="mt-3 flex flex-col gap-3.5">
+            {g.ctl_target != null && (
+              <>
+                <ProjectionRow
+                  name="Overall CTL"
+                  current={g.ctl_current}
+                  target={g.ctl_target}
+                  color="var(--color-brand)"
+                  projection={g.projection}
+                  eventDate={g.event_date}
+                  overall
+                />
+                <div className="h-px bg-halo-border" />
+              </>
+            )}
             {(['swim', 'ride', 'run'] as const).map(sport => {
               const block = g.per_sport?.[sport]
               if (!block) return null
               const meta = SPORT_META[sport]
               return (
-                <ProgressBar
+                <ProjectionRow
                   key={sport}
-                  label={<span>{meta.emoji} {meta.label}</span>}
+                  name={meta.label}
                   current={block.ctl_current}
                   target={block.ctl_target}
-                  pct={block.pct}
                   color={meta.color}
                   projection={block.projection}
+                  eventDate={g.event_date}
                 />
               )
             })}
           </div>
-        )}
-
-        {warnings.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-bg space-y-1" role="status">
-            {warnings.map(w => (
-              <div key={w} className="text-[11px] text-red-600">
-                <span aria-hidden="true">⚠ </span>
-                <span className="sr-only">Warning: </span>
-                {w}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {!g.per_sport && g.ctl_target && (
-          <div className="text-[11px] text-text-dim mt-3 pt-3 border-t border-bg">
-            Set per-sport CTL targets in Settings to see swim / ride / run progress.
-          </div>
-        )}
+          {warnings.length > 0 && (
+            <div className="mt-3.5 flex flex-col gap-1.5 border-t border-halo-border pt-3" role="status">
+              {warnings.map(w => {
+                const ci = w.indexOf(':')
+                return (
+                  <div key={w} className="flex items-start gap-2 text-[12px] leading-snug text-halo-ink">
+                    <span
+                      aria-hidden="true"
+                      className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
+                      style={{ background: 'color-mix(in srgb, var(--color-coral) 14%, transparent)', color: 'var(--color-coral)' }}
+                    >
+                      !
+                    </span>
+                    <span>
+                      <span className="sr-only">Warning: </span>
+                      <strong className="font-bold">{w.slice(0, ci + 1)}</strong>
+                      {w.slice(ci + 1)}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
       </div>
 
-      <RacePlanPanel goalId={g.id} />
+      <RacePlanPanel goalId={g.id} daysRemaining={g.days_remaining} />
     </>
   )
 }
 
-// Sport buckets are keyed by the backend's normalized name (swimming / cycling
-// / running — what _SPORT_MAP in api/routers/dashboard.py emits). Anything else
-// is dropped server-side, so we don't need a fallback row in the UI.
-const WEEK_SPORT_META: Record<string, { label: string; emoji: string }> = {
-  swimming: { label: 'Swim', emoji: '🏊' },
-  cycling: { label: 'Ride', emoji: '🚴' },
-  running: { label: 'Run', emoji: '🏃' },
+// ---------------------------------------------------------------------------
+// Recap tab — weekly reports
+//
+// Port of the prototype `BDashboard` recap tab (direction-b-halo.jsx:1959+):
+// each card is a real AI weekly report — the leading `# ` headline, the week's
+// training volume, and the CTL/ramp/TSB it bought — and taps through to the
+// full markdown at /weekly/:week_start. Driven by /api/weekly-reports (not the
+// retired /api/weekly-recap activity buckets) so every card has a headline.
+// ---------------------------------------------------------------------------
+
+// Design's top-bar reads «8 weeks» — match it as the first-page size. Older
+// weeks page in via the cursor («Load earlier weeks»).
+const RECAP_PAGE_SIZE = 8
+
+// Backend `by_sport` keys (swimming/cycling/running — see _SPORT_BUCKET in
+// api/routers/weekly_reports.py) → card label + dot color.
+const RECAP_SPORT_META: Record<string, { label: string; color: string }> = {
+  swimming: { label: 'Swim', color: CHART_COLORS.swim },
+  cycling: { label: 'Ride', color: CHART_COLORS.ride },
+  running: { label: 'Run', color: CHART_COLORS.run },
 }
-const WEEK_SPORT_ORDER = ['swimming', 'cycling', 'running']
+const RECAP_SPORT_ORDER = ['swimming', 'cycling', 'running']
 
 function formatHm(seconds: number): string {
   if (seconds <= 0) return '—'
@@ -476,177 +455,221 @@ function formatKm(meters: number): string {
   return km >= 100 ? `${km.toFixed(0)} km` : `${km.toFixed(1)} km`
 }
 
-function formatWeekRange(weekStart: string, weekEnd: string): string {
-  const start = new Date(weekStart + 'T00:00:00')
-  const end = new Date(weekEnd + 'T00:00:00')
-  // `undefined` = browser/runtime default locale. Respects the user's system
-  // language instead of forcing en-US on Russian users (whose app is otherwise
-  // localised via i18next).
-  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-  return `${start.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}`
+// ISO Monday → "May 11 – 17" Mon-Sun range. Reports carry only the Monday, so
+// the Sunday is synthesised locally. Parse + format in UTC — a local-TZ parse
+// shifts a UTC-positive user's Monday into the preceding Sunday at format time
+// (same TZ-shift bug fixed in WeeklyReports.tsx / shiftIsoDate).
+function formatRecapWeekRange(isoMonday: string, locale: string): string {
+  const monday = new Date(`${isoMonday}T00:00:00Z`)
+  const sunday = new Date(monday)
+  sunday.setUTCDate(monday.getUTCDate() + 6)
+  const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', timeZone: 'UTC' }
+  return `${monday.toLocaleDateString(locale, opts)} – ${sunday.toLocaleDateString(locale, opts)}`
 }
 
-function tsbZone(tsb: number, t: (k: string) => string): { label: string; color: string } {
-  if (tsb > 10) return { label: t('dashboard.week.tsb_under'), color: TSB_ZONE_COLORS.under }
-  if (tsb >= -10) return { label: t('dashboard.week.tsb_optimal'), color: TSB_ZONE_COLORS.optimal }
-  if (tsb >= -25) return { label: t('dashboard.week.tsb_productive'), color: TSB_ZONE_COLORS.productive }
-  return { label: t('dashboard.week.tsb_risk'), color: TSB_ZONE_COLORS.risk }
+// Current week's Monday for the "This week" pill. Derived from the viewer's
+// LOCAL clock — "this week" is the viewer's notion of now. (formatRecapWeekRange
+// parses the backend's fixed ISO Monday in UTC purely for TZ-stable display;
+// here we need today, so local components are read consistently — mixing
+// local `new Date()` with `getUTC*` would shift the pill near midnight.)
+function currentMondayIso(): string {
+  const now = new Date()
+  const dow = (now.getDay() + 6) % 7 // 0 = Monday
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow)
+  const y = monday.getFullYear()
+  const m = String(monday.getMonth() + 1).padStart(2, '0')
+  const d = String(monday.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
-function WeekLoadCard({ week }: { week: WeeklyRecapBucket }) {
-  const { t } = useTranslation()
-  const { ctl_start, ctl_end, ctl_delta, tsb_end } = week
-  // Bootstrap or pre-Intervals weeks have no wellness rows at the bookends —
-  // render nothing rather than a half-rendered "CTL — → 73 (—)" row.
-  if (ctl_start === null || ctl_end === null) return null
+function RecapCard({ item, isCurrent }: { item: WeeklyReportListItem; isCurrent: boolean }) {
+  const { t, i18n } = useTranslation()
+  const sports = RECAP_SPORT_ORDER.filter(s => item.by_sport[s])
+  const totalSec = sports.reduce((a, s) => a + (item.by_sport[s]?.duration_sec || 0), 0)
+  const totalTss = sports.reduce((a, s) => a + (item.by_sport[s]?.tss || 0), 0)
+  // Legacy reports (pre-headline-prompt) have headline === null — fall back to
+  // the prose preview so the card always has a title line.
+  const headline = item.headline || item.preview
+  const { ctl_start, ctl_end, ctl_delta, ramp, tsb_end } = item
 
-  const deltaStr =
-    ctl_delta === null ? '' : ctl_delta > 0 ? `+${ctl_delta.toFixed(1)}` : ctl_delta.toFixed(1)
+  const deltaStr = ctl_delta == null ? '' : `${ctl_delta > 0 ? '+' : ''}${ctl_delta.toFixed(1)}`
   const deltaColor =
-    ctl_delta === null
-      ? 'var(--text-dim)'
-      : ctl_delta > 0.5
-        ? TSB_ZONE_COLORS.optimal
-        : ctl_delta < -0.5
-          ? TSB_ZONE_COLORS.risk
-          : 'var(--text-dim)'
-  const zone = tsb_end !== null ? tsbZone(tsb_end, t) : null
-  const tsbStr = tsb_end === null ? '—' : tsb_end > 0 ? `+${tsb_end.toFixed(0)}` : tsb_end.toFixed(0)
+    ctl_delta == null || (ctl_delta > -0.5 && ctl_delta < 0.5)
+      ? 'var(--color-ink-dim)'
+      : ctl_delta > 0
+        ? 'var(--color-status-green)'
+        : 'var(--color-amber)'
+  // Ramp tone — amber only above the project's >7/wk ramp-rate warning
+  // threshold (CLAUDE.md business rules); the number itself always shows.
+  const rampColor = ramp != null && ramp > 7 ? 'var(--color-amber)' : 'var(--color-ink)'
+  const rampStr = ramp == null ? null : `${ramp > 0 ? '+' : ''}${ramp.toFixed(1)}`
 
   return (
-    <div className="flex justify-between items-center text-[12px] text-text-dim mt-1.5">
-      <span>
-        CTL{' '}
-        <span className="font-mono text-text">
-          {ctl_start !== null ? ctl_start.toFixed(0) : '—'}
-          {' → '}
-          {ctl_end !== null ? ctl_end.toFixed(0) : '—'}
-        </span>{' '}
-        {ctl_delta !== null && (
-          <span className="font-mono font-semibold" style={{ color: deltaColor }}>
-            ({deltaStr})
+    <Link
+      to={`/weekly/${item.week_start}`}
+      className="block rounded-card border border-halo-border bg-halo-surface p-4 no-underline text-halo-ink shadow-card transition-colors hover:bg-halo-surface-2"
+    >
+      <div className="flex items-center justify-between">
+        <div className="text-[12px] font-bold uppercase tracking-[0.6px] text-halo-ink-dim">
+          {formatRecapWeekRange(item.week_start, i18n.language)}
+        </div>
+        {isCurrent && (
+          <span className="rounded-pill bg-halo-brand px-2 py-[3px] text-[10px] font-bold uppercase tracking-[0.6px] text-white">
+            {t('weekly.this_week')}
           </span>
         )}
-      </span>
-      {zone && (
-        <span className="flex items-center gap-1.5">
-          <span className="font-mono" style={{ color: zone.color }}>TSB {tsbStr}</span>
-          <span
-            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-white"
-            style={{ background: zone.color }}
-          >
-            {zone.label}
-          </span>
-        </span>
-      )}
-    </div>
-  )
-}
-
-function WeekCard({ week, isCurrent }: { week: WeeklyRecapBucket; isCurrent: boolean }) {
-  const { t } = useTranslation()
-  const sports = WEEK_SPORT_ORDER.filter(s => week.by_sport[s])
-  const totalTss = sports.reduce((a, s) => a + (week.by_sport[s]?.tss || 0), 0)
-  const totalSec = sports.reduce((a, s) => a + (week.by_sport[s]?.duration_sec || 0), 0)
-
-  return (
-    <div className="bg-surface border border-border rounded-[14px] p-3 mb-3">
-      <div className="flex justify-between items-baseline mb-1">
-        <div className="text-sm font-bold">
-          {formatWeekRange(week.week_start, week.week_end)}
-          {isCurrent && <span className="ml-2 text-[10px] uppercase font-semibold text-text-dim">{t('dashboard.week.this_week')}</span>}
-        </div>
-        <div className="text-[13px] font-semibold tabular-nums">
-          {totalSec > 0 && <span className="text-text-dim font-normal mr-2">{formatHm(totalSec)}</span>}
-          TSS {totalTss.toFixed(0)}
-        </div>
       </div>
-      {sports.length === 0 ? (
-        <div className="text-[13px] text-text-dim py-1">{t('dashboard.week.no_activities')}</div>
-      ) : (
-        sports.map(sport => {
-          const s = week.by_sport[sport]
-          const meta = WEEK_SPORT_META[sport]
-          return (
-            <div key={sport} className="flex justify-between items-center py-1 text-[13px]">
-              <span>{meta.emoji} <span className="font-semibold">{meta.label}</span></span>
-              <div className="flex gap-3 tabular-nums">
-                <span className="text-text-dim w-14 text-right">{formatHm(s.duration_sec)}</span>
-                <span className="text-text-dim w-16 text-right">{formatKm(s.distance_m)}</span>
-                <span className="font-semibold w-14 text-right">{s.tss.toFixed(0)}</span>
-              </div>
-            </div>
-          )
-        })
+
+      <div className="mt-2 line-clamp-2 text-[15px] font-semibold leading-[1.35] tracking-[-0.2px]">
+        {headline}
+      </div>
+
+      {/* Totals — total time + TSS pulled up so the eye sees "how much work?"
+          before the per-sport columns. Hidden for a week with no volume. */}
+      {totalSec > 0 && (
+        <div className="mt-3 flex items-baseline gap-2 border-t border-halo-border pt-3">
+          <span className="text-lg font-semibold tracking-[-0.4px]">{formatHm(totalSec)}</span>
+          <span className="text-[12px] font-medium text-halo-ink-dim">· {totalTss.toFixed(0)} TSS</span>
+        </div>
       )}
-      <WeekLoadCard week={week} />
-    </div>
+
+      {sports.length > 0 && (
+        <div className="mt-2.5 flex flex-col gap-1.5">
+          {sports.map(s => {
+            const b = item.by_sport[s]
+            const meta = RECAP_SPORT_META[s]
+            return (
+              <div key={s} className="flex items-center gap-2.5 text-[13px] tabular-nums">
+                <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: meta.color }} />
+                <span className="w-11 font-semibold">{meta.label}</span>
+                <span className="w-16 text-halo-ink-dim">{formatHm(b.duration_sec)}</span>
+                <span className="flex-1 text-halo-ink-dim">{formatKm(b.distance_m)}</span>
+                <span className="min-w-[32px] text-right font-bold">{b.tss.toFixed(0)}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Footer — CTL transition, ramp, TSB. CTL change gets the emphasis
+          ("what did this week buy me?"); ramp & TSB stay muted captions. */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-halo-border pt-2.5">
+        {ctl_start != null && ctl_end != null && (
+          <div className="text-[12px] font-medium text-halo-ink-dim">
+            CTL <span className="font-semibold text-halo-ink">{ctl_start.toFixed(0)}</span>
+            <span className="mx-1 text-halo-ink-dim">→</span>
+            <span className="font-semibold text-halo-ink">{ctl_end.toFixed(0)}</span>
+            {ctl_delta != null && (
+              <span className="ml-1 font-semibold" style={{ color: deltaColor }}>
+                ({deltaStr})
+              </span>
+            )}
+          </div>
+        )}
+        {rampStr != null && (
+          <div className="text-[11px] font-medium text-halo-ink-dim">
+            ramp{' '}
+            <span className="font-bold" style={{ color: rampColor }}>
+              {rampStr}
+            </span>
+          </div>
+        )}
+        {tsb_end != null && (
+          <div className="text-[11px] font-medium text-halo-ink-dim">
+            TSB{' '}
+            <span className="font-bold text-halo-ink">
+              {tsb_end > 0 ? '+' : ''}
+              {tsb_end.toFixed(0)}
+            </span>
+          </div>
+        )}
+        <span className="ml-auto text-base leading-none text-halo-ink-dim">›</span>
+      </div>
+    </Link>
   )
 }
 
-function WeekTab() {
+function RecapTab() {
   const { t } = useTranslation()
-  const [recap, setRecap] = useState<WeeklyRecapResponse | null>(null)
-  const [offset, setOffset] = useState(0)
+  const [items, setItems] = useState<WeeklyReportListItem[]>([])
+  const [nextBefore, setNextBefore] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const fetchPage = (before: string | null) => {
+    const params = new URLSearchParams({ limit: String(RECAP_PAGE_SIZE) })
+    if (before) params.set('before', before)
+    return apiFetch<WeeklyReportListResponse>(`/api/weekly-reports?${params}`)
+  }
+
   useEffect(() => {
-    setLoading(true)
+    let cancelled = false
+    fetchPage(null)
+      .then(resp => {
+        if (cancelled) return
+        setItems(resp.items)
+        setNextBefore(resp.next_before)
+      })
+      .catch(err => {
+        if (!cancelled) setError(err instanceof Error ? err.message : t('weekly.error_load'))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const loadMore = async () => {
+    if (!nextBefore || loadingMore) return
+    setLoadingMore(true)
     setError(null)
-    apiFetch<WeeklyRecapResponse>(`/api/weekly-recap?weeks=4&offset=${offset}`)
-      .then(setRecap)
-      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load'))
-      .finally(() => setLoading(false))
-  }, [offset])
+    try {
+      const resp = await fetchPage(nextBefore)
+      // Append — paginating older history into the tail of the list.
+      setItems(prev => [...prev, ...resp.items])
+      setNextBefore(resp.next_before)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('weekly.error_load'))
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
-  if (loading && !recap) return <LoadingSpinner />
-  if (error) return <ErrorMessage message={error} />
-  if (!recap) return null
+  if (loading) return <LoadingSpinner />
+  if (error && items.length === 0) return <ErrorMessage message={error} />
 
-  // ``has_prev`` reflects whether ANY activity exists before the window start,
-  // so we can scroll into recovery weeks with empty buckets without dead-end
-  // navigation. The server caps ``offset`` at -52 (FastAPI ge=-52); without this
-  // clamp athletes with >1y of history would see has_prev=true at the cap and
-  // the next click would 422. ``canNext`` is bound to offset directly — once
-  // the freshest visible week is the current week (offset 0), Later locks.
-  // While a fetch is in-flight we keep the previous window visible (no
-  // spinner-flash) but lock both buttons — otherwise a double-click could
-  // bump offset twice and `canPrev` (derived from the now-stale recap) would
-  // briefly disagree with the new offset.
-  const canPrev = recap.has_prev && offset > -52 && !loading
-  const canNext = offset < 0 && !loading
-  const range = recap.weeks.length > 0
-    ? formatWeekRange(recap.weeks[recap.weeks.length - 1].week_start, recap.weeks[0].week_end)
-    : null
+  const thisMonday = currentMondayIso()
 
   return (
     <>
-      <div className="flex justify-between items-center mb-2">
-        <button
-          onClick={() => canPrev && setOffset(o => Math.max(o - 4, -52))}
-          disabled={!canPrev}
-          className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
-        >
-          {t('dashboard.week.earlier')}
-        </button>
-        <span className="text-[12px] text-text-dim">{loading ? '…' : range}</span>
-        <button
-          onClick={() => canNext && setOffset(o => o + 4)}
-          disabled={!canNext}
-          className="px-3 py-1.5 rounded-lg bg-[var(--surface)] text-[13px] font-semibold disabled:opacity-30 disabled:cursor-not-allowed border-none cursor-pointer"
-        >
-          {t('dashboard.week.later')}
-        </button>
-      </div>
-
-      {recap.weeks.length === 0 ? (
-        <div className="text-center py-6 text-text-dim text-sm">{t('dashboard.week.no_activities_window')}</div>
+      {items.length === 0 ? (
+        <div className="py-6 text-center text-sm text-halo-ink-dim">{t('weekly.empty')}</div>
       ) : (
-        recap.weeks.map((w, i) => (
-          <WeekCard key={w.week_start} week={w} isCurrent={offset === 0 && i === 0} />
-        ))
+        /* Desktop: weekly report cards tile into a 2-col grid. */
+        <div className="contents md:grid md:grid-cols-2 md:items-start md:gap-[18px]">
+          {items.map(item => (
+            <RecapCard key={item.week_start} item={item} isCurrent={item.week_start === thisMonday} />
+          ))}
+        </div>
       )}
+
+      {nextBefore && (
+        <button
+          type="button"
+          onClick={loadMore}
+          disabled={loadingMore}
+          className="w-full rounded-card border border-halo-border bg-halo-surface py-3 text-sm font-semibold text-halo-ink-dim transition-colors hover:bg-halo-surface-2 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loadingMore ? t('weekly.loading_more') : t('weekly.load_more')}
+        </button>
+      )}
+
+      {/* «Load more» failure shows inline so the loaded cards stay readable. */}
+      {error && items.length > 0 && <ErrorMessage message={error} />}
     </>
   )
 }

@@ -51,6 +51,13 @@ async def _seed_wellness(
     atl: float | None = 50.0,
     recovery_score: float | None = 75.0,
     hrv: float | None = 52.0,
+    resting_hr: int | None = None,
+    sleep_secs: int | None = None,
+    sleep_score: float | None = None,
+    weight: float | None = None,
+    body_fat: float | None = None,
+    vo2max: float | None = None,
+    steps: int | None = None,
 ) -> None:
     """Insert a wellness row directly. WellnessDTO.intervals_dict() only syncs
     Intervals.icu fields, but our endpoints also need ``recovery_score`` which
@@ -64,6 +71,13 @@ async def _seed_wellness(
                 atl=atl,
                 recovery_score=recovery_score,
                 hrv=hrv,
+                resting_hr=resting_hr,
+                sleep_secs=sleep_secs,
+                sleep_score=sleep_score,
+                weight=weight,
+                body_fat=body_fat,
+                vo2max=vo2max,
+                steps=steps,
                 updated=datetime.now(timezone.utc),
             )
         )
@@ -105,7 +119,7 @@ class TestTrainingLoad:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert set(data.keys()) == {"dates", "ctl", "atl", "tsb"}
+        assert set(data.keys()) == {"dates", "ctl", "atl", "tsb", "ctl_swim", "ctl_ride", "ctl_run"}
         # 3 in-window rows + 1 NULL-CTL row dropped + 1 outside-window row dropped
         assert len(data["dates"]) == 3
         assert len(data["ctl"]) == 3
@@ -144,24 +158,79 @@ class TestTrainingLoad:
         data = resp.json()
         assert data["tsb"][0] == 18.0  # 60.0 - 42.0
 
-    async def test_no_per_sport_keys_in_load_response(self, client):
-        """Per-sport CTL goes to GoalTab via END-12, not Load."""
+    async def test_per_sport_ctl_parsed_from_sport_info(self, client):
+        """Per-sport CTL series feed the Training-load detail by-sport breakdown."""
+        await _seed_wellness_with_sport_ctl(
+            1,
+            _FIXED_TODAY,
+            ctl=60.0,
+            sport_info=[
+                {"type": "Swim", "ctl": 12.0},
+                {"type": "Ride", "ctl": 28.0},
+                {"type": "Run", "ctl": 20.0},
+            ],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/training-load?days=84")
+
+        data = resp.json()
+        assert data["ctl_swim"] == [12.0]
+        assert data["ctl_ride"] == [28.0]
+        assert data["ctl_run"] == [20.0]
+
+    async def test_per_sport_ctl_null_when_sport_info_absent(self, client):
+        """A wellness row with no sport_info yields null per-sport CTL, not 0."""
         await _seed_wellness(1, _FIXED_TODAY)
 
         async with client as c:
             resp = await c.get("/api/training-load?days=84")
 
         data = resp.json()
-        assert "ctl_swim" not in data
-        assert "ctl_ride" not in data
-        assert "ctl_run" not in data
+        assert data["ctl_swim"] == [None]
+        assert data["ctl_ride"] == [None]
+        assert data["ctl_run"] == [None]
+
+    async def test_per_sport_ctl_interleaved_nulls_stay_index_aligned(self, client):
+        """When a sport has CTL on some days but not others, its array keeps
+        null holes index-aligned with `dates` — the detail screen's chart
+        spans those gaps."""
+        await _seed_wellness_with_sport_ctl(
+            1,
+            _FIXED_TODAY - timedelta(days=1),
+            ctl=58.0,
+            sport_info=[{"type": "Ride", "ctl": 28.0}],
+        )
+        await _seed_wellness_with_sport_ctl(
+            1,
+            _FIXED_TODAY,
+            ctl=60.0,
+            sport_info=[{"type": "Run", "ctl": 20.0}],
+        )
+
+        async with client as c:
+            resp = await c.get("/api/training-load?days=84")
+
+        data = resp.json()
+        assert data["dates"] == [(_FIXED_TODAY - timedelta(days=1)).isoformat(), _FIXED_TODAY.isoformat()]
+        assert data["ctl_swim"] == [None, None]
+        assert data["ctl_ride"] == [28.0, None]
+        assert data["ctl_run"] == [None, 20.0]
 
     async def test_empty_user_returns_empty_arrays(self, client):
         async with client as c:
             resp = await c.get("/api/training-load?days=84")
 
         assert resp.status_code == 200
-        assert resp.json() == {"dates": [], "ctl": [], "atl": [], "tsb": []}
+        assert resp.json() == {
+            "dates": [],
+            "ctl": [],
+            "atl": [],
+            "tsb": [],
+            "ctl_swim": [],
+            "ctl_ride": [],
+            "ctl_run": [],
+        }
 
     async def test_per_user_scoping(self, client):
         """Wellness rows for another user must not leak into the response."""
@@ -311,17 +380,26 @@ class TestActivities:
 
 class TestRecoveryTrend:
     async def test_returns_correct_shape(self, client):
-        await _seed_wellness(1, _FIXED_TODAY, recovery_score=80.0, hrv=55.5)
+        await _seed_wellness(1, _FIXED_TODAY, recovery_score=80.0, hrv=55.5, resting_hr=48)
 
         async with client as c:
             resp = await c.get("/api/recovery-trend?days=21")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert set(data.keys()) == {"dates", "recovery", "hrv"}
+        assert set(data.keys()) == {"dates", "recovery", "hrv", "rhr"}
         assert data["dates"] == [_FIXED_TODAY.isoformat()]
         assert data["recovery"] == [80.0]
         assert data["hrv"] == [55.5]
+        assert data["rhr"] == [48]
+
+    async def test_accepts_365_day_window(self, client):
+        """The Wellness "Recovery trend" 1y pill requests days=365; 366 is over the cap."""
+        async with client as c:
+            ok = await c.get("/api/recovery-trend?days=365")
+            over = await c.get("/api/recovery-trend?days=366")
+        assert ok.status_code == 200
+        assert over.status_code == 422
 
     async def test_dates_within_window(self, client):
         for offset in range(5):
@@ -338,10 +416,10 @@ class TestRecoveryTrend:
             d = date.fromisoformat(d_str)
             assert oldest_allowed <= d <= _FIXED_TODAY
 
-    async def test_skips_rows_with_neither_recovery_nor_hrv(self, client):
-        """A wellness row with both fields NULL is the same as no row for the chart."""
+    async def test_skips_rows_with_no_metric_at_all(self, client):
+        """A wellness row with recovery + HRV + RHR all NULL is the same as no row."""
         await _seed_wellness(1, _FIXED_TODAY, recovery_score=70.0, hrv=50.0)
-        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), recovery_score=None, hrv=None)
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), recovery_score=None, hrv=None, resting_hr=None)
 
         async with client as c:
             resp = await c.get("/api/recovery-trend?days=21")
@@ -351,7 +429,7 @@ class TestRecoveryTrend:
         assert data["dates"][0] == _FIXED_TODAY.isoformat()
 
     async def test_keeps_rows_with_only_one_metric(self, client):
-        """Recovery alone (or HRV alone) is still a meaningful point on the dual-axis chart."""
+        """Recovery alone (or HRV/RHR alone) is still a meaningful point on the chart."""
         await _seed_wellness(1, _FIXED_TODAY, recovery_score=70.0, hrv=None)
 
         async with client as c:
@@ -360,12 +438,205 @@ class TestRecoveryTrend:
         data = resp.json()
         assert data["recovery"] == [70.0]
         assert data["hrv"] == [None]
+        assert data["rhr"] == [None]
+
+    async def test_keeps_rows_with_only_rhr(self, client):
+        """A row carrying just RHR feeds the RHR line — it must not be dropped."""
+        await _seed_wellness(1, _FIXED_TODAY, recovery_score=None, hrv=None, resting_hr=44)
+
+        async with client as c:
+            resp = await c.get("/api/recovery-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+        assert data["rhr"] == [44]
+        assert data["recovery"] == [None]
+        assert data["hrv"] == [None]
+
+    async def test_zero_rhr_treated_as_missing(self, client):
+        """Intervals.icu uses restingHR=0 as a no-data sentinel — never plot it."""
+        # A row whose only field is the 0 sentinel is functionally empty → dropped.
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), recovery_score=None, hrv=None, resting_hr=0)
+        # A real day with a 0-sentinel RHR keeps the row but nulls the rhr point.
+        await _seed_wellness(1, _FIXED_TODAY, recovery_score=70.0, hrv=50.0, resting_hr=0)
+
+        async with client as c:
+            resp = await c.get("/api/recovery-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+        assert data["rhr"] == [None]
 
     async def test_empty_user_returns_empty_arrays(self, client):
         async with client as c:
             resp = await c.get("/api/recovery-trend?days=21")
 
-        assert resp.json() == {"dates": [], "recovery": [], "hrv": []}
+        assert resp.json() == {"dates": [], "recovery": [], "hrv": [], "rhr": []}
+
+
+# ---------------------------------------------------------------------------
+# /api/sleep-trend
+# ---------------------------------------------------------------------------
+
+
+class TestSleepTrend:
+    async def test_returns_correct_shape(self, client):
+        await _seed_wellness(1, _FIXED_TODAY, sleep_secs=26640, sleep_score=68.0)
+
+        async with client as c:
+            resp = await c.get("/api/sleep-trend?days=21")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data.keys()) == {"dates", "duration_min", "score"}
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+        # 26640s = 444 min exactly.
+        assert data["duration_min"] == [444]
+        assert data["score"] == [68.0]
+
+    async def test_accepts_365_day_window(self, client):
+        """The 1y range pill requests days=365; 366 is over the cap."""
+        async with client as c:
+            ok = await c.get("/api/sleep-trend?days=365")
+            over = await c.get("/api/sleep-trend?days=366")
+        assert ok.status_code == 200
+        assert over.status_code == 422
+
+    async def test_skips_rows_with_no_sleep_data(self, client):
+        """A wellness row with neither duration nor score is the same as no row."""
+        await _seed_wellness(1, _FIXED_TODAY, sleep_secs=25200, sleep_score=72.0)
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), sleep_secs=None, sleep_score=None)
+
+        async with client as c:
+            resp = await c.get("/api/sleep-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+
+    async def test_zero_sleep_secs_treated_as_missing(self, client):
+        """Intervals.icu writes sleep_secs=0 for an un-captured night — a sentinel."""
+        # Only the 0 sentinel → functionally empty row → dropped.
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), sleep_secs=0, sleep_score=None)
+        # Real score but a 0-sentinel duration → row kept, duration nulled.
+        await _seed_wellness(1, _FIXED_TODAY, sleep_secs=0, sleep_score=64.0)
+
+        async with client as c:
+            resp = await c.get("/api/sleep-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+        assert data["duration_min"] == [None]
+        assert data["score"] == [64.0]
+
+    async def test_empty_user_returns_empty_arrays(self, client):
+        async with client as c:
+            resp = await c.get("/api/sleep-trend?days=21")
+
+        assert resp.json() == {"dates": [], "duration_min": [], "score": []}
+
+    async def test_per_user_scoping(self, client):
+        """Sleep rows for another user must not leak into the response."""
+        async with get_session() as session:
+            session.add(User(id=2, chat_id="23456", role="athlete"))
+            await session.commit()
+        await _seed_wellness(2, _FIXED_TODAY, sleep_secs=28800, sleep_score=90.0)
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), sleep_secs=21600, sleep_score=55.0)
+
+        async with client as c:
+            resp = await c.get("/api/sleep-trend?days=21")
+
+        # Authenticated user is 1 — user 2's row must not leak.
+        data = resp.json()
+        assert data["dates"] == [(_FIXED_TODAY - timedelta(days=1)).isoformat()]
+        assert data["score"] == [55.0]
+
+
+# ---------------------------------------------------------------------------
+# /api/body-trend
+# ---------------------------------------------------------------------------
+
+
+class TestBodyTrend:
+    async def test_returns_correct_shape(self, client):
+        await _seed_wellness(1, _FIXED_TODAY, weight=78.2, body_fat=25.2, vo2max=48.5, steps=8432)
+
+        async with client as c:
+            resp = await c.get("/api/body-trend?days=21")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert set(data.keys()) == {"dates", "weight", "body_fat", "vo2max", "steps"}
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+        assert data["weight"] == [78.2]
+        assert data["body_fat"] == [25.2]
+        assert data["vo2max"] == [48.5]
+        assert data["steps"] == [8432]
+
+    async def test_accepts_365_day_window(self, client):
+        """The 1y range pill requests days=365; 366 is over the cap."""
+        async with client as c:
+            ok = await c.get("/api/body-trend?days=365")
+            over = await c.get("/api/body-trend?days=366")
+        assert ok.status_code == 200
+        assert over.status_code == 422
+
+    async def test_skips_rows_with_no_body_data(self, client):
+        """A wellness row with no body metric at all is the same as no row."""
+        await _seed_wellness(1, _FIXED_TODAY, weight=80.0)
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), recovery_score=70.0, hrv=50.0)
+
+        async with client as c:
+            resp = await c.get("/api/body-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+
+    async def test_keeps_rows_with_only_one_metric(self, client):
+        """A row carrying just one body metric is still a point on its chart."""
+        await _seed_wellness(1, _FIXED_TODAY, steps=9000)
+
+        async with client as c:
+            resp = await c.get("/api/body-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+        assert data["steps"] == [9000]
+        assert data["weight"] == [None]
+        assert data["body_fat"] == [None]
+        assert data["vo2max"] == [None]
+
+    async def test_zero_steps_kept_as_real_value(self, client):
+        """steps=0 is a genuine rest day — NOT a no-data sentinel (unlike
+        resting_hr=0 / sleep_secs=0). It must survive as 0, not become null."""
+        await _seed_wellness(1, _FIXED_TODAY, steps=0)
+
+        async with client as c:
+            resp = await c.get("/api/body-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [_FIXED_TODAY.isoformat()]
+        assert data["steps"] == [0]
+
+    async def test_empty_user_returns_empty_arrays(self, client):
+        async with client as c:
+            resp = await c.get("/api/body-trend?days=21")
+
+        assert resp.json() == {"dates": [], "weight": [], "body_fat": [], "vo2max": [], "steps": []}
+
+    async def test_per_user_scoping(self, client):
+        """Body rows for another user must not leak into the response."""
+        async with get_session() as session:
+            session.add(User(id=2, chat_id="23456", role="athlete"))
+            await session.commit()
+        await _seed_wellness(2, _FIXED_TODAY, weight=99.9)
+        await _seed_wellness(1, _FIXED_TODAY - timedelta(days=1), weight=70.0)
+
+        async with client as c:
+            resp = await c.get("/api/body-trend?days=21")
+
+        data = resp.json()
+        assert data["dates"] == [(_FIXED_TODAY - timedelta(days=1)).isoformat()]
+        assert data["weight"] == [70.0]
 
 
 # ---------------------------------------------------------------------------
@@ -445,8 +716,6 @@ class TestGoal:
         assert len(data["goals"]) == 1
         g = data["goals"][0]
         assert g["event_name"] == "Ironman 70.3"
-        assert g["category"] == "RACE_A"
-        assert g["sport_type"] == "triathlon"
         assert g["weeks_remaining"] == 10  # 70 // 7
         assert g["days_remaining"] == 70
         assert g["ctl_current"] == 60.0
@@ -620,21 +889,6 @@ class TestGoal:
         assert resp.json() == {"has_goals": False, "goals": []}
 
 
-# ---------------------------------------------------------------------------
-# /api/weekly-recap
-# ---------------------------------------------------------------------------
-
-
-# _FIXED_TODAY is a Thursday (weekday 3), so for offset=0:
-#   newest week (idx=3): Mon 2026-04-27 → Sun 2026-05-03  (current)
-#   week idx=2:          Mon 2026-04-20 → Sun 2026-04-26
-#   week idx=1:          Mon 2026-04-13 → Sun 2026-04-19
-#   oldest (idx=0):      Mon 2026-04-06 → Sun 2026-04-12
-_W_NEWEST_START = date(2026, 4, 27)
-_W_NEWEST_END = date(2026, 5, 3)
-_W_OLDEST_START = date(2026, 4, 6)
-
-
 async def _save_detail(activity_id: str, distance_m: float) -> None:
     """Write an ActivityDetail row directly. ``ActivityDetail.save`` expects
     an Intervals.icu detail blob; for tests we only need ``distance``, so we
@@ -642,169 +896,6 @@ async def _save_detail(activity_id: str, distance_m: float) -> None:
     async with get_session() as session:
         session.add(ActivityDetail(activity_id=activity_id, distance=distance_m))
         await session.commit()
-
-
-class TestWeeklyRecap:
-    async def test_bucket_boundary_sunday_vs_monday(self, client):
-        """Activity exactly on Sunday lands in week N; the next Monday lands in N+1."""
-        # Sunday of week idx=2 → must end up in that week, not the newer one
-        await Activity.save_bulk(
-            1,
-            activities=[
-                _make_activity(aid="i_sun", dt=date(2026, 4, 26), sport="Run", tss=50.0),
-                _make_activity(aid="i_mon", dt=date(2026, 4, 27), sport="Run", tss=70.0),
-            ],
-        )
-
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        # Response is freshest-first, so weeks[0] is the current week
-        assert data["weeks"][0]["week_start"] == _W_NEWEST_START.isoformat()
-        assert data["weeks"][0]["week_end"] == _W_NEWEST_END.isoformat()
-        # Monday activity in newest week
-        assert data["weeks"][0]["by_sport"]["running"]["tss"] == 70.0
-        # Sunday activity in week idx=2 (one week back)
-        assert data["weeks"][1]["by_sport"]["running"]["tss"] == 50.0
-
-    async def test_drops_unmappable_sports_from_by_sport(self, client):
-        """Yoga / hike never make it into by_sport — they aren't on _SPORT_MAP."""
-        await Activity.save_bulk(
-            1,
-            activities=[
-                _make_activity(aid="i_yoga", dt=_FIXED_TODAY, sport="Yoga", tss=10.0),
-                _make_activity(aid="i_hike", dt=_FIXED_TODAY, sport="Hike", tss=30.0),
-                _make_activity(aid="i_run", dt=_FIXED_TODAY, sport="Run", tss=55.0),
-            ],
-        )
-
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        newest = resp.json()["weeks"][0]
-        assert set(newest["by_sport"].keys()) == {"running"}
-        assert newest["by_sport"]["running"]["tss"] == 55.0
-
-    async def test_empty_week_still_carries_ctl_bookends(self, client):
-        """A week with zero activities still emits a bucket and resolves CTL bookends."""
-        # Seed wellness on the bookend days only — every week's start/end has CTL/ATL.
-        # Note: _nearest_wellness anchors on (week_start - 1) for ctl_start, so
-        # we seed Sunday-of-prior-week as well.
-        for d in [
-            _W_OLDEST_START - timedelta(days=1),  # 2026-04-05 (anchor for oldest week's ctl_start)
-            date(2026, 4, 12),  # oldest week's last day
-            date(2026, 4, 19),
-            date(2026, 4, 26),
-            _W_NEWEST_END,  # 2026-05-03
-        ]:
-            await _seed_wellness(1, d, ctl=60.0, atl=50.0)
-
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        weeks = resp.json()["weeks"]
-        assert len(weeks) == 4
-        # Every bucket has bookends and an empty by_sport map
-        for w in weeks:
-            assert w["by_sport"] == {}
-            assert w["ctl_start"] == 60.0
-            assert w["ctl_end"] == 60.0
-            assert w["ctl_delta"] == 0.0
-            assert w["tsb_end"] == 10.0  # 60 - 50
-
-    async def test_ctl_back_walk_covers_bootstrap_gaps(self, client):
-        """When the exact bookend day is missing, _nearest_wellness walks back up
-        to 6 days. The pre-fetch must cover that whole window — regression test
-        for the CodeReviewer-flagged 1-day vs 7-day mismatch."""
-        # Anchor for oldest week's ctl_start is (window_start - 1) = 2026-04-05.
-        # Drop wellness rows 5 days BEFORE that anchor (2026-03-31). With the old
-        # (wellness_start = window_start - 1) bug those rows never landed in the
-        # cache and ctl_start would silently come back null.
-        await _seed_wellness(1, date(2026, 3, 31), ctl=42.0, atl=35.0)
-        # Plus an end-bookend anchor so ctl_end is not null and we can isolate
-        # the regression to ctl_start.
-        await _seed_wellness(1, _W_NEWEST_END, ctl=70.0, atl=55.0)
-
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        weeks = resp.json()["weeks"]
-        # Oldest week (last in the freshest-first list)
-        oldest = weeks[-1]
-        assert oldest["week_start"] == _W_OLDEST_START.isoformat()
-        # Without the back-walk widening this would be null.
-        assert oldest["ctl_start"] == 42.0
-
-    async def test_has_prev_true_when_older_activity_exists(self, client):
-        """has_prev must flip true if any activity sits strictly before window_start."""
-        await Activity.save_bulk(
-            1,
-            activities=[
-                _make_activity(aid="i_old", dt=_W_OLDEST_START - timedelta(days=1), sport="Run"),
-            ],
-        )
-
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        assert resp.json()["has_prev"] is True
-
-    async def test_has_prev_false_when_no_older_activity(self, client):
-        """No activities anywhere → has_prev is false."""
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        assert resp.json()["has_prev"] is False
-
-    async def test_offset_minus_one_shifts_window_back(self, client):
-        """offset=-1 moves the freshest visible week to the previous Mon–Sun."""
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=-1")
-
-        weeks = resp.json()["weeks"]
-        # Freshest week is the prior Mon (2026-04-20) → Sun (2026-04-26)
-        assert weeks[0]["week_start"] == "2026-04-20"
-        assert weeks[0]["week_end"] == "2026-04-26"
-
-    async def test_distance_aggregates_from_activity_detail(self, client):
-        """Distance comes from the outer-joined ActivityDetail row; multiple
-        activities in the same week roll up to one bucket per sport."""
-        await Activity.save_bulk(
-            1,
-            activities=[
-                _make_activity(aid="i_d1", dt=_FIXED_TODAY, sport="Run", tss=40.0),
-                _make_activity(aid="i_d2", dt=_FIXED_TODAY - timedelta(days=1), sport="Run", tss=60.0),
-            ],
-        )
-        await _save_detail("i_d1", 5_000.0)
-        await _save_detail("i_d2", 7_500.0)
-
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        run = resp.json()["weeks"][0]["by_sport"]["running"]
-        assert run["distance_m"] == 12500.0
-        assert run["tss"] == 100.0
-        assert run["duration_sec"] == 7200  # 2 × 3600
-
-    async def test_per_user_scoping(self, client):
-        """Activities from another user must not leak into the recap."""
-        async with get_session() as session:
-            session.add(User(id=2, chat_id="23456", role="athlete"))
-            await session.commit()
-        await Activity.save_bulk(
-            2,
-            activities=[_make_activity(aid="i_other", dt=_FIXED_TODAY, sport="Run", tss=99.0)],
-        )
-
-        async with client as c:
-            resp = await c.get("/api/weekly-recap?weeks=4&offset=0")
-
-        # User 1 has no activities; the response should be empty buckets
-        for w in resp.json()["weeks"]:
-            assert w["by_sport"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -852,11 +943,11 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        # Без wellness vo2max строки — все weeks: shape_pct=null
-        for w in resp.json()["weeks"]:
+        # Без wellness vo2max строки — все weeks: shape_pct=null + current_components None
+        data = resp.json()
+        for w in data["weeks"]:
             assert w["shape_pct"] is None
-            assert w["vo2max_used"] is None
-            assert w["components"] is None
+        assert data["current_components"] is None
 
     async def test_vo2max_30d_backfill(self, client):
         """vo2max snapshot 25 дней назад должен подтянуться через walk-back."""
@@ -865,8 +956,7 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        newest = resp.json()["weeks"][0]
-        assert newest["vo2max_used"] == 48.0  # picked up via back-walk
+        assert resp.json()["current_components"]["vo2max"] == 48.0  # picked up via back-walk
 
     async def test_run_distance_meters_to_km_conversion(self, client):
         """ActivityDetail.distance is METERS — endpoint must divide by 1000."""
@@ -888,9 +978,8 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        newest = resp.json()["weeks"][0]
         # 21.1 km registered as longjog (>13 km) → actual_longjog_km == 21.1
-        assert newest["components"]["actual_longjog_km"] == 21.1
+        assert resp.json()["current_components"]["actual_longjog_km"] == 21.1
 
     async def test_race_runs_included_matches_runalyze(self, client):
         """Run with is_race=True MUST contribute to shape — mirror Runalyze upstream.
@@ -913,11 +1002,11 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        newest = resp.json()["weeks"][0]
+        data = resp.json()
         # Race contributes to weekly_km (>0) and is a 42-km longjog
-        assert newest["components"]["actual_weekly_km"] > 0
-        assert newest["components"]["actual_longjog_km"] == 42.2  # rounded km
-        assert newest["shape_pct"] > 0  # non-zero shape from race volume
+        assert data["current_components"]["actual_weekly_km"] > 0
+        assert data["current_components"]["actual_longjog_km"] == 42.2  # rounded km
+        assert data["weeks"][0]["shape_pct"] > 0  # non-zero shape from race volume
 
     async def test_race_and_non_race_both_counted(self, client):
         """Mixed-bag: race + sibling non-race in same window — both count in volume."""
@@ -942,9 +1031,8 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        newest = resp.json()["weeks"][0]
         # Both runs counted; race longest → actual_longjog_km = 42.2 (the race)
-        assert newest["components"]["actual_longjog_km"] == 42.2
+        assert resp.json()["current_components"]["actual_longjog_km"] == 42.2
 
     async def test_vo2max_below_minimum_surfaces_clamped_value(self, client):
         """Real VO2max < 25 → response surfaces clamped 25.0 (documented in spec §7)."""
@@ -953,9 +1041,9 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        newest = resp.json()["weeks"][0]
-        assert newest["vo2max_used"] == 25.0  # not 20.0 — clamp surfaces honestly
-        assert newest["components"]["target_weekly_km"] == 38.6  # 25^1.135 rounded
+        cc = resp.json()["current_components"]
+        assert cc["vo2max"] == 25.0  # not 20.0 — clamp surfaces honestly
+        assert cc["target_weekly_km"] == 38.6  # 25^1.135 rounded
 
     async def test_per_user_scoping(self, client):
         """User 2's runs and vo2max don't leak into user 1's response."""
@@ -990,11 +1078,8 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        newest = resp.json()["weeks"][0]
-        c = newest["components"]
-        # target_longjog_km (scoring) ≈ 17.3; displayed = 17.3 + 13 = 30.3
-        assert c["target_longjog_km"] == 17.3
-        assert c["displayed_target_long_run_km"] == 30.3
+        # displayed_target_long_run_km = ln(50/4)*12 = 30.31 → round 30.3
+        assert resp.json()["current_components"]["displayed_target_long_run_km"] == 30.3
 
     async def test_max_run_race_distance_m_in_response(self, client):
         """Endpoint exposes longest Run-race distance so widget can flag extrapolated predictions.
@@ -1078,10 +1163,8 @@ class TestMarathonShape:
         async with client as c:
             resp = await c.get("/api/marathon-shape?weeks=12")
 
-        newest = resp.json()["weeks"][0]
-        c = newest["components"]
+        c = resp.json()["current_components"]
         assert c["target_weekly_km"] == 84.8
-        assert c["target_longjog_km"] == 17.3
         assert c["displayed_target_long_run_km"] == 30.3
 
     async def test_current_components_from_newest_week(self, client):

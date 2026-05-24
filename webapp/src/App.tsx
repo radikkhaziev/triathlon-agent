@@ -14,13 +14,19 @@ import BotChatBanner from './components/BotChatBanner'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Wellness from './pages/Wellness'
-import Plan from './pages/Plan'
+import Coach from './pages/Coach'
+import MetricDetail from './pages/MetricDetail'
+import RecoveryTrend from './pages/RecoveryTrend'
+import SleepTrend from './pages/SleepTrend'
+import BodyTrend from './pages/BodyTrend'
+import LoadDetail from './pages/LoadDetail'
+import WellnessHistory from './pages/WellnessHistory'
+import PersonalEdit from './pages/PersonalEdit'
+import PlanScreen from './pages/PlanScreen'
 import ScheduledWorkout from './pages/ScheduledWorkout'
-import Activities from './pages/Activities'
 import Activity from './pages/Activity'
 import Dashboard from './pages/Dashboard'
 import Settings from './pages/Settings'
-import Progress from './pages/Progress'
 import WeeklyReport from './pages/WeeklyReport'
 import WeeklyReports from './pages/WeeklyReports'
 
@@ -156,14 +162,30 @@ export default function App() {
       } />
       <Route path="/login" element={<Login />} />
       <Route path="/settings" element={<Settings />} />
+      <Route path="/settings/personal/edit" element={<PersonalEdit />} />
       <Route path="/report" element={<Navigate to="/wellness" />} />
+      {/* Halo-v3 tab rename (2026-05-23): `/plan` → `/calendar`, `/dashboard`
+          → `/trends`. Legacy paths preserved as redirects so Telegram WebApp
+          kbd buttons (e.g. race-plan PR4 button), bookmarks, and any in-flight
+          morning-report links keep working. ``replace`` keeps history clean. */}
+      <Route path="/plan" element={<Navigate to="/calendar" replace />} />
+      <Route path="/dashboard" element={<Navigate to="/trends" replace />} />
       <Route path="/wellness" element={dataRoute(Wellness)} />
-      <Route path="/plan" element={dataRoute(Plan)} />
+      <Route path="/wellness/recovery" element={dataRoute(RecoveryTrend)} />
+      <Route path="/wellness/sleep" element={dataRoute(SleepTrend)} />
+      <Route path="/wellness/body" element={dataRoute(BodyTrend)} />
+      <Route path="/wellness/load" element={dataRoute(LoadDetail)} />
+      <Route path="/wellness/history" element={dataRoute(WellnessHistory)} />
+      <Route path="/wellness/:metric" element={dataRoute(MetricDetail)} />
+      <Route path="/coach" element={dataRoute(Coach)} />
+      <Route path="/calendar" element={dataRoute(PlanScreen)} />
       <Route path="/workout/:id" element={dataRoute(ScheduledWorkout)} />
-      <Route path="/activities" element={dataRoute(Activities)} />
+      {/* `/activities` list-route retired 2026-05-23 — Week tab now hosts the
+          weekly activities (merged with plan). Detail-route `/activity/:id`
+          remains as a deep-link (from Week day-cards, morning report, etc.). */}
+      <Route path="/activities" element={<Navigate to="/calendar" replace />} />
       <Route path="/activity/:id" element={dataRoute(Activity)} />
-      <Route path="/progress" element={dataRoute(Progress)} />
-      <Route path="/dashboard" element={dataRoute(Dashboard)} />
+      <Route path="/trends" element={dataRoute(Dashboard)} />
       <Route path="/weekly" element={dataRoute(WeeklyReports)} />
       <Route path="/weekly/:weekStart" element={dataRoute(WeeklyReport)} />
       <Route path="*" element={<Navigate to="/" />} />

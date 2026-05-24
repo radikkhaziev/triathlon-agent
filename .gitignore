@@ -49,3 +49,10 @@ backups/
 pitch/
 
 .claude/scheduled_tasks.lock
+
+# Local dev compose (contains DB password override)
+docker-compose.local.yml
+
+design-package/
+
+node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/

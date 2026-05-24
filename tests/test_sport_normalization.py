@@ -2,16 +2,7 @@
 
 import pytest
 
-from data.utils import (
-    _RAW_TO_CANONICAL,
-    CANONICAL_TYPES,
-    HRV_ELIGIBLE_TYPES,
-    extract_sport_ctl,
-    is_bike,
-    is_run,
-    is_swim,
-    normalize_sport,
-)
+from data.utils import HRV_ELIGIBLE_TYPES, extract_sport_ctl, is_bike, is_run, normalize_sport
 
 
 class TestNormalizeSport:
@@ -49,10 +40,6 @@ class TestNormalizeSport:
     def test_unknown_type_returns_other(self):
         assert normalize_sport("UnknownSport") == "Other"
 
-    def test_all_raw_to_canonical_values_are_canonical(self):
-        for canonical in _RAW_TO_CANONICAL.values():
-            assert canonical in CANONICAL_TYPES
-
 
 class TestHelpers:
     def test_is_bike(self):
@@ -64,15 +51,8 @@ class TestHelpers:
         assert is_run("Run") is True
         assert is_run("Ride") is False
 
-    def test_is_swim(self):
-        assert is_swim("Swim") is True
-        assert is_swim("Other") is False
-
 
 class TestConstants:
-    def test_canonical_types(self):
-        assert CANONICAL_TYPES == {"Ride", "Run", "Swim", "Other"}
-
     def test_hrv_eligible(self):
         assert HRV_ELIGIBLE_TYPES == {"Ride", "Run"}
 

@@ -72,20 +72,6 @@ class TestTrainingLogCRUD:
         assert str(in_range_date) in dates
         assert str(out_of_range_date) not in dates
 
-    async def test_unfilled_actual(self, _test_db):
-        row = await TrainingLog.create(
-            user_id=1,
-            date="2026-03-20",
-            sport="Run",
-            source="ai",
-            original_name="Easy Run",
-            pre_recovery_score=65.0,
-            pre_recovery_category="moderate",
-        )
-
-        unfilled = await TrainingLog.get_unfilled_actual(user_id=1, dt="2026-04-01")
-        assert any(r.id == row.id for r in unfilled)
-
     async def test_update_actual(self, _test_db):
         row = await TrainingLog.create(
             user_id=1,

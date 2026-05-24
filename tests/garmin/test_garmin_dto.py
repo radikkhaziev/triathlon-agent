@@ -464,50 +464,6 @@ class TestGarminTrainingLoadDTO:
 
 
 class TestGarminFitnessMetricsDTO:
-    def test_from_vo2max_running(self):
-        raw = {
-            "calendarDate": "2025-03-15",
-            "sport": "RUNNING",
-            "vo2MaxValue": 42.5,
-            "activityId": 123456789,
-        }
-        dto = GarminFitnessMetricsDTO.from_vo2max(raw)
-
-        assert dto.calendar_date == "2025-03-15"
-        assert dto.vo2max_running == pytest.approx(42.5)
-        assert dto.vo2max_cycling is None
-        assert dto.source_activity_id == "123456789"
-
-    def test_from_vo2max_cycling(self):
-        raw = {
-            "calendarDate": "2025-08-06",
-            "sport": "CYCLING",
-            "vo2MaxValue": 54.0,
-            "activityId": 19966844211,
-        }
-        dto = GarminFitnessMetricsDTO.from_vo2max(raw)
-
-        assert dto.vo2max_cycling == pytest.approx(54.0)
-        assert dto.vo2max_running is None
-        assert dto.source_activity_id == "19966844211"
-
-    def test_from_vo2max_unknown_sport_yields_both_none(self):
-        raw = {
-            "calendarDate": "2025-01-01",
-            "sport": "SWIMMING",
-            "vo2MaxValue": 40.0,
-        }
-        dto = GarminFitnessMetricsDTO.from_vo2max(raw)
-
-        assert dto.vo2max_running is None
-        assert dto.vo2max_cycling is None
-
-    def test_from_vo2max_no_activity_id_yields_none_source(self):
-        raw = {"calendarDate": "2025-01-01", "sport": "RUNNING", "vo2MaxValue": 38.0}
-        dto = GarminFitnessMetricsDTO.from_vo2max(raw)
-
-        assert dto.source_activity_id is None
-
     def test_from_endurance_with_ms_epoch(self):
         # 1701043200000 ms = 2023-11-27 UTC
         raw = {"calendarDate": 1701043200000, "overallScore": 62.5}

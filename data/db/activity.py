@@ -406,6 +406,11 @@ class ActivityAchievement(Base):
     ) -> list[ActivityAchievement]:
         """Tenant-safe fetch by (user_id, activity_id).
 
+        Kept as a test-verification seam — `save_bulk` round-trip tests read
+        rows back through this to assert what was inserted. Removing it would
+        force tests to use raw SQL, no production caller today but the cost
+        of the read API is one method.
+
         Secondary order on ``id`` — ``save_bulk`` writes all rows in one
         ``INSERT`` so they share the same ``created_at`` (server `now()`),
         making a single-key sort nondeterministic across drivers/replicas.

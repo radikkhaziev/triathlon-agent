@@ -91,7 +91,7 @@ R(t+1) = R(t) + (100 - R(t)) * (1 - exp(-1/τ)) - k * ESS(t)
 - RMSSD declining trend → flag `rmssd_declining` (предупреждение, без изменения score)
 - RMSSD status = red → recommendation override на `skip` (всегда, поверх category)
 
-> Late-sleep modifier (>23:00 → −10) упоминается в docstring `data/metrics.py:400` как design intent, но в текущей реализации не применяется. Если вернётся — потребует `wellness.sleep_start` сигнала, которого сейчас нет в DTO.
+> Late-sleep modifier (>23:00 → −10) упоминается в docstring `data/metrics.py:_compute_recovery_score` как design intent, но в текущей реализации не применяется (функция даже не принимает `sleep_start`). Если вернётся — потребует `wellness.sleep_start` сигнала, которого сейчас нет в DTO.
 
 **Категории восстановления:**
 

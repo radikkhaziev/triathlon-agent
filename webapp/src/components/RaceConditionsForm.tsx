@@ -23,6 +23,9 @@ interface RaceConditionsFormProps {
   onInheritableLoaded?: (rows: InheritableRace[]) => void
 }
 
+const FIELD_CLS =
+  'flex-1 rounded-lg border border-halo-border bg-halo-bg px-2 py-1 text-sm tabular-nums disabled:opacity-50'
+
 export default function RaceConditionsForm({
   goalId,
   value,
@@ -106,20 +109,25 @@ export default function RaceConditionsForm({
   }
 
   return (
-    <div className="border-t border-bg pt-3 mt-3">
+    <div className="mt-3.5 border-t border-halo-border pt-3">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between text-[11px] text-text-dim hover:text-text"
+        className="flex w-full items-center justify-between text-[13px] font-medium text-halo-ink-dim hover:text-halo-ink"
       >
-        <span>{t('race_plan.conditions.title')}</span>
-        <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span>
+          {t('race_plan.conditions.title')}{' '}
+          <span className="font-normal text-halo-ink-dimmer">· {t('race_plan.conditions.optional')}</span>
+        </span>
+        <span aria-hidden="true" className={`text-sm transition-transform ${open ? 'rotate-90' : ''}`}>
+          ›
+        </span>
       </button>
 
       {open && (
-        <div className="mt-2 space-y-2">
+        <div className="mt-3 space-y-2">
           <div className="flex items-center gap-2">
-            <label htmlFor={elevationId} className="text-[11px] text-text-dim w-32">
+            <label htmlFor={elevationId} className="w-32 text-[11px] text-halo-ink-dim">
               {t('race_plan.conditions.elevation_label')}
             </label>
             <input
@@ -130,11 +138,11 @@ export default function RaceConditionsForm({
               step={50}
               value={value.elevation_gain_m ?? ''}
               onChange={e => handleNumberChange('elevation_gain_m', e.target.value)}
-              className="flex-1 px-2 py-1 text-sm border border-border rounded bg-bg tabular-nums"
+              className={FIELD_CLS}
             />
           </div>
           <div className="flex items-center gap-2">
-            <label htmlFor={tempId} className="text-[11px] text-text-dim w-32">
+            <label htmlFor={tempId} className="w-32 text-[11px] text-halo-ink-dim">
               {t('race_plan.conditions.temp_label')}
             </label>
             <input
@@ -145,19 +153,19 @@ export default function RaceConditionsForm({
               step={1}
               value={value.expected_temp_c ?? ''}
               onChange={e => handleNumberChange('expected_temp_c', e.target.value)}
-              className="flex-1 px-2 py-1 text-sm border border-border rounded bg-bg tabular-nums"
+              className={FIELD_CLS}
             />
           </div>
           <div className="flex items-center gap-2">
-            <label htmlFor={inheritId} className="text-[11px] text-text-dim w-32">
+            <label htmlFor={inheritId} className="w-32 text-[11px] text-halo-ink-dim">
               {t('race_plan.conditions.inherit_label')}
             </label>
             <select
               id={inheritId}
               onChange={e => handleInherit(e.target.value)}
-              disabled={loadingInherit || (inheritable?.length === 0)}
+              disabled={loadingInherit || inheritable?.length === 0}
               defaultValue=""
-              className="flex-1 px-2 py-1 text-sm border border-border rounded bg-bg disabled:opacity-50"
+              className={FIELD_CLS}
             >
               <option value="" disabled>
                 {loadingInherit
