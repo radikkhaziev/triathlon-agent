@@ -661,3 +661,47 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         ), f"expected no repeat groups (single-rep should flatten), got reps={[s.reps for s in steps]}"
         # Sequence: warmup, interval (flattened), recovery (flattened), cooldown
         assert [s.text for s in steps] == ["Warm-up", "Interval", "Recovery", "Cool-down"]
+
+    def test_inter_set_rest_not_swallowed_into_repeat(self):
+        """Regression: HumanGo swim sets often emit `interval + short rest +
+        long rest` inside a `repeat N times` block, where the long Rest is
+        actually the rest **between sets**, not part of the repeat body.
+        Pre-fix parser multiplied that long Rest by N, inflating duration.
+        Mirrors event 111913346 (user 1, 2026-05-24) which leaked ~9 min.
+        """
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "======= repeat 4 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 2:00 per 100 meters\n\nhigh: 1:50 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 15 sec\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 1 min 0 sec\n\n"
+            "==============================\n\n"
+            "======= repeat 4 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 150 meters\n\n"
+            "pace:\n\nlow: 2:00 per 100 meters\n\nhigh: 1:50 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 15 sec\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 1 min 0 sec\n\n"
+        )
+        steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=110.0))
+        assert steps
+
+        # Two repeat groups + two outer Rests between/after them.
+        repeats = [s for s in steps if s.reps == 4]
+        assert len(repeats) == 2, f"expected 2 repeat-4 groups, got {[s.reps for s in steps]}"
+        # Each repeat body holds Interval + short Rest only — the long Rest
+        # must NOT have been absorbed.
+        for rep in repeats:
+            assert [sub.text for sub in rep.steps] == ["Interval", "Rest"], rep.steps
+            assert rep.steps[1].duration == 15  # short rest stays inside
+
+        # The long Rest blocks live at the outer level (not multiplied by 4).
+        outer_long_rests = [s for s in steps if s.text == "Rest" and s.duration == 60]
+        assert len(outer_long_rests) == 2, [(s.text, s.duration) for s in steps]

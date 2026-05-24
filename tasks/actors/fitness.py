@@ -37,13 +37,14 @@ def actor_save_fitness_projection(user: UserDTO, records: list[dict]) -> None:
     sorted_records = sorted(valid_records, key=lambda r: r["id"])
     FitnessProjection.save_bulk(user_id=user.id, records=sorted_records)
 
-    today_iso = local_today().isoformat()
+    today = local_today()
+    today_iso = today.isoformat()
     today_record = next((r for r in sorted_records if r["id"] == today_iso), None)
     wellness_updated = False
     if today_record is not None:
         wellness_updated = Wellness.update_loads(
             user_id=user.id,
-            dt=today_iso,
+            dt=today,
             ctl=today_record.get("ctl"),
             atl=today_record.get("atl"),
             ramp_rate=today_record.get("rampRate"),

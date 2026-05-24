@@ -329,14 +329,20 @@ class Wellness(Base):
 
     @classmethod
     @with_sync_session
-    def update_sport_ctl(
+    def update_sport_load(
         cls,
         user_id: int,
         dt: DateDTO,
         sport_ctl: dict[str, float],
+        sport_atl: dict[str, float],
         *,
         session: Session,
     ) -> None:
+        """Merge per-sport CTL+ATL into wellness.sport_info JSON.
+
+        Preserves existing per-sport fields (eftp, wPrime, pMax from Intervals.icu);
+        only the ctl/atl keys are overwritten.
+        """
         date_str = dt.isoformat()
         result = session.execute(
             select(cls).where(
@@ -351,16 +357,27 @@ class Wellness(Base):
         existing_info = list(row.sport_info or [])  # copy to trigger SQLAlchemy change detection
         existing_types = {e["type"].lower(): i for i, e in enumerate(existing_info) if e.get("type")}
 
-        for canonical_sport, ctl_val in sport_ctl.items():
-            if ctl_val < 0:
+        for canonical_sport in ("swim", "ride", "run"):
+            ctl_val = sport_ctl.get(canonical_sport)
+            atl_val = sport_atl.get(canonical_sport)
+            ctl_ok = ctl_val is not None and ctl_val >= 0
+            atl_ok = atl_val is not None and atl_val >= 0
+            if not ctl_ok and not atl_ok:
                 continue
-            iv_type = _CANONICAL_TO_TYPE[canonical_sport]
 
+            iv_type = _CANONICAL_TO_TYPE[canonical_sport]
             iv_type_lower = iv_type.lower()
             if iv_type_lower in existing_types:
-                existing_info[existing_types[iv_type_lower]]["ctl"] = ctl_val
+                entry = existing_info[existing_types[iv_type_lower]]
             else:
-                existing_info.append({"type": iv_type, "ctl": ctl_val})
+                entry = {"type": iv_type}
+                existing_info.append(entry)
+                existing_types[iv_type_lower] = len(existing_info) - 1
+
+            if ctl_ok:
+                entry["ctl"] = ctl_val
+            if atl_ok:
+                entry["atl"] = atl_val
 
         row.sport_info = existing_info
         session.commit()

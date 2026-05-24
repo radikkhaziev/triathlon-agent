@@ -9,7 +9,7 @@ from pydantic import validate_call
 from sqlalchemy import select
 
 from data.db import Activity, AthleteSettings, AthleteThresholdsDTO, UserDTO, Wellness, get_sync_session
-from data.metrics import calculate_banister_for_date, calculate_sport_ctl
+from data.metrics import calculate_banister_for_date, calculate_sport_atl, calculate_sport_ctl
 from tasks.dto import DateDTO
 
 from .training_log import actor_fill_training_log, actor_fill_training_log_post
@@ -31,23 +31,40 @@ def _actor_enrich_wellness_sport_info(
     user: UserDTO,
     dt: DateDTO,
 ) -> None:
-    """Enrich wellness with per-sport CTL from DB (not API)."""
+    """Enrich wellness with per-sport CTL + ATL from DB (not API).
+
+    Uses a 200-day activity window so the CTL EMA (τ=42) and ATL EMA (τ=7) both
+    have ~5τ of warm-up — see `docs/PER_SPORT_LOAD_SPEC.md`.
+    """
 
     with get_sync_session() as session:
         activity_row: list[Activity] = Activity.get_windowed(
             user.id,
             filters=(Activity.icu_training_load.isnot(None),),
             as_of=dt,
+            days=200,
             session=session,
         )
 
-        sport_ctl: dict[str, float] = calculate_sport_ctl(activity_row)
-        logger.info("Sport CTL for user %d on %s: %s (%d activities)", user.id, dt, sport_ctl, len(activity_row))
+        # `as_of=dt` ensures the EMA decays through any rest gap between the
+        # last activity and `dt` — without it the value freezes at the last
+        # activity date and a 30-day rest leaves CTL at its pre-rest level.
+        sport_ctl: dict[str, float] = calculate_sport_ctl(activity_row, as_of=dt)
+        sport_atl: dict[str, float] = calculate_sport_atl(activity_row, as_of=dt)
+        logger.info(
+            "Sport load for user %d on %s: ctl=%s atl=%s (%d activities)",
+            user.id,
+            dt,
+            sport_ctl,
+            sport_atl,
+            len(activity_row),
+        )
 
-        Wellness.update_sport_ctl(
+        Wellness.update_sport_load(
             user_id=user.id,
             dt=dt,
             sport_ctl=sport_ctl,
+            sport_atl=sport_atl,
             session=session,
         )
 

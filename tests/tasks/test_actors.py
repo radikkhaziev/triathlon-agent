@@ -594,7 +594,7 @@ class TestActorUpdateHrvAnalysis:
 
 
 class TestActorEnrichWellnessSportInfo:
-    """_actor_enrich_wellness_sport_info calculates per-sport CTL and writes to wellness."""
+    """_actor_enrich_wellness_sport_info calculates per-sport CTL+ATL and writes to wellness."""
 
     def _make_activity(self, activity_type: str, load: float):
         act = MagicMock()
@@ -603,36 +603,41 @@ class TestActorEnrichWellnessSportInfo:
         act.start_date_local = _DT_STR
         return act
 
-    def test_no_activities_calls_update_with_empty_ctl(self):
-        """No activities → calculate_sport_ctl returns empty/zero dict → update_sport_ctl called."""
+    def test_no_activities_calls_update_with_zero_load(self):
+        """No activities → both CTL and ATL = zero dict → update_sport_load called."""
         from tasks.actors.common import _actor_enrich_wellness_sport_info
 
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)
         mock_session.__exit__ = MagicMock(return_value=False)
+        zeros = {"swim": 0.0, "ride": 0.0, "run": 0.0}
 
         with (
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
             patch("tasks.actors.common.Activity.get_windowed", return_value=[]) as mock_get,
-            patch("tasks.actors.common.calculate_sport_ctl", return_value={"swim": 0.0, "ride": 0.0, "run": 0.0}),
-            patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
+            patch("tasks.actors.common.calculate_sport_ctl", return_value=zeros),
+            patch("tasks.actors.common.calculate_sport_atl", return_value=zeros),
+            patch("tasks.actors.common.Wellness.update_sport_load") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(_user().model_dump(), _DT)
 
         mock_get.assert_called_once()
         assert mock_get.call_args[0][0] == 1  # user_id positional
         assert mock_get.call_args[1]["as_of"] == _DT
+        assert mock_get.call_args[1]["days"] == 200  # CTL warm-up requires 200d
         mock_update.assert_called_once()
         assert mock_update.call_args[1]["user_id"] == 1
         assert mock_update.call_args[1]["dt"] == _DT
-        assert mock_update.call_args[1]["sport_ctl"] == {"swim": 0.0, "ride": 0.0, "run": 0.0}
+        assert mock_update.call_args[1]["sport_ctl"] == zeros
+        assert mock_update.call_args[1]["sport_atl"] == zeros
 
-    def test_activities_present_calculates_sport_ctl(self):
-        """Activities passed to calculate_sport_ctl and result forwarded to Wellness."""
+    def test_activities_present_calculates_both_loads(self):
+        """Activities forwarded to both calculate_sport_ctl and calculate_sport_atl."""
         from tasks.actors.common import _actor_enrich_wellness_sport_info
 
         activities = [self._make_activity("Run", 80.0), self._make_activity("Ride", 120.0)]
         expected_ctl = {"swim": 0.0, "ride": 10.5, "run": 6.3}
+        expected_atl = {"swim": 0.0, "ride": 18.2, "run": 11.7}
 
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)
@@ -642,19 +647,23 @@ class TestActorEnrichWellnessSportInfo:
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
             patch("tasks.actors.common.Activity.get_windowed", return_value=activities),
             patch("tasks.actors.common.calculate_sport_ctl", return_value=expected_ctl) as mock_ctl,
-            patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
+            patch("tasks.actors.common.calculate_sport_atl", return_value=expected_atl) as mock_atl,
+            patch("tasks.actors.common.Wellness.update_sport_load") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(_user().model_dump(), _DT)
 
-        mock_ctl.assert_called_once_with(activities)
+        mock_ctl.assert_called_once_with(activities, as_of=_DT)
+        mock_atl.assert_called_once_with(activities, as_of=_DT)
         mock_update.assert_called_once()
         assert mock_update.call_args[1]["sport_ctl"] == expected_ctl
+        assert mock_update.call_args[1]["sport_atl"] == expected_atl
 
     def test_uses_user_id_from_dto(self):
-        """user_id passed to both Activity.get_windowed and Wellness.update_sport_ctl."""
+        """user_id passed to both Activity.get_windowed and Wellness.update_sport_load."""
         from tasks.actors.common import _actor_enrich_wellness_sport_info
 
         user = _user(id=7)
+        zeros = {"swim": 0.0, "ride": 0.0, "run": 0.0}
 
         mock_session = MagicMock()
         mock_session.__enter__ = MagicMock(return_value=mock_session)
@@ -663,8 +672,9 @@ class TestActorEnrichWellnessSportInfo:
         with (
             patch("tasks.actors.common.get_sync_session", return_value=mock_session),
             patch("tasks.actors.common.Activity.get_windowed", return_value=[]) as mock_get,
-            patch("tasks.actors.common.calculate_sport_ctl", return_value={}),
-            patch("tasks.actors.common.Wellness.update_sport_ctl") as mock_update,
+            patch("tasks.actors.common.calculate_sport_ctl", return_value=zeros),
+            patch("tasks.actors.common.calculate_sport_atl", return_value=zeros),
+            patch("tasks.actors.common.Wellness.update_sport_load") as mock_update,
         ):
             _actor_enrich_wellness_sport_info(user.model_dump(), _DT)
 
