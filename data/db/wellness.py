@@ -354,8 +354,13 @@ class Wellness(Base):
         if row is None:
             return
 
-        existing_info = list(row.sport_info or [])  # copy to trigger SQLAlchemy change detection
-        existing_types = {e["type"].lower(): i for i, e in enumerate(existing_info) if e.get("type")}
+        # JSON column is NOT MutableList-wrapped → SQLAlchemy compares the new
+        # list value to its loaded one by equality. If we mutate dicts in place
+        # via shared references and then reassign, both sides see the mutation
+        # and compare equal → no UPDATE issued (silently). Build the new list
+        # with FRESH dict copies so identity differs from the loaded value.
+        new_info: list[dict] = [dict(e) for e in (row.sport_info or [])]
+        existing_types = {e["type"].lower(): i for i, e in enumerate(new_info) if e.get("type")}
 
         for canonical_sport in ("swim", "ride", "run"):
             ctl_val = sport_ctl.get(canonical_sport)
@@ -368,16 +373,16 @@ class Wellness(Base):
             iv_type = _CANONICAL_TO_TYPE[canonical_sport]
             iv_type_lower = iv_type.lower()
             if iv_type_lower in existing_types:
-                entry = existing_info[existing_types[iv_type_lower]]
+                entry = new_info[existing_types[iv_type_lower]]
             else:
                 entry = {"type": iv_type}
-                existing_info.append(entry)
-                existing_types[iv_type_lower] = len(existing_info) - 1
+                new_info.append(entry)
+                existing_types[iv_type_lower] = len(new_info) - 1
 
             if ctl_ok:
                 entry["ctl"] = ctl_val
             if atl_ok:
                 entry["atl"] = atl_val
 
-        row.sport_info = existing_info
+        row.sport_info = new_info
         session.commit()
