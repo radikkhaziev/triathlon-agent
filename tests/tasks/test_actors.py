@@ -185,7 +185,7 @@ class TestSyncUserWellness:
 
         user = UserDTO(
             id=1,
-            chat_id=os.environ["TELEGRAM_CHAT_ID"],
+            chat_id=os.environ.get("TELEGRAM_CHAT_ID", "0"),
             username=os.environ.get("TELEGRAM_USERNAME", "test"),
             athlete_id=os.environ["INTERVALS_ATHLETE_ID"],
         )
@@ -1208,7 +1208,7 @@ class TestWellnessPipelineIntegration:
     def _real_user(self) -> UserDTO:
         return UserDTO(
             id=1,
-            chat_id=os.environ["TELEGRAM_CHAT_ID"],
+            chat_id=os.environ.get("TELEGRAM_CHAT_ID", "0"),
             username=os.environ.get("TELEGRAM_USERNAME", "test"),
             athlete_id=os.environ["INTERVALS_ATHLETE_ID"],
             api_key=os.environ["INTERVALS_API_KEY"],
