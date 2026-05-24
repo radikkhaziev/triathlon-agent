@@ -1,7 +1,6 @@
 """Dramatiq actors — wellness pipeline: HRV, RHR, Banister, recovery."""
 
 import logging
-import statistics
 import time
 from datetime import date
 
@@ -13,7 +12,7 @@ from sqlalchemy import select
 from data.db import HrvAnalysis, RhrAnalysis, UserDTO, Wellness, get_sync_session
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, RhrStatusDTO, RmssdStatusDTO, WellnessDTO
-from data.metrics import TREND_THRESHOLDS, calculate_trend, combined_recovery_score, rmssd_flatt_esco
+from data.metrics import combined_recovery_score, rhr_baseline, rmssd_flatt_esco
 from tasks.dto import ORMDTO, DateDTO, local_today
 
 from ._constants import MORNING_REPORT_DELAY_SEC
@@ -28,71 +27,9 @@ def _actor_calculate_rhr(
     user: UserDTO,
     dt: DateDTO,
 ) -> RhrStatusDTO:
-    """Resting HR baseline analysis.
-
-    Compares today's RHR vs 30-day rolling baseline.
-    Inverted vs RMSSD: elevated RHR = under-recovered.
-    Computes 7d, 30d, and 60d baselines.
-    """
-
-    MIN_DAYS = 7
-
+    """Thin wrapper — delegates min-days handling to `data.metrics.rhr_baseline`."""
     rhr_rows: list[float] = Wellness.get_rhr_history(user_id=user.id, dt=dt)
-    n = len(rhr_rows)
-
-    if n < MIN_DAYS:
-        return RhrStatusDTO(
-            status="insufficient_data",
-            days_available=n,
-            days_needed=MIN_DAYS - n,
-        )
-
-    today_rhr = rhr_rows[-1]
-
-    # 7-day baseline
-    last_7 = rhr_rows[-7:]
-    mean_7 = statistics.mean(last_7)
-    sd_7 = statistics.stdev(last_7) if len(last_7) >= 2 else 1.0
-
-    # 30-day baseline (used for status bounds)
-    last_30 = rhr_rows[-30:] if n >= 30 else rhr_rows
-    mean_30 = statistics.mean(last_30)
-    sd_30 = statistics.stdev(last_30) if len(last_30) >= 2 else 1.0
-
-    lower_bound = mean_30 - 0.5 * sd_30
-    upper_bound = mean_30 + 0.5 * sd_30
-
-    # 60-day baseline (context only)
-    rhr_60d = statistics.mean(rhr_rows[-60:]) if n >= 60 else None
-    rhr_sd_60d = statistics.stdev(rhr_rows[-60:]) if n >= 60 else None
-
-    # Inverted: high RHR = red, low RHR = green
-    if today_rhr > upper_bound:
-        status = "red"
-    elif today_rhr < lower_bound:
-        status = "green"
-    else:
-        status = "yellow"
-
-    cv_7d = (sd_7 / mean_7 * 100) if mean_7 > 0 else None
-    trend = calculate_trend(last_7, window=7, **TREND_THRESHOLDS["resting_hr"])
-
-    return RhrStatusDTO(
-        status=status,
-        days_available=n,
-        days_needed=0,
-        rhr_today=round(today_rhr, 1),
-        rhr_7d=round(mean_7, 1),
-        rhr_sd_7d=round(sd_7, 2),
-        rhr_30d=round(mean_30, 1),
-        rhr_sd_30d=round(sd_30, 2),
-        rhr_60d=round(rhr_60d, 1) if rhr_60d else None,
-        rhr_sd_60d=round(rhr_sd_60d, 2) if rhr_sd_60d else None,
-        lower_bound=round(lower_bound, 1),
-        upper_bound=round(upper_bound, 1),
-        cv_7d=round(cv_7d, 1) if cv_7d is not None else None,
-        trend=trend,
-    )
+    return rhr_baseline(rhr_rows)
 
 
 @dramatiq.actor(queue_name="default")
@@ -101,26 +38,13 @@ def _actor_calculate_hrv(
     user: UserDTO,
     dt: DateDTO,
 ) -> RmssdStatusDTO:
-    """Loads HRV history from DB, runs Flatt/Esco baseline.
+    """Thin wrapper — delegates min-days handling to `data.metrics.rmssd_flatt_esco`.
 
     Returns a Pydantic model — Dramatiq's PydanticEncoder (tasks/middleware.py)
     auto-dumps it to JSON, and the next actor in the pipeline rehydrates via
-    its own ``@validate_call`` annotation. The round-trip is implicit; do not
-    swap the return type for a plain dict without checking the consumer.
+    its own ``@validate_call`` annotation.
     """
-
-    MIN_DAYS = 14
-
     hrv_rows: list[float] = Wellness.get_hrv_history(user_id=user.id, dt=dt)
-    n = len(hrv_rows)
-
-    if n < MIN_DAYS:
-        return RmssdStatusDTO(
-            status="insufficient_data",
-            days_available=n,
-            days_needed=MIN_DAYS - n,
-        )
-
     return rmssd_flatt_esco(hrv_rows)
 
 

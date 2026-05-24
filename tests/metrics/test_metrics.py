@@ -1,3 +1,5 @@
+import random
+import statistics
 from datetime import date
 from types import SimpleNamespace
 
@@ -10,6 +12,7 @@ from data.metrics import (
     calculate_ess,
     calculate_trend,
     combined_recovery_score,
+    rhr_baseline,
     rmssd_flatt_esco,
 )
 
@@ -79,8 +82,6 @@ class TestClassifyRecovery:
 class TestRmssdFlattEsco:
     def _history(self, n=20, base=50.0):
         """Generate n days of HRV around base value."""
-        import random
-
         random.seed(42)
         return [base + random.gauss(0, 3) for _ in range(n)]
 
@@ -96,12 +97,32 @@ class TestRmssdFlattEsco:
         assert isinstance(result.trend, TrendResultDTO)
 
     def test_asymmetric_bounds(self):
-        result = rmssd_flatt_esco(self._history())
-        # lower bound should be further from mean than upper
-        mean = result.rmssd_7d
-        lower_gap = mean - result.lower_bound
-        upper_gap = result.upper_bound - mean
-        assert lower_gap > upper_gap  # asymmetric: -1 SD vs +0.5 SD
+        """Bounds are mean_baseline ± k*SD with k=1.0 lower / 0.5 upper.
+        Reconstruct mean/SD directly from the shifted baseline window (the
+        7 days BEFORE the smoothing window of 3) and assert the formula —
+        not just the 2:1 ratio, which is algebraically inevitable for any
+        point at `lo + (2/3)*(up-lo)`. This guards against silent drift of
+        the coefficients during future refactors.
+        """
+        h = self._history()  # 20 days
+        # `rmssd_flatt_esco` slices `h[-(7 + 3) : -3]` = first 7 of last 10.
+        baseline = h[-(7 + 3) : -3]
+        expected_mean = statistics.mean(baseline)
+        expected_sd = statistics.stdev(baseline)
+        expected_lower = round(expected_mean - 1.0 * expected_sd, 1)
+        expected_upper = round(expected_mean + 0.5 * expected_sd, 1)
+
+        result = rmssd_flatt_esco(h)
+        assert result.lower_bound == expected_lower
+        assert result.upper_bound == expected_upper
+
+    def test_smoothed_today_exposed_in_dto(self):
+        """The classification value (3-day rolling mean) must be visible in
+        the DTO — otherwise an LLM/dashboard cannot explain why a status
+        was set when raw `today` sits in-band but smoothed value drifts."""
+        h = self._history()
+        result = rmssd_flatt_esco(h)
+        assert result.rmssd_today_smoothed == round(statistics.mean(h[-3:]), 1)
 
     def test_no_60d_baseline_with_short_history(self):
         result = rmssd_flatt_esco(self._history(20))
@@ -122,6 +143,122 @@ class TestRmssdFlattEsco:
         history = [50.0] * 14 + [65.0]  # big jump
         result = rmssd_flatt_esco(history)
         assert result.status == "green"
+
+    def test_insufficient_data_when_history_short(self):
+        """Helper itself enforces MIN_DAYS=14 (not just the actor)."""
+        result = rmssd_flatt_esco([50.0] * 10)
+        assert result.status == "insufficient_data"
+        assert result.days_needed == 4
+
+    def test_noise_resistance_vs_unsmoothed(self):
+        """On a noisy flat series, smoothing should flip status fewer times."""
+        random.seed(13)
+        # Inject ±15% Gaussian noise on top of a flat baseline at 50
+        noisy = [50.0 + random.gauss(0, 7.5) for _ in range(30)]
+
+        unsmoothed_flips = 0
+        smoothed_flips = 0
+        prev_unsmoothed = None
+        prev_smoothed = None
+        # Sliding window — first 14 days establish baseline, then check days 15..30
+        for end in range(14, len(noisy)):
+            window = noisy[: end + 1]
+            unsmoothed = rmssd_flatt_esco(window, smooth=1).status
+            smoothed = rmssd_flatt_esco(window, smooth=3).status
+            if prev_unsmoothed is not None and unsmoothed != prev_unsmoothed:
+                unsmoothed_flips += 1
+            if prev_smoothed is not None and smoothed != prev_smoothed:
+                smoothed_flips += 1
+            prev_unsmoothed = unsmoothed
+            prev_smoothed = smoothed
+
+        assert (
+            smoothed_flips < unsmoothed_flips
+        ), f"smoothing should reduce flips: unsmoothed={unsmoothed_flips}, smoothed={smoothed_flips}"
+
+
+# ---------------------------------------------------------------------------
+# RHR Baseline
+# ---------------------------------------------------------------------------
+
+
+class TestRhrBaseline:
+    def _history(self, n=35, base=55.0):
+        random.seed(11)
+        return [base + random.gauss(0, 2) for _ in range(n)]
+
+    def test_returns_rhr_status(self):
+        result = rhr_baseline(self._history())
+        assert isinstance(result, RhrStatusDTO)
+        assert result.status in ("green", "yellow", "red")
+        assert result.days_available == 35
+
+    def test_insufficient_data_when_history_short(self):
+        """Helper itself enforces MIN_DAYS=7."""
+        result = rhr_baseline([55.0] * 5)
+        assert result.status == "insufficient_data"
+        assert result.days_needed == 2
+
+    def test_elevated_rhr_triggers_red(self):
+        """Inverted: smoothed RHR above the +0.5 SD upper bound = red.
+        Noise in the baseline is intentional — with a constant baseline,
+        sd_baseline=0 collapses the band, and ANY non-baseline value triggers
+        red regardless of the 0.5 coefficient. This fixture preserves the
+        coefficient's role: the elevated spike must actually clear the band.
+        """
+        random.seed(7)
+        # 30 noisy days around 55 bpm + 3 clearly elevated (+15 bpm spike)
+        history = [55.0 + random.gauss(0, 2) for _ in range(30)] + [70.0, 70.0, 70.0]
+        result = rhr_baseline(history)
+        assert result.status == "red"
+        # Defend against a future refactor accidentally killing the SD term:
+        # the band must be non-degenerate (upper > lower, not collapsed to mean).
+        assert result.upper_bound > result.lower_bound
+
+    def test_low_rhr_triggers_green(self):
+        random.seed(7)
+        history = [55.0 + random.gauss(0, 2) for _ in range(30)] + [45.0, 45.0, 45.0]
+        result = rhr_baseline(history)
+        assert result.status == "green"
+        assert result.upper_bound > result.lower_bound  # band non-degenerate
+
+    def test_symmetric_bounds(self):
+        """RHR uses ±0.5 SD symmetric — assert against the actual baseline
+        window (last 30 of `n-3`), not a tautological reconstruction."""
+        h = self._history()
+        baseline = h[-(30 + 3) : -3]
+        expected_mean = statistics.mean(baseline)
+        expected_sd = statistics.stdev(baseline)
+        expected_lower = round(expected_mean - 0.5 * expected_sd, 1)
+        expected_upper = round(expected_mean + 0.5 * expected_sd, 1)
+
+        result = rhr_baseline(h)
+        assert result.lower_bound == expected_lower
+        assert result.upper_bound == expected_upper
+
+    def test_smoothed_today_exposed_in_dto(self):
+        h = self._history()
+        result = rhr_baseline(h)
+        assert result.rhr_today_smoothed == round(statistics.mean(h[-3:]), 1)
+        # Raw last-day reading is independent — proves smoothed is NOT just a rename.
+        assert result.rhr_today == round(h[-1], 1)
+
+    def test_recency_30d_differs_from_baseline_window(self):
+        """``rhr_30d`` is the recency mean (last 30 inclusive of today). The
+        bounds use a SHIFTED 30-day baseline (the 30 days *before* the smoothing
+        window). The two must not be confused — this test pins the distinction
+        so an accidental swap (return `rhr_30d ± sd` as bounds) breaks loudly.
+        """
+        # 30 stable days at 50, then 3 elevated (today + 2 prior) at 80.
+        history = [50.0] * 30 + [80.0, 80.0, 80.0]
+        result = rhr_baseline(history)
+        # rhr_30d is recency last-30 inclusive: 27×50 + 3×80 → 53.0
+        assert result.rhr_30d == round(statistics.mean(history[-30:]), 1)
+        # Baseline used for bounds is the first 30 (history[-33:-3]) → all 50.
+        # sd=0 there → bounds collapse to mean=50 (degenerate band confirms
+        # the right window was sliced).
+        assert result.lower_bound == 50.0
+        assert result.upper_bound == 50.0
 
 
 # ---------------------------------------------------------------------------

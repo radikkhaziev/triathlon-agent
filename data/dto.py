@@ -27,10 +27,18 @@ class RmssdStatusDTO(BaseModel):
     days_available: int = 0
     days_needed: int = 0  # 0 if ready, else days remaining
 
-    rmssd_7d: float | None = None
+    # 3-day rolling mean of RMSSD — the value actually compared against bounds
+    # for classification. Exposed so dashboards / LLM prompts can explain why a
+    # status was set (raw `today` may sit in-band while the smoothed value drifts).
+    rmssd_today_smoothed: float | None = None
+    rmssd_7d: float | None = None  # mean of last 7 days (recency)
     rmssd_sd_7d: float | None = None
     rmssd_60d: float | None = None
     rmssd_sd_60d: float | None = None
+    # NOTE: lower/upper bounds are derived from a *shifted* baseline (last 7 days
+    # BEFORE the 3-day smoothing window, to avoid leakage) — they intentionally
+    # do NOT equal rmssd_7d ± rmssd_sd_7d. The canonical formula lives on
+    # `data.metrics.rmssd_flatt_esco` — don't duplicate it here.
     lower_bound: float | None = None
     upper_bound: float | None = None
     cv_7d: float | None = None
@@ -43,12 +51,19 @@ class RhrStatusDTO(BaseModel):
     days_available: int = 0
     days_needed: int = 0
     rhr_today: float | None = None
+    # 3-day rolling mean of RHR — the value actually compared against bounds.
+    # Same rationale as `rmssd_today_smoothed`: raw daily RHR is noisy enough
+    # that a sub-band raw value can map to an out-of-band smoothed status.
+    rhr_today_smoothed: float | None = None
     rhr_7d: float | None = None
     rhr_sd_7d: float | None = None
-    rhr_30d: float | None = None
+    rhr_30d: float | None = None  # mean of last 30 days (recency)
     rhr_sd_30d: float | None = None
     rhr_60d: float | None = None
     rhr_sd_60d: float | None = None
+    # Bounds use a *shifted* 30-day baseline (the 30 days BEFORE the smoothing
+    # window) — they do NOT equal `rhr_30d ± rhr_sd_30d`. Canonical formula
+    # in `data.metrics.rhr_baseline`.
     lower_bound: float | None = None
     upper_bound: float | None = None
     cv_7d: float | None = None

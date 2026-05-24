@@ -323,14 +323,25 @@ class TestActorCalculateRhr:
         expected_7d = round(statistics.mean(rows[-7:]), 1)
         assert result.rhr_7d == expected_7d
 
-    def test_30d_mean_and_bounds(self):
-        """lower_bound = mean_30 - 0.5 * sd_30, upper_bound = mean_30 + 0.5 * sd_30."""
+    def test_30d_mean_is_recency_inclusive(self):
+        """rhr_30d is the mean of the last 30 days INCLUDING today — recency stat,
+        consumed by api/routers/wellness for delta calculations. Bounds use a
+        different (shifted) window internally; see test_bounds_use_shifted_baseline."""
+        rows = list(range(30, 60))  # 30 values: 30..59
+        result = self._call(rows)
+        assert result.rhr_30d == round(statistics.mean(rows[-30:]), 1)
+
+    def test_bounds_use_shifted_baseline(self):
+        """Lower/upper bounds come from the 30-day baseline window BEFORE the
+        smoothing window (no leakage of smoothed-today into baseline). With
+        n=30 and smooth=3, baseline = rows[:-3] (27 values)."""
         rows = list(range(30, 60))  # 30 values
         result = self._call(rows)
-        mean_30 = statistics.mean(rows[-30:])
-        sd_30 = statistics.stdev(rows[-30:])
-        assert result.lower_bound == round(mean_30 - 0.5 * sd_30, 1)
-        assert result.upper_bound == round(mean_30 + 0.5 * sd_30, 1)
+        baseline_window = rows[:-3]
+        mean_b = statistics.mean(baseline_window)
+        sd_b = statistics.stdev(baseline_window)
+        assert result.lower_bound == round(mean_b - 0.5 * sd_b, 1)
+        assert result.upper_bound == round(mean_b + 0.5 * sd_b, 1)
 
     def test_60d_values_populated_when_enough_data(self):
         """With 60+ data points, rhr_60d and rhr_sd_60d are populated."""

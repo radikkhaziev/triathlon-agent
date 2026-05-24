@@ -254,6 +254,13 @@ async def training_load(
             atl.extend([None] * future_len)
             tsb.extend([None] * future_len)
 
+        # Known limitation: per-sport forecast uses baked-in `today_ctl` /
+        # `today_atl` (from `sport_info`), while overall top-line uses the
+        # recompute'd value (above). A visible split at today→tomorrow is the
+        # accepted trade-off until today's activities are attributed per sport
+        # for a parallel per-sport recompute — adding that means redoing the
+        # work `Wellness.update_sport_load` does, but without the planned-bake
+        # contamination. Defer until the asymmetry shows up as a real bug.
         for sport, (ctl_arr, atl_arr) in per_sport_series.items():
             today_ctl = _last_non_null(ctl_arr)
             today_atl = _last_non_null(atl_arr)
