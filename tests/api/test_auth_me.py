@@ -21,6 +21,7 @@ pytestmark = pytest.mark.real_db  # opt out of per-test DB truncate
 def _user(
     *,
     user_id: int = 1,
+    chat_id: str = "42",
     role: str = "athlete",
     athlete_id: str | None = "i001",
     bot_chat_initialized: bool = True,
@@ -31,6 +32,7 @@ def _user(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=user_id,
+        chat_id=chat_id,
         role=role,
         athlete_id=athlete_id,
         bot_chat_initialized=bot_chat_initialized,
@@ -201,3 +203,42 @@ class TestProfilePersonalFields:
         assert result["profile"]["hr_max"] == {"run": 190, "bike": None, "swim": None}
         assert result["profile"]["weight"] is None
         assert result["profile"]["vo2max"] is None
+
+
+class TestAvatarUrlExposed:
+    """`avatar_url` is the URL of the authenticated avatar endpoint when the
+    cached file exists; null when missing. Direct /static/avatar/* access is
+    blocked at server.py — the URL is intentionally chat_id-free so it can't
+    be used to fetch another user's photo by guessing IDs."""
+
+    @pytest.mark.asyncio
+    async def test_returns_url_when_avatar_file_exists(self, _stub_athlete_lookups, tmp_path, monkeypatch):
+        avatar_dir = tmp_path / "avatar"
+        avatar_dir.mkdir()
+        (avatar_dir / "42.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setattr("data.avatar_storage.AVATAR_DIR", str(avatar_dir))
+
+        result = await auth_me(user=_user(chat_id="42"))
+        assert result["avatar_url"] == "/api/auth/avatar"
+
+    @pytest.mark.asyncio
+    async def test_returns_null_when_no_avatar_file(self, _stub_athlete_lookups, tmp_path, monkeypatch):
+        """User revoked photo access → actor wiped the file → API drops the URL."""
+        empty_dir = tmp_path / "avatar"
+        empty_dir.mkdir()
+        monkeypatch.setattr("data.avatar_storage.AVATAR_DIR", str(empty_dir))
+
+        result = await auth_me(user=_user(chat_id="42"))
+        assert result["avatar_url"] is None
+
+    @pytest.mark.asyncio
+    async def test_demo_role_scrubs_avatar_url(self, _stub_athlete_lookups, tmp_path, monkeypatch):
+        """Demo session reuses the owner's User row; serving the owner's photo
+        would leak PII the same way display_name/username do."""
+        avatar_dir = tmp_path / "avatar"
+        avatar_dir.mkdir()
+        (avatar_dir / "42.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setattr("data.avatar_storage.AVATAR_DIR", str(avatar_dir))
+
+        result = await auth_me(user=_user(role="demo", chat_id="42"))
+        assert result["avatar_url"] is None

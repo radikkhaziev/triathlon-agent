@@ -1,11 +1,12 @@
 """Per-sport CTL/ATL EMA tests — data/metrics.py."""
 
+import math
 from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
-from data.metrics import calculate_sport_atl, calculate_sport_ctl
+from data.metrics import calculate_sport_atl, calculate_sport_ctl, project_sport_load_forward
 
 
 def _act(sport: str, dt: date, load: float):
@@ -93,8 +94,6 @@ class TestAsOfDecay:
         ctl_30d_later = calculate_sport_ctl(acts, as_of=last_train_day + timedelta(days=30))["run"]
 
         # e^(-30/42) ≈ 0.490 → CTL should drop ~51%
-        import math
-
         expected = ctl_at_last_train * math.exp(-30 / 42)
         assert ctl_30d_later == pytest.approx(expected, abs=0.5)
 
@@ -149,3 +148,113 @@ class TestSharedCore:
         single = fn([_act("Run", dt, 100.0)])
         double = fn([_act("Run", dt, 50.0), _act("Run", dt, 50.0)])
         assert single["run"] == double["run"]
+
+
+class TestProjectSportLoadForward:
+    def test_zero_planned_load_pure_decay(self):
+        """No future workouts → CTL/ATL decay from today's value at τ=42/7."""
+        today = date(2026, 1, 1)
+        horizon = today + timedelta(days=30)
+        ctl_series, atl_series = project_sport_load_forward(
+            today_ctl=50.0,
+            today_atl=50.0,
+            daily_planned_load={},
+            horizon=horizon,
+            today=today,
+        )
+        assert len(ctl_series) == 30
+        assert len(atl_series) == 30
+        # After 30 days of zero load:
+        # CTL ≈ 50 * e^(-30/42) ≈ 24.5
+        # ATL ≈ 50 * e^(-30/7) ≈ 0.7
+        last_ctl = ctl_series[-1][1]
+        last_atl = atl_series[-1][1]
+        assert last_ctl == pytest.approx(50 * math.exp(-30 / 42), abs=0.5)
+        assert last_atl == pytest.approx(50 * math.exp(-30 / 7), abs=0.5)
+
+    def test_constant_load_approaches_steady_state(self):
+        """Constant daily load X → both CTL and ATL converge to X."""
+        today = date(2026, 1, 1)
+        horizon = today + timedelta(days=200)
+        planned = {today + timedelta(days=i): 60.0 for i in range(1, 201)}
+        ctl_series, atl_series = project_sport_load_forward(
+            today_ctl=0.0,
+            today_atl=0.0,
+            daily_planned_load=planned,
+            horizon=horizon,
+            today=today,
+        )
+        # ~5τ_CTL warm-up → very close to 60
+        assert 58.0 <= ctl_series[-1][1] <= 60.0
+        # ~28τ_ATL warm-up → essentially 60
+        assert 59.9 <= atl_series[-1][1] <= 60.0
+
+    def test_horizon_at_today_returns_empty(self):
+        today = date(2026, 1, 1)
+        ctl_series, atl_series = project_sport_load_forward(
+            today_ctl=30.0,
+            today_atl=30.0,
+            daily_planned_load={},
+            horizon=today,
+            today=today,
+        )
+        assert ctl_series == []
+        assert atl_series == []
+
+    def test_horizon_before_today_returns_empty(self):
+        today = date(2026, 1, 1)
+        ctl_series, atl_series = project_sport_load_forward(
+            today_ctl=30.0,
+            today_atl=30.0,
+            daily_planned_load={},
+            horizon=today - timedelta(days=5),
+            today=today,
+        )
+        assert ctl_series == []
+        assert atl_series == []
+
+    def test_atl_decays_faster_than_ctl_under_zero_load(self):
+        today = date(2026, 1, 1)
+        horizon = today + timedelta(days=14)
+        ctl_series, atl_series = project_sport_load_forward(
+            today_ctl=30.0,
+            today_atl=30.0,
+            daily_planned_load={},
+            horizon=horizon,
+            today=today,
+        )
+        last_ctl = ctl_series[-1][1]
+        last_atl = atl_series[-1][1]
+        # 2τ_ATL gone → ATL ~13.5% of start. CTL barely moved (1/3 τ_CTL).
+        assert last_atl < last_ctl / 4
+
+    def test_starts_at_today_plus_one(self):
+        """First series point is `today + 1`, not `today` itself."""
+        today = date(2026, 1, 1)
+        ctl_series, _ = project_sport_load_forward(
+            today_ctl=30.0,
+            today_atl=30.0,
+            daily_planned_load={},
+            horizon=today + timedelta(days=3),
+            today=today,
+        )
+        assert ctl_series[0][0] == today + timedelta(days=1)
+        assert ctl_series[-1][0] == today + timedelta(days=3)
+
+    def test_workout_burst_in_middle_of_plan(self):
+        """A single 200-TSS day in middle of plan should spike ATL then decay."""
+        today = date(2026, 1, 1)
+        horizon = today + timedelta(days=20)
+        burst_day = today + timedelta(days=10)
+        planned = {burst_day: 200.0}
+        _, atl_series = project_sport_load_forward(
+            today_ctl=0.0,
+            today_atl=0.0,
+            daily_planned_load=planned,
+            horizon=horizon,
+            today=today,
+        )
+        atl_on_burst = next(v for d, v in atl_series if d == burst_day)
+        atl_at_horizon = atl_series[-1][1]
+        assert atl_on_burst > 20.0
+        assert atl_at_horizon < atl_on_burst / 3  # ~10 days decay

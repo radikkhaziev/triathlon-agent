@@ -64,3 +64,32 @@ export async function apiFetch<T>(endpoint: string, opts: RequestInit = {}): Pro
 
   return res.json()
 }
+
+/**
+ * Same auth + error contract as ``apiFetch`` but returns the raw response
+ * ``Blob`` — used for binary endpoints like ``/api/auth/avatar`` where a
+ * plain ``<img src>`` can't pass the Bearer token (HTML img-element only
+ * sends cookies, not custom headers). Callers wrap the blob in
+ * ``URL.createObjectURL`` and revoke on unmount.
+ */
+export async function apiFetchBlob(endpoint: string, opts: RequestInit = {}): Promise<Blob> {
+  const headers: Record<string, string> = { ...(opts.headers as Record<string, string> || {}) }
+  const auth = getAuthHeaderFn()
+  if (auth) headers['Authorization'] = auth
+
+  const res = await fetch(endpoint, { ...opts, headers })
+
+  if (res.status === 401) {
+    localStorage.removeItem('auth_token')
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+    throw new Error('Unauthorized')
+  }
+
+  if (!res.ok) {
+    throw new ApiError(res.status, null, `API error: ${res.status}`)
+  }
+
+  return res.blob()
+}

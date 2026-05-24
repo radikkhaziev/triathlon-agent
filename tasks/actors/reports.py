@@ -30,6 +30,7 @@ from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
 from data.weekly_preview import extract_weekly_preview
 from data.workout_adapter import compute_constraints, is_humango_event, needs_adaptation, parse_humango_description
+from tasks.actors.avatars import actor_download_user_avatar
 from tasks.dto import local_today
 from tasks.formatter import build_evening_message, build_morning_message, build_onboarding_hey_message, format_pace
 from tasks.tools import MCPTool, TelegramTool
@@ -267,6 +268,17 @@ def actor_compose_user_morning_report(
     if not _user_orm.is_active:
         logger.info("Morning report skipped: user %d is inactive", user.id)
         return
+
+    # Refresh the cached Telegram avatar once per morning. Fire-and-forget so
+    # a Telegram hiccup never blocks the report; the actor itself swallows
+    # permanent errors (privacy, no photo) and just clears the local file
+    # — see tasks/actors/avatars.py. Also guard the *dispatch* itself: a Redis
+    # broker hiccup must not take down the morning-report flow (avatar is
+    # cosmetic, the report is critical).
+    try:
+        actor_download_user_avatar.send(user=user)
+    except Exception as exc:
+        logger.warning("Avatar dispatch failed for user %d: %s", user.id, exc)
 
     # Transaction 1: short lock — claim the slot with sentinel, release immediately.
     # Prevents race: two concurrent actors both see ai_recommendation=None.

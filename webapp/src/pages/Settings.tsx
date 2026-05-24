@@ -6,7 +6,7 @@ import { BottomSheet, Card, MicroLabel, TopBar } from '../components/halo'
 import BackfillSection from '../components/BackfillSection'
 import PersonalCard from '../components/PersonalCard'
 import { useAuth } from '../auth/useAuth'
-import { apiFetch } from '../api/client'
+import { apiFetch, apiFetchBlob } from '../api/client'
 import type {
   AthleteGoal,
   AthleteGoalsResponse,
@@ -96,7 +96,14 @@ export default function Settings() {
     name: string | null
     username: string | null
     role: string | null
-  }>({ name: null, username: null, role: null })
+    // URL from /auth/me (e.g. "/api/auth/avatar") — pointer to authed endpoint,
+    // NOT directly renderable as <img src> because <img> can't carry the
+    // Bearer header. The blob-resolved URL lives in `avatarBlobUrl` below.
+    avatarUrl: string | null
+  }>({ name: null, username: null, role: null, avatarUrl: null })
+  // Object URL of the fetched-as-blob avatar — actual <img src>. Null while
+  // the fetch is in flight or if it fails (UI falls back to initials).
+  const [avatarBlobUrl, setAvatarBlobUrl] = useState<string | null>(null)
   const [profile, setProfile] = useState<{
     age?: number | null
     lthr_run?: number | null
@@ -141,6 +148,7 @@ export default function Settings() {
           name: data.display_name ?? null,
           username: data.username ?? null,
           role: data.role ?? null,
+          avatarUrl: data.avatar_url ?? null,
         })
         if (data.profile) setProfile(data.profile)
         // Defensive: only accept an actual array. Anything else (null,
@@ -172,6 +180,37 @@ export default function Settings() {
         setGoals([])
       })
   }, [isAuthenticated])
+
+  // Resolve `avatar_url` → object URL so the <img> can render. The endpoint
+  // is Bearer-protected (avoiding /static/avatar/* enumeration), and <img
+  // src=...> can't carry custom headers — only cookies — so we have to fetch
+  // the bytes through `apiFetchBlob` and hand the <img> a blob URL. On any
+  // failure (404 from missing file, 401 from expired session) we leave
+  // avatarBlobUrl null and the UI shows the initials fallback.
+  useEffect(() => {
+    const url = identity.avatarUrl
+    if (!url) {
+      setAvatarBlobUrl(null)
+      return
+    }
+    let cancelled = false
+    let objUrl: string | null = null
+    apiFetchBlob(url)
+      .then(blob => {
+        if (cancelled) return
+        objUrl = URL.createObjectURL(blob)
+        setAvatarBlobUrl(objUrl)
+      })
+      .catch(() => {
+        // Permanent failures (404) and transient ones both fall back to
+        // initials — there's nothing useful to retry from the page side.
+        if (!cancelled) setAvatarBlobUrl(null)
+      })
+    return () => {
+      cancelled = true
+      if (objUrl) URL.revokeObjectURL(objUrl)
+    }
+  }, [identity.avatarUrl])
 
   // One-shot toast after OAuth callback redirect. Clears `?connected=` or
   // `?error=` from the URL so a reload doesn't re-fire the toast.
@@ -397,12 +436,26 @@ export default function Settings() {
           fallback to the athlete-id monogram. */}
       <Card>
         <div className="flex items-center gap-3.5">
-          <div
-            aria-hidden="true"
-            className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-halo-brand to-halo-brand-dark text-[20px] font-semibold tracking-tight text-white"
-          >
-            {nameInitials(identity.name) || (intervals?.athlete_id ?? 'EN').slice(0, 2).toUpperCase()}
-          </div>
+          {avatarBlobUrl ? (
+            <img
+              src={avatarBlobUrl}
+              alt=""
+              className="h-14 w-14 shrink-0 rounded-full object-cover"
+              // Race window: blob URL revoked between render and load. Drop
+              // both URLs from state so the initials fallback renders next.
+              onError={() => {
+                setAvatarBlobUrl(null)
+                setIdentity(prev => ({ ...prev, avatarUrl: null }))
+              }}
+            />
+          ) : (
+            <div
+              aria-hidden="true"
+              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-halo-brand to-halo-brand-dark text-[20px] font-semibold tracking-tight text-white"
+            >
+              {nameInitials(identity.name) || (intervals?.athlete_id ?? 'EN').slice(0, 2).toUpperCase()}
+            </div>
+          )}
           <div className="min-w-0 flex-1">
             <div className="truncate text-[17px] font-semibold tracking-tight text-halo-ink">
               {identity.name

@@ -390,6 +390,44 @@ def calculate_sport_atl(
     return _calculate_sport_load_ema(activities, tau, as_of=as_of)
 
 
+def project_sport_load_forward(
+    today_ctl: float,
+    today_atl: float,
+    daily_planned_load: dict[date_type, float],
+    horizon: date_type,
+    today: date_type,
+    *,
+    tau_ctl: int = 42,
+    tau_atl: int = 7,
+) -> tuple[list[tuple[date_type, float]], list[tuple[date_type, float]]]:
+    """Forward-iterate per-sport CTL/ATL EMAs from `today` to `horizon` (inclusive)
+    using planned daily TSS. Days without a scheduled workout contribute zero
+    load — natural decay during rest gaps.
+
+    Returns (ctl_series, atl_series) — each a list of (date, value) starting at
+    `today + 1`. Empty if horizon <= today. Mathematically equivalent to what
+    `calculate_sport_ctl` / `calculate_sport_atl` would produce on the same date
+    if the planned workouts are executed exactly — it's the same EMA
+    continuation, just driven by planned instead of actual TSS.
+    """
+    decay_ctl = math.exp(-1.0 / tau_ctl)
+    decay_atl = math.exp(-1.0 / tau_atl)
+
+    ctl, atl = today_ctl, today_atl
+    ctl_series: list[tuple[date_type, float]] = []
+    atl_series: list[tuple[date_type, float]] = []
+    cur = today + timedelta(days=1)
+    while cur <= horizon:
+        load = daily_planned_load.get(cur, 0.0)
+        ctl = ctl * decay_ctl + load * (1 - decay_ctl)
+        atl = atl * decay_atl + load * (1 - decay_atl)
+        ctl_series.append((cur, round(ctl, 1)))
+        atl_series.append((cur, round(atl, 1)))
+        cur += timedelta(days=1)
+
+    return ctl_series, atl_series
+
+
 # ---------------------------------------------------------------------------
 # CTL Target Projection
 # ---------------------------------------------------------------------------

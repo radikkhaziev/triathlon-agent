@@ -53,6 +53,10 @@ export interface AuthMeResponse {
   // null for legacy rows created before the column / via CLI.
   display_name?: string | null
   username?: string | null
+  // Public URL of the cached Telegram avatar — null when the user has no
+  // photo, hid it via privacy settings, or the morning-report refresh
+  // hasn't run yet for this account. UI falls back to initials when null.
+  avatar_url?: string | null
   intervals?: IntervalsStatus
   // Issue #266: false means the user authed via Login Widget but never
   // pressed /start in the bot, so Telegram has no chat to receive messages.
@@ -451,19 +455,35 @@ export interface ActivityDetailsResponse {
 
 export interface TrainingLoadSeries {
   dates: string[]
-  ctl: number[]
-  atl: number[]
-  tsb: number[]
-  // Per-discipline CTL trend (Wellness "Training load" detail by-sport
-  // breakdown) — null on days a sport has no CTL. Additive: the Dashboard
-  // Load tab reads only the overall ctl/atl/tsb.
+  // ISO date marking the actual/forecast split. Values at indices where
+  // `dates[i] <= today_date` are actual; later indices are computed-on-read
+  // forward projections (same EMA model for overall and per-sport).
+  today_date: string
+  // Overall ctl/atl/tsb are projected forward past `today_date` so the TSB
+  // Form line continues into the forecast region (otherwise the chart goes
+  // blank at today). Null only when there's no past anchor to extrapolate
+  // from (brand-new account). See docs/PER_SPORT_LOAD_SPEC.md decision #12.
+  ctl: (number | null)[]
+  atl: (number | null)[]
+  tsb: (number | null)[]
+  // Per-discipline CTL+ATL trend (Wellness "Training load" detail by-sport
+  // breakdown) — null on days a sport has no value. Past segment is parsed
+  // from wellness.sport_info; future segment is plan-aware forecast (see
+  // docs/PER_SPORT_LOAD_SPEC.md Step 3.5).
   ctl_swim: (number | null)[]
   ctl_ride: (number | null)[]
   ctl_run: (number | null)[]
+  atl_swim: (number | null)[]
+  atl_ride: (number | null)[]
+  atl_run: (number | null)[]
 }
 
 export interface ActivitiesSeries {
   activities: { date: string; sport: string; tss: number }[]
+  // Future scheduled workouts (strictly past today), same {date, sport, tss}
+  // shape — drives forecast bars in the daily-TSS chart. Empty when the user
+  // has no plan.
+  planned: { date: string; sport: string; tss: number }[]
 }
 
 // Forward CTL projection from the recent 14-day ramp rate. ``projected_date``

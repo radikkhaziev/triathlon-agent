@@ -32,7 +32,12 @@ dependencies = [
     "sentry-sdk[fastapi,dramatiq]>=2.19.0",
     "psutil (>=7.2.2,<8.0.0)",
     "babel (>=2.18.0,<3.0.0)",
-    "xgboost (>=3.2.0,<4.0.0)",
+    # xgboost-cpu — XGBoost team's CPU-only build. Same `import xgboost` API,
+    # drops the ~200MB `nvidia-nccl-cu12` transitive dep that xgboost 3.2.0+
+    # added for Linux multi-GPU training. ml-worker runs CPU-only
+    # (--threads 1 --processes 1), so NCCL is dead weight that was timing
+    # out the Docker build on PyPI download.
+    "xgboost-cpu (>=3.2.0,<4.0.0)",
     "shap (>=0.51.0,<0.52.0)",
     "Pillow (>=10.0.0)",
 ]

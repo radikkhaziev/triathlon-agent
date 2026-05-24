@@ -164,7 +164,44 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _static_dir = os.path.join(_project_root, "static")
 os.makedirs(_static_dir, exist_ok=True)
 os.makedirs(os.path.join(_static_dir, "uploads"), exist_ok=True)
+# Avatar dir must exist before requests arrive — the blocker route (below)
+# 404s on missing files via `os.path.isfile`, but a missing directory would
+# also surface NotADirectoryError from `os.path.isfile` on a stale-state
+# container restart. Cheap to mkdir, removes the edge case entirely.
+os.makedirs(os.path.join(_static_dir, "avatar"), exist_ok=True)
+
+
+# Block direct public access to cached avatars. Bytes are served only via the
+# authenticated `GET /api/auth/avatar` (`api/routers/auth.py`), which scrubs
+# the demo session. Without this, a curious user could guess any chat_id and
+# fetch `/static/avatar/{chat_id}.png` to bypass the demo scrub. Route is
+# registered BEFORE the `/static` mount so the wildcard mount doesn't shadow
+# this 404. Other `/static/*` subpaths (uploads, fit-files, etc.) still
+# serve normally.
+@app.get("/static/avatar/{filename:path}", include_in_schema=False)
+async def _block_public_avatar(filename: str) -> Response:
+    raise StarletteHTTPException(status_code=404)
+
+
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+# Guard against future reorder accidentally moving the `/static` mount above
+# the avatar blocker — FastAPI matches routes in registration order, so a
+# wildcard mount registered first would shadow the 404 and re-expose chat_id
+# enumeration. Cheap startup check; fails loud if the contract is violated.
+_static_idx = next(
+    (i for i, r in enumerate(app.routes) if getattr(r, "name", None) == "static"),
+    None,
+)
+_blocker_idx = next(
+    (i for i, r in enumerate(app.routes) if getattr(r, "name", "") == "_block_public_avatar"),
+    None,
+)
+assert _static_idx is not None and _blocker_idx is not None, "static mount or avatar blocker missing"
+assert _blocker_idx < _static_idx, (
+    "Avatar blocker route must be registered BEFORE the /static mount, otherwise "
+    "the wildcard mount shadows it and re-exposes /static/avatar/{chat_id}.png"
+)
 
 # Serve React SPA — check for dist/ (production build), fallback to webapp/ root
 _webapp_dist = os.path.join(_project_root, "webapp", "dist")
