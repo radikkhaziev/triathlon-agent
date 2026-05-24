@@ -295,6 +295,40 @@ class Wellness(Base):
 
     @classmethod
     @with_sync_session
+    def update_loads(
+        cls,
+        user_id: int,
+        dt: DateDTO,
+        *,
+        ctl: float | None,
+        atl: float | None,
+        ramp_rate: float | None,
+        ctl_load: float | None,
+        atl_load: float | None,
+        session: Session,
+    ) -> bool:
+        """In-place UPDATE of training-load columns for `(user_id, dt)`.
+
+        Used by the FITNESS_UPDATED webhook to push new CTL/ATL into today's
+        wellness row without round-tripping to Intervals.icu — payload already
+        carries the recalculated values. No-op if the row doesn't exist yet
+        (next regular wellness sync will materialize it).
+        """
+        row = session.execute(
+            select(cls).where(cls.user_id == user_id, cls.date == dt.isoformat())
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        row.ctl = ctl
+        row.atl = atl
+        row.ramp_rate = ramp_rate
+        row.ctl_load = ctl_load
+        row.atl_load = atl_load
+        session.commit()
+        return True
+
+    @classmethod
+    @with_sync_session
     def update_sport_ctl(
         cls,
         user_id: int,

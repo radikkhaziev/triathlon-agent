@@ -13,19 +13,11 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from api.dto import IntervalsWebhookEvent, IntervalsWebhookPayload
 from config import settings
-from data.db import (
-    Activity,
-    ActivityAchievement,
-    ActivityDetail,
-    ActivityWeather,
-    FitnessProjection,
-    User,
-    UserDTO,
-    get_session,
-)
+from data.db import Activity, ActivityAchievement, ActivityDetail, ActivityWeather, User, UserDTO, get_session
 from data.intervals.dto import ActivityDTO, SportSettingsDTO, WellnessDTO
 from tasks.actors import (
     actor_rename_activity,
+    actor_save_fitness_projection,
     actor_send_achievement_notification,
     actor_sync_athlete_goals,
     actor_sync_athlete_settings,
@@ -231,12 +223,13 @@ async def _dispatch_achievements(user: UserDTO, event: IntervalsWebhookEvent) ->
     actor_send_achievement_notification.send(user=user, activity=event.activity)
 
 
-async def _dispatch_fitness(user_id: int, event: IntervalsWebhookEvent) -> None:
-    """Save fitness projection records from FITNESS_UPDATED webhook."""
+def _dispatch_fitness(user: UserDTO, event: IntervalsWebhookEvent) -> None:
+    """Hand FITNESS_UPDATED batch to the actor: it saves the projection and
+    writes today's recalculated CTL/ATL into the wellness row in place.
+    """
     if not event.records:
         return
-    count = await FitnessProjection.save_bulk(user_id=user_id, records=event.records)
-    logger.info("Saved %d fitness projection records for user %d", count, user_id)
+    actor_save_fitness_projection.send(user=user, records=event.records)
 
 
 def _is_stub_activity(activity: dict[str, Any]) -> bool:
@@ -395,7 +388,7 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
         "CALENDAR_UPDATED": lambda: _dispatch_calendar(user_dto),
         "SPORT_SETTINGS_UPDATED": lambda: _dispatch_sport_settings(user_dto, event),
         "APP_SCOPE_CHANGED": lambda: _dispatch_scope_changed(user, event),
-        "FITNESS_UPDATED": lambda: _dispatch_fitness(user.id, event),
+        "FITNESS_UPDATED": lambda: _dispatch_fitness(user_dto, event),
         "ACTIVITY_ACHIEVEMENTS": lambda: _dispatch_achievements(user_dto, event),
         "ACTIVITY_UPLOADED": lambda: _dispatch_activity_uploaded(user_dto, event),
         "ACTIVITY_UPDATED": lambda: _dispatch_activity_updated(user_dto, event),
@@ -416,7 +409,7 @@ async def intervals_webhook(request: Request) -> dict:
     CALENDAR_UPDATED → ``actor_user_scheduled_workouts`` + ``actor_sync_athlete_goals``,
     SPORT_SETTINGS_UPDATED → ``actor_sync_athlete_settings``,
     APP_SCOPE_CHANGED → update scope / clear tokens on deauthorize,
-    FITNESS_UPDATED → save projection to ``fitness_projection`` table,
+    FITNESS_UPDATED → save projection + write today's CTL/ATL into wellness,
     ACTIVITY_ACHIEVEMENTS → Telegram notification,
     ACTIVITY_UPLOADED / ACTIVITY_UPDATED → direct save + ``actor_update_activity_details``.
     """

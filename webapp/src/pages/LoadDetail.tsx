@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import Layout from '../components/Layout'
-import { Card, ChartScrubLine, fmtScrubDate, PeriodFilter, useChartScrubber, type ScrubItem } from '../components/halo'
+import { Card, ChartScrubLine, fmtScrubDate, InfoIcon, InfoPanel, PeriodFilter, useChartScrubber, type ScrubItem } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
@@ -86,6 +86,9 @@ export default function LoadDetail() {
       return { ...v, [k]: !v[k] }
     })
   const [bySportOpen, setBySportOpen] = useState(false)
+  // One info-panel open at a time; click the same icon to close.
+  const [openTip, setOpenTip] = useState<'ctl_atl' | 'tsb' | null>(null)
+  const toggleTip = (k: 'ctl_atl' | 'tsb') => setOpenTip(v => (v === k ? null : k))
 
   const pastDays = RANGE_DAYS[range]
   const { data: load, loading, error } = useApi<TrainingLoadSeries>(`/api/training-load?days=${pastDays}`)
@@ -176,7 +179,14 @@ export default function LoadDetail() {
               <>
                 {/* Fitness & fatigue — CTL + ATL lines, toggleable. */}
                 <Card>
-                  <div className="mb-1 text-center text-[13px] font-semibold text-halo-ink">Fitness &amp; fatigue</div>
+                  <div className="mb-1 flex items-center justify-center text-[13px] font-semibold text-halo-ink">
+                    {/* Invisible spacer mirrors the InfoIcon width (h-5 + ml-1.5) so
+                        the title stays optically centered in the card. */}
+                    <span aria-hidden className="mr-1.5 inline-block h-5 w-5" />
+                    <span>Fitness &amp; fatigue</span>
+                    <InfoIcon open={openTip === 'ctl_atl'} onClick={() => toggleTip('ctl_atl')} />
+                  </div>
+                  {openTip === 'ctl_atl' && <InfoPanel>{t('load_detail.tip.ctl_atl')}</InfoPanel>}
                   <LoadLineChart
                     dates={load.dates}
                     lines={[
@@ -194,7 +204,10 @@ export default function LoadDetail() {
                 {/* Form (TSB) — zoned chart, always visible. */}
                 <Card>
                   <div className="mb-1.5 flex items-baseline justify-between">
-                    <div className="text-[13px] font-semibold text-halo-ink">Form (TSB)</div>
+                    <div className="flex items-center text-[13px] font-semibold text-halo-ink">
+                      <span>Form (TSB)</span>
+                      <InfoIcon open={openTip === 'tsb'} onClick={() => toggleTip('tsb')} />
+                    </div>
                     {tsbToday != null &&
                       (() => {
                         const z = tsbZoneOf(tsbToday)
@@ -209,6 +222,7 @@ export default function LoadDetail() {
                         )
                       })()}
                   </div>
+                  {openTip === 'tsb' && <InfoPanel>{t('load_detail.tip.tsb')}</InfoPanel>}
                   <TsbZoneChart dates={load.dates} tsb={load.tsb} />
                   {/* Zone legend — Transition → High risk, top-to-bottom mirrors
                       the band stack. */}
