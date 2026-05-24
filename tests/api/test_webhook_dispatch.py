@@ -584,27 +584,26 @@ class TestDispatchAchievements:
 
 
 class TestDispatchFitness:
-    @pytest.mark.asyncio
-    async def test_dispatches_save_bulk(self):
+    def test_dispatches_actor(self):
         from api.routers.intervals.webhook import _dispatch_fitness
 
         event = _make_event(FITNESS_UPDATED_EVENT)
-        with patch("api.routers.intervals.webhook.FitnessProjection") as mock_cls:
-            mock_cls.save_bulk = AsyncMock(return_value=2)
-            await _dispatch_fitness(user_id=1, event=event)
-            mock_cls.save_bulk.assert_called_once()
-            call_kwargs = mock_cls.save_bulk.call_args.kwargs
-            assert call_kwargs["user_id"] == 1
+        user = _make_user_dto()
+        with patch("api.routers.intervals.webhook.actor_save_fitness_projection") as mock_actor:
+            _dispatch_fitness(user, event)
+            mock_actor.send.assert_called_once()
+            call_kwargs = mock_actor.send.call_args.kwargs
+            assert call_kwargs["user"] == user
             assert len(call_kwargs["records"]) == 2
 
-    @pytest.mark.asyncio
-    async def test_skips_empty_records(self):
+    def test_skips_empty_records(self):
         from api.routers.intervals.webhook import _dispatch_fitness
 
         event = _make_event({**FITNESS_UPDATED_EVENT, "records": []})
-        with patch("api.routers.intervals.webhook.FitnessProjection") as mock_cls:
-            await _dispatch_fitness(user_id=1, event=event)
-            mock_cls.save_bulk.assert_not_called()
+        user = _make_user_dto()
+        with patch("api.routers.intervals.webhook.actor_save_fitness_projection") as mock_actor:
+            _dispatch_fitness(user, event)
+            mock_actor.send.assert_not_called()
 
 
 class TestDispatchActivityUploaded:
@@ -906,7 +905,7 @@ class TestHandleWebhookEvent:
         event = _make_event(FITNESS_UPDATED_EVENT)
         with (
             patch("api.routers.intervals.webhook.User") as mock_user_cls,
-            patch("api.routers.intervals.webhook._dispatch_fitness", new_callable=AsyncMock) as mock_dispatch,
+            patch("api.routers.intervals.webhook._dispatch_fitness") as mock_dispatch,
         ):
             mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
             await _handle_webhook_event(event)

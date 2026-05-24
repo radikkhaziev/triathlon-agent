@@ -474,7 +474,11 @@
   },
   "load_detail": {
     "updated": "Updated {{time}}",
-    "no_data": "No load data yet"
+    "no_data": "No load data yet",
+    "tip": {
+      "ctl_atl": "CTL (Fitness) is your 42-day average training load — your aerobic base. It builds slowly and fades slowly. ATL (Fatigue) is your 7-day average — fresh tiredness from recent sessions. When the red line (ATL) climbs above the blue (CTL) you're in a build block, accumulating fatigue faster than you're adapting. When they converge again, you've recovered.",
+      "tsb": "TSB (Form) = CTL − ATL: the gap between your base and your fresh fatigue. It tells you how ready you are for hard work or racing. −10 to +5 is normal working range. Below −30 means deep fatigue, risk of overtraining. +5 to +25 is fresh — race-day window. Above +25 means you're losing fitness."
+    }
   },
   "personal_edit": {
     "subtitle": "Age, weight and per-sport max HR. Only age is editable today.",
