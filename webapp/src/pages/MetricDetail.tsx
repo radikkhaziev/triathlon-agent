@@ -15,6 +15,7 @@ import {
   type ScrubItem,
 } from '../components/halo'
 import { useApi } from '../hooks/useApi'
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { fmtDateYmd, num } from '../lib/formatters'
 import { STATUS_EMOJI, type RmssdStatus } from '../utils/recovery'
 import type { WellnessResponse, HRVBlock, RHRBlock, RecoveryTrendSeries } from '../api/types'
@@ -362,7 +363,7 @@ interface MetricSparklineProps {
 }
 
 function MetricSparkline({ dates, values, kind, unit, color }: MetricSparklineProps) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 180
   const pad = { l: 30, r: 12, t: 10, b: 22 }
   const innerW = W - pad.l - pad.r
@@ -430,12 +431,12 @@ function MetricSparkline({ dates, values, kind, unit, color }: MetricSparklinePr
         ]
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -512,5 +513,6 @@ function MetricSparkline({ dates, values, kind, unit, color }: MetricSparklinePr
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }

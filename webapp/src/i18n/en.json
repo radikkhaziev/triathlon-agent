@@ -133,7 +133,12 @@
     "coach_note": "Coach note · this morning",
     "refresh_running": "Refreshing…",
     "refresh_wait": "Wait {{sec}}s",
-    "last_7_nights": "Last 7 nights"
+    "last_7_nights": "Last 7 nights",
+    "endurance_title": "Endurance Score",
+    "endurance_subtitle": "Composite training-status score across all sports — where you sit in your training cycle.",
+    "endurance_soon_badge": "Soon",
+    "endurance_in_dev": "in development",
+    "endurance_teaser": "We're cooking — composite score lands here soon."
   },
   "activities": {
     "title": "Activity",

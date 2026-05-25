@@ -18,9 +18,10 @@ export interface ScrubItem {
 }
 
 /**
- * Pointer → nearest data index. `clientX` is converted into viewBox space so
- * the hit test stays correct despite `preserveAspectRatio="none"` stretching
- * the SVG to the card width. `n` is the number of data points (or bars).
+ * Pointer → nearest data index. `clientX` is normalized against the live
+ * `svg.viewBox.baseVal.width`, so the hit test works regardless of whether the
+ * viewBox is fixed (legacy MiniRangeGauge) or measured per-frame (all line/bar
+ * charts). `n` is the number of data points (or bars).
  */
 export function useChartScrubber(n: number, padL: number, innerW: number) {
   const svgRef = useRef<SVGSVGElement | null>(null)

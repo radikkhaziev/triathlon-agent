@@ -288,42 +288,72 @@ function GoalCard({ goal: g }: { goal: GoalProgress }) {
         <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
           {t('dashboard.race_a')}
         </div>
-        <div className="mt-1 text-lg font-semibold tracking-[-0.3px]">{g.event_name}</div>
+        <div className="mt-1 text-lg font-semibold tracking-[-0.3px] md:text-[20px]">{g.event_name}</div>
         <div className="mt-0.5 text-[13px] text-halo-ink-dim">
           {dateStr} · {t('dashboard.weeks_out', { count: g.weeks_remaining })}
         </div>
-        <div className="mt-3.5 flex items-center gap-4">
-          <Gauge
-            width={180}
-            height={150}
-            cx={90}
-            cy={90}
-            r={72}
-            strokeWidth={14}
-            value={pct}
-            color="var(--color-brand)"
-            trackColor="var(--color-brand-light)"
-            center={(cx, cy) => (
-              <>
-                <text x={cx} y={cy} textAnchor="middle" fontSize="44" fontWeight="600" fill="var(--color-ink)" letterSpacing="-1.5">
-                  {pct == null ? '—' : pct}
-                  {pct != null && <tspan fontSize="20" fill="var(--color-ink-dim)">%</tspan>}
-                </text>
-                <text x={cx} y={cy + 22} textAnchor="middle" fontSize="11" fill="var(--color-ink-dim)" style={{ textTransform: 'uppercase' }}>
-                  {t('dashboard.to_target')}
-                </text>
-              </>
-            )}
-          />
+        <div className="mt-3.5 flex items-center gap-4 md:gap-6">
+          {/* Mobile prototype `BDashboard`: 180×150 arc. Desktop (`BdDashboard`
+              line 720): 220×200 arc with bigger numeral, fills the wider card.
+              Both wrappers `aria-hidden` — the percentage is decorative here;
+              meaningful CTL data lives in the adjacent sidebar text. */}
+          <div className="md:hidden" aria-hidden="true">
+            <Gauge
+              width={180}
+              height={150}
+              cx={90}
+              cy={90}
+              r={72}
+              strokeWidth={14}
+              value={pct}
+              color="var(--color-brand)"
+              trackColor="var(--color-brand-light)"
+              center={(cx, cy) => (
+                <>
+                  <text x={cx} y={cy} textAnchor="middle" fontSize="44" fontWeight="600" fill="var(--color-ink)" letterSpacing="-1.5">
+                    {pct == null ? '—' : pct}
+                    {pct != null && <tspan fontSize="20" fill="var(--color-ink-dim)">%</tspan>}
+                  </text>
+                  <text x={cx} y={cy + 22} textAnchor="middle" fontSize="11" fill="var(--color-ink-dim)" style={{ textTransform: 'uppercase' }}>
+                    {t('dashboard.to_target')}
+                  </text>
+                </>
+              )}
+            />
+          </div>
+          <div className="hidden md:block" aria-hidden="true">
+            <Gauge
+              width={220}
+              height={200}
+              cx={110}
+              cy={110}
+              r={88}
+              strokeWidth={16}
+              value={pct}
+              color="var(--color-brand)"
+              trackColor="var(--color-brand-light)"
+              center={(cx, cy) => (
+                <>
+                  <text x={cx} y={cy} textAnchor="middle" fontSize="52" fontWeight="600" fill="var(--color-ink)" letterSpacing="-2">
+                    {pct == null ? '—' : pct}
+                    {pct != null && <tspan fontSize="24" fill="var(--color-ink-dim)">%</tspan>}
+                  </text>
+                  <text x={cx} y={cy + 26} textAnchor="middle" fontSize="11" fill="var(--color-ink-dim)" style={{ textTransform: 'uppercase' }}>
+                    {t('dashboard.to_target')}
+                  </text>
+                </>
+              )}
+            />
+          </div>
           <div className="flex-1">
             <div className="text-[11px] font-semibold uppercase tracking-[0.4px] text-halo-ink-dim">
               {t('dashboard.fitness_ctl')}
             </div>
-            <div className="mt-0.5 flex items-baseline gap-1.5">
-              <span className="text-[32px] font-semibold tracking-[-1px]">
+            <div className="mt-0.5 flex items-baseline gap-1.5 md:mt-1 md:gap-2">
+              <span className="text-[32px] font-semibold tracking-[-1px] md:text-[38px]">
                 {g.ctl_current != null ? g.ctl_current.toFixed(0) : '—'}
               </span>
-              <span className="text-sm text-halo-ink-dim">/ {g.ctl_target != null ? Math.round(g.ctl_target) : '—'}</span>
+              <span className="text-sm text-halo-ink-dim md:text-base">/ {g.ctl_target != null ? Math.round(g.ctl_target) : '—'}</span>
             </div>
             {delta != null && delta > 0 && (
               <div className="mt-1 text-xs font-semibold text-halo-brand-dark">

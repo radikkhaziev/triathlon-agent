@@ -161,9 +161,15 @@ export default function MergedWeek() {
       {error && <ErrorMessage message={t('plan.load_error')} />}
 
       {ready && (
-        <div className="flex flex-col gap-2.5 pb-4">
+        /* Mobile (prototype `BWeekMerged`): single column stack. Desktop
+           (`BdWeek` direction-b-desktop.jsx:1166): 7-column day grid would
+           cramp the existing DayCard internals — instead we go 2-up on md+ so
+           DayCard layout stays unchanged but the canvas isn't half-empty. */
+        <div className="flex flex-col gap-2.5 pb-4 md:grid md:grid-cols-2 md:gap-3">
           {week.map(d => <DayCard key={d.date} d={d} t={t} navigate={navigate} />)}
-          <WeekSummary plan={plan.data!} acts={acts.data!} t={t} />
+          <div className="md:col-span-2">
+            <WeekSummary plan={plan.data!} acts={acts.data!} t={t} />
+          </div>
         </div>
       )}
     </>
@@ -616,9 +622,14 @@ function WeekSummary({
           {fmtWeekRange(plan.week_start, plan.week_end)}
         </span>
       </div>
-      <PlanVsActualRow label={t('merged.summary_time')} plan={fmtHM(planMin)} actual={fmtHM(actMin)} planRaw={planMin} actualRaw={actMin} unit="" />
-      <PlanVsActualRow label={t('merged.summary_tss')} plan={String(Math.round(planTss))} actual={String(Math.round(actTss))} planRaw={planTss} actualRaw={actTss} unit="" />
-      <PlanVsActualRow label={t('merged.summary_sessions')} plan={String(planCount)} actual={String(actCount)} planRaw={planCount} actualRaw={actCount} unit="" />
+      {/* Mobile: 3 stacked rows with top borders. Desktop (prototype `BdWeek`
+          metric tiles row, direction-b-desktop.jsx:1127): three tiles in a row,
+          borders flipped to left dividers so they read as tiles, not stacked. */}
+      <div className="md:grid md:grid-cols-3 md:gap-0">
+        <PlanVsActualRow label={t('merged.summary_time')} plan={fmtHM(planMin)} actual={fmtHM(actMin)} planRaw={planMin} actualRaw={actMin} unit="" desktopFirst />
+        <PlanVsActualRow label={t('merged.summary_tss')} plan={String(Math.round(planTss))} actual={String(Math.round(actTss))} planRaw={planTss} actualRaw={actTss} unit="" />
+        <PlanVsActualRow label={t('merged.summary_sessions')} plan={String(planCount)} actual={String(actCount)} planRaw={planCount} actualRaw={actCount} unit="" desktopLast />
+      </div>
     </div>
   )
 }
@@ -630,6 +641,8 @@ function PlanVsActualRow({
   planRaw,
   actualRaw,
   unit,
+  desktopFirst = false,
+  desktopLast = false,
 }: {
   label: string
   plan: string
@@ -637,6 +650,14 @@ function PlanVsActualRow({
   planRaw: number
   actualRaw: number
   unit: string
+  /** First tile in the desktop 3-col layout — strips its left padding+divider
+   *  so the row's content edge aligns with the card title above. Mobile keeps
+   *  the top border on every row including the first. */
+  desktopFirst?: boolean
+  /** Last tile — mirrors `desktopFirst` on the right side so the rightmost
+   *  bar's edge aligns with the card's content edge (otherwise the leftmost
+   *  bar would be ~16px wider than tiles 2/3). */
+  desktopLast?: boolean
 }) {
   const pct = planRaw ? Math.round((actualRaw / planRaw) * 100) : 0
   // Design tonal bands: 95–115% = green «on plan», 75–94% = amber «under»,
@@ -649,8 +670,17 @@ function PlanVsActualRow({
         ? 'var(--color-amber)'
         : 'var(--color-ink-dim)'
   const barPct = Math.min(120, pct) // bar maxes out at 120% so the 100% tick stays in frame
+  // Mobile divider: top border on every row.
+  // Desktop: no top border (md:border-t-0); inner tiles get a left divider +
+  // both-sides padding; outer tiles strip the padding on the outer edge so
+  // their bars align with the card content edge.
+  const desktopPad = desktopFirst
+    ? 'md:pr-4'
+    : desktopLast
+      ? 'md:border-l md:border-halo-border md:pl-4'
+      : 'md:border-l md:border-halo-border md:px-4'
   return (
-    <div className="border-t border-halo-border py-2.5">
+    <div className={`border-t border-halo-border py-2.5 md:border-t-0 md:py-3.5 ${desktopPad}`}>
       <div className="mb-1.5 flex items-baseline justify-between">
         <span className="text-[11px] font-bold uppercase tracking-[0.5px] text-halo-ink-dim">{label}</span>
         <span className="text-[11px] font-semibold tabular-nums" style={{ color: tone }}>{pct}%</span>

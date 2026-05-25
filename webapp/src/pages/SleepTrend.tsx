@@ -6,6 +6,7 @@ import { Card, ChartScrubLine, fmtScrubDate, PeriodFilter, useChartScrubber, typ
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { fmtDateYmd } from '../lib/formatters'
 import { SLEEP_ZONES, sleepZoneOf } from '../utils/recovery'
 import type { SleepTrendSeries, WellnessResponse } from '../api/types'
@@ -215,8 +216,8 @@ export default function SleepTrend() {
 // Sleep duration bar chart (prototype `BMiniBarChart`). Bars in minutes; past
 // ~45 days the window auto-aggregates to weekly bars so they stay readable.
 // Each bar is coloured by its (or the week's average) score zone; an 8h goal
-// rule sits across the chart. `preserveAspectRatio="none"` stretches to the
-// card width, matching the design.
+// rule sits across the chart. viewBox W is measured per-frame so 1 viewBox
+// unit == 1 CSS pixel — no horizontal stretch on desktop.
 // ─────────────────────────────────────────────────────────────────────────────
 function SleepDurationChart({
   dates,
@@ -227,7 +228,7 @@ function SleepDurationChart({
   durationMin: (number | null)[]
   score: (number | null)[]
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 140
   const pad = { l: 34, r: 8, t: 10, b: 20 }
   const innerW = W - pad.l - pad.r
@@ -302,12 +303,12 @@ function SleepDurationChart({
         ]
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -395,6 +396,7 @@ function SleepDurationChart({
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }
 
@@ -404,7 +406,7 @@ function SleepDurationChart({
 // colour. Null scores are skipped, the line spans the gap.
 // ─────────────────────────────────────────────────────────────────────────────
 function SleepScoreChart({ dates, score }: { dates: string[]; score: (number | null)[] }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 160
   const pad = { l: 30, r: 8, t: 8, b: 22 }
   const innerW = W - pad.l - pad.r
@@ -466,12 +468,12 @@ function SleepScoreChart({ dates, score }: { dates: string[]; score: (number | n
         ]
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -534,5 +536,6 @@ function SleepScoreChart({ dates, score }: { dates: string[]; score: (number | n
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }

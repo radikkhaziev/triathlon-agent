@@ -418,6 +418,41 @@ export default function Settings() {
   // the JSX shell + ordering changed. Sections the mock omits but the real
   // app needs (full OAuth flow, MCP token, logout) are preserved in the
   // same card style. See WEBAPP_HALO_REDESIGN_SPEC §F-Settings.
+
+  // Extracted Language Card — rendered as the right tile of the Sports+Language
+  // pair (stacked on mobile, 2fr/1fr on md+) when sports renders, or solo
+  // full-width when sports is null.
+  const languageCard = (
+    <Card>
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-[14px] font-semibold text-halo-ink">Language</div>
+          <div className="mt-0.5 text-[12px] text-halo-ink-dim">Coach voice and UI</div>
+        </div>
+        <div className="flex rounded-[10px] bg-halo-surface-2 p-[3px]">
+          {(['EN', 'RU'] as const).map(l => {
+            const code = l.toLowerCase()
+            const on = i18n.language === code
+            return (
+              <button
+                key={l}
+                type="button"
+                onClick={() => changeLanguage(code)}
+                className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold cursor-pointer border-none font-sans ${
+                  on
+                    ? 'bg-halo-surface text-halo-ink shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
+                    : 'bg-transparent text-halo-ink-dim'
+                }`}
+              >
+                {l}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </Card>
+  )
+
   return (
     <Layout maxWidth="480px">
       <div className="-mx-4 -mt-4 md:-mb-8 min-h-screen bg-halo-bg px-4 md:px-9 pb-6 font-sans text-halo-ink">
@@ -435,12 +470,14 @@ export default function Settings() {
           ("athlete"/"owner"/"demo"…) — by request. Avatar = name initials,
           fallback to the athlete-id monogram. */}
       <Card>
-        <div className="flex items-center gap-3.5">
+        {/* Mobile (prototype `BSettings`): 56×56 avatar + 17px name. Desktop
+            (`BdSettings` direction-b-desktop.jsx:1523): 64×64 + 20px name. */}
+        <div className="flex items-center gap-3.5 md:gap-[18px]">
           {avatarBlobUrl ? (
             <img
               src={avatarBlobUrl}
               alt=""
-              className="h-14 w-14 shrink-0 rounded-full object-cover"
+              className="h-14 w-14 shrink-0 rounded-full object-cover md:h-16 md:w-16"
               // Race window: blob URL revoked between render and load. Drop
               // both URLs from state so the initials fallback renders next.
               onError={() => {
@@ -451,13 +488,13 @@ export default function Settings() {
           ) : (
             <div
               aria-hidden="true"
-              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-halo-brand to-halo-brand-dark text-[20px] font-semibold tracking-tight text-white"
+              className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-halo-brand to-halo-brand-dark text-[20px] font-semibold tracking-tight text-white md:h-16 md:w-16 md:text-[22px]"
             >
               {nameInitials(identity.name) || (intervals?.athlete_id ?? 'EN').slice(0, 2).toUpperCase()}
             </div>
           )}
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[17px] font-semibold tracking-tight text-halo-ink">
+            <div className="truncate text-[17px] font-semibold tracking-tight text-halo-ink md:text-[20px]">
               {identity.name
                 || (identity.username ? `@${identity.username}` : intervals?.athlete_id ? `@${intervals.athlete_id}` : 'Profile')}
             </div>
@@ -801,69 +838,51 @@ export default function Settings() {
           the looser ``sports &&`` gate the user could be locked into an
           unrecoverable empty state — the SportsPicker only shows when sports
           is null at the App level, not when it's []. */}
-      {/* Literal copy from the mock — by request these blocks are not i18n'd. */}
-      {sports !== null && (
-        <Panel label="Active sports">
-          <div className="flex gap-2">
-            {([['swim', 'Swim', 'var(--color-amber)'], ['ride', 'Ride', 'var(--color-brand)'], ['run', 'Run', 'var(--color-coral)']] as const).map(
-              ([tag, label, c]) => {
-                const active = sports.includes(tag as SportTag)
-                return (
-                  <button
-                    key={tag}
-                    type="button"
-                    onClick={() => toggleSport(tag as SportTag)}
-                    disabled={isDemo}
-                    aria-pressed={active}
-                    className="flex-1 rounded-chip py-2.5 text-center text-[13px] font-semibold cursor-pointer transition-colors font-sans disabled:cursor-not-allowed"
-                    style={
-                      active
-                        ? { background: `color-mix(in srgb, ${c} 12%, transparent)`, color: c, border: `1.5px solid ${c}` }
-                        : { background: 'var(--color-surface-2)', color: 'var(--color-ink-dimmer)', border: '1.5px dashed var(--color-ink-dimmer)' }
-                    }
-                  >
-                    {label}
-                  </button>
-                )
-              },
+      {/* Sports + Language pair. Mobile: stacked. Desktop (`BdSettings`
+          direction-b-desktop.jsx:1589): 2-col row (2fr/1fr). Sports renders
+          only when the picker has been completed — when sports is null the
+          Language card is solo (full-width on both viewports).
+          Literal copy from the mock — by request these blocks are not i18n'd. */}
+      {sports !== null ? (
+        // `md:items-start` keeps Language tile compact (its segmented control
+        // doesn't stretch to match Sports' height when `sportsSaveError`
+        // expands the left tile). Design uses `alignItems:'stretch'` — diverging
+        // here to preserve the segmented-control proportions.
+        <div className="flex flex-col gap-3.5 md:grid md:grid-cols-[2fr_1fr] md:items-start md:gap-[18px]">
+          <Panel label="Active sports">
+            <div className="flex gap-2">
+              {([['swim', 'Swim', 'var(--color-amber)'], ['ride', 'Ride', 'var(--color-brand)'], ['run', 'Run', 'var(--color-coral)']] as const).map(
+                ([tag, label, c]) => {
+                  const active = sports.includes(tag as SportTag)
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => toggleSport(tag as SportTag)}
+                      disabled={isDemo}
+                      aria-pressed={active}
+                      className="flex-1 rounded-chip py-2.5 text-center text-[13px] font-semibold cursor-pointer transition-colors font-sans disabled:cursor-not-allowed"
+                      style={
+                        active
+                          ? { background: `color-mix(in srgb, ${c} 12%, transparent)`, color: c, border: `1.5px solid ${c}` }
+                          : { background: 'var(--color-surface-2)', color: 'var(--color-ink-dimmer)', border: '1.5px dashed var(--color-ink-dimmer)' }
+                      }
+                    >
+                      {label}
+                    </button>
+                  )
+                },
+              )}
+            </div>
+            {sportsSaveError && (
+              <p className="text-[12px] text-halo-coral mt-2">{sportsSaveError}</p>
             )}
-          </div>
-          {sportsSaveError && (
-            <p className="text-[12px] text-halo-coral mt-2">{sportsSaveError}</p>
-          )}
-        </Panel>
-      )}
-
-      {/* Language — prototype's inline row (title + sub left, EN/RU
-          segmented right). Literal copy, not i18n'd, by request. */}
-      <Card>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-[14px] font-semibold text-halo-ink">Language</div>
-            <div className="mt-0.5 text-[12px] text-halo-ink-dim">Coach voice and UI</div>
-          </div>
-          <div className="flex rounded-[10px] bg-halo-surface-2 p-[3px]">
-            {(['EN', 'RU'] as const).map(l => {
-              const code = l.toLowerCase()
-              const on = i18n.language === code
-              return (
-                <button
-                  key={l}
-                  type="button"
-                  onClick={() => changeLanguage(code)}
-                  className={`rounded-lg px-3 py-1.5 text-[12px] font-semibold cursor-pointer border-none font-sans ${
-                    on
-                      ? 'bg-halo-surface text-halo-ink shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
-                      : 'bg-transparent text-halo-ink-dim'
-                  }`}
-                >
-                  {l}
-                </button>
-              )
-            })}
-          </div>
+          </Panel>
+          {languageCard}
         </div>
-      </Card>
+      ) : (
+        languageCard
+      )}
 
       {/* MCP — single config block, prototype `BSettings` (direction-b-extras
           .jsx :316–352). Literal copy, not i18n'd (by request). Copy/reveal

@@ -6,6 +6,7 @@ import { Card, ChartScrubLine, fmtScrubDate, PeriodFilter, useChartScrubber, typ
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { fmtDateYmd, num } from '../lib/formatters'
 import type { BodyTrendSeries, WellnessResponse } from '../api/types'
 
@@ -246,7 +247,8 @@ function MetricCard({
 // ─────────────────────────────────────────────────────────────────────────────
 // Mini line chart (prototype `BMiniLineChart`). Auto-fit y range, area fill,
 // sparse x labels, today endpoint dot. Null points are skipped; the line spans
-// the gap. `preserveAspectRatio="none"` stretches to the card width.
+// the gap. viewBox W is measured per-frame so labels and dots aren't stretched
+// horizontally on desktop.
 // ─────────────────────────────────────────────────────────────────────────────
 function MiniLineChart({
   dates,
@@ -259,7 +261,7 @@ function MiniLineChart({
   color: string
   fmtY: (v: number) => string
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 110
   const pad = { l: 32, r: 8, t: 10, b: 20 }
   const innerW = W - pad.l - pad.r
@@ -305,12 +307,12 @@ function MiniLineChart({
   const scrubItems: ScrubItem[] = scrubPt ? [{ label: '', value: fmtY(scrubPt.v), color }] : []
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -368,6 +370,7 @@ function MiniLineChart({
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }
 
@@ -387,7 +390,7 @@ function MiniBarChart({
   color: string
   fmtY: (v: number) => string
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 110
   const pad = { l: 34, r: 8, t: 10, b: 20 }
   const innerW = W - pad.l - pad.r
@@ -436,12 +439,12 @@ function MiniBarChart({
     scrubBar == null || scrubBar.v == null ? [] : [{ label: '', value: fmtY(scrubBar.v), color }]
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -505,5 +508,6 @@ function MiniBarChart({
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }
