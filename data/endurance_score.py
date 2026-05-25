@@ -89,6 +89,12 @@ class EnduranceZone:
     color: str
 
 
+# Zone thresholds + colors — single source of truth on the backend, but
+# duplicated for FE rendering at `webapp/src/components/halo/EnduranceScore.tsx`
+# (`ENDURANCE_ZONES`) and in the spec `docs/ENDURANCE_SCORE_SPEC.md` §3.8. When
+# tuning thresholds or colors, sync all three so the FE gauge zone matches the
+# `current.zone` field the API returns. FE labels live in
+# `webapp/src/i18n/{en,ru}.json:load.endurance.zone.*` — don't add another copy.
 ENDURANCE_ZONES: tuple[EnduranceZone, ...] = (
     EnduranceZone("detrained", "Растренирован", "Detrained", 0, "#ef4444"),
     EnduranceZone("recovering", "Восстанавливаюсь", "Recovering", 3000, "#f97316"),
