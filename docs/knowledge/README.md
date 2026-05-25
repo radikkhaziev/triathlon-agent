@@ -11,3 +11,5 @@ Theoretical foundations behind the triathlon agent's algorithms and metrics. Ext
 | [durability-postmortem.md](durability-postmortem.md) | Why the durability classifier was attempted then abandoned 2026-05-09 — Phase 0 findings + replay script (preserved for re-run if triggers fire) |
 | [fitness-fatigue-model.md](fitness-fatigue-model.md) | ESS/Banister impulse-response model, recovery score formula, calibration |
 | [hrv.md](hrv.md) | HRV analysis (Flatt & Esco baseline), RHR, recovery scoring, DFA physiology |
+| [ramp-test-protocols.md](ramp-test-protocols.md) | Bike/swim ramp-test protocols, HRVT1/HRVT2 detection, tier confidence system |
+| [training-data-hygiene.md](training-data-hygiene.md) | Noise tags, R² floors, ML-input filtering, scheduler cadence for clean training data |

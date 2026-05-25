@@ -18,6 +18,7 @@ from .athlets import actor_sync_athlete_goals, actor_sync_athlete_settings, acto
 from .avatars import actor_download_user_avatar  # noqa: F401
 from .bootstrap import actor_bootstrap_step, actor_send_bootstrap_start_notification  # noqa: F401
 from .changelog import actor_publish_weekly_changelog  # noqa: F401
+from .endurance import actor_snapshot_endurance_scores, actor_snapshot_endurance_scores_all_users  # noqa: F401
 from .fitness import actor_save_fitness_projection  # noqa: F401
 from .progression import actor_retrain_progression_model  # noqa: F401
 from .race_models import actor_retrain_race_models  # noqa: F401

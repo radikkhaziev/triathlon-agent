@@ -12,11 +12,13 @@ from sqlalchemy import select
 from config import settings
 from data.db import Activity, ActivityDetail, AthleteSettings, User, Wellness, get_session, get_sync_session
 from data.db.dto import UserDTO
+from data.endurance_score_service import recompute_and_upsert as _recompute_endurance_score
 from data.garmin import importer as garmin_importer
 from data.garmin.parser import GarminExportParser
 from data.ml.noise_classifier import classify_activity_row
 from tasks.actors.activities import actor_fetch_user_activities
 from tasks.actors.wellness import actor_user_wellness
+from tasks.dto import local_today
 from tasks.tools import TelegramTool
 
 
@@ -147,6 +149,36 @@ def main() -> None:
     p_rsl.add_argument("--days", type=int, default=200, help="Window in days (default: 200, matches CTL EMA 5τ)")
     p_rsl.add_argument("--dry-run", action="store_true", help="List users + dates without dispatching")
 
+    p_bes = sub.add_parser(
+        "backfill-endurance-scores",
+        help="Compute + upsert daily Endurance Score snapshots into the "
+        "endurance_scores table. Default: all active athletes × last 365 days. "
+        "Idempotent — skips existing rows unless --force. See "
+        "docs/ENDURANCE_SCORE_SPEC.md §7.3.",
+    )
+    p_bes.add_argument(
+        "--user-id",
+        type=int,
+        default=None,
+        help="Limit to one user (default: all active athletes)",
+    )
+    p_bes.add_argument(
+        "--days",
+        type=int,
+        default=365,
+        help="History window in days from today (default: 365)",
+    )
+    p_bes.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-compute and overwrite existing rows (default: skip)",
+    )
+    p_bes.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print scope (users × days) without writing",
+    )
+
     p_cn = sub.add_parser(
         "classify-noise",
         help="Backfill activities.noise_reason for Run activities — Phase 1.6 "
@@ -191,6 +223,8 @@ def main() -> None:
         _publish_changelog(force=args.force)
     elif args.command == "train-race-models":
         _train_race_models(args.user_id)
+    elif args.command == "backfill-endurance-scores":
+        _backfill_endurance_scores(user_id=args.user_id, days=args.days, force=args.force, dry_run=args.dry_run)
     elif args.command == "classify-noise":
         _classify_noise(user_id=args.user_id, since_days=args.since_days, dry_run=args.dry_run)
     elif args.command == "recalc-sport-load":
@@ -898,6 +932,100 @@ def _recalc_sport_load(*, user_id: int | None, days: int, dry_run: bool) -> None
                 delay=user_offset_ms + j * delay_per_day_ms,
             )
         print(f"  user_id={u.id} queued {days_per_user} days, " f"starts at +{user_offset_ms // 60_000} min")
+
+
+def _backfill_endurance_scores(*, user_id: int | None, days: int, force: bool, dry_run: bool) -> None:
+    """Backfill daily Endurance Score snapshots — Phase 2 of ENDURANCE_SCORE_SPEC §7.3.
+
+    Default: all active athletes × last 365 days. With ``--user-id`` restricts to
+    one user. Idempotent — pre-existing rows are skipped unless ``--force`` is
+    set (overwrite). Per-user errors → sentry + continue, never fail the batch.
+    Performance: pure-module compute is ~50ms/day; 365 × 5 users ≈ 2.5 min
+    sequential. Acceptable for one-shot backfill (parallelism premature here).
+    """
+    today = local_today()
+    window_start = today - timedelta(days=days - 1)
+
+    with get_sync_session() as session:
+        if user_id is not None:
+            # Validate: must exist + be active athlete. Match actor + cron
+            # filter (`is_active AND athlete_id IS NOT NULL`) to avoid writing
+            # `insufficient_data` rows for demo/viewer/non-onboarded users.
+            row = session.execute(select(User.id, User.is_active, User.athlete_id).where(User.id == user_id)).first()
+            if row is None:
+                print(f"user {user_id}: not found")
+                return
+            uid, active, ath = row
+            if not active or ath is None:
+                print(
+                    f"user {user_id}: skipped (is_active={active}, athlete_id={ath}) — "
+                    "endurance score requires an active athlete with Intervals.icu connected"
+                )
+                return
+            user_ids = [uid]
+        else:
+            # Same filter as `actor_snapshot_endurance_scores_all_users`.
+            user_ids = [
+                row[0]
+                for row in session.execute(
+                    select(User.id).where(User.is_active.is_(True), User.athlete_id.isnot(None)).order_by(User.id)
+                )
+            ]
+
+    if not user_ids:
+        print("No active athletes found")
+        return
+
+    suffix = " (dry-run, no writes)" if dry_run else ""
+    print(
+        f"backfill-endurance-scores: {len(user_ids)} user(s), window "
+        f"{window_start.isoformat()} → {today.isoformat()} ({days} days){suffix}"
+    )
+
+    if dry_run:
+        print(f"would compute {len(user_ids) * days} (user, day) rows")
+        return
+
+    start_time = time.monotonic()
+    grand = {"computed": 0, "skipped": 0, "errors": 0}
+
+    # Single sync session reused across all (user, day) compute calls —
+    # opening/closing per call adds ~5-10 min wall-time on a 5-user × 365-day
+    # backfill via the connection-pool checkout/checkin overhead. The service
+    # supports `session=` reuse explicitly for this case.
+    with get_sync_session() as session:
+        for uid in user_ids:
+            per_user = {"computed": 0, "skipped": 0, "errors": 0}
+            for offset in range(days):
+                ref_date = window_start + timedelta(days=offset)
+                try:
+                    outcome = _recompute_endurance_score(uid, ref_date, force=force, session=session)
+                    if outcome.written:
+                        per_user["computed"] += 1
+                    else:
+                        per_user["skipped"] += 1
+                except Exception as e:
+                    per_user["errors"] += 1
+                    sentry_sdk.capture_exception(e)
+                    print(f"    {ref_date} user={uid}: {type(e).__name__}: {e}")
+                    # SQLAlchemy auto-rollbacks the failed statement, but the
+                    # session is poisoned for further work in the same TX —
+                    # explicit rollback to keep iterating cleanly.
+                    session.rollback()
+
+            print(
+                f"  user {uid:>4}: {per_user['computed']:>3} computed, "
+                f"{per_user['skipped']:>3} skipped, {per_user['errors']:>2} errors"
+            )
+            for key in grand:
+                grand[key] += per_user[key]
+
+    elapsed = time.monotonic() - start_time
+    mm, ss = divmod(int(elapsed), 60)
+    print(
+        f"\ntotal: {grand['computed']} written, {grand['skipped']} skipped, "
+        f"{grand['errors']} errors, runtime {mm}m {ss:02d}s"
+    )
 
 
 def _classify_noise(*, user_id: int | None, since_days: int, dry_run: bool) -> None:

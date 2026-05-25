@@ -70,7 +70,26 @@
     "no_race": "No race set."
   },
   "load": {
-    "endurance_desc": "One composite score for your overall endurance state across all sports.",
+    "endurance": {
+      "tap_for_trend": "tap for trend ›",
+      "tooltip": "One composite score for your endurance state across all sports. Zones: Detrained → Recovering → Maintaining → Productive → Peaking. Productive and Peaking are the target states for race-day shape.",
+      "delta_vs_week": "Progress {{sign}}{{delta}} vs last week",
+      "trend_title": "Trend",
+      "weekly": "Weekly",
+      "period": {
+        "1m": "1 month",
+        "3m": "3 months",
+        "6m": "6 months",
+        "1y": "1 year"
+      },
+      "zones_title": "Zones",
+      "sport": {
+        "Bike": "Bike",
+        "Run": "Run",
+        "Swim": "Swim",
+        "Other": "Other"
+      }
+    },
     "recent_sessions": "Recent sessions",
     "no_swim_data": "No swim sessions found in this period",
     "tip": {

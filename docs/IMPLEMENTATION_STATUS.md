@@ -11,6 +11,26 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## Endurance Score — Phase 1 + 2 (2026-05-25)
+
+Composite 0..8000 endurance metric across all sports — replaces «coming soon»-placeholder in Dashboard Load-таб. Spec: `docs/ENDURANCE_SCORE_SPEC.md`. **Drift vs Garmin anchor (5773) = −2% on real Radik data.**
+
+**Formula (additive, capped):** `ES = 100·VO2max_composite + LongTerm + Recent + Duration + Consistency + Recovery`. VO₂max composite: Storer for bike (FTP/weight/age), Daniels VDOT for run (threshold pace), run-proxy for swim. Bonuses: CTL/8w (cap 1000), ramp_rate/14d (cap 200), long-session TSS share filtered by Z2+ (cap 400 effective), 8-week TSS CV via `pstdev` (cap 200), DFA-α1 ≥0.75 share over Ride ≥60m + Run ≥45m (cap 200). 5 training-state zones: Растренирован <3000 / Восстанавливаюсь / Поддерживаю / Развиваюсь / На пике ≥6500. ENDURANCE_MAX=8000. Per-sport breakdown via sport-CTL share (Bike/Run/Swim/Other). 4 milestone badges with cooldown (7d / 1d для new_zone). Pure module `data/endurance_score.py`, no DB/clock — 51 unit tests incl. 5 historical anchor dates of Radik.
+
+**Phase 1** (Phase-1 only — endpoint computed on-the-fly, no storage): pure module + tests, `GET /api/endurance-score` (on-the-fly compute for today + 12 weekly trend points), `EnduranceScoreCard` + `EnduranceScoreDetail` (SVG 5-segment arc gauge, badge plate, 5-row zone legend), i18n RU/EN. Phase-1 review: 1 day, 4 medium + 5 low applied (delete dead constants `_ES_SPORT_KEY` / `zone_label_ru`, fix wellness fallback for old trend points, DFA-α1 docstring).
+
+**Phase 2** (storage + cron + backfill — daily-grain table replaces on-the-fly):
+- Migration `f6e360a8f4fa_add_endurance_scores` — `endurance_scores(user_id, snapshot_date, score, vo2max_composite Numeric(5,1), components JSONB, computed_at)` with UNIQUE(user_id, snapshot_date) + DESC index on (user_id, snapshot_date). ON CONFLICT DO UPDATE for idempotent same-day refresh. ORM model `EnduranceScore` with `@dual upsert`/`get_latest`/`get_range`/`get_history`/`get_score_on`.
+- Service layer `data/endurance_score_service.py` — `compute_for(user_id, ref_date)` + `recompute_and_upsert(force=False)` (idempotent: skip existing unless force). Shared by actor / endpoint fallback / CLI. Defense-in-depth join on `Activity.user_id` for `ActivityHrv` lookup.
+- Two Dramatiq actors `tasks/actors/endurance.py` — per-user `actor_snapshot_endurance_scores(user_id)` (max_retries=0, exception-swallow with logger.exception) + all-users wrapper `actor_snapshot_endurance_scores_all_users` (filters `is_active=True AND athlete_id IS NOT NULL`).
+- **Level 1 hooks**: `actor_user_wellness` + `actor_fetch_user_activities` fire per-user actor after write (top-level imports — no circular dep). **Level 2 cron**: daily 18:30 Belgrade (`misfire_grace_time=3600, coalesce=True`).
+- Endpoint refactored: reads from table, fallback to on-the-fly compute via `asyncio.to_thread` for today if cron not yet fired (synthesises today-point in trend so the line reaches the gauge). `period` query param `1m/3m/6m/1y` (FastAPI `pattern=`). Removed Phase-1 helpers + stale imports (`ActivityHrv` / `AthleteSettings`).
+- CLI `python -m cli backfill-endurance-scores [--user-id N] [--days 365] [--force] [--dry-run]` — default all active athletes × 365 days, shared sync session for ~5-10× perf, per-day try/except + sentry, session.rollback on error to keep iterating.
+- Frontend: period state lifted to `LoadTab` parent, both card and detail render off shared `enduranceData`; detail adds `<PeriodFilter>` chips above trend chart; chip change → parent re-fetches. Removed Phase-1 `onData` prop (was fetch-loop risk).
+- Tests: 6 endpoint integration tests (`TestEnduranceScore`) — returns from table, period window filters, multi-tenant isolation (seeds user 2 inline for FK), fallback compute when today missing, invalid period 422, components serialised from JSONB. Plus 3 badge cooldown tests. Phase-2 review: 1 critical + 2 high + 5 medium applied (JSON→JSONB, athlete_id filter, hoist imports, max_retries=0 parity, shared session, today in trend, JSONB type narrowing). M4/M5 nice-to-have deferred.
+
+**Phase 3 deferred** — all nice-to-have, no triggering pain. Open per concrete trigger: Cooper VO₂max percentile badge (when pool>1), ES in morning report (when habit-forming asked), calibration anchor logging (when 3+ Garmin anchors), age/sex zone normalization (when AG outside 40-44 male), Q5 Base-decay refinement, Q6 historical-thresholds for trend backfill.
+
 ## Workout detail page + Rest target relaxation (2026-05-13)
 
 **Trigger:** план в webapp (`/plan`) показывал только короткую meta-строку (sport icon · duration · distance) и inline expand-collapse с pre-formatted `description`. AI-pushed swim workout от Claude рендерился криво — Rest шаги были обязаны нести pace-таргет (валидатор `PlannedWorkoutDTO._check_steps_have_targets` резал любой target-less terminal step), и Claude ставил fake `{units: "%pace", start: 40, end: 55}` на Rest → Intervals.icu trackчил это как «slow swimming Z1», а не реальный pool-side stop (плоский провал на chart). HumanGo же эмитит `{"text": "Rest", "duration": N}` без target и получает корректные паузы — потому что HumanGo идёт через `EventExDTO` напрямую, минуя `PlannedWorkoutDTO`-валидатор.
