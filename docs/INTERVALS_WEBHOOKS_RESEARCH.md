@@ -143,13 +143,14 @@ Authorization: <value from webhook auth settings, not used for verification>
 ```
 - **Заметки:**
   - **Только fitness-поля** — нет `weight`, `restingHR`, `hrv`, `sleepSecs`, `sleepScore`, `bodyFat`, `steps` (в отличие от WELLNESS_UPDATED)
-  - **Массовый batch**: при пересчёте приходит **14 records** — от сегодня до даты гонки (2026-09-15). Это вся будущая кривая CTL/ATL/eFTP при текущей нагрузке + zero future load assumption.
-  - `id` = дата **прогноза** в будущем (от `2026-04-16` до `2026-09-15`)
+  - **Массовый batch** (intra-day, после activity-analysis): обычно **14 records** — от сегодня до даты гонки (2026-09-15). Это вся будущая кривая CTL/ATL/eFTP при текущей нагрузке + zero future load assumption.
+  - **Midnight finalisation case** (наблюдён в проде 2026-05): payload может также содержать **past records** — Intervals пересчитывает вчера/позавчера, снимая planned-bake с `ctlLoad` после midnight cutoff. То есть `id` бывает `<= today`, не только `> today`. Обработчик в `tasks/actors/fitness.py` пишет past+today в `wellness` (через `Wellness.update_loads`), future оставляет только в `fitness_projection`.
+  - `id` = дата (прошлая, сегодняшняя или будущая); типичный диапазон от `2026-04-16` до `2026-09-15`
   - Последний record: CTL падает с 17.9 до 0.48 к дню гонки, eFTP с 207.8 до 178.9 — реалистичная деградация при полном stop
   - `sportInfo` содержит eFTP/wPrime/pMax per sport type (только Ride в данном случае)
   - `WellnessDTO` парсит корректно (confirmed — все поля optional)
-  - Частота: после каждого analysis активности (пересчёт всей fitness кривой)
-- **Dispatch plan:** **НЕ** записывать в `wellness` таблицу как обычные дневные данные — это **projection от Intervals.icu**, не факт. См. §FITNESS_PROJECTION ниже.
+  - Частота: после каждого analysis активности (пересчёт всей fitness кривой) + раз в день после midnight finalisation
+- **Dispatch plan:** future records → только в `fitness_projection` таблицу (projection, не факт). Past+today → дополнительно в `wellness` через `Wellness.update_loads` (только `ctl/atl/ramp_rate/ctl_load/atl_load`, NOT hrv/sleep/etc.) — это снимает «stale baseline» баг в `recompute_today_loads`. См. §FITNESS_PROJECTION ниже.
 
 #### FITNESS_UPDATED — расшифровка projection
 
@@ -639,7 +640,7 @@ docker compose logs -f api | grep "Intervals webhook"
 
 ### A.3 FITNESS_UPDATED (2026-04-16, после VirtualRide 41 TSS)
 
-60 records — показаны первый, промежуточный и последний (race day).
+60 records — показаны первый, промежуточный и последний (race day). **Это intra-day case** (после analysis активности): `records[0]` = today, остальные — будущая кривая. **Midnight finalisation case** (наблюдён отдельно в проде 2026-05) добавляет к этому past records (`id < today`) — Intervals пересчитывает вчера/позавчера, снимая planned-bake с `ctlLoad`. Sample для midnight-варианта пока не зафиксирован — известно только что past `id` появляются и `ctlLoad` для них становится actual-only.
 
 ```json
 {

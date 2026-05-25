@@ -1,6 +1,6 @@
 """Tests for actor_save_fitness_projection (FITNESS_UPDATED handler)."""
 
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from data.db.user import UserDTO
@@ -102,3 +102,62 @@ class TestActorSaveFitnessProjection:
             actor_save_fitness_projection(user=_user(), records=future_only)
             save.assert_called_once()
             upd.assert_not_called()
+
+    def test_malformed_date_id_is_skipped_not_raised(self):
+        """A single malformed `id` (never seen in prod, but defensive) must not
+        crash the actor — Dramatiq would retry it 20× and lose all the valid
+        rows in the same payload. Bad row is logged + skipped, valid rows
+        continue through."""
+        records = [
+            {"id": "not-a-date", "ctl": 10.0, "atl": 10.0},
+            {
+                "id": _TODAY_ISO,
+                "ctl": 18.94,
+                "atl": 38.27,
+                "rampRate": 4.23,
+                "ctlLoad": 41.0,
+                "atlLoad": 44.0,
+            },
+        ]
+        with (
+            _patch_today(),
+            patch("tasks.actors.fitness.FitnessProjection.save_bulk"),
+            patch("tasks.actors.fitness.Wellness.update_loads", return_value=True) as upd,
+        ):
+            actor_save_fitness_projection(user=_user(), records=records)
+        # Only today's good row reaches wellness; malformed row skipped silently.
+        assert upd.call_count == 1
+        assert upd.call_args.kwargs["dt"] == _TODAY
+
+    def test_updates_wellness_for_past_dates_skips_future(self):
+        """Past + today get wellness.update_loads; future dates only land in
+        fitness_projection. Mirrors the Intervals finalisation case: yesterday's
+        ctl_load shrinks at midnight when planned-bake is stripped, and we
+        need that delta in wellness — otherwise `recompute_today_loads` reads
+        a stale baseline (the original bug this fix addresses)."""
+        yesterday = (_TODAY - timedelta(days=1)).isoformat()
+        two_days_ago = (_TODAY - timedelta(days=2)).isoformat()
+        records = [
+            {"id": two_days_ago, "ctl": 40.0, "atl": 60.0, "rampRate": 2.0, "ctlLoad": 50.0, "atlLoad": 50.0},
+            {"id": yesterday, "ctl": 42.0, "atl": 70.0, "rampRate": 2.5, "ctlLoad": 117.0, "atlLoad": 117.0},
+            {"id": _TODAY_ISO, "ctl": 41.5, "atl": 63.5, "rampRate": 2.0, "ctlLoad": 0.0, "atlLoad": 0.0},
+            {"id": "2026-05-21", "ctl": 8.0, "atl": 0.0, "rampRate": -1.0, "ctlLoad": 0.0, "atlLoad": 0.0},
+            {"id": "2026-09-15", "ctl": 0.5, "atl": 0.0, "rampRate": 0.0, "ctlLoad": 0.0, "atlLoad": 0.0},
+        ]
+        with (
+            _patch_today(),
+            patch("tasks.actors.fitness.FitnessProjection.save_bulk") as save,
+            patch("tasks.actors.fitness.Wellness.update_loads", return_value=True) as upd,
+        ):
+            actor_save_fitness_projection(user=_user(), records=records)
+        # All 5 records saved to fitness_projection (past + today + future).
+        save.assert_called_once()
+        assert len(save.call_args.kwargs["records"]) == 5
+        # Only 3 (past + today) reach wellness — future skipped.
+        assert upd.call_count == 3
+        called_dts = [c.kwargs["dt"].isoformat() for c in upd.call_args_list]
+        assert called_dts == [two_days_ago, yesterday, _TODAY_ISO]
+        # Spot-check yesterday's payload — the actual contamination-strip case.
+        yesterday_call = upd.call_args_list[1]
+        assert yesterday_call.kwargs["ctl"] == 42.0
+        assert yesterday_call.kwargs["ctl_load"] == 117.0
