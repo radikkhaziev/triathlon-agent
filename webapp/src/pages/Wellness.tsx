@@ -195,8 +195,9 @@ export default function Wellness() {
             <div className="md:col-start-2 md:row-start-1 md:row-span-2">
               <EnduranceScoreCard />
             </div>
-            {/* Mobile order matches pre-Endurance Wellness (Recovery → HRV/RHR →
-                Sleep → Load → Body → Coach). Desktop reflows via md:row-start-N. */}
+            {/* Mobile flex-col order: Recovery → Endurance → HRV/RHR → Sleep →
+                Load → Body → Coach. Desktop reflows via md:row-start-N (Endurance
+                spans rows 1-2 in col 2; row 3 holds Sleep + Load). */}
             <div className="md:col-span-2 md:col-start-1 md:row-start-4">
               <PairedMetrics data={data} t={t} />
             </div>

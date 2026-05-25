@@ -71,18 +71,17 @@
   },
   "load": {
     "endurance": {
-      "tap_for_trend": "tap for trend ›",
+      "title": "Endurance Score",
+      "subtitle": "Composite score across all sports — where you sit in the training cycle.",
+      "current_score": "Current score",
+      "per_sport": "By sport",
+      "by_sport_title": "By sport",
+      "trend_chart_title": "Dynamics",
+      "delta_per_week": "{{sign}}{{delta}} vs last week",
       "tooltip": "One composite score for your endurance state across all sports. Zones: Detrained → Recovering → Maintaining → Productive → Peaking. Productive and Peaking are the target states for race-day shape.",
       "delta_vs_week": "Progress {{sign}}{{delta}} vs last week",
-      "trend_title": "Trend",
-      "weekly": "Weekly",
-      "back": "Back",
-      "period": {
-        "1m": "1 month",
-        "3m": "3 months",
-        "6m": "6 months",
-        "1y": "1 year"
-      },
+      "insufficient": "Not enough history yet — keep training and check back in a few days.",
+      "no_data": "No history yet — come back in a few days.",
       "zone": {
         "detrained": "Detrained",
         "recovering": "Recovering",
@@ -90,13 +89,14 @@
         "productive": "Productive",
         "peaking": "Peaking"
       },
-      "zones_title": "Zones",
-      "sport": {
-        "Bike": "Bike",
-        "Run": "Run",
-        "Swim": "Swim",
-        "Other": "Other"
-      }
+      "zone_desc": {
+        "detrained": "Base lost or never built (newcomer / 3+ months off)",
+        "recovering": "Return after break or injury, volume low",
+        "maintaining": "Base fitness, no growth (between seasons)",
+        "productive": "Active build, volume growing",
+        "peaking": "Race shape, race-ready"
+      },
+      "zones_title": "Zones"
     },
     "recent_sessions": "Recent sessions",
     "no_swim_data": "No swim sessions found in this period",

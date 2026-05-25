@@ -4,13 +4,14 @@
 // Lives on Wellness home (between Recovery and Training load), with a
 // dedicated detail route at `/wellness/endurance`. Spec:
 // docs/ENDURANCE_SCORE_SPEC.md. Halo design: direction-b-halo.jsx:3414-3635.
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import LoadingSpinner from '../LoadingSpinner'
 import ErrorMessage from '../ErrorMessage'
 import { InfoIcon, InfoPanel } from './InfoTip'
-import { apiFetch } from '../../api/client'
+import StackedBar from './StackedBar'
+import { useApi } from '../../hooks/useApi'
 import { CHART_COLORS } from '../../lib/constants'
 import type { EnduranceScoreResponse, EnduranceZoneId } from '../../api/types'
 
@@ -18,18 +19,21 @@ export const ENDURANCE_MAX = 8000
 
 export type EnduranceZoneDef = {
   id: EnduranceZoneId
-  labelRu: string
   min: number
   color: string
 }
 
 // Zone thresholds — spec §3.8. Colors mirror Halo prototype (red → blue).
+// SoT note: thresholds + colors are also duplicated in `data/endurance_score.py`
+// (`ENDURANCE_ZONES`) and `docs/ENDURANCE_SCORE_SPEC.md` §3.8. Keep all three in
+// sync when tuning — the gauge zone (here) must match the server-computed
+// `current.zone` (Python). Localized labels live in `load.endurance.zone.{id}`.
 export const ENDURANCE_ZONES: EnduranceZoneDef[] = [
-  { id: 'detrained',    labelRu: 'Растренирован',    min: 0,    color: '#ef4444' },
-  { id: 'recovering',   labelRu: 'Восстанавливаюсь', min: 3000, color: '#f97316' },
-  { id: 'maintaining',  labelRu: 'Поддерживаю',      min: 4500, color: '#eab308' },
-  { id: 'productive',   labelRu: 'Развиваюсь',       min: 5500, color: '#22c55e' },
-  { id: 'peaking',      labelRu: 'На пике',          min: 6500, color: '#3b82f6' },
+  { id: 'detrained',   min: 0,    color: '#ef4444' },
+  { id: 'recovering',  min: 3000, color: '#f97316' },
+  { id: 'maintaining', min: 4500, color: '#eab308' },
+  { id: 'productive',  min: 5500, color: '#22c55e' },
+  { id: 'peaking',     min: 6500, color: '#3b82f6' },
 ]
 
 export function zoneFor(score: number): EnduranceZoneDef {
@@ -47,6 +51,29 @@ const SPORT_COLOR: Record<string, string> = {
   Other: 'var(--color-ink-dimmer)',
 }
 
+// Per-sport display vocabulary matches Training load: Swim → Ride → Run →
+// Other, literal English labels (backend's "Bike" renders as "Ride" — same
+// thing, project canon is "Ride"). Both locales use the same names since this
+// is the established palette and reads identically on home + detail.
+const ENDURANCE_SPORT_ORDER: Record<string, number> = { Swim: 0, Bike: 1, Run: 2, Other: 3 }
+export const ENDURANCE_SPORT_LABEL: Record<string, string> = {
+  Swim: 'Swim',
+  Bike: 'Ride',
+  Run: 'Run',
+  Other: 'Other',
+}
+const rank = (name: string) => ENDURANCE_SPORT_ORDER[name] ?? 99
+
+export function sortPerSport<T extends { name: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => rank(a.name) - rank(b.name))
+}
+
+// %-descending order with the canonical order as a stable tie-breaker, so
+// equal shares don't flicker between renders. Used by the BySportCard grid.
+export function sortPerSportByShareDesc<T extends { name: string; pct: number }>(items: T[]): T[] {
+  return [...items].sort((a, b) => b.pct - a.pct || rank(a.name) - rank(b.name))
+}
+
 const CARD = 'rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card'
 const EYEBROW = 'text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim'
 
@@ -54,6 +81,7 @@ const EYEBROW = 'text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-
 // score label). Port of `EnduranceGauge` in `direction-b-halo.jsx:3481`,
 // retuned for 5 zones + ENDURANCE_MAX=8000.
 export function EnduranceGauge({ score, size = 220 }: { score: number; size?: number }) {
+  const { t } = useTranslation()
   const cx = size / 2
   const cy = size / 2 + 4
   const r = size / 2 - 14
@@ -74,10 +102,22 @@ export function EnduranceGauge({ score, size = 220 }: { score: number; size?: nu
     return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`
   }
 
-  const t = Math.max(0, Math.min(1, score / ENDURANCE_MAX))
-  const markerAngle = startAngle + totalSweep * t
-  const [mx, my] = polar(markerAngle)
+  // Marker placement must use *segment-aware* math, not a linear `score /
+  // ENDURANCE_MAX`. The arc is split into 5 equal-width segments (52°), but
+  // the zones cover unequal score ranges (1000 for Maintaining/Productive,
+  // 1500 for Recovering/Peaking, 3000 for Detrained). A linear marker for
+  // 5491 lands at angle −41.5° — visually inside the green Productive
+  // segment, even though zoneFor(5491) is Maintaining. Place the marker
+  // inside the zone's own segment, proportional to the score's position
+  // within the zone's range.
   const zone = zoneFor(score)
+  const zoneIndex = ENDURANCE_ZONES.indexOf(zone)
+  const zoneMax = ENDURANCE_ZONES[zoneIndex + 1]?.min ?? ENDURANCE_MAX
+  const zoneSpan = Math.max(1, zoneMax - zone.min)
+  const withinZone = Math.max(0, Math.min(1, (score - zone.min) / zoneSpan))
+  const markerAngle =
+    startAngle + zoneIndex * segSweep + gap / 2 + withinZone * (segSweep - gap)
+  const [mx, my] = polar(markerAngle)
 
   // Height of the SVG box — large enough to fit the arc's lowest point + the
   // marker radius + a few px of breathing room. Without this the gauge clips.
@@ -104,7 +144,7 @@ export function EnduranceGauge({ score, size = 220 }: { score: number; size?: nu
         {score.toLocaleString('en-US').replace(/,/g, ' ')}
       </text>
       <text x={cx} y={cy + 28} textAnchor="middle" fontSize="13" fill="var(--color-ink-dim)" fontWeight="500">
-        {zone.labelRu}
+        {t(`load.endurance.zone.${zone.id}`)}
       </text>
     </svg>
   )
@@ -137,27 +177,12 @@ export function EnduranceScoreCard() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [tipOpen, setTipOpen] = useState(false)
-  const [data, setData] = useState<EnduranceScoreResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    apiFetch<EnduranceScoreResponse>('/api/endurance-score?period=3m')
-      .then(d => {
-        if (!cancelled) setData(d)
-      })
-      .catch((e: Error) => {
-        if (!cancelled) setError(e.message)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { data, error } = useApi<EnduranceScoreResponse>('/api/endurance-score?period=3m')
 
   if (error) {
     return (
       <div className={CARD}>
-        <div className={EYEBROW}>Endurance Score</div>
+        <div className={EYEBROW}>{t('load.endurance.title')}</div>
         <div className="mt-3"><ErrorMessage message={error} /></div>
       </div>
     )
@@ -165,7 +190,7 @@ export function EnduranceScoreCard() {
   if (!data) {
     return (
       <div className={CARD}>
-        <div className={EYEBROW}>Endurance Score</div>
+        <div className={EYEBROW}>{t('load.endurance.title')}</div>
         <div className="mt-3 flex h-[120px] items-center justify-center">
           <LoadingSpinner />
         </div>
@@ -176,23 +201,39 @@ export function EnduranceScoreCard() {
   const { current } = data
   const zone = zoneFor(current.score)
   const delta = current.delta_vs_week_ago
-  const deltaSign = delta > 0 ? '+' : ''
+  const deltaSign = delta >= 0 ? '+' : ''
+  const goDetail = () => navigate('/wellness/endurance')
+
+  if (current.insufficient_data) {
+    return (
+      <div className={CARD}>
+        <div className={EYEBROW}>{t('load.endurance.title')}</div>
+        <div className="mt-4 px-2 py-8 text-center text-[13px] text-halo-ink-dim">
+          {t('load.endurance.insufficient')}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={`${CARD} pt-[14px]`}>
       <div className="flex items-center">
-        <span className={EYEBROW}>Endurance Score</span>
+        <span className={EYEBROW}>{t('load.endurance.title')}</span>
         <InfoIcon open={tipOpen} onClick={() => setTipOpen(v => !v)} />
-        <span className="ml-auto text-[11px] font-medium text-halo-ink-dim">{t('load.endurance.tap_for_trend')}</span>
+        <span aria-hidden="true" className="ml-auto text-[15px] leading-none text-halo-ink-dimmer">›</span>
       </div>
       {tipOpen && <InfoPanel>{t('load.endurance.tooltip')}</InfoPanel>}
       <div
         className="mt-2 cursor-pointer"
-        onClick={() => navigate('/wellness/endurance')}
+        onClick={goDetail}
         role="link"
         tabIndex={0}
+        aria-label={t('load.endurance.title')}
         onKeyDown={e => {
-          if (e.key === 'Enter') navigate('/wellness/endurance')
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            goDetail()
+          }
         }}
       >
         <div className="flex justify-center">
@@ -208,16 +249,22 @@ export function EnduranceScoreCard() {
             {t('load.endurance.delta_vs_week', { sign: deltaSign, delta })}
           </div>
         )}
-        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2.5 border-t border-halo-border pt-[14px]">
-          {current.per_sport.map(s => (
-            <div key={s.name}>
-              <div className="text-[20px] font-semibold tracking-[-0.6px]">{s.pct.toFixed(1)}%</div>
-              <div className="mt-0.5 flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full" style={{ background: SPORT_COLOR[s.name] }} />
-                <span className="text-[12px] font-medium text-halo-ink-dim">{t(`load.endurance.sport.${s.name}`)}</span>
-              </div>
-            </div>
-          ))}
+        {/* Per-sport breakdown — horizontal stacked bar + inline legend,
+            same form (and ordering: Swim → Ride → Run → Other) as Training
+            load below. Full %-by-sport grid lives on the detail screen
+            (BySportCard). Direction-b-halo.jsx:3591-3609. */}
+        <div className="mt-3 border-t border-halo-border pt-[14px]">
+          <StackedBar
+            segments={sortPerSport(current.per_sport).map(s => ({ flex: s.pct, color: SPORT_COLOR[s.name] }))}
+          />
+          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[10px] font-medium text-halo-ink-dim">
+            {sortPerSport(current.per_sport).map(s => (
+              <span key={s.name} className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: SPORT_COLOR[s.name] }} />
+                {ENDURANCE_SPORT_LABEL[s.name] ?? s.name} {s.pct.toFixed(1)}%
+              </span>
+            ))}
+          </div>
         </div>
       </div>
     </div>
