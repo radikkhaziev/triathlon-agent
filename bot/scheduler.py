@@ -20,6 +20,7 @@ from tasks.actors import (
     actor_retrain_race_models,
     actor_send_onboarding_hey,
     actor_send_pre_race_plan_push,
+    actor_snapshot_endurance_scores_all_users,
     actor_sync_athlete_goals,
     actor_user_scheduled_workouts,
     actor_user_wellness,
@@ -245,6 +246,21 @@ async def scheduler_pre_race_plan_push_job() -> None:
     logger.info("Dispatched pre-race push for %d goals (race_date=%s)", len(dispatches), target_iso)
 
 
+async def scheduler_endurance_snapshot_job() -> None:
+    """Daily 18:30 Belgrade — safety-net Endurance Score snapshot for all users.
+
+    Spec §7.0 Level 2 / §7.1. Captures users whose Level-1 hooks (wellness +
+    activities actors) didn't fire that day (Intervals.icu sync down, user
+    offline) and catches natural decay of components rolling out of the 28d
+    / 8w windows even without a fresh write. Fires at 18:30 — 30 min before
+    the weekly-report cron, leaving the actor's per-user dispatch + compute
+    a comfortable window to drain. ``misfire_grace_time=3600`` covers a
+    restart within the hour; ``coalesce=True`` collapses missed firings into
+    one. The actor itself is idempotent.
+    """
+    actor_snapshot_endurance_scores_all_users.send()
+
+
 async def scheduler_publish_weekly_changelog_job() -> None:
     """Sunday 15:00 — single fan-out, no per-user dispatch.
 
@@ -352,6 +368,17 @@ async def create_scheduler() -> AsyncIOScheduler:
         trigger=CronTrigger(hour=8, minute=0, timezone=settings.TIMEZONE),
         id="scheduler_pre_race_plan_push_job",
         misfire_grace_time=7200,
+        coalesce=True,
+    )
+
+    # Endurance Score daily snapshot (docs/ENDURANCE_SCORE_SPEC.md §7.1).
+    # 18:30 Belgrade — Level-2 safety-net for all active users. See the job's
+    # docstring for why this slot.
+    scheduler.add_job(
+        scheduler_endurance_snapshot_job,
+        trigger=CronTrigger(hour=18, minute=30, timezone=settings.TIMEZONE),
+        id="scheduler_endurance_snapshot_job",
+        misfire_grace_time=3600,
         coalesce=True,
     )
 

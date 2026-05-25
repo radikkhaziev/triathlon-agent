@@ -17,6 +17,7 @@ from tasks.dto import ORMDTO, DateDTO, local_today
 
 from ._constants import MORNING_REPORT_DELAY_SEC
 from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update
+from .endurance import actor_snapshot_endurance_scores
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +238,13 @@ def actor_user_wellness(
     if not result.is_changed and not force:
         logger.debug("Wellness unchanged for user %s on %s, skipping pipelines", user.id, _dt)
         return
+
+    # Endurance Score Level-1 hook (spec §7.0). Fire-and-forget — recompute
+    # depends on the wellness row we just wrote (CTL / ramp_rate / sport_ctl
+    # feed LongTerm + Recent + composite VO2max), and the idempotent upsert
+    # in `EnduranceScore.upsert` makes re-fires from multiple sources (this
+    # actor + actor_fetch_user_activities + Level-2 cron) safe.
+    actor_snapshot_endurance_scores.send(user_id=user.id)
 
     # all independent tasks run in parallel
     group(

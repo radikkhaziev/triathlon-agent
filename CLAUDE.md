@@ -50,11 +50,11 @@ triathlon-agent/
 
 ## Database Schema
 
-36 tables. Full column specs in `data/db/`. Key tables:
+37 tables. Full column specs in `data/db/`. Key tables:
 
 **Core:** `users` (multi-tenant, chat_id, role, api_key_encrypted, mcp_token, is_active, last_donation_at, + Intervals.icu OAuth: `intervals_access_token_encrypted` / `intervals_oauth_scope` / `intervals_auth_method` — `"api_key"` | `"oauth"` | `"none"` — see `api/routers/intervals/oauth.py`), `athlete_settings` (per-sport thresholds), `athlete_goals` (race goals + CTL targets), `wellness` (daily Intervals.icu data + recovery score + AI recommendations).
 
-**Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling), `fitness_projection` (CTL/ATL/rampRate decay curve from `FITNESS_UPDATED` webhook, dates can be future), `activity_achievements` (per-activity PRs from `ACTIVITY_ACHIEVEMENTS` webhook — power PRs / FTP changes / future milestone types; raw payload preserved in `extra` JSON; UNIQUE on user+activity+achievement_id).
+**Analysis:** `hrv_analysis` (dual-algorithm baselines), `rhr_analysis` (RHR baselines, inverted), `activity_details` (zones, intervals, EF, decoupling), `activity_hrv` (DFA a1, Ra/Da), `pa_baseline` (14d rolling), `fitness_projection` (CTL/ATL/rampRate decay curve from `FITNESS_UPDATED` webhook, dates can be future), `activity_achievements` (per-activity PRs from `ACTIVITY_ACHIEVEMENTS` webhook — power PRs / FTP changes / future milestone types; raw payload preserved in `extra` JSON; UNIQUE on user+activity+achievement_id), `endurance_scores` (daily 0..8000 composite endurance score per `docs/ENDURANCE_SCORE_SPEC.md` — `vo2max_composite` Numeric(5,1) + components JSONB with per_sport+badge; UNIQUE(user_id, snapshot_date) for idempotent multi-fire from Level-1 hooks + Level-2 cron; ON CONFLICT DO UPDATE; populated by `actor_snapshot_endurance_scores`).
 
 **Training:** `scheduled_workouts` (incl. `icu_intensity` — 0-100 percent, NOT 0-1; `icu_training_load` — TSS-equivalent; both top-level on Intervals event, `workout_doc.strain_score` is always null for planned. `distance` in METERS native — divided by 1000 in API responses), `activities` (incl. `is_race`/`sub_type`/`rpe` — Borg CR-10 1-10 with `CHECK` constraint), `ai_workouts`, `training_log` (pre/actual/post + compliance + `race_id` FK), `exercise_cards`, `workout_cards`, `races` (name, distance, finish/goal time, placement, surface/weather, RPE, notes, race-day CTL/ATL/TSB/HRV/recovery snapshot, `carbs_consumed_g` for fueling-compliance metric).
 
@@ -68,7 +68,7 @@ triathlon-agent/
 
 ## Implementation Status
 
-All core modules done. Multi-tenant Phase 1.3, Intervals.icu OAuth Phase 2, OAuth bootstrap backfill, Webhook data capture, User-memory facts Phase 1, ATP Phase 3, race execution plans, weekly changelog + report archive, race-projection ML Phase 1 + β2 bias correction, HumanGo workout enrichment — all live.
+All core modules done. Multi-tenant Phase 1.3, Intervals.icu OAuth Phase 2, OAuth bootstrap backfill, Webhook data capture, User-memory facts Phase 1, ATP Phase 3, race execution plans, weekly changelog + report archive, race-projection ML Phase 1 + β2 bias correction, HumanGo workout enrichment, **Endurance Score Phase 1+2** (composite 0..8000 metric across all sports, daily snapshots, period-filtered trend, milestone badges with cooldown — drift −2% vs Garmin) — all live.
 
 > **`docs/IMPLEMENTATION_STATUS.md`** — feature-by-feature changelog with rationale, schemas, migration IDs, tests, and deviations. Read it for any «when / why / how» context on what's already shipped. **This file (`CLAUDE.md`) is for architecture / stack / business rules / operational pointers only — not a changelog.**
 
@@ -251,6 +251,7 @@ Specs and plans in `docs/`. Key references:
 - **`IMPLEMENTATION_STATUS.md`** — feature-by-feature changelog, what's done / pending.
 - **`OPERATIONS.md`** — bot commands, API endpoints, webapp routes, CLI, migrations, onboarding, Docker.
 - **`ADAPTIVE_TRAINING_PLAN_SPEC.md`**, **`MULTI_TENANT_SECURITY_SPEC.md`**, **`INTERVALS_WEBHOOKS_RESEARCH.md`** (10 event-type payload samples), **`INTERVALS_NATIVE_WORKOUT_FORMAT.md`** (description-field grammar + parser quirks), **`WORKOUT_ABSOLUTE_TARGETS_SPEC.md`** (HR corridor `start`/`end` schema discovery + FIT-export mode switching), **`HUMANGO_ENRICHMENT_SPEC.md`** (HumanGo shared-calendar enrichment — detection, round-trip math, actor flow), **`OAUTH_BOOTSTRAP_SYNC_SPEC.md`**, **`USER_CONTEXT_SPEC.md`**, **`WEBHOOK_DATA_CAPTURE_SPEC.md`**, **`RACE_PLAN_SPEC.md`**, **`TRAINING_PROGRESSION_SPEC.md`**, **`ML_HRV_PREDICTION_SPEC.md`**, **`ML_RACE_PROJECTION_SPEC.md`** — feature specs.
+- **`PAPERCLIP_SETUP_SPEC.md`** (paperclip orchestration: git flow, agent roles, PR review chain) + **`paperclip-install.md`** (Ubuntu server install — PostgreSQL, Caddy, systemd) — paperclip-specific, not part of the triathlon-agent runtime.
 - **`intervals_icu_openapi.json`** — Intervals.icu API reference. **`knowledge/`** — training methodology.
 
 ---

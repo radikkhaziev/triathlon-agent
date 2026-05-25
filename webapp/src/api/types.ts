@@ -828,3 +828,59 @@ export interface BikeReadinessResponse {
   weeks: BikeReadinessWeek[]
   current_components: BikeReadinessComponents
 }
+
+// Endurance Score — composite endurance state across all sports.
+// See docs/ENDURANCE_SCORE_SPEC.md. Phase 1: weekly trend on-the-fly, no
+// daily snapshots. Frontend toggles a detail view via local state.
+export type EnduranceZoneId =
+  | 'detrained'
+  | 'recovering'
+  | 'maintaining'
+  | 'productive'
+  | 'peaking'
+
+export interface EnduranceComponents {
+  base: number
+  long_term: number
+  recent: number
+  duration: number
+  consistency: number
+  recovery: number
+}
+
+export interface EnduranceSportShare {
+  name: 'Bike' | 'Run' | 'Swim' | 'Other'
+  pct: number
+  sub_score: number | null
+}
+
+export interface EnduranceBadge {
+  id: 'new_zone' | 'best_90d' | 'top_10_percentile' | 'in_form_3m'
+  label: string
+  icon: string
+}
+
+export interface EnduranceCurrent {
+  score: number
+  zone: EnduranceZoneId
+  vo2max_composite: number
+  components: EnduranceComponents
+  per_sport: EnduranceSportShare[]
+  delta_vs_week_ago: number
+  badge: EnduranceBadge | null
+  insufficient_data: boolean
+}
+
+export interface EnduranceTrendPoint {
+  date: string  // "YYYY-MM-DD" daily snapshot
+  score: number
+  zone: EnduranceZoneId
+}
+
+export type EndurancePeriod = '1m' | '3m' | '6m' | '1y'
+
+export interface EnduranceScoreResponse {
+  current: EnduranceCurrent
+  trend: EnduranceTrendPoint[]
+  period: EndurancePeriod
+}

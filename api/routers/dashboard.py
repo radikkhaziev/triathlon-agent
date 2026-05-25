@@ -6,6 +6,7 @@ router (``api/dashboard_routes.py``) was deleted in the Halo cleanup pass —
 all dashboard endpoints now live here.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -18,8 +19,21 @@ from sqlalchemy import func, select
 
 from api.deps import get_data_user_id, require_athlete, require_viewer
 from config import settings
-from data.db import Activity, ActivityDetail, AthleteGoal, Race, ScheduledWorkout, User, UserDTO, Wellness, get_session
+from data.db import (
+    Activity,
+    ActivityDetail,
+    AthleteGoal,
+    EnduranceScore,
+    Race,
+    ScheduledWorkout,
+    User,
+    UserDTO,
+    Wellness,
+    get_session,
+)
 from data.db.dto import AthleteGoalDTO
+from data.endurance_score import classify_zone
+from data.endurance_score_service import compute_for as compute_endurance_for
 from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivity, calculate_marathon_shape
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target, project_sport_load_forward, recompute_today_loads
 from data.ml.race_predict import predict_splits_with_ci
@@ -925,6 +939,114 @@ async def _predict_times_fresh(user_id: int, today_iso: str) -> dict[str, dict |
             "pace_ci_high": round(values["ci_high"], 1),
         }
     return predicted_times
+
+
+_ENDURANCE_PERIOD_DAYS: dict[str, int] = {"1m": 30, "3m": 90, "6m": 180, "1y": 365}
+
+
+@router.get("/api/endurance-score")
+async def endurance_score(
+    period: str = Query(default="3m", pattern="^(1m|3m|6m|1y)$"),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Endurance Score + period-filtered daily trend for the Dashboard Load tab.
+
+    Phase 2 implementation (per `docs/ENDURANCE_SCORE_SPEC.md` §9):
+      · Reads daily snapshots from ``endurance_scores`` (populated by the
+        Level-1 hooks in wellness/activities actors + Level-2 daily cron).
+      · Period filter chooses the window: 1m=30d, 3m=90d (default), 6m=180d,
+        1y=365d. Frontend chips drive this.
+      · Fallback: if today's row is missing (cron hasn't fired yet on a fresh
+        deploy, or backfill incomplete), compute on-the-fly via the sync
+        service — kept inside ``asyncio.to_thread`` so we don't block the
+        event loop on the chained DB queries.
+
+    Per-sport breakdown, components, badge — all serialized from the stored
+    ``components`` JSONB. Schema matches the Phase-1 response so the
+    frontend doesn't need adjustment.
+    """
+    today = _today_local()
+    uid = get_data_user_id(user)
+    days = _ENDURANCE_PERIOD_DAYS[period]
+    window_start = today - timedelta(days=days - 1)
+
+    async with get_session() as session:
+        rows = await EnduranceScore.get_range(uid, window_start, today, session=session)
+        today_row = rows[-1] if rows and rows[-1].snapshot_date == today else None
+
+    if today_row is None:
+        # Fallback: today's snapshot not in the table yet. Recompute synchronously
+        # off-thread. The actor will eventually persist it (Level 1 fires after
+        # the next wellness/activities sync; Level 2 fires at 18:30 daily).
+        current_result = await asyncio.to_thread(compute_endurance_for, uid, today)
+        current_score = current_result.score
+        current_zone_id = current_result.zone_id
+        current_vo2max = current_result.vo2max_composite
+        components = {
+            "base": current_result.components.base,
+            "long_term": current_result.components.long_term,
+            "recent": current_result.components.recent,
+            "duration": current_result.components.duration,
+            "consistency": current_result.components.consistency,
+            "recovery": current_result.components.recovery,
+        }
+        per_sport = [{"name": p.name, "pct": p.pct, "sub_score": p.sub_score} for p in current_result.per_sport]
+        badge = (
+            {"id": current_result.badge.id, "label": current_result.badge.label, "icon": current_result.badge.icon}
+            if current_result.badge
+            else None
+        )
+        insufficient = current_result.insufficient_data
+    else:
+        c = today_row.components or {}
+        current_score = today_row.score
+        current_zone_id = classify_zone(current_score).id
+        current_vo2max = float(today_row.vo2max_composite) if today_row.vo2max_composite is not None else 0.0
+        components = {
+            "base": c.get("base", 0),
+            "long_term": c.get("long_term", 0),
+            "recent": c.get("recent", 0),
+            "duration": c.get("duration", 0),
+            "consistency": c.get("consistency", 0),
+            "recovery": c.get("recovery", 0),
+        }
+        per_sport = c.get("per_sport", [])
+        badge = c.get("badge")
+        insufficient = c.get("insufficient_data", False)
+
+    # Δ vs ~a week ago — strict `today - 7d` match was fragile: one skipped
+    # cron-day = no badge, delta=0 looks misleadingly flat. Take the nearest
+    # snapshot in the [today-10d, today-4d] window; if none exists (e.g. fresh
+    # user, gap >3d) fall back to 0 — same neutral behaviour as before for
+    # genuine «no data» cases, but resilient to single-day gaps.
+    target = today - timedelta(days=7)
+    window_lo = today - timedelta(days=10)
+    window_hi = today - timedelta(days=4)
+    candidates = [r for r in rows if window_lo <= r.snapshot_date <= window_hi]
+    week_ago_row = min(candidates, key=lambda r: abs((r.snapshot_date - target).days)) if candidates else None
+    delta_vs_week_ago = current_score - week_ago_row.score if week_ago_row is not None else 0
+
+    trend = [{"date": r.snapshot_date.isoformat(), "score": r.score, "zone": classify_zone(r.score).id} for r in rows]
+    # Fallback path computed today's score but didn't write it to the table
+    # yet, so `rows` won't include a today-point. Synthesize one so the chart
+    # line reaches today's gauge value instead of stopping at yesterday.
+    if today_row is None:
+        trend.append({"date": today.isoformat(), "score": current_score, "zone": current_zone_id})
+
+    return {
+        "current": {
+            "score": current_score,
+            "zone": current_zone_id,
+            "vo2max_composite": current_vo2max,
+            "components": components,
+            "per_sport": per_sport,
+            "delta_vs_week_ago": delta_vs_week_ago,
+            "badge": badge,
+            "insufficient_data": insufficient,
+        },
+        "trend": trend,
+        "period": period,
+    }
 
 
 @router.get("/api/bike-readiness")

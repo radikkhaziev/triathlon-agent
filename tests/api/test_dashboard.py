@@ -2194,3 +2194,228 @@ class TestBikeReadiness:
         # Sanity: the ride DID land in the decoupling pipeline — null here
         # is about EF trend specifically, not a blanket "no data" miss.
         assert cc["decoupling_n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# /api/endurance-score (Phase 2 — reads from endurance_scores table)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_endurance(
+    user_id: int,
+    dt: date,
+    score: int,
+    *,
+    vo2max: float = 44.0,
+    components: dict | None = None,
+) -> None:
+    """Insert one endurance_scores row directly — bypasses the actor + service
+    so tests focus on endpoint behaviour, not pipeline integration."""
+    from data.db import EnduranceScore
+
+    await EnduranceScore.upsert(
+        user_id=user_id,
+        snapshot_date=dt,
+        score=score,
+        vo2max_composite=vo2max,
+        components=components
+        or {
+            "base": 4400,
+            "long_term": 520,
+            "recent": 155,
+            "duration": 200,
+            "consistency": 160,
+            "recovery": 180,
+            "per_sport": [
+                {"name": "Bike", "pct": 42.0, "sub_score": None},
+                {"name": "Run", "pct": 43.0, "sub_score": None},
+                {"name": "Swim", "pct": 14.0, "sub_score": None},
+            ],
+            "badge": None,
+            "insufficient_data": False,
+            "insufficient_reason": None,
+        },
+    )
+
+
+class TestEnduranceScore:
+    async def test_returns_today_from_table_when_present(self, client):
+        await _seed_endurance(1, _FIXED_TODAY, score=5500)
+
+        async with client as c:
+            resp = await c.get("/api/endurance-score?period=1m")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current"]["score"] == 5500
+        assert data["current"]["zone"] == "productive"  # 5500 = productive zone start
+        assert data["period"] == "1m"
+
+    async def test_period_window_filters_trend(self, client):
+        """Trend must include only rows within ``period`` window."""
+        # 30 days in window (1m), plus one row 100 days back — outside 1m, inside 6m
+        await _seed_endurance(1, _FIXED_TODAY, score=5500)
+        await _seed_endurance(1, _FIXED_TODAY - timedelta(days=15), score=5400)
+        await _seed_endurance(1, _FIXED_TODAY - timedelta(days=100), score=5000)
+
+        async with client as c:
+            resp1 = await c.get("/api/endurance-score?period=1m")
+            resp6 = await c.get("/api/endurance-score?period=6m")
+
+        # 1m window has only the 2 recent rows
+        assert len(resp1.json()["trend"]) == 2
+        # 6m window picks up the 100-day-old row too
+        assert len(resp6.json()["trend"]) == 3
+
+    async def test_multi_tenant_isolation(self, client):
+        """User 1's endpoint must NOT see user 2's snapshots."""
+        # Seed a second user (conftest only autocreates user 1) — the FK
+        # constraint on endurance_scores.user_id requires the row to exist.
+        async with get_session() as session:
+            existing = await session.get(User, 2)
+            if not existing:
+                session.add(User(id=2, chat_id="test_user_2", role="athlete"))
+                await session.commit()
+
+        await _seed_endurance(1, _FIXED_TODAY, score=5500)
+        await _seed_endurance(2, _FIXED_TODAY, score=7000)
+        await _seed_endurance(2, _FIXED_TODAY - timedelta(days=10), score=6800)
+
+        async with client as c:
+            # client fixture is hard-wired to user_id=1 via dependency_overrides
+            resp = await c.get("/api/endurance-score?period=3m")
+
+        data = resp.json()
+        assert data["current"]["score"] == 5500
+        # Trend must have only user 1's row, not user 2's
+        scores = [p["score"] for p in data["trend"]]
+        assert 7000 not in scores
+        assert 6800 not in scores
+
+    async def test_fallback_compute_when_today_missing(self, client):
+        """If today's row is missing, endpoint falls back to on-the-fly compute.
+
+        We don't seed today but seed a historical row — endpoint must still
+        return a current.score (computed via service) without raising. The
+        synthesized today-point must appear in `trend` (fix for review M3).
+        """
+        await _seed_endurance(1, _FIXED_TODAY - timedelta(days=5), score=5400)
+
+        async with client as c:
+            resp = await c.get("/api/endurance-score?period=1m")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # current.score comes from on-the-fly compute — value depends on user
+        # 1's data state in the test DB, just assert it returned an int.
+        assert isinstance(data["current"]["score"], int)
+        assert data["current"]["score"] >= 0
+        # The historical row is still in trend
+        scores = [p["score"] for p in data["trend"]]
+        assert 5400 in scores
+        # Synthesized today-point also in trend (fallback path)
+        dates = [p["date"] for p in data["trend"]]
+        assert _FIXED_TODAY.isoformat() in dates
+
+    async def test_fallback_compute_does_not_leak_other_user_data(self, client):
+        """Fallback compute path must respect tenant isolation.
+
+        Seed activities+wellness for user 2 (NOT user 1) so the fallback
+        compute for user 1 has no data of its own. Verify the computed score
+        does not reflect user 2's activity load.
+        """
+        # Seed user 2 (FK constraint requires the row).
+        async with get_session() as session:
+            existing = await session.get(User, 2)
+            if not existing:
+                session.add(User(id=2, chat_id="test_user_2", role="athlete"))
+                await session.commit()
+        # User 2 has aggressive training history — would push score up if leaked.
+        for offset in range(28):
+            await _seed_wellness(2, _FIXED_TODAY - timedelta(days=offset), ctl=80.0, atl=75.0)
+        await Activity.save_bulk(
+            2,
+            activities=[
+                _make_activity(
+                    aid=f"user2_act_{i}",
+                    dt=_FIXED_TODAY - timedelta(days=i),
+                    sport="Ride",
+                    tss=120.0,
+                )
+                for i in range(20)
+            ],
+        )
+        # User 1 has NO data → fallback compute hits DEFAULT_VO2MAX baseline only.
+
+        async with client as c:
+            resp = await c.get("/api/endurance-score?period=1m")
+
+        assert resp.status_code == 200
+        # User 1's score = DEFAULT_VO2MAX(40) × 100 = 4000 base + 0 bonuses.
+        # If we leaked user 2's data, score would be ~5000+ from LongTerm/Duration.
+        score = resp.json()["current"]["score"]
+        assert score < 4500, f"score {score} suggests data leak from user 2"
+
+    async def test_recompute_middle_of_history_preserves_neighbors(self, client):
+        """Backfill replay corner-case: recomputing a single historical day
+        must not touch neighbouring rows. Tests that upsert is keyed
+        correctly and the period-window response stays consistent (review M3)."""
+        import asyncio
+
+        from data.endurance_score_service import recompute_and_upsert
+
+        # Seed three days with distinct scores.
+        await _seed_endurance(1, _FIXED_TODAY - timedelta(days=5), score=5000)
+        await _seed_endurance(1, _FIXED_TODAY - timedelta(days=3), score=5200)
+        await _seed_endurance(1, _FIXED_TODAY - timedelta(days=1), score=5400)
+
+        # Recompute the middle day with force=True. Service is sync-only —
+        # async test calls it off-thread (same pattern as the endpoint fallback).
+        await asyncio.to_thread(recompute_and_upsert, 1, _FIXED_TODAY - timedelta(days=3), force=True)
+
+        async with client as c:
+            resp = await c.get("/api/endurance-score?period=1m")
+
+        data = resp.json()
+        # Neighbouring rows must still be present with their original scores.
+        scores_by_date = {p["date"]: p["score"] for p in data["trend"]}
+        assert scores_by_date[(_FIXED_TODAY - timedelta(days=5)).isoformat()] == 5000
+        assert scores_by_date[(_FIXED_TODAY - timedelta(days=1)).isoformat()] == 5400
+        # Middle row is overwritten with whatever fallback compute produced
+        # — value is non-deterministic, just verify it exists and is an int.
+        assert isinstance(scores_by_date[(_FIXED_TODAY - timedelta(days=3)).isoformat()], int)
+
+    async def test_invalid_period_returns_422(self, client):
+        async with client as c:
+            resp = await c.get("/api/endurance-score?period=invalid")
+
+        assert resp.status_code == 422  # FastAPI Query pattern mismatch
+
+    async def test_components_serialized_from_jsonb(self, client):
+        """Endpoint surfaces the stored components JSONB as-is to the frontend."""
+        await _seed_endurance(
+            1,
+            _FIXED_TODAY,
+            score=5500,
+            components={
+                "base": 4400,
+                "long_term": 520,
+                "recent": 155,
+                "duration": 200,
+                "consistency": 160,
+                "recovery": 180,
+                "per_sport": [{"name": "Bike", "pct": 42.0, "sub_score": None}],
+                "badge": {"id": "best_90d", "label": "Лучший за 3 месяца", "icon": "🏆"},
+                "insufficient_data": False,
+                "insufficient_reason": None,
+            },
+        )
+
+        async with client as c:
+            resp = await c.get("/api/endurance-score?period=1m")
+
+        data = resp.json()
+        assert data["current"]["components"]["base"] == 4400
+        assert data["current"]["components"]["recovery"] == 180
+        assert data["current"]["badge"]["id"] == "best_90d"
+        assert data["current"]["badge"]["label"] == "Лучший за 3 месяца"

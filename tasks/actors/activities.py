@@ -48,6 +48,7 @@ from data.intervals.dto import ActivityDTO
 from data.ml.noise_classifier import classify_activity_row
 from data.utils import HRV_ELIGIBLE_TYPES
 from tasks.actors.athlets import actor_update_zones
+from tasks.actors.endurance import actor_snapshot_endurance_scores
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO, local_today
 from tasks.formatter import build_post_activity_message, build_ramp_test_message, build_rpe_keyboard
 from tasks.tools import TelegramTool
@@ -730,6 +731,12 @@ def actor_fetch_user_activities(
 
     g = group([actor_update_activity_details.message(user=user, activity_id=aid, force=force) for aid in activity_ids])
     g.run()
+
+    # Endurance Score Level-1 hook (spec §7.0). Fire-and-forget — new
+    # activities shift Duration/Consistency/Recovery components in the 28d/8w
+    # windows. Idempotent upsert in `EnduranceScore.upsert` makes re-fires
+    # safe (this hook + actor_user_wellness hook + Level-2 cron).
+    actor_snapshot_endurance_scores.send(user_id=user.id)
 
 
 @dramatiq.actor(queue_name="default")
