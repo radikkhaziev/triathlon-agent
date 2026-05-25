@@ -7,6 +7,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
 import { fmtDateYmd } from '../lib/formatters'
+import { TSB_ZONES, tsbZoneOf } from '../lib/constants'
 import type { ActivitiesSeries, TrainingLoadSeries, WellnessResponse } from '../api/types'
 
 /**
@@ -34,28 +35,6 @@ const RANGE_DAYS: Record<Range, number> = { '1m': 30, '3m': 90, '6m': 180, '1y':
 
 const LOAD_COLOR = { ctl: 'var(--color-brand)', atl: 'var(--color-coral)' }
 const SPORT_COLOR = { swim: 'var(--color-amber)', ride: 'var(--color-brand)', run: 'var(--color-coral)' }
-
-// TSB zone bands — ported verbatim from the design's `TSB_ZONES` (a 5-band
-// PMC-style banding chosen for this chart by explicit request).
-interface TsbZone {
-  id: string
-  label: string
-  lo: number
-  hi: number
-  fill: string
-  line: string
-}
-const TSB_ZONES: TsbZone[] = [
-  { id: 'risk', label: 'High risk', lo: -Infinity, hi: -30, fill: 'rgba(239, 68, 68, 0.10)', line: '#dc2626' },
-  { id: 'optimal', label: 'Optimal', lo: -30, hi: -10, fill: 'rgba(34, 197, 94, 0.10)', line: '#16a34a' },
-  { id: 'gray', label: 'Gray zone', lo: -10, hi: 5, fill: 'rgba(148, 163, 184, 0.10)', line: '#6b7280' },
-  { id: 'fresh', label: 'Fresh', lo: 5, hi: 25, fill: 'rgba(59, 109, 255, 0.10)', line: '#3b6dff' },
-  { id: 'transition', label: 'Transition', lo: 25, hi: Infinity, fill: 'rgba(209, 139, 0, 0.12)', line: '#d18b00' },
-]
-function tsbZoneOf(v: number): TsbZone {
-  for (const z of TSB_ZONES) if (v < z.hi) return z
-  return TSB_ZONES[TSB_ZONES.length - 1]
-}
 
 const fmtMd = (ymd: string) => {
   const p = ymd.split('-')
@@ -126,10 +105,14 @@ export default function LoadDetail() {
   const atlToday = load && todayIdx >= 0 ? load.atl[todayIdx] : null
   const tsbToday = load && todayIdx >= 0 ? load.tsb[todayIdx] : null
 
+  // Form's chip + value share the active TSB zone colour (risk/optimal/gray/
+  // fresh/transition — same gradation as the zoned chart below and the
+  // Wellness Training-load card).
+  const tsbColor = tsbToday != null ? tsbZoneOf(tsbToday).line : 'var(--color-ink-dim)'
   const headline: { k: string; sub: string; val: number | null; color: string; signed?: boolean }[] = [
     { k: 'Fitness', sub: 'CTL', val: ctlToday, color: LOAD_COLOR.ctl },
     { k: 'Fatigue', sub: 'ATL', val: atlToday, color: LOAD_COLOR.atl },
-    { k: 'Form', sub: 'TSB', val: tsbToday, color: '#16a34a', signed: true },
+    { k: 'Form', sub: 'TSB', val: tsbToday, color: tsbColor, signed: true },
   ]
 
   return (
@@ -168,7 +151,7 @@ export default function LoadDetail() {
                     </div>
                     <div
                       className="mt-1 text-[26px] font-semibold tracking-[-0.5px]"
-                      style={{ color: m.signed && (m.val ?? 0) < 0 ? 'var(--color-coral)' : 'var(--color-ink)' }}
+                      style={{ color: m.signed ? m.color : 'var(--color-ink)' }}
                     >
                       {m.val == null ? '—' : m.signed ? fmtSigned(m.val) : m.val}
                     </div>

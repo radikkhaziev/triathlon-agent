@@ -10,6 +10,7 @@ import { useChangelog } from '../hooks/useChangelog'
 import { useApi } from '../hooks/useApi'
 import { apiFetch, ApiError } from '../api/client'
 import { num, relativeTime, fmtDateYmd } from '../lib/formatters'
+import { tsbZoneOf } from '../lib/constants'
 import {
   classifyRecovery,
   recommendTraining,
@@ -615,18 +616,27 @@ function TrainingLoadCard({ data }: { data: WellnessResponseData }) {
         </span>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-3.5">
-        {cells.map(c => (
-          <div key={c.sub}>
-            <div className="text-[11px] font-semibold text-halo-ink-dim">{c.k}</div>
-            <div
-              className="mt-0.5 text-[22px] font-semibold tracking-[-0.5px]"
-              style={{ color: c.signed && (c.val ?? 0) < 0 ? 'var(--color-coral)' : 'var(--color-ink)' }}
-            >
-              {c.val != null ? (c.signed && c.val > 0 ? '+' : '') + num(c.val) : '--'}
+        {cells.map(c => {
+          // Form (TSB) coloured by the 5-band gradation (risk/optimal/gray/
+          // fresh/transition — `lib/constants.TSB_ZONES`, shared with LoadDetail).
+          // CTL/ATL stay regular ink.
+          const colour =
+            c.signed && c.val != null
+              ? tsbZoneOf(c.val).line
+              : 'var(--color-ink)'
+          return (
+            <div key={c.sub}>
+              <div className="text-[11px] font-semibold text-halo-ink-dim">{c.k}</div>
+              <div
+                className="mt-0.5 text-[22px] font-semibold tracking-[-0.5px]"
+                style={{ color: colour }}
+              >
+                {c.val != null ? (c.signed && c.val > 0 ? '+' : '') + num(c.val) : '--'}
+              </div>
+              <div className="mt-px text-[10px] uppercase tracking-[0.6px] text-halo-ink-dimmer">{c.sub}</div>
             </div>
-            <div className="mt-px text-[10px] uppercase tracking-[0.6px] text-halo-ink-dimmer">{c.sub}</div>
-          </div>
-        ))}
+          )
+        })}
       </div>
       {hasSeg && (
         <div className="mt-3.5">

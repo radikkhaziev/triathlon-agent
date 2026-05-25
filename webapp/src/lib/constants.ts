@@ -40,3 +40,26 @@ export const CHART_COLORS = {
   ride: '#3b6dff',
   run: '#d94640',
 }
+
+// TSB zone bands — frontend is the source of truth (CLAUDE.md «Business Rules»
+// references this list); `data/utils.py:tsb_zone` mirrors the same five ids.
+// 5-band PMC-style banding.
+export interface TsbZone {
+  id: 'risk' | 'optimal' | 'gray' | 'fresh' | 'transition'
+  label: string
+  lo: number
+  hi: number
+  fill: string
+  line: string
+}
+export const TSB_ZONES: TsbZone[] = [
+  { id: 'risk', label: 'High risk', lo: -Infinity, hi: -30, fill: 'rgba(239, 68, 68, 0.10)', line: '#dc2626' },
+  { id: 'optimal', label: 'Optimal', lo: -30, hi: -10, fill: 'rgba(34, 197, 94, 0.10)', line: '#16a34a' },
+  { id: 'gray', label: 'Gray zone', lo: -10, hi: 5, fill: 'rgba(148, 163, 184, 0.10)', line: '#6b7280' },
+  { id: 'fresh', label: 'Fresh', lo: 5, hi: 25, fill: 'rgba(59, 109, 255, 0.10)', line: '#3b6dff' },
+  { id: 'transition', label: 'Transition', lo: 25, hi: Infinity, fill: 'rgba(209, 139, 0, 0.12)', line: '#d18b00' },
+]
+export function tsbZoneOf(v: number): TsbZone {
+  for (const z of TSB_ZONES) if (v < z.hi) return z
+  return TSB_ZONES[TSB_ZONES.length - 1]
+}
