@@ -6,6 +6,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import ZoneBar from '../components/ZoneBar'
 import { useApi } from '../hooks/useApi'
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { fmtDateShort, fmtDuration, fmtPace, sportLabel, stripWorkoutPrefix } from '../lib/formatters'
 import { ZONE_COLORS } from '../lib/constants'
 import type {
@@ -496,6 +497,10 @@ function TimelineChart({
   title: string
   totalLabel?: string | null
 }) {
+  // Hooks must run on every render — keep them above every early return so the
+  // call order stays identical across re-renders with different prop shapes.
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(800)
+
   const flat = flattenSteps(steps)
   if (flat.length === 0) return null
   const totalSec = flat[flat.length - 1].startSec + flat[flat.length - 1].durationSec
@@ -537,8 +542,8 @@ function TimelineChart({
   const yMin = dataMin - range * 0.1
   const yMax = dataMax + range * 0.1
 
-  // Chart geometry — viewBox so it scales fluidly across screen widths.
-  const W = 800
+  // Chart geometry — `W` measured via `useMeasuredWidth` above so 1 viewBox
+  // unit equals 1 CSS px (no horizontal stretch).
   const H = 160
   const padL = 40
   const padR = 8
@@ -609,10 +614,12 @@ function TimelineChart({
         <span className="text-sm font-semibold">{title}</span>
         {totalLabel && <span className="text-xs text-halo-ink-dim">{totalLabel}</span>}
       </div>
+      <div ref={wrapRef} className="w-full">
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="w-full h-auto block"
-        preserveAspectRatio="none"
+        width="100%"
+        height={H}
+        className="block"
         role="img"
         aria-label={ariaLabel}
       >
@@ -699,6 +706,7 @@ function TimelineChart({
           )
         })}
       </svg>
+      </div>
     </div>
   )
 }

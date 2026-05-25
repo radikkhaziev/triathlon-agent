@@ -177,24 +177,36 @@ export default function Wellness() {
 
         {!loading && !error && data?.has_data && (
           /* Mobile: single column (prototype `BWellness`). Desktop
-             (`BdWellness`): 1.4fr / 1fr — recovery hero spans col 1 rows
-             1-2, Sleep + Training-load stack col 2, then HRV/RHR, Body and
-             the Coach teaser run full width below. Flat DOM keeps the mobile
-             order byte-identical; `md:` row/col placement does the reflow. */
+             (`BdWellness` + Endurance redesign at direction-b-desktop.jsx:555):
+             1.4fr / 1fr — Row 1-2: Recovery hero (col 1) + Endurance Score
+             "Coming soon" (col 2) as twin heroes. Row 3: Sleep + Training Load
+             as a peer 2-col row (used to live inside Recovery's right column).
+             Row 4+: HRV/RHR, Body, Coach teaser full width. Flat DOM keeps
+             mobile order byte-identical; Endurance is desktop-only (mobile has
+             it on the Load tab). */
           <div className="flex flex-col gap-3.5 pb-4 md:grid md:grid-cols-[1.4fr_1fr] md:items-start md:gap-[18px] md:[grid-auto-rows:max-content]">
             <div className="md:col-start-1 md:row-start-1 md:row-span-2">
               <RecoveryHero data={data} lang={lang} showBreakdown={showBreakdown} onToggle={() => setShowBreakdown(s => !s)} t={t} />
             </div>
-            <div className="md:col-span-2 md:col-start-1 md:row-start-3">
+            {/* Endurance Score — desktop-only Coming Soon card, peer to Recovery.
+                Hidden on mobile (CSS Grid + flex-gap skip display:none children),
+                so this wrapper's DOM position between RecoveryHero and PairedMetrics
+                doesn't affect the mobile flex-col order. */}
+            <div className="hidden md:col-start-2 md:row-start-1 md:row-span-2 md:block">
+              <EnduranceComingSoonCard />
+            </div>
+            {/* Mobile order matches pre-Endurance Wellness (Recovery → HRV/RHR →
+                Sleep → Load → Body → Coach). Desktop reflows via md:row-start-N. */}
+            <div className="md:col-span-2 md:col-start-1 md:row-start-4">
               <PairedMetrics data={data} t={t} />
             </div>
-            <div className="md:col-start-2 md:row-start-1">
+            <div className="md:col-start-1 md:row-start-3">
               <SleepCard data={data} t={t} />
             </div>
-            <div className="md:col-start-2 md:row-start-2">
+            <div className="md:col-start-2 md:row-start-3">
               <TrainingLoadCard data={data} />
             </div>
-            <div className="md:col-span-2 md:col-start-1 md:row-start-4">
+            <div className="md:col-span-2 md:col-start-1 md:row-start-5">
               <BodyCard data={data} t={t} />
             </div>
 
@@ -206,7 +218,7 @@ export default function Wellness() {
               <Link
                 to={isToday ? '/coach' : `/coach?date=${dateStr}`}
                 aria-label={t('wellness.coach_note')}
-                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-2 md:col-start-1 md:row-start-5"
+                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-2 md:col-start-1 md:row-start-6"
               >
                 <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-white/10 text-[13px] font-bold tracking-[0.4px]">
                   AI
@@ -342,98 +354,103 @@ function RecoveryHero({
         </span>
         <span aria-hidden="true" className="text-[15px] leading-none text-halo-ink-dimmer">›</span>
       </div>
-      <div className="flex justify-center pt-2">
-        <Gauge
-          width={240}
-          height={220}
-          cx={120}
-          cy={120}
-          r={92}
-          strokeWidth={16}
-          value={score}
-          color={arcColor}
-          trackColor={arcWash}
-          /* Category boundaries from utils/recovery.classifyRecovery:
-             <40 low / 40-70 moderate / 70-85 good / >85 excellent.
-             Halo-v3 swap from prototype's visual 33/66 to the real
-             backend gradations — data-honest. */
-          ticks={hasScore ? [40, 70, 85] : undefined}
-          endLabels={['0', '100']}
-          center={(cx, cy) => (
-            <>
-              <text x={cx} y={cy + 4} textAnchor="middle" fontSize="64" fontWeight="600" fill="var(--color-ink)" letterSpacing="-3">
-                {score ?? '--'}
-              </text>
-              <text x={cx} y={cy + 30} textAnchor="middle" fontSize="12" fill="var(--color-ink-dim)" style={{ textTransform: 'uppercase' }}>
-                {cat ?? '—'}
-              </text>
-            </>
-          )}
-        />
-      </div>
-      <div className="flex flex-col gap-2 px-4 pb-4">
-        {chip ? (
-          <div className="flex items-center gap-2.5 rounded-chip px-3 py-2.5" style={{ backgroundColor: arcWash }}>
-            <span aria-hidden="true" className="text-lg leading-none">{chip.emoji}</span>
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-bold tracking-[0.6px] text-halo-ink">{chip.label}</div>
-              <div className="mt-0.5 text-[13px] leading-snug text-halo-ink-dim">{recCopy}</div>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-chip bg-halo-surface-2 px-3 py-2.5 text-[13px] text-halo-ink-dim">
-            {t('wellness.score_unavailable')}
-          </div>
-        )}
-
-        {isSkip && (
-          <div
-            className="flex items-start gap-2.5 rounded-chip px-3 py-2.5"
-            style={{ background: '#fef2f2', border: '1px solid #fecaca' }}
-          >
-            <span aria-hidden="true" className="text-sm leading-tight">⚠</span>
-            <div className="text-[12px] leading-snug" style={{ color: '#7f1d1d' }}>
-              <strong>{t('wellness.hrv_override_title')}:</strong> {t('wellness.skip_override')}
-            </div>
-          </div>
-        )}
-
-        {/* stopPropagation — toggling the disclosure must not also fire the
-            card's navigate-to-trend click. */}
-        <button
-          type="button"
-          onClick={e => {
-            e.stopPropagation()
-            onToggle()
-          }}
-          aria-expanded={showBreakdown}
-          aria-controls="recovery-breakdown"
-          className="mt-0.5 flex w-full items-center justify-between rounded-chip border border-dashed border-halo-border px-3 py-2.5 text-[12px] font-semibold tracking-[0.2px] text-halo-ink-dim"
-        >
-          <span>{t('wellness.how_score')}</span>
-          <span aria-hidden="true" className={`transition-transform ${showBreakdown ? 'rotate-180' : ''}`}>⌄</span>
-        </button>
-        {showBreakdown && (
-          <div
-            id="recovery-breakdown"
-            onClick={e => e.stopPropagation()}
-            className="flex flex-col gap-0.5 px-1 pt-1"
-          >
-            {breakdown.map(b => (
-              <div key={b.k} className="grid grid-cols-[62px_18px_1fr_auto] items-center gap-2 px-2 py-2">
-                <span className="text-[12px] font-bold text-halo-ink">{b.k}</span>
-                <span className="text-center text-[12px] leading-none">{b.emoji || ''}</span>
-                <span className="text-[12px] font-medium text-halo-ink-dim">{b.val}</span>
-                <span className="min-w-[34px] rounded-pill bg-halo-brand-light px-1.5 py-0.5 text-center text-[10px] font-bold tracking-[0.4px] text-halo-brand-dark">
-                  {b.wt}%
-                </span>
+      {/* Mobile: vertical stack (gauge → chip+breakdown). Desktop (prototype
+          `BdWellness` rows 259-337): row layout — gauge left, chip+breakdown
+          right inside the same card so the wider hero earns its width. */}
+      <div className="flex flex-col md:flex-row md:items-center md:gap-7 md:px-6 md:pb-5">
+        <div className="flex justify-center pt-2 md:flex-shrink-0 md:pt-4">
+          <Gauge
+            width={240}
+            height={220}
+            cx={120}
+            cy={120}
+            r={92}
+            strokeWidth={16}
+            value={score}
+            color={arcColor}
+            trackColor={arcWash}
+            /* Category boundaries from utils/recovery.classifyRecovery:
+               <40 low / 40-70 moderate / 70-85 good / >85 excellent.
+               Halo-v3 swap from prototype's visual 33/66 to the real
+               backend gradations — data-honest. */
+            ticks={hasScore ? [40, 70, 85] : undefined}
+            endLabels={['0', '100']}
+            center={(cx, cy) => (
+              <>
+                <text x={cx} y={cy + 4} textAnchor="middle" fontSize="64" fontWeight="600" fill="var(--color-ink)" letterSpacing="-3">
+                  {score ?? '--'}
+                </text>
+                <text x={cx} y={cy + 30} textAnchor="middle" fontSize="12" fill="var(--color-ink-dim)" style={{ textTransform: 'uppercase' }}>
+                  {cat ?? '—'}
+                </text>
+              </>
+            )}
+          />
+        </div>
+        <div className="flex flex-col gap-2 px-4 pb-4 md:min-w-0 md:flex-1 md:px-0 md:pb-0">
+          {chip ? (
+            <div className="flex items-center gap-2.5 rounded-chip px-3 py-2.5" style={{ backgroundColor: arcWash }}>
+              <span aria-hidden="true" className="text-lg leading-none">{chip.emoji}</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-bold tracking-[0.6px] text-halo-ink">{chip.label}</div>
+                <div className="mt-0.5 text-[13px] leading-snug text-halo-ink-dim">{recCopy}</div>
               </div>
-            ))}
-            <div className="mt-1.5 px-2 text-[10px] leading-relaxed text-halo-ink-dimmer">
-              {t('wellness.breakdown_note')}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="rounded-chip bg-halo-surface-2 px-3 py-2.5 text-[13px] text-halo-ink-dim">
+              {t('wellness.score_unavailable')}
+            </div>
+          )}
+
+          {isSkip && (
+            <div
+              className="flex items-start gap-2.5 rounded-chip px-3 py-2.5"
+              style={{ background: '#fef2f2', border: '1px solid #fecaca' }}
+            >
+              <span aria-hidden="true" className="text-sm leading-tight">⚠</span>
+              <div className="text-[12px] leading-snug" style={{ color: '#7f1d1d' }}>
+                <strong>{t('wellness.hrv_override_title')}:</strong> {t('wellness.skip_override')}
+              </div>
+            </div>
+          )}
+
+          {/* stopPropagation — toggling the disclosure must not also fire the
+              card's navigate-to-trend click. */}
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation()
+              onToggle()
+            }}
+            aria-expanded={showBreakdown}
+            aria-controls="recovery-breakdown"
+            className="mt-0.5 flex w-full items-center justify-between rounded-chip border border-dashed border-halo-border px-3 py-2.5 text-[12px] font-semibold tracking-[0.2px] text-halo-ink-dim"
+          >
+            <span>{t('wellness.how_score')}</span>
+            <span aria-hidden="true" className={`transition-transform ${showBreakdown ? 'rotate-180' : ''}`}>⌄</span>
+          </button>
+          {showBreakdown && (
+            <div
+              id="recovery-breakdown"
+              onClick={e => e.stopPropagation()}
+              className="flex flex-col gap-0.5 px-1 pt-1"
+            >
+              {breakdown.map(b => (
+                <div key={b.k} className="grid grid-cols-[62px_18px_1fr_auto] items-center gap-2 px-2 py-2">
+                  <span className="text-[12px] font-bold text-halo-ink">{b.k}</span>
+                  <span className="text-center text-[12px] leading-none">{b.emoji || ''}</span>
+                  <span className="text-[12px] font-medium text-halo-ink-dim">{b.val}</span>
+                  <span className="min-w-[34px] rounded-pill bg-halo-brand-light px-1.5 py-0.5 text-center text-[10px] font-bold tracking-[0.4px] text-halo-brand-dark">
+                    {b.wt}%
+                  </span>
+                </div>
+              ))}
+              <div className="mt-1.5 px-2 text-[10px] leading-relaxed text-halo-ink-dimmer">
+                {t('wellness.breakdown_note')}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -681,11 +698,14 @@ function BodyCard({ data, t }: { data: WellnessResponseData; t: TFn }) {
         <span className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">{t('wellness.body')}</span>
         <span aria-hidden="true" className="text-[15px] leading-none text-halo-ink-dimmer">›</span>
       </div>
-      <div className="mt-2.5 grid grid-cols-2 gap-x-[18px] gap-y-3.5">
+      {/* Mobile: 2×2 grid. Desktop (prototype `BdWellness` rows 567-583):
+          single-row 4-col strip — weight/BF/VO₂/steps fit on one line at
+          1180px content width. */}
+      <div className="mt-2.5 grid grid-cols-2 gap-x-[18px] gap-y-3.5 md:grid-cols-4 md:gap-x-6 md:gap-y-0">
         {cells.map(c => (
           <div key={c.k}>
             <div className="text-[11px] font-semibold text-halo-ink-dim">{c.k}</div>
-            <div className="mt-0.5 text-[22px] font-semibold tracking-[-0.5px] text-halo-ink">
+            <div className="mt-0.5 text-[22px] font-semibold tracking-[-0.5px] text-halo-ink md:text-[28px] md:mt-1">
               {c.val}
               {c.unit && <span className="text-[11px] font-medium text-halo-ink-dim"> {c.unit}</span>}
             </div>
@@ -693,6 +713,81 @@ function BodyCard({ data, t }: { data: WellnessResponseData; t: TFn }) {
         ))}
       </div>
     </Link>
+  )
+}
+
+// Endurance Score — composite training-status metric (mirrors mobile
+// `TRAINING_STATUS` in direction-b-halo.jsx, with desktop port at
+// direction-b-desktop.jsx:313 `BdEnduranceCard`). Designed to sit as a peer
+// hero next to Recovery on the desktop Wellness grid. Backend is not wired
+// yet — render a placeholder "Coming soon" card so the slot is reserved and
+// the desktop grid balances visually. Hidden on mobile: the mobile design
+// puts Endurance on the Load tab, not Wellness.
+function EnduranceComingSoonCard() {
+  const { t } = useTranslation()
+  return (
+    <div className="flex h-full flex-col overflow-hidden rounded-card border border-halo-border bg-halo-surface shadow-card">
+      <div className="flex items-start justify-between px-5 pt-5">
+        <div className="min-w-0">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
+            {t('wellness.endurance_title')}
+          </span>
+          <div className="mt-1.5 max-w-[280px] text-[13px] leading-snug text-halo-ink-dim">
+            {t('wellness.endurance_subtitle')}
+          </div>
+        </div>
+        <span className="shrink-0 rounded-pill bg-halo-surface-2 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.5px] text-halo-ink-dim">
+          {t('wellness.endurance_soon_badge')}
+        </span>
+      </div>
+
+      {/* Ghost segmented arc + zone label — visual silhouette of the future
+          gauge so the slot reads as "endurance card" even without data. Matches
+          the segmented-arc treatment from BdEnduranceGauge (6 colored zones,
+          240° sweep, bottom-open opening). All ink is dimmed to read as
+          unavailable rather than active. */}
+      <div className="flex flex-1 flex-col items-center justify-center px-5 pb-5 pt-2">
+        <svg width="220" height="200" viewBox="0 0 220 200" className="block" aria-hidden="true">
+          {[
+            { from: -120, to: -86, color: 'var(--color-status-red)' },
+            { from: -82, to: -48, color: 'var(--color-amber)' },
+            { from: -44, to: -10, color: 'var(--color-status-yellow)' },
+            { from: -6, to: 28, color: 'var(--color-status-green)' },
+            { from: 32, to: 66, color: 'var(--color-brand)' },
+            { from: 70, to: 104, color: '#a855f7' },
+          ].map((seg, i) => {
+            const cx = 110, cy = 116, r = 88
+            const polar = (a: number) => {
+              const rad = ((a - 90) * Math.PI) / 180
+              return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)]
+            }
+            const [x0, y0] = polar(seg.from)
+            const [x1, y1] = polar(seg.to)
+            const large = seg.to - seg.from > 180 ? 1 : 0
+            return (
+              <path
+                key={i}
+                d={`M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`}
+                fill="none"
+                stroke={seg.color}
+                strokeWidth="12"
+                strokeLinecap="round"
+                opacity="0.35"
+              />
+            )
+          })}
+          <text x="110" y="124" textAnchor="middle" fontSize="40" fontWeight="600" fill="var(--color-ink-dimmer)" letterSpacing="-1.5">
+            ••••
+          </text>
+          <text x="110" y="146" textAnchor="middle" fontSize="11" fill="var(--color-ink-dimmer)" letterSpacing="0.5" style={{ textTransform: 'uppercase' }}>
+            {t('wellness.endurance_in_dev')}
+          </text>
+        </svg>
+        <div className="mt-1 text-center text-[12px] text-halo-ink-dim">
+          {t('wellness.endurance_teaser')}
+        </div>
+      </div>
+    </div>
   )
 }
 

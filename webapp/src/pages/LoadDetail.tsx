@@ -6,6 +6,7 @@ import { Card, ChartScrubLine, fmtScrubDate, InfoIcon, InfoPanel, PeriodFilter, 
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { fmtDateYmd } from '../lib/formatters'
 import { TSB_ZONES, tsbZoneOf } from '../lib/constants'
 import type { ActivitiesSeries, TrainingLoadSeries, WellnessResponse } from '../api/types'
@@ -480,7 +481,8 @@ function linePath(
 // splits each line into solid (actual) + dashed (forecast) segments, tints
 // the forecast region, and drops a "today" rule. Otherwise renders as a
 // single solid line (legacy overall chart, past-only per-sport series).
-// `preserveAspectRatio="none"` stretches to the card width.
+// viewBox width is measured per-frame so 1 viewBox unit == 1 CSS pixel — no
+// horizontal stretch even when the card is desktop-wide.
 // ─────────────────────────────────────────────────────────────────────────────
 function LoadLineChart({
   dates,
@@ -493,7 +495,7 @@ function LoadLineChart({
   height?: number
   todayIdx?: number | null
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = height
   const pad = { l: 28, r: 10, t: 14, b: 22 }
   const innerW = W - pad.l - pad.r
@@ -528,12 +530,12 @@ function LoadLineChart({
         )
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -662,6 +664,7 @@ function LoadLineChart({
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }
 
@@ -681,7 +684,7 @@ function TsbZoneChart({
   tsb: number[]
   todayIdx?: number | null
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 160
   const pad = { l: 28, r: 10, t: 8, b: 22 }
   const innerW = W - pad.l - pad.r
@@ -732,12 +735,12 @@ function TsbZoneChart({
         })()
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -849,6 +852,7 @@ function TsbZoneChart({
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }
 
@@ -880,7 +884,7 @@ function SportTssChart({
   // distinct from the solid past actuals. Null → no split (legacy past-only).
   todayIdx?: number | null
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 200
   const pad = { l: 28, r: 8, t: 10, b: 22 }
   const innerW = W - pad.l - pad.r
@@ -949,12 +953,12 @@ function SportTssChart({
         ]
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -1091,5 +1095,6 @@ function SportTssChart({
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }

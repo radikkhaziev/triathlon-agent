@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { InfoIcon, InfoPanel, PeriodFilter } from '../components/halo'
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
 import { fmtPace } from '../lib/formatters'
@@ -411,7 +412,7 @@ function TargetLineChart({
   yMin: number
   yMax: number
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 200
   const pad = { l: 30, r: 14, t: 14, b: 26 }
   const innerW = W - pad.l - pad.r
@@ -455,7 +456,8 @@ function TargetLineChart({
   return (
     <div className="mt-3.5 rounded-chip border border-halo-border bg-halo-bg p-3.5">
       <div className="text-center text-[13px] font-bold tracking-[-0.1px]">{title}</div>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" className="mt-2.5 block">
+      <div ref={wrapRef} className="w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="mt-2.5 block">
         {yTicks.map((tick, i) => (
           <g key={i}>
             <line
@@ -526,6 +528,7 @@ function TargetLineChart({
           </text>
         ))}
       </svg>
+      </div>
     </div>
   )
 }
@@ -921,6 +924,9 @@ function MarathonShapeCard() {
 function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 'run' }) {
   const { t } = useTranslation()
   const [tip, setTip] = useState(false)
+  // Hooks must run on every render — keep them above the early return so the
+  // call order stays identical when `weekly` flips from <2 to ≥2 items.
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const weekly = (data.weekly ?? []).filter(w => w.ef_mean != null)
   const sportLabel = sport === 'bike' ? 'Bike' : 'Run'
 
@@ -944,7 +950,6 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
   const improving = deltaPct > 0
   const deltaColor = improving ? ZONE_FILL.low : 'var(--color-coral)'
 
-  const W = 320
   const H = 200
   const pad = { l: 32, r: 10, t: 14, b: 26 }
   const innerW = W - pad.l - pad.r
@@ -987,7 +992,8 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
       <div className="mt-3.5 border-t border-halo-border pt-2.5 text-center text-[13px] font-bold tracking-[-0.1px]">
         Efficiency Factor — {sportLabel}
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" className="mt-2.5 block">
+      <div ref={wrapRef} className="w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="mt-2.5 block">
         {ticks.map((tk, i) => (
           <g key={i}>
             <line
@@ -1021,6 +1027,7 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
           </text>
         ))}
       </svg>
+      </div>
     </div>
   )
 }
@@ -1033,6 +1040,8 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
 function CardiacDriftCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 'run' }) {
   const { t } = useTranslation()
   const [tip, setTip] = useState(false)
+  // Hooks above the early return — see EfTrendCard for the rationale.
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const acts = data.activities.filter(a => a.decoupling != null)
   const sportLabel = sport === 'bike' ? 'Bike' : 'Run'
   const N = acts.length
@@ -1048,7 +1057,6 @@ function CardiacDriftCard({ data, sport }: { data: ProgressResponse; sport: 'bik
     )
   }
 
-  const W = 320
   const H = 200
   const pad = { l: 32, r: 10, t: 16, b: 24 }
   const innerW = W - pad.l - pad.r
@@ -1073,7 +1081,8 @@ function CardiacDriftCard({ data, sport }: { data: ProgressResponse; sport: 'bik
         <InfoIcon open={tip} onClick={() => setTip(v => !v)} />
       </div>
       {tip && <InfoPanel>{t('load.tip.drift')}</InfoPanel>}
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" className="mt-2.5 block">
+      <div ref={wrapRef} className="w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="mt-2.5 block">
         {/* Threshold bands */}
         <rect x={pad.l} y={yOf(30)} width={innerW} height={yOf(10) - yOf(30)} fill={ZONE_FILL.high} opacity="0.1" />
         <rect x={pad.l} y={yOf(10)} width={innerW} height={yOf(5) - yOf(10)} fill={ZONE_FILL.mid} opacity="0.1" />
@@ -1125,6 +1134,7 @@ function CardiacDriftCard({ data, sport }: { data: ProgressResponse; sport: 'bik
           </text>
         ))}
       </svg>
+      </div>
     </div>
   )
 }
@@ -1208,6 +1218,8 @@ function SwimTrendCard({
    */
   formatValue?: (v: number) => string
 }) {
+  // Hooks above the early return — see EfTrendCard for the rationale.
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const dUnit = deltaUnit ?? unit
   const N = weekly.length
   if (N < 2) return null
@@ -1221,7 +1233,6 @@ function SwimTrendCard({
   const improving = deltaAbs < 0
   const deltaColor = improving ? ZONE_FILL.low : 'var(--color-coral)'
 
-  const W = 320
   const H = 150
   const pad = { l: 32, r: 10, t: 14, b: 22 }
   const innerW = W - pad.l - pad.r
@@ -1268,7 +1279,8 @@ function SwimTrendCard({
         </div>
       </div>
 
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" className="mt-2 block">
+      <div ref={wrapRef} className="w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="mt-2 block">
         {ticks.map((v, i) => (
           <g key={i}>
             <line
@@ -1301,6 +1313,7 @@ function SwimTrendCard({
           </text>
         ))}
       </svg>
+      </div>
     </div>
   )
 }

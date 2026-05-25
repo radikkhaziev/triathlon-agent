@@ -102,6 +102,7 @@ python -m cli backfill-races <user_id> [period]                  # create Race r
 python -m cli bootstrap-sync <user_id> [--period 365] [--force]  # chunk-recursive OAuth bootstrap backfill (wellness + activities)
 python -m cli reprocess-ramp-test <user_id> <activity_id> [--push]  # back-fill hrvt2_pace (Run) / hrvt2_power (Ride) on one ramp test (post v2c3d4e5f6a7 / w3d4e5f6a7b8)
 python -m cli publish-changelog [--force]                        # manually trigger the weekly changelog (idempotent by week; --force overrides)
+python -m cli backfill-endurance-scores [--user-id N] [--days 365] [--force] [--dry-run]  # daily ES snapshots, default all active × 365d (`docs/ENDURANCE_SCORE_SPEC.md` §7.3)
 ```
 
 ### `publish-changelog`

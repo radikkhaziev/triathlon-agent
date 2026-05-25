@@ -6,6 +6,7 @@ import { Card, ChartScrubLine, fmtScrubDate, PeriodFilter, useChartScrubber, typ
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useApi } from '../hooks/useApi'
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { fmtDateYmd, num } from '../lib/formatters'
 import { classifyRecovery, computeRecoveryMeaningStat, RECOVERY_CHIP } from '../utils/recovery'
 import type { RecoveryTrendSeries, WellnessResponse } from '../api/types'
@@ -253,9 +254,10 @@ function RecoveryMeaningCard({ series }: { series: readonly (number | null)[] })
 // ─────────────────────────────────────────────────────────────────────────────
 // Dual-axis line chart — Recovery score (left, 0-100, tinted area) + HRV/RHR
 // (right, auto-fit, lines). Hand-rolled inline SVG (prototype
-// `BRecoveryTrendChart`); `preserveAspectRatio="none"` lets it stretch to the
-// card width, matching the design. Null points are skipped and the line spans
-// the gap — a single missing wellness day reads as a glitch, not a real break.
+// `BRecoveryTrendChart`). viewBox W is measured so 1 viewBox unit == 1 CSS px,
+// keeping desktop labels and dots crisp. Null points are skipped and the line
+// spans the gap — a single missing wellness day reads as a glitch, not a real
+// break.
 // ─────────────────────────────────────────────────────────────────────────────
 function RecoveryTrendChart({
   series,
@@ -264,7 +266,7 @@ function RecoveryTrendChart({
   series: RecoveryTrendSeries
   show: Record<SeriesKey, boolean>
 }) {
-  const W = 320
+  const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 220
   const pad = { l: 30, r: 30, t: 12, b: 22 }
   const innerW = W - pad.l - pad.r
@@ -351,12 +353,12 @@ function RecoveryTrendChart({
         ]
 
   return (
+    <div ref={wrapRef} className="w-full">
     <svg
       ref={svgRef}
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
-      preserveAspectRatio="none"
       className="block overflow-visible"
       {...handlers}
     >
@@ -485,5 +487,6 @@ function RecoveryTrendChart({
         padR={pad.r}
       />
     </svg>
+    </div>
   )
 }
