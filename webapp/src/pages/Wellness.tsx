@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
-import { TopBar, Gauge, MiniRangeGauge, StackedBar, DateStrip, type DatePill } from '../components/halo'
+import { TopBar, Gauge, MiniRangeGauge, StackedBar, DateStrip, EnduranceScoreCard, type DatePill } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useDayNav } from '../hooks/useDayNav'
@@ -179,21 +179,21 @@ export default function Wellness() {
           /* Mobile: single column (prototype `BWellness`). Desktop
              (`BdWellness` + Endurance redesign at direction-b-desktop.jsx:555):
              1.4fr / 1fr — Row 1-2: Recovery hero (col 1) + Endurance Score
-             "Coming soon" (col 2) as twin heroes. Row 3: Sleep + Training Load
-             as a peer 2-col row (used to live inside Recovery's right column).
-             Row 4+: HRV/RHR, Body, Coach teaser full width. Flat DOM keeps
-             mobile order byte-identical; Endurance is desktop-only (mobile has
-             it on the Load tab). */
+             (col 2) as twin heroes. Row 3: Sleep + Training Load as a peer
+             2-col row (used to live inside Recovery's right column). Row 4+:
+             HRV/RHR, Body, Coach teaser full width. Flat DOM keeps mobile
+             order: Recovery → Endurance → HRV/RHR → Sleep → Load → Body →
+             Coach (Endurance moved from Trends → Load to Wellness home per
+             direction-b-halo.jsx:666-677). */
           <div className="flex flex-col gap-3.5 pb-4 md:grid md:grid-cols-[1.4fr_1fr] md:items-start md:gap-[18px] md:[grid-auto-rows:max-content]">
             <div className="md:col-start-1 md:row-start-1 md:row-span-2">
               <RecoveryHero data={data} lang={lang} showBreakdown={showBreakdown} onToggle={() => setShowBreakdown(s => !s)} t={t} />
             </div>
-            {/* Endurance Score — desktop-only Coming Soon card, peer to Recovery.
-                Hidden on mobile (CSS Grid + flex-gap skip display:none children),
-                so this wrapper's DOM position between RecoveryHero and PairedMetrics
-                doesn't affect the mobile flex-col order. */}
-            <div className="hidden md:col-start-2 md:row-start-1 md:row-span-2 md:block">
-              <EnduranceComingSoonCard />
+            {/* Endurance Score — composite training-cycle headline. Mobile:
+                sits right below Recovery hero. Desktop: peer to Recovery in
+                col 2, spanning rows 1-2 to match the Recovery hero height. */}
+            <div className="md:col-start-2 md:row-start-1 md:row-span-2">
+              <EnduranceScoreCard />
             </div>
             {/* Mobile order matches pre-Endurance Wellness (Recovery → HRV/RHR →
                 Sleep → Load → Body → Coach). Desktop reflows via md:row-start-N. */}
@@ -713,81 +713,6 @@ function BodyCard({ data, t }: { data: WellnessResponseData; t: TFn }) {
         ))}
       </div>
     </Link>
-  )
-}
-
-// Endurance Score — composite training-status metric (mirrors mobile
-// `TRAINING_STATUS` in direction-b-halo.jsx, with desktop port at
-// direction-b-desktop.jsx:313 `BdEnduranceCard`). Designed to sit as a peer
-// hero next to Recovery on the desktop Wellness grid. Backend is not wired
-// yet — render a placeholder "Coming soon" card so the slot is reserved and
-// the desktop grid balances visually. Hidden on mobile: the mobile design
-// puts Endurance on the Load tab, not Wellness.
-function EnduranceComingSoonCard() {
-  const { t } = useTranslation()
-  return (
-    <div className="flex h-full flex-col overflow-hidden rounded-card border border-halo-border bg-halo-surface shadow-card">
-      <div className="flex items-start justify-between px-5 pt-5">
-        <div className="min-w-0">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
-            {t('wellness.endurance_title')}
-          </span>
-          <div className="mt-1.5 max-w-[280px] text-[13px] leading-snug text-halo-ink-dim">
-            {t('wellness.endurance_subtitle')}
-          </div>
-        </div>
-        <span className="shrink-0 rounded-pill bg-halo-surface-2 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.5px] text-halo-ink-dim">
-          {t('wellness.endurance_soon_badge')}
-        </span>
-      </div>
-
-      {/* Ghost segmented arc + zone label — visual silhouette of the future
-          gauge so the slot reads as "endurance card" even without data. Matches
-          the segmented-arc treatment from BdEnduranceGauge (6 colored zones,
-          240° sweep, bottom-open opening). All ink is dimmed to read as
-          unavailable rather than active. */}
-      <div className="flex flex-1 flex-col items-center justify-center px-5 pb-5 pt-2">
-        <svg width="220" height="200" viewBox="0 0 220 200" className="block" aria-hidden="true">
-          {[
-            { from: -120, to: -86, color: 'var(--color-status-red)' },
-            { from: -82, to: -48, color: 'var(--color-amber)' },
-            { from: -44, to: -10, color: 'var(--color-status-yellow)' },
-            { from: -6, to: 28, color: 'var(--color-status-green)' },
-            { from: 32, to: 66, color: 'var(--color-brand)' },
-            { from: 70, to: 104, color: '#a855f7' },
-          ].map((seg, i) => {
-            const cx = 110, cy = 116, r = 88
-            const polar = (a: number) => {
-              const rad = ((a - 90) * Math.PI) / 180
-              return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)]
-            }
-            const [x0, y0] = polar(seg.from)
-            const [x1, y1] = polar(seg.to)
-            const large = seg.to - seg.from > 180 ? 1 : 0
-            return (
-              <path
-                key={i}
-                d={`M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`}
-                fill="none"
-                stroke={seg.color}
-                strokeWidth="12"
-                strokeLinecap="round"
-                opacity="0.35"
-              />
-            )
-          })}
-          <text x="110" y="124" textAnchor="middle" fontSize="40" fontWeight="600" fill="var(--color-ink-dimmer)" letterSpacing="-1.5">
-            ••••
-          </text>
-          <text x="110" y="146" textAnchor="middle" fontSize="11" fill="var(--color-ink-dimmer)" letterSpacing="0.5" style={{ textTransform: 'uppercase' }}>
-            {t('wellness.endurance_in_dev')}
-          </text>
-        </svg>
-        <div className="mt-1 text-center text-[12px] text-halo-ink-dim">
-          {t('wellness.endurance_teaser')}
-        </div>
-      </div>
-    </div>
   )
 }
 

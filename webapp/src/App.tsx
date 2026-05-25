@@ -20,6 +20,7 @@ import RecoveryTrend from './pages/RecoveryTrend'
 import SleepTrend from './pages/SleepTrend'
 import BodyTrend from './pages/BodyTrend'
 import LoadDetail from './pages/LoadDetail'
+import EnduranceDetail from './pages/EnduranceDetail'
 import WellnessHistory from './pages/WellnessHistory'
 import PersonalEdit from './pages/PersonalEdit'
 import PlanScreen from './pages/PlanScreen'
@@ -175,6 +176,7 @@ export default function App() {
       <Route path="/wellness/sleep" element={dataRoute(SleepTrend)} />
       <Route path="/wellness/body" element={dataRoute(BodyTrend)} />
       <Route path="/wellness/load" element={dataRoute(LoadDetail)} />
+      <Route path="/wellness/endurance" element={dataRoute(EnduranceDetail)} />
       <Route path="/wellness/history" element={dataRoute(WellnessHistory)} />
       <Route path="/wellness/:metric" element={dataRoute(MetricDetail)} />
       <Route path="/coach" element={dataRoute(Coach)} />

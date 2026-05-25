@@ -76,11 +76,19 @@
       "delta_vs_week": "Прогресс {{sign}}{{delta}} за неделю",
       "trend_title": "Тренд",
       "weekly": "По неделям",
+      "back": "Назад",
       "period": {
         "1m": "1 месяц",
         "3m": "3 месяца",
         "6m": "6 месяцев",
         "1y": "1 год"
+      },
+      "zone": {
+        "detrained": "Растренирован",
+        "recovering": "Восстанавливаюсь",
+        "maintaining": "Поддерживаю",
+        "productive": "Развиваюсь",
+        "peaking": "На пике"
       },
       "zones_title": "Зоны",
       "sport": {
@@ -152,12 +160,7 @@
     "coach_note": "Заметка тренера · сегодня утром",
     "refresh_running": "Обновляю…",
     "refresh_wait": "Ждите {{sec}}с",
-    "last_7_nights": "Последние 7 ночей",
-    "endurance_title": "Endurance Score",
-    "endurance_subtitle": "Композитный показатель тренировочного статуса по всем видам — где вы в тренировочном цикле.",
-    "endurance_soon_badge": "Скоро",
-    "endurance_in_dev": "в разработке",
-    "endurance_teaser": "Готовим — композитный score появится здесь скоро."
+    "last_7_nights": "Последние 7 ночей"
   },
   "activities": {
     "title": "Активность",

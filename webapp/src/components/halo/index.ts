@@ -21,6 +21,15 @@ export { default as PhotoStrip } from './PhotoStrip'
 export * from './geometry'
 export { useChartScrubber, ChartScrubLine, fmtScrubDate } from './ChartScrubber'
 export { InfoIcon, InfoPanel } from './InfoTip'
+export {
+  EnduranceScoreCard,
+  EnduranceGauge,
+  BadgePlate as EnduranceBadgePlate,
+  ENDURANCE_ZONES,
+  ENDURANCE_MAX,
+  zoneFor as enduranceZoneFor,
+} from './EnduranceScore'
+export type { EnduranceZoneDef } from './EnduranceScore'
 export { default as BottomSheet } from './BottomSheet'
 export type { DatePill } from './DateStrip'
 export type { ScrubItem } from './ChartScrubber'
