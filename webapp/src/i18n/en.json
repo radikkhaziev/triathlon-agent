@@ -76,11 +76,19 @@
       "delta_vs_week": "Progress {{sign}}{{delta}} vs last week",
       "trend_title": "Trend",
       "weekly": "Weekly",
+      "back": "Back",
       "period": {
         "1m": "1 month",
         "3m": "3 months",
         "6m": "6 months",
         "1y": "1 year"
+      },
+      "zone": {
+        "detrained": "Detrained",
+        "recovering": "Recovering",
+        "maintaining": "Maintaining",
+        "productive": "Productive",
+        "peaking": "Peaking"
       },
       "zones_title": "Zones",
       "sport": {
@@ -152,12 +160,7 @@
     "coach_note": "Coach note · this morning",
     "refresh_running": "Refreshing…",
     "refresh_wait": "Wait {{sec}}s",
-    "last_7_nights": "Last 7 nights",
-    "endurance_title": "Endurance Score",
-    "endurance_subtitle": "Composite training-status score across all sports — where you sit in your training cycle.",
-    "endurance_soon_badge": "Soon",
-    "endurance_in_dev": "in development",
-    "endurance_teaser": "We're cooking — composite score lands here soon."
+    "last_7_nights": "Last 7 nights"
   },
   "activities": {
     "title": "Activity",
