@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import DayCard, { type WeekDay } from './DayCard'
 import { useApi } from '../hooks/useApi'
 import { sportTone } from '../lib/constants'
 import { stripWorkoutPrefix } from '../lib/formatters'
@@ -40,15 +41,23 @@ interface Props {
  *
  * Pulls the selected day's planned workout + actual activity from the same
  * /scheduled-workouts + /activities-week endpoints used by the Week tab,
- * filters to one date, and renders them side-by-side. Goal: when the user
- * opens "Сегодня" they immediately see what's on plan and what they've done,
- * without having to switch to the Week tab.
+ * filters to one date, and renders them:
+ *   • Mobile — reuses the shared `DayCard` so it reads identically to the
+ *     Week tab's per-day card. Each session is its own mini-card (white for
+ *     done, cobalt for planned-not-done, coral-tinted for past-missed); the
+ *     outer frame stays neutral and «today» surfaces via the date column.
+ *     `hideDate` strips the left date column here since Wellness's DateStrip
+ *     already shows the day above.
+ *   • Desktop — keeps the original 2-col Plan|Actual side-by-side layout
+ *     (the wide canvas reads better as a direct comparison than as a single
+ *     stacked card with a date column the page already shows above).
  *
  * Renders `null` when there's nothing to show (rest day with no plan + no
  * actual, or the API call is still loading / errored).
  */
 export default function TodayWorkoutCard({ dateStr, currentDate, isToday }: Props) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   // `new Date()` was called every render — within the same calendar day all
   // those Dates collapse to the same Monday after mondayOf(), so it didn't
   // actually trigger refetches, but it's wasted work and a midnight-edge
@@ -67,13 +76,57 @@ export default function TodayWorkoutCard({ dateStr, currentDate, isToday }: Prop
   if (plan.loading || acts.loading) return null
   if (plan.error || acts.error || !plan.data || !acts.data) return null
 
-  const planned = plan.data.days.find(d => d.date === dateStr)?.workouts ?? []
-  const actuals = acts.data.days.find(d => d.date === dateStr)?.activities ?? []
+  const planDay = plan.data.days.find(d => d.date === dateStr)
+  const actDay = acts.data.days.find(d => d.date === dateStr)
+  const planned = planDay?.workouts ?? []
+  const actuals = actDay?.activities ?? []
   // Nothing to surface — Wellness's other cards still carry the day. No empty
   // placeholder card (avoids «—  /  —» noise on real rest days).
   if (planned.length === 0 && actuals.length === 0) return null
 
-  const isPast = dateStr < plan.data.today
+  // Shared-DayCard input — derive state the same way `MergedWeek.buildWeek`
+  // does. `weekday` falls back to the activities-week feed if the plan feed
+  // doesn't carry the selected day.
+  const day: WeekDay = {
+    date: dateStr,
+    weekday: planDay?.weekday ?? actDay?.weekday ?? '',
+    state: dateStr === plan.data.today ? 'today' : dateStr < plan.data.today ? 'past' : 'future',
+    planned,
+    actuals,
+  }
+
+  return (
+    <>
+      {/* Mobile — same per-session DayCard as the Week tab. */}
+      <div className="md:hidden">
+        <DayCard d={day} t={t} navigate={navigate} hideDate />
+      </div>
+      {/* Desktop — original 2-col Plan|Actual layout (untouched per request). */}
+      <div className="hidden md:block">
+        <DesktopPlanActualCard
+          planned={planned}
+          actuals={actuals}
+          isPast={dateStr < plan.data.today}
+          isToday={isToday}
+          t={t}
+        />
+      </div>
+    </>
+  )
+}
+
+// ─── Desktop-only Plan|Actual card (preserved verbatim from the pre-refactor
+// `TodayWorkoutCard`) ────────────────────────────────────────────────────────
+
+interface DesktopProps {
+  planned: ScheduledWorkout[]
+  actuals: ActivityItem[]
+  isPast: boolean
+  isToday: boolean
+  t: TFn
+}
+
+function DesktopPlanActualCard({ planned, actuals, isPast, isToday, t }: DesktopProps) {
   const pairedIds = new Set(actuals.map(a => a.paired_event_id).filter((v): v is number => v != null))
   const unpairedPlanned = planned.filter(w => !pairedIds.has(w.id))
   const missed = isPast && actuals.length === 0 && planned.length > 0
@@ -89,9 +142,6 @@ export default function TodayWorkoutCard({ dateStr, currentDate, isToday }: Prop
     badgeText = t('merged.completed')
     badgeCls = 'text-halo-status-green'
   } else if (actuals.length > 0) {
-    // Partial — some planned done, some still pending. Today reads as «in
-    // progress», past as «completed» (the day is over; the rest counts as
-    // skipped per-row).
     badgeText = isToday ? t('merged.in_progress') : t('merged.completed')
     badgeCls = isToday ? 'text-halo-brand-dark' : 'text-halo-status-green'
   } else if (isToday) {
@@ -112,9 +162,7 @@ export default function TodayWorkoutCard({ dateStr, currentDate, isToday }: Prop
           {badgeText}
         </span>
       </div>
-      {/* Mobile: stacked (Plan above, Actual below). Desktop: 2-col side by
-          side so plan/actual read as a direct comparison. */}
-      <div className="grid gap-3 md:grid-cols-2 md:gap-4">
+      <div className="grid gap-4 md:grid-cols-2">
         <PlanCol planned={planned} t={t} />
         <ActualCol actuals={actuals} t={t} />
       </div>

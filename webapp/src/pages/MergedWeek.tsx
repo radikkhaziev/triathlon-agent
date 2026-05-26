@@ -2,13 +2,11 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
+import DayCard, { type WeekDay } from '../components/DayCard'
 import { useWeekNav } from '../hooks/useWeekNav'
 import { useApi } from '../hooks/useApi'
-import { sportTone } from '../lib/constants'
-import { stripWorkoutPrefix } from '../lib/formatters'
 import type {
   ScheduledWorkoutsResponse,
-  ScheduledWorkout,
   ActivitiesWeekResponse,
   ActivityItem,
 } from '../api/types'
@@ -19,46 +17,16 @@ import type {
  *
  * Layout per design:
  *   • Header row — «X done · Y to go» summary + prev/next chevrons.
- *   • Single-column day cards — state-driven content (NOT a 2-col Plan|Done
- *     grid like the previous merge attempt):
- *       past + actual      → sport pill + duration; TSS · HR; extras stacked
- *                            with `+ Sport` prefix; race chip on the extra row
- *       past + missed      → coral «{name} · skipped» line
- *       past + no plan     → «—»
- *       today (not done)   → white-on-cobalt card; sport pill + name + desc +
- *                            duration · km (planned row); badge «in progress»
- *       today (done)       → white-on-cobalt card; same actual+extras layout
- *                            as past; badge «completed». Diverges from the
- *                            static prototype, which never modelled this case
- *                            (direction-b-halo.jsx:1408).
- *       future + planned   → regular card; sport pill + name + desc + dur · km
- *       rest day           → surface-2 card; italic «Recover well»
- *     Right chevron `›` appears on every tappable card.
+ *   • Single-column day cards (rendered by `DayCard` from `../components/DayCard`,
+ *     shared with the Today page). Each session inside a day is its own
+ *     mini-card: white surface for completed actuals, cobalt blue for
+ *     planned-not-yet-done, coral-tinted for past-missed. The outer day
+ *     frame stays neutral — «today» is marked by the date column rendering
+ *     in the brand accent rather than inverting the whole card.
  *   • Plan vs Actual summary card at the bottom — Time / TSS / Sessions, each
  *     row with a % readout and a bar with a 100% tick (over/under reads
  *     against the plan target).
- *
- * Tap targets per session row (NOT per day — the card itself isn't clickable):
- *   • actual session  → `/activity/:id` of that activity
- *   • planned session → `/workout/:id` of that planned workout
- *   • missed / rest   → static (no rows, just a label)
- *
- * Brick handling: a day with multiple sessions renders each one as its own
- * tappable row (main row + `+ Sport` extras row below a divider). Clicking
- * RUN vs +RIDE opens the correct detail page. The state badge appends a
- * count for multi-session days («Выполнено · 2 сессии», «По плану · 2
- * сессии»). Mirrors design direction-b-halo.jsx:1410-1509.
  */
-
-type DayState = 'past' | 'today' | 'future'
-
-interface WeekDay {
-  date: string
-  weekday: string
-  state: DayState
-  planned: ScheduledWorkout[]
-  actuals: ActivityItem[]
-}
 
 function buildWeek(plan: ScheduledWorkoutsResponse, acts: ActivitiesWeekResponse): WeekDay[] {
   const today = plan.today
@@ -95,12 +63,20 @@ export default function MergedWeek() {
     (s, d) => s + (today && d.date <= today ? d.actuals.filter(a => !!a.type).length : 0),
     0,
   )
-  // Today's planned only counts toward «to go» if the workout isn't done yet
-  // (otherwise it double-counts against `doneCount`).
+  // Per-session pairing — a planned workout «covered» by an actual via
+  // Intervals' pairing is already in `doneCount`, so it shouldn't double-count
+  // here. Track unpaired planned per day instead of the old
+  // `actuals.length === 0` blunt check (which lost partial-day remainders:
+  // 2 planned + 1 done → previously contributed 0, now contributes 1).
   const toGoCount = week.reduce(
     (s, d) => {
       if (d.state === 'future') return s + d.planned.length
-      if (d.state === 'today' && d.actuals.length === 0) return s + d.planned.length
+      if (d.state === 'today') {
+        const pairedIds = new Set(
+          d.actuals.map(a => a.paired_event_id).filter((v): v is number => v != null),
+        )
+        return s + d.planned.filter(w => !pairedIds.has(w.id)).length
+      }
       return s
     },
     0,
@@ -160,388 +136,6 @@ export default function MergedWeek() {
           </div>
         </div>
       )}
-    </>
-  )
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Day card — state-driven content. Each session row is its OWN tap target
-// (RUN vs +RIDE on a brick day open different detail pages); the card frame
-// itself isn't clickable. Multi-session days show «… · N сессий» on the
-// badge. Design direction-b-halo.jsx:1454+ — same per-row pattern.
-// ─────────────────────────────────────────────────────────────────────────────
-interface DayCardProps {
-  d: WeekDay
-  t: (k: string, o?: Record<string, unknown>) => string
-  navigate: (path: string) => void
-}
-
-function DayCard({ d, t, navigate }: DayCardProps) {
-  const isToday = d.state === 'today'
-  const isPast = d.state === 'past'
-  const isFuture = d.state === 'future'
-  const planned = d.planned[0] ?? null
-  const main = d.actuals[0] ?? null
-  const extras = d.actuals.slice(main ? 1 : 0)
-  const restDay = d.planned.length === 0 && d.actuals.length === 0
-
-  // Card surface — today inverted to cobalt, rest day on surface-2, missed
-  // day with a faint coral tint. Everything else on plain surface.
-  const missed = isPast && !main && d.planned.length > 0
-  const cardCls = isToday
-    ? 'bg-halo-brand text-white'
-    : restDay
-      ? 'bg-halo-surface-2 text-halo-ink border border-halo-border'
-      : 'bg-halo-surface text-halo-ink border border-halo-border'
-  const cardStyle = missed && !isToday
-    ? { background: 'color-mix(in srgb, var(--color-coral) 8%, var(--color-surface))' }
-    : undefined
-
-  // Tonal helpers tied to today's inversion.
-  const dim = isToday ? 'text-white/70' : 'text-halo-ink-dim'
-  const dimmer = isToday ? 'text-white/55' : 'text-halo-ink-dimmer'
-  const ink = isToday ? 'text-white' : 'text-halo-ink'
-  const divider = isToday ? 'border-white/20' : 'border-halo-border'
-
-  // Sessions to render as individual tap-target rows. Each row carries its
-  // own navigation target — clicking RUN vs +RIDE on a brick day opens
-  // different detail pages. Design direction-b-halo.jsx:1410+.
-  //
-  // Today / past with at least one actual: render the actuals AND any
-  // planned sessions that weren't paired with an actual (covers the partial-
-  // day case — planned SWIM not done + planned RUN done shows both rows).
-  // Past + un-paired planned → coloured «skipped» so the user sees the miss;
-  // today + un-paired planned → regular planned row, still tappable.
-  //
-  // Today / past with no actual: all planned render as planned rows. Future:
-  // same. Empty otherwise (rest day renders its own static message below).
-  type SessionRow = { key: string; path: string; sport: string | null; render: () => JSX.Element }
-  const sessions: SessionRow[] = []
-  if (main && (isPast || isToday)) {
-    sessions.push({
-      key: `a-${main.id}`,
-      path: `/activity/${main.id}`,
-      sport: main.type,
-      render: () => <ActualRow a={main} ink={ink} dim={dim} isToday={isToday} t={t} />,
-    })
-    for (const a of extras) {
-      sessions.push({
-        key: `a-${a.id}`,
-        path: `/activity/${a.id}`,
-        sport: a.type,
-        render: () => <ExtraActualRow a={a} ink={ink} dim={dim} t={t} isToday={isToday} />,
-      })
-    }
-  }
-  // Planned workouts that haven't been «covered» by an actual via Intervals'
-  // pairing — render as their own rows so partially-done days don't drop the
-  // outstanding plan from view.
-  const pairedIds = new Set(d.actuals.map(a => a.paired_event_id).filter((v): v is number => v != null))
-  for (const w of d.planned) {
-    if (pairedIds.has(w.id)) continue
-    if (isPast) {
-      // Past + unpaired planned. If there's no main actual at all the day
-      // already routes through the «missed» branch below; this loop only
-      // contributes when main exists but Intervals couldn't pair THIS
-      // particular planned to any actual (brick day variants).
-      if (!main) continue
-      sessions.push({
-        key: `m-${w.id}`,
-        path: `/workout/${w.id}`,
-        sport: w.type,
-        render: () => (
-          <div className="text-[13px] font-medium text-halo-coral">
-            {stripWorkoutPrefix(w.name)} · {t('merged.skipped')}
-          </div>
-        ),
-      })
-      continue
-    }
-    if (isToday || isFuture) {
-      const idx = sessions.length
-      sessions.push({
-        key: `p-${w.id}`,
-        path: `/workout/${w.id}`,
-        sport: w.type,
-        render: () =>
-          idx === 0 ? (
-            <PlannedRow w={w} ink={ink} dim={dim} isToday={isToday} />
-          ) : (
-            <ExtraPlannedRow w={w} ink={ink} dim={dim} isToday={isToday} />
-          ),
-      })
-    }
-  }
-
-  // State badge — ALL CAPS, 10px, above the body. Multi-session days append
-  // the count («Выполнено · 2 сессии», «По плану · 2 сессии»). Today flips
-  // from «in progress» to «completed» once any actual exists.
-  const sessionCount = sessions.length
-  const multi = sessionCount > 1
-  const completedTxt = multi
-    ? `${t('merged.completed')} · ${t('merged.sessions_count', { count: sessionCount })}`
-    : t('merged.completed')
-  const plannedTxt = multi
-    ? `${t('merged.planned_state')} · ${t('merged.sessions_count', { count: sessionCount })}`
-    : t('merged.planned_state')
-  const todayDone = isToday && main
-  const badge = todayDone
-    ? { text: completedTxt, cls: 'text-white/85' }
-    : isToday
-      ? { text: t('merged.in_progress'), cls: 'text-white/85' }
-      : isPast && main
-        ? { text: completedTxt, cls: 'text-halo-brand-dark' }
-        : missed
-          ? { text: t('merged.missed'), cls: 'text-halo-coral' }
-          : isPast
-            ? { text: '—', cls: dimmer }
-            : restDay
-              ? { text: t('merged.rest_day'), cls: dimmer }
-              : { text: plannedTxt, cls: dim }
-
-  // Per-row click — replaces the previous card-level onClick so brick days
-  // (RUN + RIDE, SWIM + RUN) navigate to the right session instead of always
-  // the first. Card itself is no longer a button.
-  const onRow = (path: string) => () => navigate(path)
-  const rowHoverCls = isToday ? 'hover:bg-white/8' : 'hover:bg-halo-surface-2'
-
-  return (
-    <div className={`rounded-card p-3.5 shadow-card transition-colors ${cardCls}`} style={cardStyle}>
-      <div className="flex items-start gap-3.5">
-        {/* Date column */}
-        <div className="min-w-[38px] shrink-0 pt-1 text-center">
-          <div className={`text-[10px] font-semibold uppercase tracking-[0.7px] ${isToday ? 'opacity-75' : 'opacity-55'}`}>
-            {d.weekday}
-          </div>
-          <div className={`text-[24px] font-semibold leading-none tracking-[-0.5px] ${ink}`}>
-            {d.date.slice(8)}
-          </div>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 min-w-0">
-          <div className={`mb-1.5 text-[10px] font-bold uppercase tracking-[0.6px] ${badge.cls}`}>
-            {badge.text}
-          </div>
-
-          {/* Per-session rows — each its own tap target. */}
-          {sessions.map((s, i) => (
-            <div
-              key={s.key}
-              role="button"
-              tabIndex={0}
-              aria-label={t('merged.open_session', { sport: s.sport ?? '—' })}
-              onClick={onRow(s.path)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  navigate(s.path)
-                }
-              }}
-              className={`-mx-2 cursor-pointer rounded-lg px-2 py-2 transition-colors ${rowHoverCls} ${i > 0 ? `mt-2 border-t pt-3 ${divider}` : ''}`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="flex-1 min-w-0">{s.render()}</div>
-                <span
-                  aria-hidden="true"
-                  className={`shrink-0 self-center text-[20px] leading-none ${isToday ? 'text-white/70' : 'text-halo-ink-dimmer'}`}
-                >
-                  ›
-                </span>
-              </div>
-            </div>
-          ))}
-
-          {/* past + missed planned — static, no tap target. */}
-          {missed && (
-            <div className="text-[13px] font-medium text-halo-coral">
-              {stripWorkoutPrefix(planned?.name)} · {t('merged.skipped')}
-            </div>
-          )}
-
-          {/* rest day — static. */}
-          {restDay && (
-            <div className={`text-[14px] italic ${dim}`}>{t('merged.recover_well')}</div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// Sport-tinted pill — sport name in ALL CAPS, soft tonal background.
-function SportPill({ type, isToday }: { type: string | null; isToday?: boolean }) {
-  if (!type) return null
-  if (isToday) {
-    // White-on-cobalt variant — semi-transparent white background, white text.
-    return (
-      <span className="rounded-pill bg-white/20 px-2 py-[3px] text-[11px] font-semibold uppercase tracking-[0.4px] text-white">
-        {type}
-      </span>
-    )
-  }
-  const tone = sportTone(type)
-  return (
-    <span
-      className="rounded-pill px-2 py-[3px] text-[11px] font-semibold uppercase tracking-[0.4px]"
-      style={{ background: tone.bg, color: tone.fg }}
-    >
-      {type}
-    </span>
-  )
-}
-
-function PlannedRow({
-  w,
-  ink,
-  dim,
-  isToday,
-}: {
-  w: ScheduledWorkout
-  ink: string
-  dim: string
-  isToday: boolean
-}) {
-  return (
-    <>
-      <div className="flex items-center gap-2">
-        <SportPill type={w.type} isToday={isToday} />
-        <span className={`text-[15px] font-semibold ${ink}`}>{stripWorkoutPrefix(w.name)}</span>
-      </div>
-      {w.description && (
-        <div className={`mt-1.5 text-[13px] leading-snug ${isToday ? 'text-white/80' : 'text-halo-ink-dim'}`}>
-          {w.description}
-        </div>
-      )}
-      <div className={`mt-2 flex gap-3.5 text-[12px] ${dim}`}>
-        {w.duration && <span aria-label="duration">⏱ {w.duration}</span>}
-        {w.distance_km != null && <span aria-label="distance">↔ {w.distance_km.toFixed(1)} km</span>}
-      </div>
-    </>
-  )
-}
-
-// Extra planned session row — used for the 2nd+ planned workout on a multi-
-// session day (design direction-b-halo.jsx:1490, `j>0 ? '+ '` prefix on the
-// sport pill). Tighter copy than `PlannedRow` (no big name line); still
-// shows description + duration · km so the row is informative enough to act
-// as its own tap target.
-function ExtraPlannedRow({
-  w,
-  ink,
-  dim,
-  isToday,
-}: {
-  w: ScheduledWorkout
-  ink: string
-  dim: string
-  isToday?: boolean
-}) {
-  // Skip the sportTone lookup on today's cobalt card — pill uses white-on-cobalt
-  // instead of the per-sport tone, so the tone result would be dead code.
-  const tone = isToday ? null : sportTone(w.type)
-  const pillCls = isToday
-    ? 'rounded-pill bg-white/20 px-2 py-[3px] text-[11px] font-semibold uppercase tracking-[0.4px] text-white'
-    : 'rounded-pill px-2 py-[3px] text-[11px] font-semibold uppercase tracking-[0.4px]'
-  const pillStyle = tone ? { background: tone.bg, color: tone.fg } : undefined
-  return (
-    <>
-      <div className="flex items-center gap-2">
-        <span className={pillCls} style={pillStyle}>
-          + {w.type ?? '—'}
-        </span>
-        <span className={`text-[13px] font-semibold ${ink}`}>{stripWorkoutPrefix(w.name)}</span>
-      </div>
-      {w.description && (
-        <div className={`mt-1 text-[12px] leading-snug ${isToday ? 'text-white/75' : 'text-halo-ink-dim'}`}>
-          {w.description}
-        </div>
-      )}
-      <div className={`mt-1 flex gap-3.5 text-[12px] ${dim}`}>
-        {w.duration && <span>⏱ {w.duration}</span>}
-        {w.distance_km != null && <span>↔ {w.distance_km.toFixed(1)} km</span>}
-      </div>
-    </>
-  )
-}
-
-function ActualRow({ a, ink, dim, isToday, t }: { a: ActivityItem; ink: string; dim: string; isToday?: boolean; t: (k: string) => string }) {
-  return (
-    <>
-      <div className="flex items-center gap-2">
-        <SportPill type={a.type} isToday={isToday} />
-        <span className={`text-[15px] font-semibold ${ink}`}>{a.duration || '—'}</span>
-      </div>
-      <div className={`mt-1.5 flex items-center gap-3.5 text-[12px] ${dim}`}>
-        {a.icu_training_load != null && <span>{Math.round(a.icu_training_load)} TSS</span>}
-        {a.average_hr != null && <span>{Math.round(a.average_hr)} bpm</span>}
-        {/* Intervals returns 0 for activities with no paired planned workout
-            (= nothing to score against). Hide the chip in that case — «0% on
-            plan» reads as a failure when really there was no plan at all. */}
-        {a.compliance != null && a.compliance > 0 && <ComplianceChip value={a.compliance} isToday={isToday} t={t} />}
-      </div>
-    </>
-  )
-}
-
-// Per-design (direction-b-halo.jsx:1489) compliance reads as a subtle dot +
-// percent + «on plan» chip in the metrics row, right-aligned via `ml-auto`.
-// Thresholds: ≥90 sage / 70–89 amber / <70 coral. On the cobalt today-card
-// the dot keeps its colour and the «on plan» tail uses white/55 so it still
-// reads as secondary text against the inverted background.
-function ComplianceChip({ value, isToday, t }: { value: number; isToday?: boolean; t: (k: string) => string }) {
-  const c = Math.round(value)
-  const color = c >= 90 ? 'var(--color-status-green)' : c >= 70 ? 'var(--color-amber)' : 'var(--color-coral)'
-  const tailCls = isToday ? 'text-white/55' : 'text-halo-ink-dimmer'
-  return (
-    <span className="ml-auto inline-flex items-center gap-1.5" style={{ color }}>
-      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
-      <span className="font-semibold">{c}%</span>
-      <span className={`font-normal ${tailCls}`}>{t('merged.compliance_tail')}</span>
-    </span>
-  )
-}
-
-function ExtraActualRow({
-  a,
-  ink,
-  dim,
-  t,
-  isToday,
-}: {
-  a: ActivityItem
-  ink: string
-  dim: string
-  t: (k: string) => string
-  isToday?: boolean
-}) {
-  // White-on-cobalt variant mirrors `SportPill` on today's inverted card so
-  // the colored sport tones don't clash with the brand background. Skip the
-  // sportTone lookup when isToday — tone result would be dead code.
-  const tone = isToday ? null : sportTone(a.type)
-  const pillCls = isToday
-    ? 'rounded-pill bg-white/20 px-2 py-[3px] text-[11px] font-semibold uppercase tracking-[0.4px] text-white'
-    : 'rounded-pill px-2 py-[3px] text-[11px] font-semibold uppercase tracking-[0.4px]'
-  const pillStyle = tone ? { background: tone.bg, color: tone.fg } : undefined
-  return (
-    <>
-      <div className="flex items-center gap-2">
-        <span className={pillCls} style={pillStyle}>
-          + {a.type ?? '—'}
-        </span>
-        <span className={`text-[13px] font-semibold ${ink}`}>{a.duration || '—'}</span>
-        {a.is_race && (
-          <span className="rounded-pill bg-halo-coral px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.4px] text-white">
-            {t('merged.race')}
-          </span>
-        )}
-      </div>
-      <div className={`mt-1 text-[12px] ${dim}`}>
-        {[a.icu_training_load != null ? `${Math.round(a.icu_training_load)} TSS` : null,
-          a.average_hr != null ? `${Math.round(a.average_hr)} bpm` : null]
-          .filter(Boolean)
-          .join(' · ')}
-      </div>
     </>
   )
 }
