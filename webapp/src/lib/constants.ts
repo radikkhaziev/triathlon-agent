@@ -9,6 +9,20 @@ const SPORT_COLOR: Record<string, string> = {
 export const sportColor = (sport: string | null | undefined): string =>
   SPORT_COLOR[sport || ''] || 'var(--color-ink-dim)'
 
+// Pill tone — accent fg + a color-mix'd bg. Used by every sport pill in the
+// app: Week-tab day cards (10%), Wellness Today card (10%), Activity hero
+// pill (12% — stronger because the hero pill is larger). Unknown sport
+// returns a neutral surface-2 tint instead of mixing with the fallback ink,
+// which would render as a dirty grey wash on the pill.
+export function sportTone(
+  sport: string | null | undefined,
+  mixPct = 10,
+): { fg: string; bg: string } {
+  const fg = sportColor(sport)
+  if (fg === 'var(--color-ink-dim)') return { fg, bg: 'var(--color-surface-2)' }
+  return { fg, bg: `color-mix(in srgb, ${fg} ${mixPct}%, transparent)` }
+}
+
 export const MONTHS: Record<string, string[]> = {
   ru: ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'],
   en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],

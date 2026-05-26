@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import { useWeekNav } from '../hooks/useWeekNav'
 import { useApi } from '../hooks/useApi'
+import { sportTone } from '../lib/constants'
 import { stripWorkoutPrefix } from '../lib/formatters'
 import type {
   ScheduledWorkoutsResponse,
@@ -48,19 +49,6 @@ import type {
  * count for multi-session days («Выполнено · 2 сессии», «По плану · 2
  * сессии»). Mirrors design direction-b-halo.jsx:1410-1509.
  */
-
-// Sport tone for the per-leg pill — single source of truth, must match the
-// Wellness tile + Dashboard load-by-sport chart colours.
-const SPORT_TONE: Record<string, { fg: string; bg: string }> = {
-  Swim: { fg: 'var(--color-amber)', bg: 'color-mix(in srgb, var(--color-amber) 10%, transparent)' },
-  Ride: { fg: 'var(--color-brand)', bg: 'color-mix(in srgb, var(--color-brand) 10%, transparent)' },
-  Run: { fg: 'var(--color-coral)', bg: 'color-mix(in srgb, var(--color-coral) 10%, transparent)' },
-}
-const _SPORT_TONE_FALLBACK = { fg: 'var(--color-ink-dim)', bg: 'var(--color-surface-2)' }
-
-function sportTone(t: string | null): { fg: string; bg: string } {
-  return (t && SPORT_TONE[t]) || _SPORT_TONE_FALLBACK
-}
 
 type DayState = 'past' | 'today' | 'future'
 

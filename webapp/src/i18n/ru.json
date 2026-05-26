@@ -158,6 +158,7 @@
     "tomorrow_plan": "План на завтра",
     "sleep_score": "Оценка {{score}} / 100",
     "coach_note": "Заметка тренера · сегодня утром",
+    "todays_workout": "Тренировка",
     "refresh_running": "Обновляю…",
     "refresh_wait": "Ждите {{sec}}с",
     "last_7_nights": "Последние 7 ночей"

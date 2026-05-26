@@ -7,6 +7,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import ZoneBar from '../components/ZoneBar'
 import { useApi } from '../hooks/useApi'
+import { sportTone } from '../lib/constants'
 import {
   fmtDateShort,
   fmtDuration,
@@ -22,18 +23,6 @@ import type {
   ActivityWeatherInfo,
   RaceInfo,
 } from '../api/types'
-
-// Sport tone — single source of truth, must match the Wellness tile + the
-// Week tab + the load-by-sport chart. Used by the hero pill on non-race
-// activities.
-const SPORT_TONE: Record<string, { fg: string; bg: string }> = {
-  Swim: { fg: 'var(--color-amber)', bg: 'color-mix(in srgb, var(--color-amber) 12%, transparent)' },
-  Ride: { fg: 'var(--color-brand)', bg: 'color-mix(in srgb, var(--color-brand) 12%, transparent)' },
-  Run: { fg: 'var(--color-coral)', bg: 'color-mix(in srgb, var(--color-coral) 12%, transparent)' },
-}
-function sportTone(t: string | null): { fg: string; bg: string } {
-  return (t && SPORT_TONE[t]) || { fg: 'var(--color-ink-dim)', bg: 'var(--color-surface-2)' }
-}
 
 const ZONE_DONUT_COLORS = [
   'var(--color-ink-dimmer)',
@@ -618,7 +607,9 @@ function ActivityHero({
   swimPace: number | null
 }) {
   const { t } = useTranslation()
-  const tone = sportTone(data.type)
+  // Hero pill — stronger 12% mix (cf. 10% default used by Week-tab + Wellness
+  // Today day-card pills); the hero is larger so the wash needs more weight.
+  const tone = sportTone(data.type, 12)
   const isBike = data.type === 'Ride'
   const isRun = data.type === 'Run'
   const isSwim = data.type === 'Swim'
