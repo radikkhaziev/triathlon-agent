@@ -158,6 +158,7 @@
     "tomorrow_plan": "Tomorrow's plan",
     "sleep_score": "Score {{score}} / 100",
     "coach_note": "Coach note · this morning",
+    "todays_workout": "Workout",
     "refresh_running": "Refreshing…",
     "refresh_wait": "Wait {{sec}}s",
     "last_7_nights": "Last 7 nights"

@@ -5,6 +5,7 @@ import Layout from '../components/Layout'
 import { TopBar, Gauge, MiniRangeGauge, StackedBar, DateStrip, EnduranceScoreCard, type DatePill } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
+import TodayWorkoutCard from '../components/TodayWorkoutCard'
 import { useDayNav } from '../hooks/useDayNav'
 import { useChangelog } from '../hooks/useChangelog'
 import { useApi } from '../hooks/useApi'
@@ -189,25 +190,36 @@ export default function Wellness() {
             <div className="md:col-start-1 md:row-start-1 md:row-span-2">
               <RecoveryHero data={data} lang={lang} showBreakdown={showBreakdown} onToggle={() => setShowBreakdown(s => !s)} t={t} />
             </div>
-            {/* Endurance Score — composite training-cycle headline. Mobile:
-                sits right below Recovery hero. Desktop: peer to Recovery in
-                col 2, spanning rows 1-2 to match the Recovery hero height. */}
-            <div className="md:col-start-2 md:row-start-1 md:row-span-2">
-              <EnduranceScoreCard />
-            </div>
-            {/* Mobile flex-col order: Recovery → Endurance → HRV/RHR → Sleep →
-                Load → Body → Coach. Desktop reflows via md:row-start-N (Endurance
-                spans rows 1-2 in col 2; row 3 holds Sleep + Load). */}
+            {/* Mobile flex-col order: Recovery → HRV/RHR → Sleep → Endurance →
+                Load → Workout → Body → Coach. Endurance sits right above Load
+                so the «training-cycle» pair reads as a block. Desktop reflows
+                via md:row-start-N (Endurance keeps the col 2 row 1-2 twin-hero
+                slot next to Recovery; row 3 holds Sleep + Load). */}
             <div className="md:col-span-2 md:col-start-1 md:row-start-4">
               <PairedMetrics data={data} t={t} />
             </div>
             <div className="md:col-start-1 md:row-start-3">
               <SleepCard data={data} t={t} />
             </div>
+            {/* Endurance Score — composite training-cycle headline. Mobile:
+                immediately above Training Load (paired «training-cycle» group).
+                Desktop: peer to Recovery in col 2, spanning rows 1-2 to match
+                the Recovery hero height. */}
+            <div className="md:col-start-2 md:row-start-1 md:row-span-2">
+              <EnduranceScoreCard />
+            </div>
             <div className="md:col-start-2 md:row-start-3">
               <TrainingLoadCard data={data} />
             </div>
+            {/* Plan vs Actual for the selected day — placed right before Body
+                so the screen reads top-to-bottom as «how you feel» (Recovery /
+                Endurance / HRV-RHR / Sleep / Load) → «what you trained» (Plan
+                vs Actual + Body). Mobile follows JSX order, desktop reflows
+                via row-start. */}
             <div className="md:col-span-2 md:col-start-1 md:row-start-5">
+              <TodayWorkoutCard dateStr={dateStr} currentDate={currentDate} isToday={isToday} />
+            </div>
+            <div className="md:col-span-2 md:col-start-1 md:row-start-6">
               <BodyCard data={data} t={t} />
             </div>
 
@@ -219,7 +231,7 @@ export default function Wellness() {
               <Link
                 to={isToday ? '/coach' : `/coach?date=${dateStr}`}
                 aria-label={t('wellness.coach_note')}
-                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-2 md:col-start-1 md:row-start-6"
+                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-2 md:col-start-1 md:row-start-7"
               >
                 <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-white/10 text-[13px] font-bold tracking-[0.4px]">
                   AI
