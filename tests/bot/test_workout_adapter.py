@@ -662,6 +662,73 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         # Sequence: warmup, interval (flattened), recovery (flattened), cooldown
         assert [s.text for s in steps] == ["Warm-up", "Interval", "Recovery", "Cool-down"]
 
+    def test_active_recovery_bridge_not_swallowed_into_repeat(self):
+        """Regression: HumanGo Threshold-25s swim sessions emit an «active
+        recovery» interval as the BRIDGE between two repeat groups (e.g. a
+        200m PB pull-buoy easy effort between two 10× 25m threshold sets).
+        Pre-fix the parser greedily folded the bridge into the prior repeat
+        and multiplied it 10× — overcounting workout distance by 1800m
+        (2.06×). Mirrors event 112634380 (user 1, 2026-05-31 Swim
+        «Threshold 25s-2»).
+        """
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "total distance: 1700 meters\n\n"
+            "==============================\n\n"
+            "warmup\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 4:18 per 100 meters\n\nhigh: 2:36 per 100 meters\n\n"
+            "==============================\n\n"
+            "======= repeat 10 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 25 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 20 sec\n\n"
+            "==============================\n\n"
+            "interval\n\nPB (Pull Buoy) Active recovery\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 2:42 per 100 meters\n\nhigh: 2:27 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 40 sec\n\n"
+            "==============================\n\n"
+            "======= repeat 10 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 25 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 20 sec\n\n"
+            "==============================\n\n"
+            "cooldown\n\ndistance: 300 meters\n\n"
+            "pace:\n\nlow: 3:22 per 100 meters\n\nhigh: 2:42 per 100 meters\n\n"
+        )
+        steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps
+
+        repeats = [s for s in steps if s.reps == 10]
+        assert len(repeats) == 2, f"expected 2 repeat-10 groups, got {[s.reps for s in steps]}"
+
+        # Each repeat body must hold ONLY interval (25m) + rest (20s) — not
+        # the 200m bridge nor the 40s long rest.
+        for rep in repeats:
+            assert [sub.text for sub in rep.steps] == ["Interval", "Rest"], rep.steps
+            assert rep.steps[0].distance == 25
+            assert rep.steps[1].duration == 20
+
+        # The 200m bridge interval and the 40s rest after it live at the
+        # outer level, not multiplied by 10.
+        bridge = [s for s in steps if s.text == "Interval" and s.distance == 200]
+        assert len(bridge) == 1, [(s.text, s.distance) for s in steps]
+        outer_long_rests = [s for s in steps if s.text == "Rest" and s.duration == 40]
+        assert len(outer_long_rests) == 1, [(s.text, s.duration) for s in steps]
+
+        # Final assembly: WU 200 + 10×25 + 200 bridge + 10×25 + CD 300 = 1200m
+        # (minimal fixture omits the 6×50 + 4×50 build sets from the real
+        # event for brevity — full production payload sums to 1700m, see
+        # SPEC §7 row «Active-recovery bridge»). Pre-fix this would have
+        # multiplied the 200m bridge 10× and yielded ≥ 3000m.
+        from data.workout_adapter import _sum_swim_distance
+
+        assert _sum_swim_distance(steps) == 1200
+
     def test_inter_set_rest_not_swallowed_into_repeat(self):
         """Regression: HumanGo swim sets often emit `interval + short rest +
         long rest` inside a `repeat N times` block, where the long Rest is
@@ -705,3 +772,197 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         # The long Rest blocks live at the outer level (not multiplied by 4).
         outer_long_rests = [s for s in steps if s.text == "Rest" and s.duration == 60]
         assert len(outer_long_rests) == 2, [(s.text, s.duration) for s in steps]
+
+    def test_active_recovery_in_run_workout_stays_in_repeat(self):
+        """Sport-scope guard: the bridge heuristic is Swim-only (per Copilot
+        review on PR #425). A distance-based Run repeat like `400m hard +
+        200m active recovery` is a legitimate inner-rep composition — the
+        recovery 200m belongs INSIDE the repeat, not de-scoped to outer
+        level. Symmetric coverage for Ride.
+        """
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "======= repeat 5 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 400 meters\n\n"
+            "pace:\n\nlow: 5:46 per km\n\nhigh: 5:15 per km\n\n"
+            "==============================\n\n"
+            "interval\n\nactive recovery jog\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 7:00 per km\n\nhigh: 6:33 per km\n\n"
+            "==============================\n\n"
+            "cooldown\n\nduration: 5 min\n\n"
+            "pace:\n\nlow: 7:00 per km\n\nhigh: 6:33 per km\n\n"
+        )
+        steps = humango_to_intervals_steps(desc, "Run", _thresholds(threshold_pace_run=330.0))
+        assert steps
+        repeat = next((s for s in steps if s.reps == 5), None)
+        assert repeat is not None
+        # Both intervals (hard 400m + active recovery 200m) stay INSIDE the
+        # repeat — heuristic is Swim-only and must NOT have fired on Run.
+        assert len(repeat.steps) == 2, [s.text for s in repeat.steps]
+        assert repeat.steps[0].distance == 400
+        assert repeat.steps[1].distance == 200
+
+    def test_active_recovery_with_duration_stays_in_repeat(self):
+        """Narrowing guard: the bridge heuristic requires `distance:` AND no
+        `duration:`. A duration-driven interval that happens to mention
+        «active recovery» in its prose is treated as a legit inner-rep step
+        (e.g. a Ride workout where a coach annotates a 2min easy spin as
+        «active recovery» inside a tabata-style repeat).
+        """
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "======= repeat 3 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\nduration: 1 min\n\n"
+            "power:\n\nlow: 200 W\n\nhigh: 240 W\n\n"
+            "==============================\n\n"
+            "interval\n\nactive recovery spin\n\nduration: 2 min\n\n"
+            "power:\n\nlow: 100 W\n\nhigh: 130 W\n\n"
+            "==============================\n\n"
+            "cooldown\n\nduration: 5 min\n\n"
+            "power:\n\nlow: 80 W\n\nhigh: 100 W\n\n"
+        )
+        steps = humango_to_intervals_steps(desc, "Ride", _thresholds(ftp=200))
+        assert steps
+        repeat = next((s for s in steps if s.reps == 3), None)
+        assert repeat is not None
+        # Both intervals stay INSIDE — heuristic must NOT have fired on the
+        # 2-min «active recovery» block because it's duration-based.
+        assert len(repeat.steps) == 2, [s.text for s in repeat.steps]
+
+    def test_active_recovery_as_first_sub_step_does_not_trigger(self):
+        """Guard: `sub_steps` empty check means the heuristic never fires on
+        the FIRST sub-step of a repeat. Protects the «active recovery is the
+        legit opener of a repeat» edge case from being misclassified as a
+        bridge — distance-based or not.
+        """
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "======= repeat 3 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\nactive recovery prep\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:55 per 100 meters\n\nhigh: 2:39 per 100 meters\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 30 sec\n\n"
+        )
+        steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps
+        repeat = next((s for s in steps if s.reps == 3), None)
+        assert repeat is not None
+        # All three blocks stay INSIDE — first sub-step is the «active
+        # recovery» 100m, guard prevented it from breaking the repeat.
+        assert len(repeat.steps) == 3, [s.text for s in repeat.steps]
+
+    def test_multiple_bridges_each_terminates_its_repeat(self):
+        """Multi-set workout: 3 repeat groups separated by 2 bridges. Each
+        bridge must terminate ONLY its own repeat — outer loop then opens a
+        new repeat group on the next marker."""
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "======= repeat 5 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 20 sec\n\n"
+            "==============================\n\n"
+            "interval\n\nactive recovery\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:55 per 100 meters\n\nhigh: 2:39 per 100 meters\n\n"
+            "==============================\n\n"
+            "======= repeat 5 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 20 sec\n\n"
+            "==============================\n\n"
+            "interval\n\nactive recovery\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:55 per 100 meters\n\nhigh: 2:39 per 100 meters\n\n"
+            "==============================\n\n"
+            "======= repeat 5 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 20 sec\n\n"
+        )
+        steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps
+
+        repeats = [s for s in steps if s.reps == 5]
+        assert len(repeats) == 3, f"expected 3 repeat-5 groups, got {[s.reps for s in steps]}"
+
+        # Each repeat must contain only (Interval 50m + Rest 20s).
+        for rep in repeats:
+            assert [sub.text for sub in rep.steps] == ["Interval", "Rest"], rep.steps
+            assert rep.steps[0].distance == 50
+
+        # Two 100m bridges at the outer level.
+        bridges = [s for s in steps if s.text == "Interval" and s.distance == 100]
+        assert len(bridges) == 2, [(s.text, s.distance) for s in steps]
+
+    def test_swim_without_total_distance_header_no_warning(self):
+        """Defensive: HumanGo descriptions without a `total distance: N` header
+        must still enrich cleanly. Sanity log skips silently (no divide-by-
+        None, no false warning).
+        """
+        from unittest.mock import patch
+
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "warmup\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:55 per 100 meters\n\nhigh: 2:39 per 100 meters\n\n"
+            "==============================\n\n"
+            "cooldown\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:55 per 100 meters\n\nhigh: 2:39 per 100 meters\n\n"
+        )
+        with patch("data.workout_adapter.logger.warning") as mock_warning:
+            steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps and len(steps) == 2
+        # No «exceeds announced» warning fired because announced header is absent.
+        assert not any(
+            "exceeds announced" in (call.args[0] if call.args else "") for call in mock_warning.call_args_list
+        )
+
+    def test_swim_overshoot_warning_fires(self):
+        """Sanity log: if the parsed structure (somehow) overshoots HumanGo's
+        announced total by >20%, a WARNING surfaces in logs so drift is
+        visible even if the bridge heuristic doesn't catch the pattern.
+        Constructed by under-reporting `total distance` in the description
+        relative to a structure that has zero «active recovery» annotation
+        (so the heuristic doesn't trigger).
+
+        We patch ``logger.warning`` directly instead of using ``caplog`` —
+        the latter silently drops records in some class-scoped pytest
+        contexts here (root cause unknown; smoke tests in the same dir
+        capture cleanly). Mock-based assertion is robust regardless.
+        """
+        from unittest.mock import patch
+
+        # 4× (200m + rest) = 800m parsed, but announce 500m → +60% overshoot.
+        desc = (
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "total distance: 500 meters\n\n"
+            "==============================\n\n"
+            "======= repeat 4 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 20 sec\n\n"
+        )
+        with patch("data.workout_adapter.logger.warning") as mock_warning:
+            steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps
+        assert mock_warning.called
+        call_msg = mock_warning.call_args.args[0]
+        assert "exceeds announced" in call_msg, call_msg
