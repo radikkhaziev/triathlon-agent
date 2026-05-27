@@ -429,6 +429,98 @@ def _sum_swim_distance(steps: list[WorkoutStepDTO]) -> float:
     return total
 
 
+def _humango_shrink_repeats_to_announced(
+    steps: list[WorkoutStepDTO],
+    announced: int,
+    tolerance: float = 0.20,
+    max_iter: int = 10,
+) -> tuple[list[WorkoutStepDTO], bool]:
+    """Iteratively shrink overshooting repeat groups by lifting trailing
+    sub-step pairs to outer level so parsed swim distance converges toward
+    HumanGo's announced total.
+
+    Why this exists: HumanGo's plain-text export has **no explicit «end of
+    repeat scope» marker**. The parser greedily collects every block after a
+    ``repeat N times`` marker until the next marker, but real HumanGo
+    workouts can have standalone post-repeat blocks (extra warmups, finisher
+    intervals) intended for **outer** level. Without a structural cue
+    («Active recovery» label, double-rest, etc.) we cannot distinguish those
+    from legit multi-block repeats. HumanGo *does* include
+    ``total distance: N meters`` in the header — we use that as ground
+    truth: if parsed overshoots, walk back the greedy decisions.
+
+    Algorithm: iteratively pick the single shrink (one repeat group, one
+    candidate ``keep`` count) that reduces drift the most. Shrink ``keep``
+    is always even (interval+rest pairs) — to preserve the pair invariant
+    we **skip odd-length repeat bodies entirely**, since dropping a partial
+    pair would lift either a lone interval or a lone rest to the outer
+    level, breaking the rendered workout structure.
+
+    Loop terminates when: no improving shrink exists OR ``max_iter``
+    iterations elapsed. **Does NOT stop at ``tolerance``** — keeps
+    iterating while drift improves. Empirically «Tempo PB-3» (event
+    112656655, user 1, 2026-06-07) needs TWO shrinks: the first lands at
+    ~13% drift (within 20% tolerance) but the second can drop drift to 0%.
+    Stopping at tolerance leaves residual over-grouping that's still wrong
+    even if «good enough» by the threshold. The caller (``humango_to_intervals_steps``)
+    decides whether to use the shrunk result based on a separate
+    ``drift_after <= tolerance`` check.
+
+    Returns ``(steps, shrunk_applied)``. ``shrunk_applied=False`` when the
+    function returns the input unchanged (no overshoot, or no improving
+    shrink was found in the first iteration).
+
+    ``tolerance`` only gates the **early-exit** at function entry (``drift
+    ≤ tolerance`` → no-op). It does not gate loop termination.
+
+    Empirically: «Tempo PB-3» needs two shrinks — repeat-2x WU group from
+    8 sub-steps → 2, and repeat-3x interval group from 4 sub-steps → 2 —
+    to converge to 0% drift vs the announced 2300m. «May 29 drill» (legit
+    multi-block repeat) parses cleanly under tolerance with no shrink.
+    """
+    if announced <= 0:
+        return steps, False
+    drift = abs(_sum_swim_distance(steps) - announced) / announced
+    if drift <= tolerance:
+        return steps, False
+
+    applied = False
+    for _ in range(max_iter):
+        best_steps = None
+        best_drift = drift
+
+        for i, s in enumerate(steps):
+            # Skip non-shrinkable groups: not a repeat, no sub-steps, ≤ 2
+            # sub-steps (already at minimum), or odd-length body (would
+            # require dropping a partial pair — see docstring).
+            if not (s.reps and s.steps):
+                continue
+            if len(s.steps) <= 2 or len(s.steps) % 2 != 0:
+                continue
+            # Try keeping 2, 4, 6, ... sub-steps (interval+rest pairs).
+            # `range` stops at ``len(s.steps)`` exclusive, so the loop never
+            # tries ``keep=0`` (which would dissolve the repeat) — the
+            # parser-side `repeat 1 times → flatten` rule (see line 686)
+            # handles the "no sub-steps" degenerate case upstream.
+            for keep in range(2, len(s.steps), 2):
+                kept = s.steps[:keep]
+                dropped = s.steps[keep:]
+                shrunk = WorkoutStepDTO(text=s.text, reps=s.reps, steps=kept)
+                candidate = steps[:i] + [shrunk] + dropped + steps[i + 1 :]
+                cand_drift = abs(_sum_swim_distance(candidate) - announced) / announced
+                if cand_drift < best_drift:
+                    best_drift = cand_drift
+                    best_steps = candidate
+
+        if best_steps is None:
+            break  # no improving shrink — converged
+        steps = best_steps
+        drift = best_drift
+        applied = True
+
+    return steps, applied
+
+
 def is_humango_event(description: str | None, workout_doc: dict | None) -> bool:
     """Decide whether a calendar event came from HumanGo and is ready for enrichment.
 
@@ -732,23 +824,58 @@ def humango_to_intervals_steps(
         )
         return None
 
-    # Sanity log: HumanGo's plain-text export has no explicit «end of repeat
-    # scope» marker. The active-recovery-bridge heuristic catches the
-    # canonical case (SPEC §7), but if future patterns slip through, the
-    # parsed swim distance will overshoot the announced total. Log so the
-    # drift is visible — not a fail-close because we'd rather push slightly-
-    # wrong steps than fall back to a watch-unfriendly flat description.
+    # Distance reconciliation for Swim: HumanGo's plain-text export has no
+    # explicit «end of repeat scope» marker. The active-recovery-bridge
+    # heuristic catches one canonical case (SPEC §7), but other patterns —
+    # warmup sets bleeding into a `repeat 2x` warmup group, finisher
+    # intervals bleeding into the main `repeat 3x` set — have no semantic
+    # marker. HumanGo *does* emit `total distance: N meters` in the header,
+    # which we use as ground truth: shrink overshooting repeat groups by
+    # lifting trailing sub-steps to outer level until parsed total matches.
+    # If shrink can't land within tolerance, keep greedy parse and log a
+    # warning (we'd rather push slightly-wrong steps than fall back to a
+    # watch-unfriendly flat description).
     if sport == "Swim":
         announced = _humango_announced_total_meters(description)
         if announced:
-            parsed = _sum_swim_distance(steps)
-            if parsed > announced * 1.2:
-                logger.warning(
-                    "HumanGo enrichment: parsed swim distance %d exceeds announced %d "
-                    "by >20%% — possible repeat-scope overflow (missed bridge block?)",
-                    parsed,
-                    announced,
-                )
+            parsed_before = _sum_swim_distance(steps)
+            if parsed_before > announced * 1.2:
+                shrunk, applied = _humango_shrink_repeats_to_announced(steps, announced)
+                if applied:
+                    parsed_after = _sum_swim_distance(shrunk)
+                    drift_after = abs(parsed_after - announced) / announced
+                    # Binary good-enough-or-nothing: a partial shrink that
+                    # halves drift but stays >20% is discarded in favour of
+                    # the greedy parse. Rationale: an athlete glancing at a
+                    # 2.5km vs 2.0km swim card can't tell which is closer to
+                    # truth, but they CAN tell something is off when the
+                    # warning log surfaces. Half-shrunk pushes would launder
+                    # the wrongness behind a structured-looking workout.
+                    if drift_after <= 0.20:
+                        logger.debug(
+                            "HumanGo enrichment: shrank repeat scopes to within 20%% of "
+                            "announced %d (greedy parse was %d, shrunk to %d)",
+                            announced,
+                            int(round(parsed_before)),
+                            int(round(parsed_after)),
+                        )
+                        steps = shrunk
+                    else:
+                        logger.warning(
+                            "HumanGo enrichment: parsed swim distance %d exceeds announced "
+                            "%d by >20%% and shrink could not reconcile (best %d) — keeping "
+                            "greedy parse",
+                            int(round(parsed_before)),
+                            announced,
+                            int(round(parsed_after)),
+                        )
+                else:
+                    logger.warning(
+                        "HumanGo enrichment: parsed swim distance %d exceeds announced %d "
+                        "by >20%% — no shrinkable repeat groups",
+                        int(round(parsed_before)),
+                        announced,
+                    )
 
     return steps
 

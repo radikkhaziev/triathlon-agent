@@ -1,8 +1,13 @@
 """Tests for ATP Phase 2: workout parsing and adaptation."""
 
+from unittest.mock import patch
+
 from data.db import AthleteThresholdsDTO
 from data.intervals.dto import RecoveryScoreDTO, WorkoutStepDTO
 from data.workout_adapter import (
+    _humango_announced_total_meters,
+    _humango_shrink_repeats_to_announced,
+    _sum_swim_distance,
     compute_constraints,
     estimate_step_zone,
     estimate_workout_max_zone,
@@ -725,8 +730,6 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         # event for brevity — full production payload sums to 1700m, see
         # SPEC §7 row «Active-recovery bridge»). Pre-fix this would have
         # multiplied the 200m bridge 10× and yielded ≥ 3000m.
-        from data.workout_adapter import _sum_swim_distance
-
         assert _sum_swim_distance(steps) == 1200
 
     def test_inter_set_rest_not_swallowed_into_repeat(self):
@@ -914,8 +917,6 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         must still enrich cleanly. Sanity log skips silently (no divide-by-
         None, no false warning).
         """
-        from unittest.mock import patch
-
         desc = (
             "View on HumanGo: https://app.humango.ai/...\n\n"
             "==============================\n\n"
@@ -946,8 +947,6 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         contexts here (root cause unknown; smoke tests in the same dir
         capture cleanly). Mock-based assertion is robust regardless.
         """
-        from unittest.mock import patch
-
         # 4× (200m + rest) = 800m parsed, but announce 500m → +60% overshoot.
         desc = (
             "View on HumanGo: https://app.humango.ai/...\n\n"
@@ -966,3 +965,217 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         assert mock_warning.called
         call_msg = mock_warning.call_args.args[0]
         assert "exceeds announced" in call_msg, call_msg
+
+    def test_shrink_reconciles_tempo_pb3_pattern(self):
+        """Distance reconciliation: «Tempo PB-3» pattern (event 112656655, user 1,
+        2026-06-07) where TWO repeat groups each greedily collect post-repeat
+        standalone blocks. Greedy parse: 3400m. Announced: 2300m. Both
+        repeats need shrinking — `2x` from 8 sub-steps → 2 (drops 6 to
+        outer), `3x` from 4 sub-steps → 2 (drops 2 to outer). Final parsed
+        total must match announced within 20% tolerance.
+        """
+        desc = (
+            "sport: swimming\n\n"
+            "total distance: 2300 meters\n\n"
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            # repeat 2x (warmup set) — greedy will eat 4 warmups + 4 rests
+            "==============================\n\n"
+            "======= repeat 2 times =====\n\n"
+            "==============================\n\n"
+            "warmup\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:42 per 100 meters\n\nhigh: 2:27 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 10 sec\n\n"
+            "==============================\n\n"
+            "warmup\n\nstroke choice\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:42 per 100 meters\n\nhigh: 2:27 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 10 sec\n\n"
+            "==============================\n\n"
+            "warmup\n\ndrill choice\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:42 per 100 meters\n\nhigh: 2:27 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 10 sec\n\n"
+            "==============================\n\n"
+            "warmup\n\nalternate drill\n\ndistance: 100 meters\n\n"
+            "pace:\n\nlow: 2:42 per 100 meters\n\nhigh: 2:27 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 10 sec\n\n"
+            "==============================\n\n"
+            # repeat 3x (main set) — greedy will eat 2 intervals + 2 rests
+            "======= repeat 3 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 400 meters\n\n"
+            "pace:\n\nlow: 2:27 per 100 meters\n\nhigh: 2:18 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 30 sec\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 400 meters\n\n"
+            "pace:\n\nlow: 2:18 per 100 meters\n\nhigh: 2:11 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 45 sec\n\n"
+            "==============================\n\n"
+            "cooldown\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 3:22 per 100 meters\n\nhigh: 2:42 per 100 meters\n\n"
+        )
+        steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps
+
+        # Parsed distance must land within 20% of announced 2300m (the
+        # shrink algorithm's tolerance).
+        parsed = _sum_swim_distance(steps)
+        assert abs(parsed - 2300) / 2300 <= 0.20, f"parsed={parsed}, announced=2300"
+
+        # Both repeat groups must have shrunk to 2 sub-steps (interval+rest).
+        repeats = [s for s in steps if s.reps]
+        assert len(repeats) == 2, [s.reps for s in repeats]
+        for rep in repeats:
+            assert len(rep.steps) == 2, (rep.reps, [sub.text for sub in rep.steps])
+
+        # Standalone warmups + standalone finisher interval must have surfaced
+        # at outer level (lifted from inside the over-greedy repeats).
+        outer_warmups = [s for s in steps if s.text == "Warm-up" and s.distance == 100]
+        assert len(outer_warmups) == 3, [(s.text, s.distance) for s in steps]
+        outer_finisher = [s for s in steps if s.text == "Interval" and s.distance == 400 and s.reps is None]
+        assert len(outer_finisher) == 1, [(s.text, s.distance, s.reps) for s in steps]
+
+    def test_shrink_leaves_legit_multi_block_repeat_alone(self):
+        """No-regression: a legit 6-sub-step repeat (drill-style HumanGo
+        sessions like 2026-05-29 Catch Work) where greedy parse matches
+        announced total within tolerance must NOT be shrunk."""
+        desc = (
+            "sport: swimming\n\n"
+            "total distance: 500 meters\n\n"
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "warmup\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 3:00 per 100 meters\n\nhigh: 2:40 per 100 meters\n\n"
+            "==============================\n\n"
+            "======= repeat 2 times =====\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 2:30 per 100 meters\n\nhigh: 2:15 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 5 sec\n\n"
+            "==============================\n\n"
+            "interval\n\nclosed fist drill\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 3:00 per 100 meters\n\nhigh: 2:40 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 5 sec\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 2:30 per 100 meters\n\nhigh: 2:15 per 100 meters\n\n"
+            "==============================\n\n"
+            "rest\n\nduration: 0 min 30 sec\n\n"
+            "==============================\n\n"
+            "cooldown\n\ndistance: 50 meters\n\n"
+            "pace:\n\nlow: 3:00 per 100 meters\n\nhigh: 2:40 per 100 meters\n\n"
+        )
+        # 50 WU + 2× (3 intervals × 50 = 150m) + 50 CD = 400m parsed.
+        # Announced 500m. Drift = 20% — at boundary, shrink shouldn't fire.
+        steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps
+
+        repeat = next((s for s in steps if s.reps == 2), None)
+        assert repeat is not None
+        # Greedy preserved all 6 sub-steps in the repeat (interval+rest×3).
+        assert len(repeat.steps) == 6, [s.text for s in repeat.steps]
+
+    def test_shrink_unable_to_reconcile_keeps_greedy_and_warns(self):
+        """When shrink can't bring drift within tolerance (e.g. the
+        overshoot is in the outer level, not a repeat), keep greedy and
+        log warning instead of silently emitting a misleading shrink."""
+        # All outer-level — no repeats to shrink. 4 × 200m = 800m, announced 300m.
+        desc = (
+            "sport: swimming\n\n"
+            "total distance: 300 meters\n\n"
+            "View on HumanGo: https://app.humango.ai/...\n\n"
+            "==============================\n\n"
+            "warmup\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 2:55 per 100 meters\n\nhigh: 2:39 per 100 meters\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 2:30 per 100 meters\n\nhigh: 2:15 per 100 meters\n\n"
+            "==============================\n\n"
+            "interval\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 2:30 per 100 meters\n\nhigh: 2:15 per 100 meters\n\n"
+            "==============================\n\n"
+            "cooldown\n\ndistance: 200 meters\n\n"
+            "pace:\n\nlow: 2:55 per 100 meters\n\nhigh: 2:39 per 100 meters\n\n"
+        )
+        with patch("data.workout_adapter.logger.warning") as mock_warning:
+            steps = humango_to_intervals_steps(desc, "Swim", _thresholds(css=140.0))
+        assert steps
+        # No repeats present → shrink can't apply → warning fires.
+        assert mock_warning.called
+        call_msg = mock_warning.call_args.args[0]
+        assert "exceeds announced" in call_msg
+        assert "no shrinkable repeat groups" in call_msg or "shrink could not reconcile" in call_msg
+
+    def test_shrink_helper_returns_unchanged_when_within_tolerance(self):
+        """Unit-level: `_humango_shrink_repeats_to_announced` is a no-op
+        when drift already within tolerance, regardless of repeat shape."""
+        steps = [
+            WorkoutStepDTO(text="Warm-up", distance=100, pace={"units": "%pace", "start": 80, "end": 90}),
+            WorkoutStepDTO(
+                text="4x",
+                reps=4,
+                steps=[
+                    WorkoutStepDTO(text="Interval", distance=100, pace={"units": "%pace", "start": 95, "end": 105}),
+                    WorkoutStepDTO(text="Rest", duration=20),
+                    WorkoutStepDTO(text="Interval", distance=50, pace={"units": "%pace", "start": 95, "end": 105}),
+                    WorkoutStepDTO(text="Rest", duration=20),
+                ],
+            ),
+            WorkoutStepDTO(text="Cool-down", distance=100, pace={"units": "%pace", "start": 70, "end": 85}),
+        ]
+        # Parsed = 100 + 4×(100+50) + 100 = 800. Announced = 800 → drift 0%.
+        out, applied = _humango_shrink_repeats_to_announced(steps, announced=800)
+        assert applied is False
+        assert out is steps
+
+    def test_shrink_skips_odd_length_repeat_bodies(self):
+        """Pair-invariant guard: when a repeat has an odd number of sub-steps,
+        shrinking would lift a partial pair (lone interval or lone rest) to
+        outer level, breaking the [interval, rest] structural contract.
+        The algorithm must skip such repeats entirely, even if they're the
+        cause of overshoot. Caller will then log the «no shrinkable repeat
+        groups» warning.
+
+        Per Copilot review on PR #427.
+        """
+        # 3-sub-step repeat (interval + rest + interval) — odd length, must
+        # not be shrunk. Construct an overshoot directly to bypass parsing.
+        steps = [
+            WorkoutStepDTO(
+                text="4x",
+                reps=4,
+                steps=[
+                    WorkoutStepDTO(text="Interval", distance=200, pace={"units": "%pace", "start": 95, "end": 105}),
+                    WorkoutStepDTO(text="Rest", duration=20),
+                    WorkoutStepDTO(text="Interval", distance=100, pace={"units": "%pace", "start": 80, "end": 90}),
+                ],
+            ),
+        ]
+        # Parsed = 4 × (200+100) = 1200. Announced = 500 → drift 140%.
+        out, applied = _humango_shrink_repeats_to_announced(steps, announced=500)
+        # Skipped odd-length repeat → no shrink applied even though drift > tolerance.
+        assert applied is False
+        assert out is steps
+
+    def test_shrink_handles_km_units_in_announced(self):
+        """`total distance: N km` path: announcer may use km instead of meters
+        (BIKE_DESCRIPTION fixture uses km; Swim historically meters, but
+        the parser is unit-agnostic). km → multiplied by 1000 internally.
+        """
+        # km input should be converted.
+        desc_km = "sport: swimming\n\ntotal distance: 2.3 km\n\nView on HumanGo: x\n"
+        assert _humango_announced_total_meters(desc_km) == 2300
+
+        # Plain integer km too.
+        desc_int_km = "sport: swimming\n\ntotal distance: 3 km\n\nView on HumanGo: x\n"
+        assert _humango_announced_total_meters(desc_int_km) == 3000
+
+        # Sanity: meter path unchanged.
+        desc_m = "sport: swimming\n\ntotal distance: 1700 meters\n\nView on HumanGo: x\n"
+        assert _humango_announced_total_meters(desc_m) == 1700
