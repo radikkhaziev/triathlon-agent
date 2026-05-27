@@ -138,7 +138,7 @@ export default function Settings() {
     if (!isAuthenticated) return
     apiFetch<AuthMeResponse & { profile?: typeof profile }>('/api/auth/me')
       .then(data => {
-        setIntervals(data.intervals ?? { method: 'none', athlete_id: null, scope: null })
+        setIntervals(data.intervals ?? { athlete_id: null, scope: null, connected: false })
         // Default to true on missing field so old API responses don't lock
         // existing users out of the OAuth button — only an explicit `false`
         // from a fresh server triggers the /start gate.
@@ -157,7 +157,7 @@ export default function Settings() {
         setSports(Array.isArray(data.sports) ? data.sports : null)
       })
       .catch(() => {
-        setIntervals({ method: 'none', athlete_id: null, scope: null })
+        setIntervals({ athlete_id: null, scope: null, connected: false })
         setBotChatInitialized(true)
       })
   }, [isAuthenticated])
@@ -1060,15 +1060,6 @@ function StatTile({ label, value, unit }: { label: string; value: string; unit: 
         <span className="text-[20px] font-semibold tracking-tight text-halo-ink">{value}</span>
         <span className="text-[11px] text-halo-ink-dimmer">{unit}</span>
       </div>
-    </div>
-  )
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between items-center py-1.5 border-b border-halo-border last:border-b-0">
-      <span className="text-[13px] text-halo-ink-dim">{label}</span>
-      <span className="text-[13px] font-medium text-halo-ink">{value}</span>
     </div>
   )
 }
