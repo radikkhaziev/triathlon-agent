@@ -351,6 +351,83 @@ def needs_adaptation(
 
 _HUMANGO_SIGNATURE = "View on HumanGo"
 
+# Matches HumanGo's «active recovery» annotation on an interval block — empirically
+# only appears on between-sets bridge intervals (e.g. «PB (Pull Buoy) Active recovery»
+# in Threshold-25s swim sessions). Used as a structural cue to terminate the
+# surrounding repeat scope; see SPEC §7 row «Active-recovery bridge».
+_HUMANGO_ACTIVE_RECOVERY = re.compile(r"active\s+recovery", re.IGNORECASE)
+
+# Matches HumanGo's workout-level «total distance: N meters» (or «N km») header.
+# Used as a post-build sanity log — if parsed structure overshoots announced
+# total by a wide margin we surface a warning so repeat-scope drift is visible
+# in logs even when no «active recovery» label is present.
+_HUMANGO_TOTAL_DISTANCE = re.compile(
+    r"total\s+distance:\s*([\d.]+)\s*(km|meters?)",
+    re.IGNORECASE,
+)
+
+
+def _humango_is_active_recovery_interval(block_text: str) -> bool:
+    """Detect a HumanGo «active recovery» interval block.
+
+    HumanGo emits these as the bridge between two repeat groups (e.g. a 200m
+    PB pull-buoy active recovery sandwiched between two 10× 25m threshold
+    sets). The raw plain-text export has no explicit «end of repeat scope»
+    marker, so without this cue the parser folds the bridge into the prior
+    repeat and multiplies it ``N`` times — overcounting workout distance by
+    ``(N-1) ×`` the bridge.
+
+    Three AND'd checks — all must hold:
+
+    1. Step type is ``interval`` (not ``recovery`` / ``rest`` / ``cooldown``).
+    2. Block text contains the phrase «active recovery».
+    3. Block has ``distance:`` but no ``duration:`` — narrowing guard against
+       false positives where HumanGo describes a duration-based inner-rep
+       step using «active recovery» in its prose. Empirically every observed
+       bridge is distance-driven (200m PB pull-buoy, 100m easy, etc.);
+       duration-driven «active recovery» blocks would belong inside repeats.
+    """
+    lines = [line.strip().lower() for line in block_text.split("\n") if line.strip()]
+    if "interval" not in lines:
+        return False
+    if not _HUMANGO_ACTIVE_RECOVERY.search(block_text):
+        return False
+    has_distance = bool(_DISTANCE.search(block_text))
+    has_duration = bool(_DURATION_FULL.search(block_text) and _DURATION_FULL.search(block_text).group(0))
+    # _DURATION_FULL matches even on the literal "duration:" prefix with empty
+    # values, so re-check that at least one of mins/secs is non-zero.
+    if has_duration:
+        m = _DURATION_FULL.search(block_text)
+        mins = int(m.group(1) or 0)
+        secs = int(m.group(2) or 0)
+        has_duration = (mins + secs) > 0
+    return has_distance and not has_duration
+
+
+def _humango_announced_total_meters(description: str) -> int | None:
+    """Parse HumanGo's «total distance: N meters/km» workout header."""
+    m = _HUMANGO_TOTAL_DISTANCE.search(description)
+    if not m:
+        return None
+    val = float(m.group(1))
+    if m.group(2).lower() == "km":
+        val *= 1000
+    return int(round(val))
+
+
+def _sum_swim_distance(steps: list[WorkoutStepDTO]) -> float:
+    """Recursive sum of swim distance across steps and repeat groups.
+
+    Returns ``float`` because ``WorkoutStepDTO.distance`` is ``float | None``.
+    """
+    total: float = 0.0
+    for s in steps:
+        if s.reps and s.steps:
+            total += s.reps * _sum_swim_distance(s.steps)
+        elif s.distance:
+            total += s.distance
+    return total
+
 
 def is_humango_event(description: str | None, workout_doc: dict | None) -> bool:
     """Decide whether a calendar event came from HumanGo and is ready for enrichment.
@@ -588,6 +665,19 @@ def humango_to_intervals_steps(
             while i < len(blocks):
                 if _REPEAT.search(blocks[i]):
                     break
+                # «Active recovery» interval block signals end of repeat
+                # scope — HumanGo emits these as the bridge between two
+                # repeat groups (see SPEC §7 row «Active-recovery bridge»).
+                # Check BEFORE parsing so ``i`` stays pointed at the bridge
+                # block and the outer loop picks it up as a standalone step
+                # instead of multiplying it ``reps`` times. **Swim-only**:
+                # the bridge pattern was observed empirically on Swim
+                # threshold sessions; distance-based Run/Ride workouts like
+                # `400m hard + 200m active recovery` are a legitimate
+                # repeat-body composition and must NOT be de-scoped (per
+                # Copilot review on PR #425).
+                if sport == "Swim" and sub_steps and _humango_is_active_recovery_interval(blocks[i]):
+                    break
                 sub = _humango_parse_block_for_enrichment(blocks[i], sport, thresholds)
                 if sub:
                     step_kind = sub.text.lower().replace("-", "")
@@ -641,6 +731,24 @@ def humango_to_intervals_steps(
             len(steps),
         )
         return None
+
+    # Sanity log: HumanGo's plain-text export has no explicit «end of repeat
+    # scope» marker. The active-recovery-bridge heuristic catches the
+    # canonical case (SPEC §7), but if future patterns slip through, the
+    # parsed swim distance will overshoot the announced total. Log so the
+    # drift is visible — not a fail-close because we'd rather push slightly-
+    # wrong steps than fall back to a watch-unfriendly flat description.
+    if sport == "Swim":
+        announced = _humango_announced_total_meters(description)
+        if announced:
+            parsed = _sum_swim_distance(steps)
+            if parsed > announced * 1.2:
+                logger.warning(
+                    "HumanGo enrichment: parsed swim distance %d exceeds announced %d "
+                    "by >20%% — possible repeat-scope overflow (missed bridge block?)",
+                    parsed,
+                    announced,
+                )
 
     return steps
 
