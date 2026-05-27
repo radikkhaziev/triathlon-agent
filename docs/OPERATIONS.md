@@ -16,7 +16,7 @@ Commands use `@athlete_required` (needs `athlete_id`) or `@user_required` (any a
 /race       — lightweight entry point for race creation: sends a priming message; user describes the race in free-form, preview+confirm via `suggest_race` MCP tool
 /web        — one-time code for desktop login (5 min TTL)
 /stick      — increment IQOS stick counter for today (owner only)
-/health     — server diagnostics: system stats, DB/Redis/queues, per-athlete Intervals.icu token check (OAuth/api_key), daily token usage per user, Anthropic (owner only)
+/health     — server diagnostics: system stats, DB/Redis/queues, per-athlete Intervals.icu OAuth token check, daily token usage per user, Anthropic (owner only)
 /lang       — set language: /lang ru or /lang en (@user_required — works for viewers too)
 /silent     — toggle silent mode (@user_required — works for viewers too)
 /whoami     — show current user info (chat_id, role)
@@ -207,7 +207,9 @@ with get_sync_session() as s:
     user = s.get(User, 2)  # user_id
     user.role = "athlete"
     user.athlete_id = "i543070"       # Intervals.icu athlete ID
-    user.set_api_key("your-api-key")  # encrypted in DB via Fernet
+    # OAuth-only: drive the athlete through /api/intervals/auth/init from the
+    # webapp Settings page — that writes intervals_access_token_encrypted +
+    # intervals_oauth_scope. There is no plaintext set-api-key path anymore.
     user.mcp_token = "generated-token"
     user.age = 30
     user.sports = ["swim", "ride", "run"]   # subset of {"swim","ride","run"}; null=picker on next webapp open

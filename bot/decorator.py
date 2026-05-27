@@ -1,10 +1,12 @@
 import functools
+import logging
 
 from pydantic import TypeAdapter
-from sqlalchemy import select
 
 from bot.i18n import _, set_language
-from data.db import User, UserDTO, get_session
+from data.db import User, UserDTO
+
+logger = logging.getLogger(__name__)
 
 _UserListAdapter = TypeAdapter(list[UserDTO])
 
@@ -21,52 +23,55 @@ def with_athletes(fn):
     return wrapper
 
 
-def with_legacy_athletes(fn):
-    """Temporary decorator for scheduler jobs that need to run even for athletes who haven't completed
-    onboarding (and thus lack an IntervalsSyncClient).
-    Use `with_athletes` instead where possible,
-    and remove this once all scheduler jobs are migrated.
+async def _wake_user(user: User) -> None:
+    """Flip ``is_active=True`` if a dormant user just interacted with the bot.
+
+    The daily ``deactivate_stale`` cron pauses idle accounts to stop token
+    spend on morning reports; the moment they come back (a message, command,
+    callback) we reactivate so the next morning report lands again. This is
+    the bot-side mirror of the webapp's ``get_current_user`` wake-up path.
     """
-
-    @functools.wraps(fn)
-    async def wrapper(*args, **kwargs):
-        async with get_session() as session:
-            result = await session.execute(
-                select(User).where(
-                    User.is_active.is_(True),
-                    User.intervals_auth_method == "api_key",
-                    User.athlete_id.isnot(None),
-                )
-            )
-            users = list(result.scalars().all())
-        athletes: list[UserDTO] = _UserListAdapter.validate_python(users)
-        return await fn(athletes, *args, **kwargs)
-
-    return wrapper
+    if user.is_active:
+        return
+    logger.info("Reactivating dormant user id=%d on bot interaction", user.id)
+    await User.set_active_by_chat_id(user.chat_id, True)
+    user.is_active = True
 
 
 def athlete_required(fn):
-    """Decorator for Telegram handlers: resolve active athlete by chat_id, pass as `user` kwarg."""
+    """Decorator for Telegram handlers: resolve athlete by chat_id, pass as `user` kwarg.
+
+    Dormant accounts (``is_active=False`` set by the stale-deactivation cron
+    or a prior Telegram-block flip) are reactivated on first interaction —
+    a returning user shouldn't need to type ``/start`` first. Users without
+    ``athlete_id`` still bounce: this decorator is athlete-scoped commands
+    only (use ``user_required`` for pre-onboarding paths).
+    """
 
     @functools.wraps(fn)
     async def wrapper(update, context, *args, **kwargs):
-        user = await User.get_by_chat_id(str(update.effective_user.id))
+        # `include_inactive=True` so we can see dormant rows and reactivate
+        # below; otherwise a stale-deactivated user would look "missing" and
+        # we'd send the bounce message instead of waking them up.
+        user = await User.get_by_chat_id(str(update.effective_user.id), include_inactive=True)
         if user:
             set_language(user.language or "ru")
-        if not user or not user.athlete_id or not user.is_active:
+        if not user or not user.athlete_id:
             if update.callback_query:
                 await update.callback_query.answer(_("Нет доступа."), show_alert=True)
             elif update.message:
                 await update.message.reply_text(_("Нет доступа."))
             return
+        await _wake_user(user)
+        await User.touch_last_action(user.id)
         return await fn(update, context, *args, user=user, **kwargs)
 
     return wrapper
 
 
 def user_required(fn):
-    """Decorator for Telegram handlers: resolve any active user (viewer or
-    athlete), pass as `user` kwarg.
+    """Decorator for Telegram handlers: resolve any user (viewer or athlete),
+    pass as `user` kwarg.
 
     Weaker than `athlete_required` — does NOT require `athlete_id`. Use for
     commands that make sense for not-yet-onboarded users: `/silent`, `/lang`,
@@ -79,23 +84,26 @@ def user_required(fn):
     We use `effective_user.id` to identify the sender regardless of chat type,
     matching the existing `athlete_required` convention.
 
-    Fallback: if the row is missing or `is_active=False`, reply with
-    "Сначала отправьте /start" on both `message` and `callback_query` paths
-    so the user gets consistent guidance on how to recover.
+    Dormant accounts (`is_active=False`) are reactivated on first interaction
+    — a returning user shouldn't need to type ``/start`` first. Only fully
+    missing rows bounce with "Сначала отправьте /start".
     """
 
     @functools.wraps(fn)
     async def wrapper(update, context, *args, **kwargs):
-        user = await User.get_by_chat_id(str(update.effective_user.id))
+        # `include_inactive=True` so dormant rows are findable for reactivation.
+        user = await User.get_by_chat_id(str(update.effective_user.id), include_inactive=True)
         if user:
             set_language(user.language or "ru")
-        if not user or not user.is_active:
+        if not user:
             msg = _("Сначала отправьте /start")
             if update.callback_query:
                 await update.callback_query.answer(msg, show_alert=True)
             elif update.message:
                 await update.message.reply_text(msg)
             return
+        await _wake_user(user)
+        await User.touch_last_action(user.id)
         return await fn(update, context, *args, user=user, **kwargs)
 
     return wrapper

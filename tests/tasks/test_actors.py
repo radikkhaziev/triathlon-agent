@@ -187,7 +187,11 @@ class TestSyncUserWellness:
             id=1,
             chat_id=os.environ.get("TELEGRAM_CHAT_ID", "0"),
             username=os.environ.get("TELEGRAM_USERNAME", "test"),
-            athlete_id=os.environ["INTERVALS_ATHLETE_ID"],
+            # The legacy `INTERVALS_ATHLETE_ID` env var was retired with api_key
+            # auth (migration `a8b9c0d1e2f3`); these skipped integration tests
+            # don't actually wire creds, so a placeholder is enough to keep the
+            # UserDTO valid if someone re-enables them.
+            athlete_id=os.environ.get("INTERVALS_ATHLETE_ID", "i000000"),
         )
         result = actor_user_wellness(user)
         assert result is None
@@ -1089,6 +1093,53 @@ class TestActorUserWellnessMocked:
         mock_save.assert_not_called()
         mock_enrich.send.assert_not_called()
 
+    def test_skips_inactive_user_before_intervals_call(self):
+        """WELLNESS_UPDATED webhook keeps firing for dormant users (we don't
+        filter at the webhook layer so event history stays consistent). The
+        actor must short-circuit *before* hitting Intervals.icu — otherwise
+        we spend Intervals API quota + recalcs on someone who hasn't touched
+        the bot in 30+ days. The morning-report compose actor has its own
+        guard further downstream.
+        """
+        from tasks.actors import actor_user_wellness
+
+        # Patch the shared helper at its definition site — the wellness actor
+        # imports it via `from .common import is_user_dormant`, so the patch
+        # has to land on `tasks.actors.common.is_user_dormant` (or the alias
+        # `tasks.actors.wellness.is_user_dormant`, which points to the same
+        # callable). Using the alias keeps the patch local to this actor.
+        with (
+            patch("tasks.actors.wellness.is_user_dormant", return_value=True) as mock_gate,
+            patch("tasks.actors.wellness.IntervalsSyncClient.for_user") as mock_for_user,
+            patch("tasks.actors.wellness.Wellness.save") as mock_save,
+        ):
+            actor_user_wellness(_user().model_dump(), _DT)
+
+        mock_gate.assert_called_once_with(1, "actor_user_wellness")
+        mock_for_user.assert_not_called()
+        mock_save.assert_not_called()
+
+    def test_force_inactive_bypasses_dormant_guard(self):
+        """CLI admin path (`cli sync-wellness <user_id>`) needs to backfill
+        data for a deactivated user without first reactivating them. The
+        ``force_inactive=True`` parameter is the explicit opt-out; webhooks
+        and cron never set it, so production tenants stay protected.
+        """
+        from tasks.actors import actor_user_wellness
+
+        mock_client = self._make_client(None)  # client returns no wellness → early-out *after* the guard
+
+        with (
+            patch("tasks.actors.wellness.is_user_dormant", return_value=True) as mock_gate,
+            patch("tasks.actors.wellness.IntervalsSyncClient.for_user", return_value=mock_client) as mock_for_user,
+        ):
+            actor_user_wellness(_user().model_dump(), _DT, force_inactive=True)
+
+        # Gate is short-circuited by `force_inactive` — never even called.
+        mock_gate.assert_not_called()
+        # And the Intervals client constructor IS reached.
+        mock_for_user.assert_called_once()
+
     def test_saves_wellness_when_data_present(self):
         """Wellness data returned → Wellness.save called with correct user_id."""
         from tasks.actors import actor_user_wellness
@@ -1231,8 +1282,11 @@ class TestWellnessPipelineIntegration:
             id=1,
             chat_id=os.environ.get("TELEGRAM_CHAT_ID", "0"),
             username=os.environ.get("TELEGRAM_USERNAME", "test"),
-            athlete_id=os.environ["INTERVALS_ATHLETE_ID"],
-            api_key=os.environ["INTERVALS_API_KEY"],
+            # The legacy `INTERVALS_ATHLETE_ID` env var was retired with api_key
+            # auth (migration `a8b9c0d1e2f3`); these skipped integration tests
+            # don't actually wire creds, so a placeholder is enough to keep the
+            # UserDTO valid if someone re-enables them.
+            athlete_id=os.environ.get("INTERVALS_ATHLETE_ID", "i000000"),
         )
 
     def test_actor_user_wellness(self):

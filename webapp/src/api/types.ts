@@ -1,8 +1,11 @@
 // Auth
 export interface IntervalsStatus {
-  method: 'oauth' | 'api_key' | 'none'
   athlete_id: string | null
   scope: string | null
+  // True iff an OAuth access_token is stored — false post-disconnect/revoke
+  // even when athlete_id lingers. UI uses this to pick "Connected" vs
+  // "Reconnect" panel.
+  connected: boolean
 }
 
 // Race-goal classification (issue #323 Strand A) — mirrors backend

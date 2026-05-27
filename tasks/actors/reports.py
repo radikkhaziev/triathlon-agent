@@ -36,6 +36,7 @@ from tasks.formatter import build_evening_message, build_morning_message, build_
 from tasks.tools import MCPTool, TelegramTool
 
 from ._constants import MORNING_REPORT_DELAY_SEC
+from .common import is_user_dormant
 from .workout import actor_enrich_humango_workout
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,14 @@ def actor_echo(message: str) -> str:
 
 @dramatiq.actor(queue_name="default")
 @validate_call
-def actor_user_scheduled_workouts(user: UserDTO):
+def actor_user_scheduled_workouts(user: UserDTO, force_inactive: bool = False):
+    # Webhook-driven (CALENDAR_UPDATED) — Intervals.icu keeps pushing for
+    # dormant users; skip API quota burn until they reactivate. CLI / admin
+    # paths pass ``force_inactive=True`` to backfill a stale-deactivated user
+    # without reactivating them first.
+    if not force_inactive and is_user_dormant(user.id, "actor_user_scheduled_workouts"):
+        return
+
     today = local_today()
     newest = today + timedelta(days=14)
 

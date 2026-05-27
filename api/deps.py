@@ -69,13 +69,29 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
             language_code=tg_language_code,
         )
     else:
-        user = await User.get_by_chat_id(chat_id)
+        # `include_inactive=True` so a stale-deactivated user opening the webapp
+        # via JWT cookie is found here (instead of a silent 401) and woken up
+        # below. initData path already uses include_inactive=True via
+        # get_or_create_from_telegram.
+        user = await User.get_by_chat_id(chat_id, include_inactive=True)
 
     if user:
         if is_demo:
             # Demo tokens grant read-only access to owner's data.
             # Set a virtual role that frontend and deps can check.
             user.role = "demo"  # type: ignore[assignment]  # virtual, not persisted
+        elif user.is_active:
+            # Bump last_action_at on every authenticated webapp request so the
+            # daily stale-deactivation cron sees real interaction. Demo users
+            # skip — touching the owner's row from someone else's demo session
+            # would falsely keep the owner "alive". Inactive users also skip —
+            # the webapp is NOT a re-engagement signal (a user who blocked the
+            # bot may still have a valid JWT cookie open); reactivation is the
+            # bot-side responsibility (see bot/decorator.py:_wake_user). They
+            # bounce off `require_athlete`/`require_owner` with 403, and
+            # /api/auth/me returns the row read-only so the frontend can show
+            # the "account paused" message instead of acting on stale state.
+            await User.touch_last_action(user.id)
         sentry_sdk.set_user(
             {
                 "id": str(user.id),

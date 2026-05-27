@@ -232,9 +232,9 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     """Check current auth status.
 
     The `intervals` block tells the frontend whether this user is connected
-    to Intervals.icu and via which method (oauth / api_key / none). Settings
-    page uses it to render the "Connect / Migrate / Connected" state of the
-    Intervals.icu section.
+    to Intervals.icu (``athlete_id`` non-null) and what OAuth scope they
+    granted. Settings page uses it to render the "Connect / Connected" state
+    of the Intervals.icu section.
     """
     if not user:
         return {"role": "anonymous", "authenticated": False}
@@ -275,9 +275,12 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
         "bot_chat_initialized": user.bot_chat_initialized,
         "bot_username": settings.TELEGRAM_BOT_USERNAME,
         "intervals": {
-            "method": user.intervals_auth_method,
             "athlete_id": user.athlete_id,
             "scope": user.intervals_oauth_scope,
+            # True iff an OAuth access_token is currently stored. False after
+            # disconnect/401-revoke even when `athlete_id` lingers — frontend
+            # uses this to decide between "Connected" vs "Reconnect" UI.
+            "connected": user.intervals_access_token_encrypted is not None,
         },
         "sports": user.sports,
         "profile": {
@@ -306,7 +309,7 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
     }
     if user.role == "demo":
         result["language"] = "en"
-        result["intervals"] = {"method": "oauth", "athlete_id": "demo", "scope": None}
+        result["intervals"] = {"athlete_id": "demo", "scope": None, "connected": True}
         # Demo browses owner data read-only and never triggers Telegram I/O.
         # Pin to True so the frontend doesn't show a meaningless /start CTA.
         result["bot_chat_initialized"] = True
@@ -523,7 +526,10 @@ async def auth_retry_backfill(user: User | None = Depends(get_current_user)) -> 
         raise HTTPException(status_code=403, detail="Read-only demo mode")
     if not user.athlete_id:
         raise HTTPException(status_code=400, detail="No Intervals.icu account connected")
-    if user.intervals_auth_method == "none":
+    # Presence check via the encrypted column avoids a wasted Fernet decrypt
+    # on every retry-backfill request (the property would decrypt just to
+    # compute truthiness). Same pattern as /api/auth/me's `connected` field.
+    if user.intervals_access_token_encrypted is None:
         raise HTTPException(status_code=400, detail="Intervals.icu not connected")
 
     now_mono = time.monotonic()

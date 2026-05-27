@@ -33,16 +33,20 @@ def _user(
     user_id: int = 1,
     role: str = "athlete",
     athlete_id: str | None = "i001",
-    intervals_auth_method: str = "oauth",
+    connected: bool = True,
 ) -> SimpleNamespace:
-    return SimpleNamespace(
+    ns = SimpleNamespace(
         id=user_id,
         role=role,
         athlete_id=athlete_id,
-        intervals_auth_method=intervals_auth_method,
         is_active=True,
         language="ru",
+        intervals_access_token_encrypted="encrypted-blob" if connected else None,
     )
+    # `intervals_access_token` property on real User decrypts the column —
+    # the auth router only checks truthiness, so mirror that contract.
+    ns.intervals_access_token = "tok" if connected else None
+    return ns
 
 
 def _state(
@@ -178,9 +182,9 @@ class TestAuthRetryBackfillPreconditions:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_intervals_none_returns_400(self):
+    async def test_intervals_disconnected_returns_400(self):
         with pytest.raises(HTTPException) as exc:
-            await auth_retry_backfill(user=_user(intervals_auth_method="none"))
+            await auth_retry_backfill(user=_user(connected=False))
         assert exc.value.status_code == 400
 
 

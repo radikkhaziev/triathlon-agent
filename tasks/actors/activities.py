@@ -53,7 +53,7 @@ from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO, lo
 from tasks.formatter import build_post_activity_message, build_ramp_test_message, build_rpe_keyboard
 from tasks.tools import TelegramTool
 
-from .common import actor_after_activity_update
+from .common import actor_after_activity_update, is_user_dormant
 
 logger = logging.getLogger(__name__)
 
@@ -698,7 +698,14 @@ def actor_fetch_user_activities(
     oldest: DateDTO | None = None,
     newest: DateDTO | None = None,
     force: bool = False,
+    force_inactive: bool = False,
 ):
+    # Webhook-driven (ACTIVITY_UPLOADED tail) + cron + CLI. Dormancy gate
+    # skips API quota for inactive users; CLI sets `force_inactive=True` for
+    # admin backfills.
+    if not force_inactive and is_user_dormant(user.id, "actor_fetch_user_activities"):
+        return
+
     today = local_today()
     _newest = newest or today
     _oldest = oldest or (today - timedelta(days=30))

@@ -155,7 +155,7 @@ After any ORM model change — generate the migration immediately. Don't forget.
 - Don't add a `user_id` parameter to MCP tools
 - Don't pass ORM objects into Dramatiq actors
 - Don't write sync code in an async context (or vice versa) without `@dual`
-- Don't hardcode `athlete_id`/`api_key` — always go through the `users` table
+- Don't hardcode `athlete_id` or Intervals.icu OAuth tokens — always go through the `users` table (`IntervalsClient.for_user(user)`)
 - Don't skip pre-commit hooks
 - Don't forget multi-tenant isolation — always scope queries by `user_id`
 

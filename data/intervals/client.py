@@ -66,8 +66,9 @@ class IntervalsScopeError(IntervalsAccessError):
 
 class IntervalsCredsMissingError(IntervalsAccessError):
     """Raised by ``_resolve_credentials`` when the user has no usable Intervals.icu
-    credentials — either no ``athlete_id``, or ``intervals_auth_method='none'``
-    after a revoke. The actor must skip; there's nothing to authenticate with.
+    credentials — either no ``athlete_id``, or no OAuth access_token (after a
+    revoke or before initial connect). The actor must skip; there's nothing to
+    authenticate with.
     """
 
     def __init__(self, user_id: int, reason: str):
@@ -108,44 +109,35 @@ class IntervalsClientBase:
 
     Subclasses implement _request() and _execute() for sync/async transport.
 
-    Supports two authentication methods (see `api/routers/intervals/oauth.py`):
-    - **api_key** (legacy): HTTP Basic Auth ``("API_KEY", key)``
-    - **access_token** (OAuth): ``Authorization: Bearer {token}``
-
-    Callers should use the ``for_user()`` factory instead of ``__init__``
-    directly — it reads ``User.intervals_auth_method`` and picks the right
-    credential automatically.
+    OAuth-only since the api_key auth path was retired — callers must use the
+    ``for_user()`` factory which reads ``User.intervals_access_token`` from
+    the DB. Direct construction with ``access_token=`` is for tests.
     """
 
     def __init__(
         self,
         *,
         athlete_id: str,
-        api_key: str | None = None,
-        access_token: str | None = None,
+        access_token: str,
         user_id: int | None = None,
     ) -> None:
         if not athlete_id:
             raise ValueError("IntervalsClient requires a non-empty athlete_id")
-        if not api_key and not access_token:
-            raise ValueError("IntervalsClient requires either api_key or access_token")
-        self._api_key = api_key
+        if not access_token:
+            raise ValueError("IntervalsClient requires a non-empty access_token")
         self._access_token = access_token
         self._athlete_id = athlete_id
         self._user_id = user_id
 
     def _http_client_kwargs(self) -> dict:
-        headers: dict[str, str] = {"Accept": "application/json"}
-        kwargs: dict[str, Any] = {
+        return {
             "base_url": BASE_URL,
-            "headers": headers,
+            "headers": {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self._access_token}",
+            },
             "timeout": 30.0,
         }
-        if self._access_token:
-            headers["Authorization"] = f"Bearer {self._access_token}"
-        else:
-            kwargs["auth"] = ("API_KEY", self._api_key)
-        return kwargs
 
     def _compute_retry_delay(self, resp: httpx.Response, attempt: int) -> float:
         retry_after = resp.headers.get("Retry-After")
@@ -365,29 +357,21 @@ class IntervalsClientBase:
 
 
 def _resolve_credentials(user: User) -> dict:
-    """Pick the right auth kwargs for IntervalsClient based on User's auth method.
+    """Build IntervalsClient kwargs from a User row.
 
-    Returns a dict suitable for unpacking into ``cls(**creds)`` — the dict
-    already contains ``athlete_id`` plus exactly one of ``access_token`` /
-    ``api_key``, so callers should NOT pass ``athlete_id`` separately
-    (that would produce a duplicate-keyword TypeError).
+    Returns a dict suitable for unpacking into ``cls(**creds)`` — contains
+    ``athlete_id`` + ``access_token``. Callers should NOT pass ``athlete_id``
+    separately (duplicate-keyword TypeError).
 
-    Raises ``IntervalsCredsMissingError`` if no usable credentials are configured —
-    callers (typically Dramatiq actors) catch ``IntervalsAccessError`` and skip
-    so Dramatiq doesn't retry-loop on a user with revoked Intervals.icu access.
+    Raises ``IntervalsCredsMissingError`` if athlete_id or OAuth access_token
+    is missing — Dramatiq actors catch ``IntervalsAccessError`` and skip so
+    Dramatiq doesn't retry-loop on a user with revoked Intervals.icu access.
     """
     if not user.athlete_id:
         raise IntervalsCredsMissingError(user.id, "no athlete_id — cannot build Intervals.icu API URLs")
-    if user.intervals_auth_method == "oauth" and user.intervals_access_token:
-        return {"athlete_id": user.athlete_id, "access_token": user.intervals_access_token}
-    if user.api_key:
-        return {"athlete_id": user.athlete_id, "api_key": user.api_key}
-    raise IntervalsCredsMissingError(
-        user.id,
-        f"method={user.intervals_auth_method}, "
-        f"api_key={'set' if user.api_key_encrypted else 'empty'}, "
-        f"oauth_token={'set' if user.intervals_access_token_encrypted else 'empty'}",
-    )
+    if not user.intervals_access_token:
+        raise IntervalsCredsMissingError(user.id, "no OAuth access_token — user must reconnect Intervals.icu")
+    return {"athlete_id": user.athlete_id, "access_token": user.intervals_access_token}
 
 
 # ======================================================================
@@ -402,11 +386,10 @@ class IntervalsAsyncClient(IntervalsClientBase):
         self,
         *,
         athlete_id: str,
-        api_key: str | None = None,
-        access_token: str | None = None,
+        access_token: str,
         user_id: int | None = None,
     ) -> None:
-        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token, user_id=user_id)
+        super().__init__(athlete_id=athlete_id, access_token=access_token, user_id=user_id)
         self._client = httpx.AsyncClient(**self._http_client_kwargs())
 
     async def close(self) -> None:
@@ -468,7 +451,7 @@ class IntervalsAsyncClient(IntervalsClientBase):
         except httpx.HTTPStatusError as e:
             if spec.handle_404 and e.response.status_code == 404:
                 return None
-            if e.response.status_code == 401 and self._access_token and self._user_id:
+            if e.response.status_code == 401 and self._user_id:
                 logger.warning("Intervals.icu 401 for OAuth user %d — clearing tokens", self._user_id)
                 async with get_session() as session:
                     db_user = await session.get(User, self._user_id)
@@ -551,11 +534,10 @@ class IntervalsSyncClient(IntervalsClientBase):
         self,
         *,
         athlete_id: str,
-        api_key: str | None = None,
-        access_token: str | None = None,
+        access_token: str,
         user_id: int | None = None,
     ) -> None:
-        super().__init__(athlete_id=athlete_id, api_key=api_key, access_token=access_token, user_id=user_id)
+        super().__init__(athlete_id=athlete_id, access_token=access_token, user_id=user_id)
         self._client = httpx.Client(**self._http_client_kwargs())
 
     @classmethod
@@ -617,7 +599,7 @@ class IntervalsSyncClient(IntervalsClientBase):
         except httpx.HTTPStatusError as e:
             if spec.handle_404 and e.response.status_code == 404:
                 return None
-            if e.response.status_code == 401 and self._access_token and self._user_id:
+            if e.response.status_code == 401 and self._user_id:
                 logger.warning("Intervals.icu 401 for OAuth user %d — clearing tokens", self._user_id)
                 with get_sync_session() as session:
                     db_user = session.get(User, self._user_id)

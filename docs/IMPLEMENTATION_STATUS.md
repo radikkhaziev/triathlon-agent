@@ -11,6 +11,16 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## api_key auth retired + stale-user deactivation (2026-05-27)
+
+Legacy `intervals_auth_method='api_key'` path removed. The last api_key user is deactivated by migration `a8b9c0d1e2f3`; columns `api_key_encrypted`, `preferred_model`, `intervals_auth_method` dropped. `intervals_oauth_scope` kept across `clear_oauth_tokens` — it's load-bearing for future scope-validation UX (telling the user "we couldn't update zones because you didn't grant SETTINGS:WRITE"). `IntervalsClient` collapsed to OAuth-only (`access_token` required, no Basic auth path).
+
+Same migration adds `users.last_action_at` (timestamp, indexed, backfilled to `now() - 14 days` so existing users get a 16-day grace window from deploy before the cron can catch them) — bumped by `User.touch_last_action(user_id)` from `athlete_required` / `user_required` decorators on every Telegram interaction and from `get_current_user` on every authenticated webapp API call (skipped for demo role to avoid falsely keeping the owner "alive"). New daily cron `scheduler_deactivate_inactive_users_job` (04:00 Belgrade) calls `User.deactivate_stale(30)` → flips dormant users to `is_active=False`. NULL `last_action_at` is treated as eligible too (a row that never recorded an interaction is stale by definition). Wake-up is automatic: any subsequent bot interaction (`athlete_required` / `user_required` via `_wake_user`) or authenticated webapp request (`api/deps.py:get_current_user`) flips `is_active=True` again — the dormant user doesn't have to `/start` first. `actor_user_wellness` short-circuits on inactive users so the WELLNESS_UPDATED webhook stops burning Intervals API quota + Anthropic tokens on dormant accounts (morning report compose already had the same guard at its own entry).
+
+Legacy scheduler jobs `scheduler_scheduled_workouts` / `scheduler_wellness` / `scheduler_activities_job` / `scheduler_sync_goals_job` (the 4 jobs guarded by `@with_legacy_athletes`) removed — webhooks (`WELLNESS_UPDATED` / `CALENDAR_UPDATED` / `ACTIVITY_UPLOADED`) cover the same ground for OAuth users. `with_legacy_athletes` decorator deleted. Frontend `OAuthMigrationPrompt` component + `connected_legacy` / `method_api_key` / `migrate_to_oauth` i18n keys removed. `/api/auth/me` now returns `intervals.connected: bool` (replacing `intervals.method`) — frontend uses it to pick "Connected" vs "Reconnect" UI without needing to know the auth method.
+
+---
+
 ## Endurance Score — Phase 1 + 2 (2026-05-25)
 
 Composite 0..8000 endurance metric across all sports — replaces «coming soon»-placeholder in Dashboard Load-таб. Spec: `docs/ENDURANCE_SCORE_SPEC.md`. **Drift vs Garmin anchor (5773) = −2% on real Radik data.**
@@ -668,7 +678,6 @@ End-to-end fix for the long-standing «Sunday weekly report disappears from chat
 ## Pending
 
 - MT Phase 2 (JWT upgrade): tenant_id, role, scope claims, bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY_SPEC.md`.
-- Retire legacy `INTERVALS_API_KEY` env vars (OAuth Phase 5).
 - User-memory Phase 2 extractor — gated on `tool_facts_per_100_msgs_30d < 3` with `chat_msgs ≥ 100`.
 - When scaling to multi-worker uvicorn, migrate `_retry_backfill_last_success` and `_mcp_config_last_access` to Redis INCR+EXPIRE.
 - **DFA H1+H2** (per `docs/DFA_REGRESSION_METHODOLOGY_SPEC.md`): sigmoidal regression replacing linear fit + per-step steady-state averaging for power-HR regression. Validation pipeline + lazy migration story documented in spec.

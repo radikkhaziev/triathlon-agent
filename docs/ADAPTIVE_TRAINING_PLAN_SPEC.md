@@ -47,7 +47,7 @@ HumanGo → Intervals.icu (оригинал, read-only)
 
 ## Фаза 1: Write API + AI generation
 
-**Auth:** per-user dual mode через `IntervalsAsyncClient.for_user(user_id)` — Bearer (OAuth) либо Basic (api_key) в зависимости от `users.intervals_auth_method`. Глобальный `INTERVALS_API_KEY` не используется. См. CLAUDE.md §«Intervals.icu Auth — Dual Mode».
+**Auth:** per-user OAuth через `IntervalsAsyncClient.for_user(user)` — Bearer токен из `users.intervals_access_token_encrypted`. Глобального `INTERVALS_API_KEY` нет. См. CLAUDE.md §«Intervals.icu Auth — OAuth only».
 
 ### Naming convention
 

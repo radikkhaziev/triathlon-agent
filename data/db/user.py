@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import secrets
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Integer, String, Text, select, update
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -185,12 +185,6 @@ class User(Base):
     """Multi-tenant user table. Tenant = individual athlete."""
 
     __tablename__ = "users"
-    __table_args__ = (
-        CheckConstraint(
-            "intervals_auth_method IN ('api_key', 'oauth', 'none')",
-            name="ck_users_intervals_auth_method",
-        ),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     chat_id: Mapped[str] = mapped_column(String, unique=True)
@@ -199,11 +193,9 @@ class User(Base):
     role: Mapped[str] = mapped_column(String, default=UserRole.viewer)  # UserRole
 
     athlete_id: Mapped[str | None] = mapped_column(String, unique=True)
-    api_key_encrypted: Mapped[str | None] = mapped_column(Text)  # Fernet-encrypted
     mcp_token: Mapped[str | None] = mapped_column(String(64), unique=True)  # MCP Bearer token
 
     language: Mapped[str] = mapped_column(String(5), default="ru")
-    preferred_model: Mapped[str | None] = mapped_column(String(30))
 
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Multi-select list of sports the athlete actually does, drawn from
@@ -221,15 +213,20 @@ class User(Base):
     # See issue #266; gated in TelegramTool + /api/intervals/auth/init.
     bot_chat_initialized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_donation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Timestamp of last user-initiated interaction (Telegram message/command,
+    # callback_query, or authenticated webapp API call). Bumped by
+    # `touch_last_action` from `athlete_required` / `user_required` / `require_viewer`.
+    # NOT bumped by webhooks, MCP calls, or cron — those don't represent the
+    # user being alive. Read by `deactivate_stale` to flip dormant accounts to
+    # `is_active=False` (cuts morning-report token spend on inactive users).
+    last_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Intervals.icu OAuth — see api/routers/intervals/oauth.py
-    # `intervals_auth_method` is the source of truth for which credential path
-    # `IntervalsClient.for_user()` should use. `"api_key"` is the legacy default,
-    # `"oauth"` is set after a successful OAuth callback, `"none"` means the user
-    # has no Intervals credentials configured at all (cleared after revoke).
+    # Intervals.icu OAuth — see api/routers/intervals/oauth.py.
+    # `intervals_oauth_scope` is kept across token clears so the UI can show
+    # "we can't update your zones because you didn't grant SETTINGS:WRITE" —
+    # future scope-validation feature depends on it. Don't drop as dead code.
     intervals_access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted
     intervals_oauth_scope: Mapped[str | None] = mapped_column(String, nullable=True)
-    intervals_auth_method: Mapped[str] = mapped_column(String(10), default="api_key", nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -239,18 +236,6 @@ class User(Base):
     )
 
     # --- Helpers ---
-
-    def set_api_key(self, plaintext: str) -> None:
-        self.api_key_encrypted = encrypt_field(plaintext)
-
-    def _get_api_key(self) -> str | None:
-        if not self.api_key_encrypted:
-            return
-        return decrypt_field(self.api_key_encrypted)
-
-    @property
-    def api_key(self) -> str | None:
-        return self._get_api_key()
 
     def generate_mcp_token(self) -> str:
         """Generate a new MCP token, store it, return it."""
@@ -263,12 +248,10 @@ class User(Base):
         """Store Intervals.icu OAuth credentials.
 
         Does NOT touch `role`, `athlete_id`, or `mcp_token` — the caller is
-        responsible for those side effects (Phase 2+ will handle role promotion
-        and mcp_token generation in the callback).
+        responsible for those side effects.
         """
         self.intervals_access_token_encrypted = encrypt_field(access_token)
         self.intervals_oauth_scope = scope
-        self.intervals_auth_method = "oauth"
 
     @property
     def intervals_access_token(self) -> str | None:
@@ -277,15 +260,14 @@ class User(Base):
         return decrypt_field(self.intervals_access_token_encrypted)
 
     def clear_oauth_tokens(self) -> None:
-        """Wipe OAuth state. Called on disconnect or 401 from Intervals.icu.
+        """Wipe OAuth access token on disconnect or 401 from Intervals.icu.
 
-        Fallback `intervals_auth_method`:
-        - `"api_key"` if the user still has a legacy api_key (so sync keeps working)
-        - `"none"` otherwise (user must reconnect)
+        `intervals_oauth_scope` is NOT cleared — it stays as a record of what
+        the user previously granted, so the UI can prompt for re-auth with the
+        right messaging. The presence of `intervals_access_token_encrypted` is
+        the source of truth for "is OAuth currently active".
         """
         self.intervals_access_token_encrypted = None
-        self.intervals_oauth_scope = None
-        self.intervals_auth_method = "api_key" if self.api_key_encrypted else "none"
 
     # --- CRUD ---
 
@@ -397,6 +379,57 @@ class User(Base):
         """
         await session.execute(update(cls).where(cls.id == user_id).values(last_donation_at=datetime.now(timezone.utc)))
         await session.commit()
+
+    @classmethod
+    @dual
+    def touch_last_action(cls, user_id: int, *, session: Session) -> None:
+        """Bump `last_action_at = now()` for the user.
+
+        Called by `athlete_required` / `user_required` decorators (every
+        Telegram message/command/callback that resolves an active user) and
+        by `require_viewer` (every authenticated webapp API call). Webhooks,
+        MCP calls, and cron jobs do NOT bump — they don't represent the user
+        being alive. Drives `deactivate_stale`.
+        """
+        session.execute(update(cls).where(cls.id == user_id).values(last_action_at=datetime.now(timezone.utc)))
+        session.commit()
+
+    @classmethod
+    @dual
+    def deactivate_stale(cls, threshold_days: int = 30, *, session: Session) -> list[int]:
+        """Flip `is_active=False` for users whose last interaction is older
+        than `threshold_days`. Returns the list of deactivated user ids for
+        logging / Sentry breadcrumb.
+
+        Run daily from `scheduler_deactivate_inactive_users_job`. Stops the
+        morning-report token spend on accounts that haven't touched the bot
+        or webapp in a month. Users return to active state on the next /start
+        (via `set_active_by_chat_id`), so this is reversible by the user
+        themselves — no manual admin step needed.
+
+        NULL `last_action_at` is treated as eligible too — a row that never
+        recorded an interaction is stale by definition. The migration
+        `a8b9c0d1e2f3` backfills existing rows to `now() - 14 days` (a
+        16-day grace window before the cron can catch them), so in practice
+        this NULL branch fires only for rows that bypassed every touch site
+        (signup-then-never-return Login Widget users, manual `cli shell`
+        inserts, etc.).
+        """
+        threshold = datetime.now(timezone.utc) - timedelta(days=threshold_days)
+        # ``NULL < timestamp`` evaluates to NULL → falsy in WHERE, so we have
+        # to OR in an explicit IS NULL branch to catch never-touched rows.
+        result = session.execute(
+            update(cls)
+            .where(
+                cls.is_active.is_(True),
+                or_(cls.last_action_at.is_(None), cls.last_action_at < threshold),
+            )
+            .values(is_active=False)
+            .returning(cls.id)
+        )
+        ids = [row[0] for row in result.all()]
+        session.commit()
+        return ids
 
     @classmethod
     @dual
@@ -545,7 +578,6 @@ class User(Base):
         username: str | None = None,
         display_name: str | None = None,
         athlete_id: str | None = None,
-        api_key: str | None = None,
         language: str = "ru",
         *,
         session: AsyncSession,
@@ -558,9 +590,6 @@ class User(Base):
             athlete_id=athlete_id,
             language=language,
         )
-        if api_key:
-            user.set_api_key(api_key)
-
         session.add(user)
         await session.commit()
         await session.refresh(user)
