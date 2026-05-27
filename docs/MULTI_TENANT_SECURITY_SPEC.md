@@ -24,7 +24,7 @@
 | Auth — MCP | `api/server.py:MCPAuthMiddleware` → `User.get_by_mcp_token` (per-user Bearer) |
 | Role guards | `api/deps.py:require_viewer / require_athlete / require_owner` |
 | Bot decorators | `bot/decorator.py:@athlete_required / @user_required` (resolve via `chat_id`) |
-| Per-user credentials | `users.api_key_encrypted` / `intervals_access_token_encrypted` (Fernet at rest) |
+| Per-user credentials | `users.intervals_access_token_encrypted` (Fernet at rest, OAuth-only since migration `a8b9c0d1e2f3`) |
 | MCP context | `mcp_server/context.py:get_current_user_id()` (contextvars, never tool parameter) |
 | Audit log allowlist | `api/routers/auth.py:_sanitize_last_error` (whitelist: `EMPTY_INTERVALS`, `watchdog_exhausted`, `OAuth revoked during backfill`; everything else → `"internal"`) |
 
@@ -85,7 +85,7 @@ Schema: 36 tables, 13 with `user_id` FK + index (migrations `268670b22cd7` users
 
 - **Что:** Все ключи в одном `.env`, один утёкший = доступ ко всему.
 - **Severity:** Medium.
-- **Mitigation:** Per-user `api_key_encrypted` / `intervals_access_token_encrypted` (Fernet). Globals (`ANTHROPIC_API_KEY`, `INTERVALS_API_KEY` legacy) остаются. Vault — out of scope.
+- **Mitigation:** Per-user `intervals_access_token_encrypted` (Fernet, OAuth-only). Globals (`ANTHROPIC_API_KEY`) остаются. Vault — out of scope.
 
 #### T7. No Audit Trail (Repudiation)
 
@@ -154,9 +154,9 @@ Schema: 36 tables, 13 with `user_id` FK + index (migrations `268670b22cd7` users
 - **Severity:** Medium (availability + auth policy leak, не data disclosure).
 - **Mitigation:**
   - `get_or_create_from_telegram` ищет через `include_inactive=True` (предотвращает `IntegrityError` на UNIQUE), но **реактивацию не делает**.
-  - Реактивация (`set_active_by_chat_id`) **только** в `bot/main.py:start` или `handle_my_chat_member` MEMBER-transition.
-  - Webapp/initData/Login Widget читают через `get_by_chat_id` без `include_inactive` → блокированный юзер «не найден», anonymous flow.
-- **Семантика `is_active`:** перегружена — «admin-deactivation» ∪ «Telegram-канал недоступен». Намеренное решение: блокировка бота = единый kill-switch.
+  - Реактивация (`set_active_by_chat_id`) **только** через бот-side сигналы: `bot/main.py:start`, `handle_my_chat_member` MEMBER-transition, или `bot/decorator.py:_wake_user` (любая команда / сообщение / callback от dormant юзера). Все три = доказательство, что Telegram-канал жив (юзер реально дотянулся до бота).
+  - Webapp / initData / Login Widget / JWT-Bearer пути читают через `get_by_chat_id(include_inactive=True)` (нужно чтобы deactivated юзер видел "account paused" банер вместо 401-loop), **но `is_active` не флипают**. Открытая webapp-вкладка после блокировки бота не доказывает доступность канала — `require_athlete`/`require_owner` бьют 403, чёрная страница с банером.
+  - **Семантика `is_active`:** перегружена через две причины — «stale-deactivation cron» (`User.deactivate_stale`, recoverable) и «Telegram-канал недоступен» (403/BANNED handler). Webapp wake-up не различает эти случаи → намеренно не реактивирует ни одну, чтобы избежать ping-pong для bot-blocked юзеров.
 - **Edge:** webapp-вкладка после блокировки → 401 → `apiFetch` clear JWT + редирект на `/login` + `<BotChatBanner/>` deep-link на бота.
 
 #### T15. Intervals.icu OAuth — Account Mismatch via State Race (Tampering)

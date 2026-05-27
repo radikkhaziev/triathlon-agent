@@ -16,7 +16,7 @@ from data.metrics import combined_recovery_score, rhr_baseline, rmssd_flatt_esco
 from tasks.dto import ORMDTO, DateDTO, local_today
 
 from ._constants import MORNING_REPORT_DELAY_SEC
-from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update
+from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update, is_user_dormant
 from .endurance import actor_snapshot_endurance_scores
 
 logger = logging.getLogger(__name__)
@@ -212,9 +212,25 @@ def actor_user_wellness(
     dt: DateDTO | None = None,
     wellness: WellnessDTO | None = None,
     force: bool = False,
+    force_inactive: bool = False,
 ):
     from .athlets import actor_sync_athlete_settings
     from .reports import actor_compose_user_morning_report
+
+    # Skip dormant accounts — the WELLNESS_UPDATED webhook keeps firing for
+    # inactive users (we intentionally don't filter at the webhook layer so
+    # event history stays consistent), but running HRV/RHR/Banister recalcs
+    # + the Intervals.icu API call for someone who hasn't touched the bot in
+    # 30+ days burns quota for no benefit. The morning-report compose actor
+    # already has its own `is_active` guard (`reports.py:269`) — this gate
+    # short-circuits *upstream* so the API fetch + recalcs don't happen
+    # either. First bot interaction reactivates via `bot/decorator._wake_user`.
+    #
+    # ``force_inactive=True`` is the admin override (CLI sync-wellness /
+    # recalc-sport-load) — operator can backfill data for a stale-deactivated
+    # user without reactivating them first.
+    if not force_inactive and is_user_dormant(user.id, "actor_user_wellness"):
+        return
 
     today = local_today()
     dt = dt or today

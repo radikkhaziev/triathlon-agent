@@ -599,7 +599,7 @@ export default function Settings() {
             </div>
           )}
           {!intervals && <p className="text-[13px] text-halo-ink-dim">{t('settings.intervals.loading')}</p>}
-          {intervals && (!intervals.athlete_id || intervals.method === 'none') && botChatInitialized === false && (
+          {intervals && (!intervals.athlete_id || !intervals.connected) && botChatInitialized === false && (
             <div className="rounded-chip border border-halo-amber bg-halo-surface-2 p-3">
               <p className="text-[13px] text-halo-ink mb-2 leading-snug font-semibold">
                 {t('settings.intervals.start_bot_required_title')}
@@ -621,7 +621,7 @@ export default function Settings() {
               )}
             </div>
           )}
-          {intervals && (!intervals.athlete_id || intervals.method === 'none') && botChatInitialized !== false && (
+          {intervals && (!intervals.athlete_id || !intervals.connected) && botChatInitialized !== false && (
             <>
               <p className="text-[12px] text-halo-ink-dim mb-3 leading-snug">
                 {t('settings.intervals.not_connected_desc')}
@@ -637,7 +637,7 @@ export default function Settings() {
               </button>
             </>
           )}
-          {intervals && intervals.athlete_id && intervals.method === 'oauth' && (
+          {intervals && intervals.athlete_id && intervals.connected && (
             <>
               {/* Prototype `BSettings` Intervals card header: name + "OAuth ·
                   <id>" sub on the left, brand-cobalt dot + "Live" on the
@@ -688,7 +688,7 @@ export default function Settings() {
                     if (!confirm(t('settings.intervals.disconnect_confirm'))) return
                     try {
                       await apiFetch('/api/intervals/auth/disconnect', { method: 'POST' })
-                      setIntervals(prev => prev ? { ...prev, method: 'none', scope: null } : prev)
+                      setIntervals(prev => prev ? { ...prev, connected: false } : prev)
                     } catch (e) {
                       console.error('Disconnect failed:', e)
                     }
@@ -699,22 +699,6 @@ export default function Settings() {
                   Disconnect
                 </button>
               </div>
-            </>
-          )}
-          {intervals && intervals.athlete_id && intervals.method === 'api_key' && (
-            <>
-              <div className="text-[13px] text-halo-ink-dim mb-2">✅ {t('settings.intervals.connected_legacy')}</div>
-              <Row label={t('settings.intervals.athlete')} value={intervals.athlete_id} />
-              <Row label={t('settings.intervals.method')} value={t('settings.intervals.method_api_key')} />
-              <button
-                type="button"
-                onClick={startIntervalsOAuth}
-                disabled={intervalsBusy}
-                className="flex items-center justify-center gap-2 w-full mt-3 py-2.5 bg-halo-surface border border-halo-brand text-halo-brand rounded-pill text-sm font-semibold cursor-pointer font-sans disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {intervalsBusy && <span className="inline-block w-3.5 h-3.5 border-2 border-halo-ink-dimmer border-t-halo-brand rounded-full animate-spin" />}
-                {intervalsBusy ? t('settings.intervals.redirecting') : t('settings.intervals.migrate_to_oauth')}
-              </button>
             </>
           )}
         </Panel>

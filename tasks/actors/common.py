@@ -8,7 +8,7 @@ from dramatiq import group
 from pydantic import validate_call
 from sqlalchemy import select
 
-from data.db import Activity, AthleteSettings, AthleteThresholdsDTO, UserDTO, Wellness, get_sync_session
+from data.db import Activity, AthleteSettings, AthleteThresholdsDTO, User, UserDTO, Wellness, get_sync_session
 from data.metrics import calculate_banister_for_date, calculate_sport_atl, calculate_sport_ctl
 from tasks.dto import DateDTO
 
@@ -23,6 +23,38 @@ CATEGORY_TO_READINESS = {
     "moderate": "yellow",
     "low": "red",
 }
+
+
+def is_user_dormant(user_id: int, actor_name: str) -> bool:
+    """Single-source gate for webhook-driven actors against dormant accounts.
+
+    Returns True (skip the actor) when the User row is missing or has
+    ``is_active=False`` — Intervals.icu keeps pushing webhooks for dormant
+    users (we intentionally don't filter at the webhook receiver so event
+    history stays consistent), but running the expensive recompute / API
+    fetch / Telegram push is wasted spend.
+
+    Logs at INFO with a stable ``actor_name`` tag for grep'ability.
+    `actor_name` is the caller's actor function name — pass `__name__`-style
+    string literal, not the function object.
+
+    APP_SCOPE_CHANGED is intentionally NOT gated by this helper — token
+    clearing on revoke must always run, regardless of dormancy. Direct
+    DB writes (ACTIVITY_UPLOADED row save) also bypass — they're cheap
+    and we want to preserve activity history for a reactivating user.
+
+    Cron / scheduler dispatch is filtered separately via `@with_athletes`
+    (which calls `User.get_active_athletes`) and doesn't need this helper.
+    """
+    with get_sync_session() as session:
+        user_row = session.get(User, user_id)
+        if user_row is None:
+            logger.info("%s skipped: user %d no longer exists", actor_name, user_id)
+            return True
+        if not user_row.is_active:
+            logger.info("%s skipped: user %d is inactive", actor_name, user_id)
+            return True
+    return False
 
 
 @dramatiq.actor(queue_name="default")

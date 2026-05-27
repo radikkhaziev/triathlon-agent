@@ -144,6 +144,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user.bot_chat_initialized:
         await User.set_bot_chat_initialized(chat_id, True)
         user.bot_chat_initialized = True
+    await User.touch_last_action(user.id)
     _set_lang(user.language or "ru")
     logger.info("User resolved via /start: id=%s chat_id=%s username=%s", user.id, chat_id, tg_user.username)
 
@@ -420,7 +421,9 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
                 )
             ).scalar()
             oauth_users = (
-                await session.execute(text("SELECT count(*) FROM users WHERE intervals_auth_method = 'oauth'"))
+                await session.execute(
+                    text("SELECT count(*) FROM users WHERE intervals_access_token_encrypted IS NOT NULL")
+                )
             ).scalar()
             mcp_tokens = (
                 await session.execute(text("SELECT count(*) FROM users WHERE mcp_token IS NOT NULL"))
@@ -514,24 +517,23 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User)
             for a in athletes:
                 url = f"https://intervals.icu/api/v1/athlete/{a.athlete_id}"
                 name = html.escape(str(a.username or f"id={a.id}"))
-                method = html.escape(str(a.intervals_auth_method))
+                # Presence check on the encrypted column — avoids a wasted
+                # Fernet decrypt for users who never finished OAuth.
+                if a.intervals_access_token_encrypted is None:
+                    lines.append(f"  ⚠️ @{name}: no OAuth token")
+                    continue
+                token = a.intervals_access_token  # single decrypt per row
                 try:
-                    if a.intervals_access_token:
-                        r = await http.get(
-                            url,
-                            headers={"Authorization": f"Bearer {a.intervals_access_token}"},
-                        )
-                    elif a.api_key:
-                        r = await http.get(url, auth=("API_KEY", a.api_key))
-                    else:
-                        lines.append(f"  ⚠️ @{name}: no credentials")
-                        continue
+                    r = await http.get(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
                     if r.status_code == 200:
-                        lines.append(f"  ✅ @{name}: {method} ok")
+                        lines.append(f"  ✅ @{name}: oauth ok")
                     elif r.status_code == 401:
-                        lines.append(f"  ❌ @{name}: {method} invalid")
+                        lines.append(f"  ❌ @{name}: oauth invalid")
                     else:
-                        lines.append(f"  ⚠️ @{name}: {method} HTTP {r.status_code}")
+                        lines.append(f"  ⚠️ @{name}: oauth HTTP {r.status_code}")
                 except Exception as e:
                     lines.append(f"  ❌ @{name}: {type(e).__name__}")
     except Exception as e:
@@ -1662,10 +1664,14 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
 
     `kicked` = blocked the bot, `member` = (re)started it. Flips `users.is_active`
     so scheduled broadcasts (which go through `User.get_active_athletes`) skip
-    blocked users without hitting the Telegram API. Reactivation is explicit:
-    this handler on `MEMBER` transitions, and `bot/main.py:start` when the
-    user sends `/start`. Webapp/Login Widget auth paths deliberately do not
-    reactivate — see `docs/MULTI_TENANT_SECURITY_SPEC.md` §T14.
+    blocked users without hitting the Telegram API. Reactivation paths:
+    this handler on `MEMBER` transitions, `bot/main.py:start` when the user
+    sends `/start`, and `bot/decorator.py:_wake_user` on any other bot
+    interaction (the dormant-user case from the stale-deactivation cron).
+    Webapp/Login Widget auth paths deliberately do NOT reactivate — a webapp
+    request doesn't prove the user can receive Telegram messages (they may
+    have blocked the bot but kept a tab open). See
+    `docs/MULTI_TENANT_SECURITY_SPEC.md` §T14.
     """
     cmu = update.my_chat_member
     if cmu is None or cmu.chat.type != "private":

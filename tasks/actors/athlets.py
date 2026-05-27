@@ -15,6 +15,7 @@ from tasks.dto import DateDTO, local_today
 from tasks.formatter import format_pace
 
 from ..tools import TelegramTool
+from .common import is_user_dormant
 
 logger = logging.getLogger(__name__)
 
@@ -111,14 +112,20 @@ def _actor_send_goal_notification(
 
 @dramatiq.actor(queue_name="default")
 @validate_call
-def actor_sync_athlete_goals(user: UserDTO):
+def actor_sync_athlete_goals(user: UserDTO, force_inactive: bool = False):
     """Sync RACE_A/B/C events from Intervals.icu → athlete_goals table.
 
     Athletes routinely have multiple races per category (e.g. two A-races in a
     season), so we upsert every event returned by Intervals, keyed on
     ``intervals_event_id``. Each genuinely new event triggers its own Telegram
     notification.
+
+    Webhook-driven (CALENDAR_UPDATED) — dormancy gate skips API quota for
+    inactive users. CLI admin (`force_inactive=True`) bypasses.
     """
+    if not force_inactive and is_user_dormant(user.id, "actor_sync_athlete_goals"):
+        return
+
     today = local_today()
     # Intervals.icu API drops category-filtered results unless newest is set explicitly —
     # reproduced on 2026-04-20 with user 5's RACE_A "Drina trail" 2026-05-05: without newest,

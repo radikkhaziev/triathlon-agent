@@ -2,7 +2,6 @@ import logging
 from datetime import timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from dramatiq import group
 from pydantic import TypeAdapter
@@ -14,20 +13,16 @@ from tasks.actors import (
     actor_bootstrap_step,
     actor_compose_user_evening_report,
     actor_compose_weekly_report,
-    actor_fetch_user_activities,
     actor_publish_weekly_changelog,
     actor_retrain_progression_model,
     actor_retrain_race_models,
     actor_send_onboarding_hey,
     actor_send_pre_race_plan_push,
     actor_snapshot_endurance_scores_all_users,
-    actor_sync_athlete_goals,
-    actor_user_scheduled_workouts,
-    actor_user_wellness,
 )
 from tasks.dto import local_today
 
-from .decorator import with_athletes, with_legacy_athletes
+from .decorator import with_athletes
 
 logger = logging.getLogger(__name__)
 
@@ -57,21 +52,6 @@ def _parse_kick_count(last_error: str | None) -> int:
         return 0
 
 
-@with_legacy_athletes
-async def scheduler_scheduled_workouts(athletes: list[UserDTO]) -> None:
-    """Fetch planned workouts for the next 14 days and upsert into DB."""
-    _group = group([actor_user_scheduled_workouts.message(user=a) for a in athletes])
-    _group.run()
-
-    logger.info("Dispatched scheduled_workouts for %d athletes", len(athletes))
-
-
-@with_legacy_athletes
-async def scheduler_wellness(athletes: list[UserDTO]) -> None:
-    """Wellness sync + morning report generation (staggered to avoid rate limits)."""
-    group([actor_user_wellness.message(user=a) for a in athletes]).run()
-
-
 @with_athletes
 async def scheduler_evening_report_job(athletes: list[UserDTO]) -> None:
     _group = group([actor_compose_user_evening_report.message(user=a) for a in athletes])
@@ -83,12 +63,6 @@ async def scheduler_weekly_report_job(athletes: list[UserDTO]) -> None:
     for i, a in enumerate(athletes):
         actor_compose_weekly_report.send_with_options(kwargs={"user": a}, delay=i * 30_000)
     logger.info("Dispatched weekly report for %d athletes", len(athletes))
-
-
-@with_legacy_athletes
-async def scheduler_activities_job(athletes: list[UserDTO]) -> None:
-    _group = group([actor_fetch_user_activities.message(user=a) for a in athletes])
-    _group.run()
 
 
 @with_athletes
@@ -111,10 +85,18 @@ async def scheduler_ml_retrain_job(athletes: list[UserDTO]) -> None:
     logger.info("Dispatched progression + race-model retraining for %d athletes", len(athletes))
 
 
-@with_legacy_athletes
-async def scheduler_sync_goals_job(athletes: list[UserDTO]) -> None:
-    _group = group([actor_sync_athlete_goals.message(user=a) for a in athletes])
-    _group.run()
+async def scheduler_deactivate_inactive_users_job() -> None:
+    """Flip dormant users to ``is_active=False`` to stop morning-report token
+    spend on accounts that haven't touched the bot or webapp in 30 days.
+
+    Reversible — users return to active state on next /start (via
+    ``set_active_by_chat_id``). See ``User.deactivate_stale`` for the SQL.
+    Daily 04:00 Belgrade — quiet window between ML retrain (Sun 03:00) and
+    the first morning-wellness fetch (~04:00).
+    """
+    ids = await User.deactivate_stale(threshold_days=30)
+    if ids:
+        logger.info("Deactivated %d stale users: %s", len(ids), ids)
 
 
 async def scheduler_watchdog_bootstrap() -> None:
@@ -276,33 +258,6 @@ async def create_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.TIMEZONE)
 
     scheduler.add_job(
-        scheduler_scheduled_workouts,
-        trigger="cron",
-        hour="4-23",
-        minute=0,
-        id="scheduler_scheduled_workouts",
-    )
-
-    scheduler.add_job(
-        scheduler_wellness,
-        trigger=OrTrigger(
-            [
-                CronTrigger(hour="4-8", minute="*/10", timezone=settings.TIMEZONE),
-                CronTrigger(hour="9-22", minute="*/30", timezone=settings.TIMEZONE),
-            ]
-        ),
-        id="scheduler_wellness_and_reports_job",
-    )
-
-    scheduler.add_job(
-        scheduler_activities_job,
-        trigger="cron",
-        hour="4-23",
-        minute="*/10",
-        id="scheduler_activities_job",
-    )
-
-    scheduler.add_job(
         scheduler_evening_report_job,
         trigger="cron",
         day_of_week="mon-sat",
@@ -322,17 +277,19 @@ async def create_scheduler() -> AsyncIOScheduler:
     )
 
     scheduler.add_job(
-        scheduler_sync_goals_job,
-        trigger="cron",
-        hour="4-23",
-        minute=30,
-        id="scheduler_sync_goals_job",
-    )
-
-    scheduler.add_job(
         scheduler_ml_retrain_job,
         trigger=CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=settings.TIMEZONE),
         id="scheduler_ml_retrain_job",
+        misfire_grace_time=7200,
+        coalesce=True,
+    )
+
+    # Daily stale-user deactivation — 04:00 Belgrade, quiet window between ML
+    # retrain (Sun 03:00) and the first morning-wellness fetch (~04:00).
+    scheduler.add_job(
+        scheduler_deactivate_inactive_users_job,
+        trigger=CronTrigger(hour=4, minute=0, timezone=settings.TIMEZONE),
+        id="scheduler_deactivate_inactive_users_job",
         misfire_grace_time=7200,
         coalesce=True,
     )

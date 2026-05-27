@@ -273,8 +273,10 @@ def _sync_settings(user_id: int) -> None:
     from tasks.actors.athlets import actor_sync_athlete_goals, actor_sync_athlete_settings
 
     user = _resolve_user(user_id)
+    # ``force_inactive=True`` bypasses the dormancy gate so admins can refresh
+    # settings/goals for a stale-deactivated user without reactivating them.
     actor_sync_athlete_settings.send(user=user)
-    actor_sync_athlete_goals.send(user=user)
+    actor_sync_athlete_goals.send(user=user, force_inactive=True)
     print(f"Queued sync-settings + sync-goals for user {user_id}")
 
 
@@ -293,8 +295,11 @@ def _sync_wellness(user_id: int, period: str | None) -> None:
 
     delay_per_day_ms = 20_000
     for i, day in enumerate(days):
+        # ``force_inactive=True`` lets the operator backfill a stale-deactivated
+        # user's data without first reactivating them — the actor's dormant-user
+        # gate is for webhook-driven dispatches, not admin paths.
         actor_user_wellness.send_with_options(
-            kwargs={"user": user, "dt": day.isoformat(), "force": True},
+            kwargs={"user": user, "dt": day.isoformat(), "force": True, "force_inactive": True},
             delay=i * delay_per_day_ms,
         )
 
@@ -318,7 +323,14 @@ def _sync_activities(user_id: int, period: str | None, force: bool = False) -> N
     delay_per_day_ms = 20_000
     for i, day in enumerate(days):
         actor_fetch_user_activities.send_with_options(
-            kwargs={"user": user, "oldest": day.isoformat(), "newest": day.isoformat(), "force": force},
+            kwargs={
+                "user": user,
+                "oldest": day.isoformat(),
+                "newest": day.isoformat(),
+                "force": force,
+                # Admin bypass — see actor docstring.
+                "force_inactive": True,
+            },
             delay=i * delay_per_day_ms,
         )
 
@@ -928,7 +940,7 @@ def _recalc_sport_load(*, user_id: int | None, days: int, dry_run: bool) -> None
         for j in range(days_per_user):
             day = (start + timedelta(days=j)).isoformat()
             actor_user_wellness.send_with_options(
-                kwargs={"user": user_dto, "dt": day, "force": True},
+                kwargs={"user": user_dto, "dt": day, "force": True, "force_inactive": True},
                 delay=user_offset_ms + j * delay_per_day_ms,
             )
         print(f"  user_id={u.id} queued {days_per_user} days, " f"starts at +{user_offset_ms // 60_000} min")

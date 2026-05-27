@@ -20,7 +20,7 @@ from data.intervals.client import (
 
 @pytest.fixture
 def client():
-    return IntervalsClientBase(api_key="test", athlete_id="i123")
+    return IntervalsClientBase(access_token="test", athlete_id="i123")
 
 
 class TestComputeRetryDelay:
@@ -79,7 +79,7 @@ class TestTransportErrorRetry:
                 raise httpx.ConnectError("tls handshake failed")
             return httpx.Response(200, json={"ok": True})
 
-        client = IntervalsSyncClient(athlete_id="i1", api_key="k")
+        client = IntervalsSyncClient(athlete_id="i1", access_token="k")
         client._client.close()
         client._client = httpx.Client(base_url=BASE_URL, transport=httpx.MockTransport(handler))
         try:
@@ -97,7 +97,7 @@ class TestTransportErrorRetry:
             calls["n"] += 1
             raise httpx.ConnectError("tls handshake failed")
 
-        client = IntervalsSyncClient(athlete_id="i1", api_key="k")
+        client = IntervalsSyncClient(athlete_id="i1", access_token="k")
         client._client.close()
         client._client = httpx.Client(base_url=BASE_URL, transport=httpx.MockTransport(handler))
         try:
@@ -120,7 +120,7 @@ class TestTransportErrorRetry:
                 raise httpx.ConnectError("tls handshake failed")
             return httpx.Response(200, json={"ok": True})
 
-        client = IntervalsAsyncClient(athlete_id="i1", api_key="k")
+        client = IntervalsAsyncClient(athlete_id="i1", access_token="k")
         await client._client.aclose()
         client._client = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(handler))
         try:
@@ -132,9 +132,9 @@ class TestTransportErrorRetry:
 
 
 class TestCredsMissing:
-    """A user with ``intervals_auth_method='none'`` and no api_key/oauth-token at
-    all (full revoke / never connected) must raise a typed error that subclasses
-    ``IntervalsAccessError`` so actors catch and skip uniformly with 401/403 paths.
+    """A user with no OAuth access_token (full revoke / never connected) must
+    raise a typed error that subclasses ``IntervalsAccessError`` so actors
+    catch and skip uniformly with 401/403 paths.
 
     Exercised through the **public** ``IntervalsSyncClient.for_user`` factory
     rather than the private ``_resolve_credentials`` helper, so the contract
@@ -145,10 +145,7 @@ class TestCredsMissing:
         class _StubUser:
             id = 25
             athlete_id = "i376855"
-            intervals_auth_method = "none"
             intervals_access_token = None
-            api_key = None
-            api_key_encrypted = None
             intervals_access_token_encrypted = None
 
         u = _StubUser()
@@ -185,7 +182,7 @@ class TestScopeRevoked:
             # auto-attach, unlike the real httpx client transport path).
             return httpx.Response(403, text="Forbidden", request=request)
 
-        client = IntervalsSyncClient(athlete_id="i1", api_key="k")
+        client = IntervalsSyncClient(athlete_id="i1", access_token="k")
         client._client.close()
         client._client = httpx.Client(base_url=BASE_URL, transport=httpx.MockTransport(handler))
         try:
@@ -203,7 +200,7 @@ class TestScopeRevoked:
             # auto-attach, unlike the real httpx client transport path).
             return httpx.Response(403, text="Forbidden", request=request)
 
-        client = IntervalsAsyncClient(athlete_id="i1", api_key="k")
+        client = IntervalsAsyncClient(athlete_id="i1", access_token="k")
         await client._client.aclose()
         client._client = httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(handler))
         try:

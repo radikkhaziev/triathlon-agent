@@ -2,7 +2,7 @@
 
 The actor depends on:
 - ``UserBackfillState`` (ORM helpers — first-call init, status guard, cursor advance, finalize).
-- ``User.intervals_auth_method`` (deauth guard).
+- ``User.intervals_access_token_encrypted`` (deauth guard — None ⇒ revoked).
 - ``IntervalsSyncClient`` (range fetches).
 - ``Activity.save_bulk`` / ``Wellness`` / downstream ``.send`` dispatches.
 
@@ -61,9 +61,16 @@ def _mock_client_ctx(wellness: list | None = None, activities: list | None = Non
     return mock
 
 
-def _mock_db_user(auth_method: str = "oauth"):
-    """SQLAlchemy-like User row with just the attribute we guard on."""
-    return SimpleNamespace(id=1, intervals_auth_method=auth_method)
+def _mock_db_user(connected: bool = True):
+    """SQLAlchemy-like User row with just the attribute we guard on.
+
+    ``connected=True`` ⇒ access_token present (live OAuth user);
+    ``connected=False`` ⇒ token cleared (revoked / never connected).
+    """
+    return SimpleNamespace(
+        id=1,
+        intervals_access_token_encrypted="encrypted-blob" if connected else None,
+    )
 
 
 @pytest.fixture
@@ -205,13 +212,13 @@ class TestIdempotency:
 
 class TestDeauthGuard:
     def test_revoked_oauth_marks_failed_without_fetch(self, bootstrap_mocks):
-        """intervals_auth_method='none' → mark_failed, no HTTP call, no recursion."""
+        """access_token cleared → mark_failed, no HTTP call, no recursion."""
         from tasks.actors.bootstrap import actor_bootstrap_step
 
         user = _user()
         oldest = date.today() - timedelta(days=365)
         bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
-        bootstrap_mocks.session.get.return_value = _mock_db_user(auth_method="none")
+        bootstrap_mocks.session.get.return_value = _mock_db_user(connected=False)
 
         actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat())
 
@@ -222,7 +229,7 @@ class TestDeauthGuard:
         bootstrap_mocks.actor_self.send.assert_not_called()
 
     def test_access_error_at_for_user_entry_marks_failed_with_class_name(self, bootstrap_mocks):
-        """Pre-check sees auth_method='oauth' so it doesn't short-circuit, but
+        """Pre-check sees a connected user so it doesn't short-circuit, but
         `for_user(...)` itself raises (broken OAuth state — token decrypts to
         None / DB credential inconsistency). The `for_user` factory IS a
         ``@contextmanager`` whose body runs at ``__enter__`` time, so the raise
@@ -235,7 +242,7 @@ class TestDeauthGuard:
         user = _user()
         oldest = date.today() - timedelta(days=365)
         bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
-        bootstrap_mocks.session.get.return_value = _mock_db_user(auth_method="oauth")
+        bootstrap_mocks.session.get.return_value = _mock_db_user(connected=True)
         # `for_user(...)` raises at the factory itself.
         bootstrap_mocks.client_cls.for_user.side_effect = IntervalsCredsMissingError(
             user.id, "oauth token decrypted to None"
@@ -263,7 +270,7 @@ class TestDeauthGuard:
         user = _user()
         oldest = date.today() - timedelta(days=365)
         bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
-        bootstrap_mocks.session.get.return_value = _mock_db_user(auth_method="oauth")
+        bootstrap_mocks.session.get.return_value = _mock_db_user(connected=True)
 
         # Mock client whose data methods raise — exercises the real "mid-fetch"
         # path (CM body enters successfully, raise comes from method call).

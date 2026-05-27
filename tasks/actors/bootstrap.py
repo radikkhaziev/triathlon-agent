@@ -68,7 +68,7 @@ def actor_bootstrap_step(
             return
 
         db_user = session.get(User, user.id)
-        if db_user is None or db_user.intervals_auth_method == "none":
+        if db_user is None or not db_user.intervals_access_token_encrypted:
             logger.info("bootstrap_step: OAuth revoked for user=%d, aborting", user.id)
             UserBackfillState.mark_failed(user.id, error="OAuth revoked during backfill", session=session)
             return
