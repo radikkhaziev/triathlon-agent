@@ -869,6 +869,24 @@ def decoupling_status(value: float) -> str:
 # ---------------------------------------------------------------------------
 
 
+_PI_POLARIZED_THRESHOLD = 2.0
+
+
+def polarization_index(low_pct: float, mid_pct: float, high_pct: float) -> float | None:
+    """Treff et al. (2019) polarization index.
+
+    PI = log10((Z1 / Z2) × Z3), with Z1/Z2/Z3 the easy/moderate/hard share of time
+    in percent. PI > 2.0 → polarized (hard share dominates moderate).
+    Returns None when Z2 or Z3 ≈ 0 (degenerate — fall back to the %-pattern).
+
+    Note: the classic «80/12/8» polarized label (Esteve-Lanao) has Z2 > Z3 and scores
+    PI ≈ 1.73 — pyramidal by the strict index. True polarized needs Z3 > Z2.
+    """
+    if low_pct <= 0 or mid_pct <= 0 or high_pct <= 0:
+        return None
+    return round(math.log10((low_pct / mid_pct) * high_pct), 2)
+
+
 def _classify_polarization(low: float, mid: float, high: float) -> str:
     if low > 90 and high < 3:
         return "too_easy"
@@ -887,7 +905,11 @@ def compute_polarization(hr_zone_times_list: list[list[int | float]]) -> dict:
     """Compute Polarization Index from a list of hr_zone_times arrays.
 
     Each entry is [Z1_secs, Z2_secs, Z3_secs, Z4_secs, Z5_secs, ...] (5-7 zones).
-    Returns {low_pct, mid_pct, high_pct, total_hours, pattern, by_zone}.
+    Returns {low_pct, mid_pct, high_pct, total_hours, pattern, polarization_index, by_zone}.
+
+    Note: `polarization_index` here is the AGGREGATE window index over all activities
+    (Treff 2019, see polarization_index()), distinct from Intervals.icu's per-activity
+    `ActivityDetail.polarization_index` column.
     """
     totals: dict[str, float] = {}
     for zt in hr_zone_times_list:
@@ -905,6 +927,7 @@ def compute_polarization(hr_zone_times_list: list[list[int | float]]) -> dict:
             "high_pct": 0,
             "total_hours": 0,
             "pattern": "insufficient_data",
+            "polarization_index": None,
             "n_activities": len(hr_zone_times_list),
             "by_zone": {},
         }
@@ -926,6 +949,7 @@ def compute_polarization(hr_zone_times_list: list[list[int | float]]) -> dict:
         "high_pct": high_pct,
         "total_hours": total_hours,
         "pattern": pattern,
+        "polarization_index": polarization_index(low_pct, mid_pct, high_pct),
         "n_activities": len(hr_zone_times_list),
         "by_zone": {k: round(v / total * 100, 1) for k, v in sorted(totals.items())},
     }
@@ -971,3 +995,99 @@ def compute_polarization_trends(windows: dict[int, dict]) -> list[str]:
         signals.append("Overtraining risk — too much high intensity over 2 weeks")
 
     return signals
+
+
+# Sport- and phase-calibrated target intensity distribution.
+# Band = (low_target, mid_max, high_target, high_max) in % of time.
+# base/build → pyramidal (more easy, Z3 < Z2); peak/race → polarized (Z3 > Z2, PI > 2).
+# Cycling naturally carries more Z2, so its easy target is lower / Z2 ceiling higher.
+# Sources: Esteve-Lanao 2007, Stöggl & Sperlich 2015, Sperlich 2023 — see
+# docs/knowledge/intensity-distribution.md.
+_TID_BANDS: dict[str, dict[str, tuple[float, float, float, float]]] = {
+    "run": {"pyramidal": (84.0, 14.0, 6.0, 10.0), "polarized": (80.0, 8.0, 12.0, 15.0)},
+    "swim": {"pyramidal": (84.0, 14.0, 6.0, 10.0), "polarized": (80.0, 8.0, 12.0, 15.0)},
+    "ride": {"pyramidal": (72.0, 32.0, 6.0, 10.0), "polarized": (66.0, 24.0, 10.0, 15.0)},
+}
+_PHASE_MODEL = {
+    "base": "pyramidal",
+    "build": "pyramidal",
+    "peak": "polarized",
+    "race": "polarized",
+    "taper": "polarized",
+}
+# PI > 2.0 is a meaningful «polarized» gate only for run/swim. Cycling naturally carries
+# more Z2 (Sperlich 2023), so a realistic ride-polarized target (Z2 ≈ 24%) scores PI ≈ 1.4
+# and could never satisfy a 2.0 gate — no PI target for ride.
+_PI_TARGET_SPORTS = {"run", "swim"}
+
+
+def _tid_band(sport_key: str, model: str) -> dict:
+    low_t, mid_max, high_t, high_max = _TID_BANDS[sport_key][model]
+    pi_target = _PI_POLARIZED_THRESHOLD if (model == "polarized" and sport_key in _PI_TARGET_SPORTS) else None
+    return {
+        "model": model,
+        "low_pct_target": low_t,
+        "mid_pct_max": mid_max,
+        "high_pct_target": high_t,
+        "high_pct_max": high_max,
+        "pi_target_min": pi_target,
+    }
+
+
+def target_distribution(sport: str, phase: str | None = None) -> dict:
+    """Target easy/moderate/hard band for a sport + training phase.
+
+    sport: "run" | "ride" | "swim" (unknown → run band).
+    phase: "base"/"build" → pyramidal target, "peak"/"race"/"taper" → polarized.
+        None → returns both bands (base + race), flagged phase-dependent, since the
+        athlete's macrocycle phase isn't resolved yet (auto-derivation = Phase 3).
+    """
+    sport_key = sport.lower()
+    if sport_key not in _TID_BANDS:
+        sport_key = "run"
+    if phase is None:
+        return {
+            "sport": sport_key,
+            "phase": "unspecified",
+            "model": "phase-dependent",
+            "base": _tid_band(sport_key, "pyramidal"),
+            "race": _tid_band(sport_key, "polarized"),
+        }
+    model = _PHASE_MODEL.get(phase.lower(), "pyramidal")
+    return {"sport": sport_key, "phase": phase.lower(), **_tid_band(sport_key, model)}
+
+
+def delta_vs_target(low_pct: float, mid_pct: float, high_pct: float, band: dict) -> dict:
+    """Gaps between an actual distribution and a single target band.
+
+    band: a flat band dict from target_distribution(..., phase=<concrete>) or one of its
+    base/race sub-bands. Positive mid_over / high_over = over the gray-zone / hard ceiling;
+    negative low_gap = not enough easy volume.
+
+    `verdict` is the single headline issue, ordered by coaching severity (most dangerous
+    first): too_much_hard → too_little_easy → too_much_z2. `issues` keeps that order.
+    """
+    if "low_pct_target" not in band:
+        raise ValueError(
+            "delta_vs_target needs a concrete-phase band; got a dual-band dict "
+            "(target_distribution with phase=None) — pass band['base'] or band['race']"
+        )
+    low_gap = round(low_pct - band["low_pct_target"], 1)
+    mid_over = round(mid_pct - band["mid_pct_max"], 1)
+    high_over = round(high_pct - band["high_pct_max"], 1)
+    # Append in severity order so issues[0] (the headline verdict) surfaces the most
+    # dangerous problem: overtraining risk first, then aerobic-base deficit, then gray zone.
+    issues: list[str] = []
+    if high_over > 0:
+        issues.append("too_much_hard")
+    if low_gap < -5:
+        issues.append("too_little_easy")
+    if mid_over > 0:
+        issues.append("too_much_z2")
+    return {
+        "low_gap": low_gap,
+        "mid_over": mid_over,
+        "high_over": high_over,
+        "issues": issues,
+        "verdict": issues[0] if issues else "on_target",
+    }

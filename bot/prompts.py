@@ -54,7 +54,9 @@ Important context on training load data:
    - too_easy → "ℹ Не хватает стимула — добавь 1-2 интервальных сессии."
    - gray_zone_drift → "⚠ Серая зона растёт — easy-тренировки недостаточно лёгкие."
    - deload_week → информационно, не предупреждение.
-   Если signals пуст → не упоминай поляризацию (всё ок).
+   Каждое окно несёт target (цель по фазе: easy% / Z2-потолок) + delta.verdict — при
+   verdict != on_target дай проактивную цель из target (напр. «цель ~80% easy, у тебя ниже»).
+   Если signals пуст и verdict = on_target → не упоминай поляризацию (всё ок).
 
 Если какие-то данные вызывают подозрение (TSB в зоне `risk` < -30, HRV red, recovery low),
 можешь запросить дополнительные данные: get_wellness_range за неделю,
@@ -127,7 +129,7 @@ Athlete profile:
 4. get_efficiency_trend(days_back=30) — аэробный тренд
 5. get_goal_progress() — прогресс к цели
 6. get_scheduled_workouts(days_ahead=7) — план следующей недели
-7. get_polarization_index(sport='{primary_sport}') — распределение зон (28d pattern + signals)
+7. get_polarization_index(sport='{primary_sport}') — распределение зон (pattern + PI + target/delta + signals)
 8. **Race-day прогноз (опционально):** если у атлета есть RACE_A goal и до неё 30-200 дней —
    вызови get_race_projection(mode="race_day"). Дистанции **строго из категории гонки** (sport_type
    на goal). Для триатлона: Sprint 750/20000/5000, Olympic 1500/40000/10000, 70.3 1900/90000/21100,

@@ -210,6 +210,7 @@ ROI-ranked hard structural checks:
 - **§11.10 — Auto-fill `race_conditions` server-side** (без UI-выбора) — PR4 если boilerplate complaints. Сейчас inherit-UI selector сделан.
 - **§11.11 — Geo source for location/weather** (issue #331). Три tier'а апгрейда (Intervals event.location, manual `goal.location` field, full geocode + forecast). Сейчас `race_conditions` — manual entry.
 - **Multi-tenant rollout (§11.1):** re-evaluate allowlist/role gate (`User.role in {"owner", "premium"}` или liability-surface signal) когда откроем для нескольких тенантов.
+- **Warmup methodology injection** (PR4, deferred). Сейчас `warmup` — free-text от Claude без методички. Влить в `_RACE_PLAN_SYSTEM_PROMPT_TEMPLATE` как факты (источник: Abade 2017): (1) активная разминка ~10–15 мин + 2–4 strides/accelerations; **избегать эксцентрики** (Nordic-type −5% мощности остро); (2) **каждый 1°C падения t° мышц ≈ −3% мощности** — при вынужденной паузе перед стартом (corral / mass-start wait / между этапами триатлона) не сидеть пассивно; (3) **re-warm-up:** ~2-мин мини-активация (прыжки/strides/COD) за 5–6 мин до старта восстанавливает спринт-мощность. Bump `RACE_PLAN_MODEL_VERSION` при инъекции (§12). Доказательная база — футбол/U-19, принцип t°-мышц переносится, но исходы не endurance-specific — формулировать как guideline, не жёсткое правило.
 
 ---
 
@@ -222,6 +223,7 @@ ROI-ranked hard structural checks:
    - Training calibration (race-rehearsal flag, FTP trajectory).
    - Predicted splits per leg (`target_split_time_sec`).
    - Race-week Q&A через chat (§10 above).
+   - Warmup methodology injection (§10 above — re-warm-up / eccentric-avoid / t°-мышц).
    - Auto-fill `race_conditions` from past Race row.
    - Escalate prompt rules → validator если feedback показывает systematic breach.
 4. ❌ **Phase 3 feedback loop** — compliance metrics actor (auto on `ACTIVITY_UPLOADED` matching race) + hash-based авто-инвалидация + HR per-segment ceiling.
