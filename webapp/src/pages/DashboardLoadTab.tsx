@@ -146,6 +146,22 @@ function DecouplingCard({ data }: { data: ProgressResponse }) {
 //     The prototype's HR/Power toggle is intentionally dropped — see the
 //     report. The classification pill is derived from the live mix.
 // ---------------------------------------------------------------------------
+interface TargetBand {
+  phase: string
+  model: string
+  low_pct_target: number
+  mid_pct_max: number
+  high_pct_target: number
+  high_pct_max: number
+  pi_target_min: number | null
+}
+interface TargetDelta {
+  low_gap: number
+  mid_over: number
+  high_over: number
+  issues: string[]
+  verdict: string
+}
 interface PolarizationWindow {
   low_pct: number
   mid_pct: number
@@ -153,6 +169,10 @@ interface PolarizationWindow {
   total_hours: number
   n_activities: number
   pattern: string
+  // Phase 1 additions — aggregate PI (Treff 2019) + sport/phase-calibrated target & gaps.
+  polarization_index?: number | null
+  target?: TargetBand
+  delta?: TargetDelta
 }
 interface PolarizationResponse {
   windows: Record<string, PolarizationWindow>
@@ -174,6 +194,14 @@ const PATTERN_META: Record<string, { label: string; color: string; tint: string 
   too_easy: { label: 'Too easy', color: 'var(--color-coral)', tint: '#d946401f' },
   too_hard: { label: 'Too hard', color: 'var(--color-coral)', tint: '#d946401f' },
   insufficient_data: { label: 'Not enough data', color: 'var(--color-ink-dimmer)', tint: 'var(--color-surface-2)' },
+}
+
+// Proactive target verdict (delta.verdict) — distinct from the descriptive pattern pill.
+const VERDICT_META: Record<string, { label: string; color: string; tint: string }> = {
+  on_target: { label: 'On target', color: ZONE_FILL.low, tint: '#16a34a1f' },
+  too_much_z2: { label: 'Z2 too high', color: 'var(--color-amber)', tint: '#d18b001f' },
+  too_little_easy: { label: 'Add easy', color: 'var(--color-amber)', tint: '#d18b001f' },
+  too_much_hard: { label: 'Too much hard', color: 'var(--color-coral)', tint: '#d946401f' },
 }
 
 function ZoneDistributionCard({ sport }: { sport: 'bike' | 'run' }) {
@@ -202,6 +230,8 @@ function ZoneDistributionCard({ sport }: { sport: 'bike' | 'run' }) {
   if (!z || z.pattern === 'insufficient_data') return null
 
   const meta = PATTERN_META[z.pattern] || PATTERN_META.insufficient_data
+  const verdict = z.delta ? VERDICT_META[z.delta.verdict] : null
+  const target = z.target
   const days = { '7': 7, '14': 14, '28': 28, '56': 56 }[window] || 28
   const seg = (pct: number, fill: string, minLabel: number) => (
     <div
@@ -221,12 +251,22 @@ function ZoneDistributionCard({ sport }: { sport: 'bike' | 'run' }) {
           </span>
           <InfoIcon open={tip} onClick={() => setTip(v => !v)} />
         </div>
-        <span
-          className="whitespace-nowrap rounded-pill px-2.5 py-1 text-[11px] font-bold tracking-[0.3px]"
-          style={{ background: meta.tint, color: meta.color }}
-        >
-          {meta.label}
-        </span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {verdict && (
+            <span
+              className="whitespace-nowrap rounded-pill px-2.5 py-1 text-[11px] font-bold tracking-[0.3px]"
+              style={{ background: verdict.tint, color: verdict.color }}
+            >
+              {verdict.label}
+            </span>
+          )}
+          <span
+            className="whitespace-nowrap rounded-pill px-2.5 py-1 text-[11px] font-bold tracking-[0.3px]"
+            style={{ background: meta.tint, color: meta.color }}
+          >
+            {meta.label}
+          </span>
+        </div>
       </div>
       {tip && <InfoPanel>{t('load.tip.zones')}</InfoPanel>}
 
@@ -249,11 +289,22 @@ function ZoneDistributionCard({ sport }: { sport: 'bike' | 'run' }) {
         ))}
       </div>
 
-      {/* Stacked bar */}
-      <div className="mt-3.5 flex h-[34px] gap-0.5 overflow-hidden rounded-chip">
-        {seg(z.low_pct, ZONE_FILL.low, 5)}
-        {seg(z.mid_pct, ZONE_FILL.mid, 5)}
-        {seg(z.high_pct, ZONE_FILL.high, 5)}
+      {/* Stacked bar + easy-target marker — approximate reference at low_pct_target
+          (~2px off the segment boundary due to flex gaps); if the green segment's
+          right edge falls left of the marker, easy volume is below target. */}
+      <div className="relative mt-3.5">
+        <div className="flex h-[34px] gap-0.5 overflow-hidden rounded-chip">
+          {seg(z.low_pct, ZONE_FILL.low, 5)}
+          {seg(z.mid_pct, ZONE_FILL.mid, 5)}
+          {seg(z.high_pct, ZONE_FILL.high, 5)}
+        </div>
+        {target && (
+          <div
+            className="absolute top-[-3px] h-[40px] w-0.5 bg-halo-ink"
+            style={{ left: `${target.low_pct_target}%` }}
+            title={`Easy target ${target.low_pct_target}%`}
+          />
+        )}
       </div>
 
       {/* Legend + totals */}
@@ -274,8 +325,17 @@ function ZoneDistributionCard({ sport }: { sport: 'bike' | 'run' }) {
         </div>
         <span className="whitespace-nowrap font-medium">
           {z.total_hours}h · {z.n_activities} sessions
+          {z.polarization_index != null ? ` · PI ${z.polarization_index}` : ''}
         </span>
       </div>
+
+      {/* Target reference — sport/phase-calibrated easy share + Z2 ceiling. */}
+      {target && (
+        <div className="mt-2 text-[12px] text-halo-ink-dim">
+          🎯 Target ({target.phase}): {target.low_pct_target}% easy · Z2 ≤ {target.mid_pct_max}%
+          {target.pi_target_min != null ? ` · PI ≥ ${target.pi_target_min}` : ''}
+        </div>
+      )}
 
       {/* Trend-creep signals from the backend (e.g. grey-zone share rising). */}
       {(data.signals ?? []).length > 0 && (
