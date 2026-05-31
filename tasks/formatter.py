@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from bot.i18n import _, get_language
+from config import settings
 from data.db.dto import DRIFT_FTP_WATTS, DRIFT_LTHR_BPM, DRIFT_PACE_SEC_PER_KM, DRIFT_R2_HIGH, DRIFT_R2_MEDIUM
 from tasks.dto import local_today
 
@@ -796,6 +797,15 @@ def build_rpe_keyboard(activity_id: str) -> dict:
             [_btn(v) for v in (6, 7, 8, 9, 10)],
         ]
     }
+
+
+def build_activity_link_button(activity_id: str) -> dict:
+    """Single inline-keyboard button opening the activity detail page in the Mini App.
+
+    Raw Telegram Bot API format — append the returned dict as a keyboard row.
+    """
+    url = f"{settings.API_BASE_URL.rstrip('/')}/activity/{activity_id}"
+    return {"text": _("📊 Открыть тренировку"), "web_app": {"url": url}}
 
 
 def _build_post_race_message(activity: Activity, race: Race) -> str:

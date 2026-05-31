@@ -50,7 +50,12 @@ from data.utils import HRV_ELIGIBLE_TYPES
 from tasks.actors.athlets import actor_update_zones
 from tasks.actors.endurance import actor_snapshot_endurance_scores
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO, local_today
-from tasks.formatter import build_post_activity_message, build_ramp_test_message, build_rpe_keyboard
+from tasks.formatter import (
+    build_activity_link_button,
+    build_post_activity_message,
+    build_ramp_test_message,
+    build_rpe_keyboard,
+)
 from tasks.tools import TelegramTool
 
 from .common import actor_after_activity_update, is_user_dormant
@@ -572,7 +577,12 @@ def _actor_send_activity_notification(
         weather=weather_row,
         achievements=achievements_rows,
     )
-    reply_markup = build_rpe_keyboard(activity_id) if activity_row.rpe is None else None
+    link_row = [build_activity_link_button(activity_id)]
+    if activity_row.rpe is None:
+        reply_markup = build_rpe_keyboard(activity_id)
+        reply_markup["inline_keyboard"].append(link_row)
+    else:
+        reply_markup = {"inline_keyboard": [link_row]}
 
     tg.send_message(text=summary, reply_markup=reply_markup)
 

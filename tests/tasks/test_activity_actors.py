@@ -1272,6 +1272,71 @@ class TestActivityNotificationTenantGuard:
         tg_mock.send_message.assert_not_called()
 
 
+class TestActivityNotificationLinkButton:
+    """Post-activity notification always carries a `web_app` button linking to
+    `/activity/{id}`. Two branches: with the RPE keyboard (rpe unset) the link
+    is appended as the last row; without it (rpe already set) the link is the
+    sole row. Regression guard for the `.append(link_row)` / branch wiring.
+    """
+
+    def _run(self, *, rpe):
+        from data.db import Activity, ActivityHrv
+        from tasks.actors.activities import _actor_send_activity_notification
+
+        activity = MagicMock(spec=Activity)
+        activity.id = "i999"
+        activity.type = "Run"
+        activity.start_date_local = str(date.today())
+        activity.user_id = 1
+        activity.is_race = False
+        activity.rpe = rpe
+
+        hrv = MagicMock(spec=ActivityHrv)
+
+        def _session_get(model, _id):
+            if model is Activity:
+                return activity
+            if model is ActivityHrv:
+                return hrv
+            return None
+
+        session = MagicMock(
+            get=_session_get, execute=MagicMock(return_value=MagicMock(scalars=MagicMock(return_value=iter([]))))
+        )
+        session_ctx = MagicMock()
+        session_ctx.__enter__ = MagicMock(return_value=session)
+        session_ctx.__exit__ = MagicMock(return_value=False)
+
+        tg_mock = MagicMock()
+        with (
+            patch("tasks.actors.activities.get_sync_session", return_value=session_ctx),
+            patch("tasks.actors.activities._is_ramp_test_activity", return_value=False),
+            patch("tasks.actors.activities.build_post_activity_message", return_value="summary"),
+            patch("tasks.actors.activities.TelegramTool", return_value=tg_mock),
+            patch("tasks.actors.activities.set_language"),
+        ):
+            _actor_send_activity_notification(None, _user(id=1), "i999")
+
+        tg_mock.send_message.assert_called_once()
+        return tg_mock.send_message.call_args.kwargs["reply_markup"]
+
+    def test_link_row_appended_below_rpe_keyboard(self):
+        """rpe is None → RPE keyboard (2 rows) + link row appended as the last."""
+        keyboard = self._run(rpe=None)["inline_keyboard"]
+        # RPE buttons still present (first row carries `rpe:` callbacks).
+        assert all(btn["callback_data"].startswith("rpe:") for btn in keyboard[0])
+        link_btn = keyboard[-1][0]
+        assert link_btn["web_app"]["url"].endswith("/activity/i999")
+
+    def test_link_is_sole_row_when_rpe_already_set(self):
+        """rpe set → no RPE keyboard, link button is the only row."""
+        keyboard = self._run(rpe=7)["inline_keyboard"]
+        assert len(keyboard) == 1
+        link_btn = keyboard[0][0]
+        assert "callback_data" not in link_btn
+        assert link_btn["web_app"]["url"].endswith("/activity/i999")
+
+
 class TestGenerateAndSaveWeeklyReport:
     """`generate_and_save_weekly_report` mirrors the morning-report pre-check
     contract: bail out cleanly when the user no longer exists / is inactive
