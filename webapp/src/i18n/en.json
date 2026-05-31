@@ -98,6 +98,42 @@
       },
       "zones_title": "Zones"
     },
+    "strain": {
+      "title": "Training Strain",
+      "subtitle": "How hard your current build is — and whether it's sustainable.",
+      "tooltip": "Foster strain: weekly load × monotony (mean/σ of daily load). High monotony — training the same every day with no rest valleys — is the main driver of illness and injury in overload phases. Zones are set from your own past year. ACWR (acute:chronic) is a separate signal of accumulated load.",
+      "strain_label": "Strain",
+      "week_load": "Week load",
+      "monotony": "Monotony",
+      "acwr": "ACWR",
+      "week_delta": "{{sign}}{{delta}} TSS vs last week",
+      "daily_load_title": "Daily load (last 7d)",
+      "trend_title": "Strain trend",
+      "baseline_note": "Building baseline — zones use monotony for now.",
+      "insufficient": "No load in the last week — check back after training.",
+      "tip": {
+        "week_load": "Total TSS over the last 7 days. The line below is the change vs the previous week.",
+        "monotony": "How even your load is day to day: mean ÷ spread of daily TSS. Above 2.0 — training the same with no rest days, which raises illness and injury risk. Rest days lower it.",
+        "acwr": "Acute load (7 days) over chronic (CTL). 0.8–1.3 is the sweet spot, above 1.5 is a sharp ramp / injury risk, below 0.8 is detraining."
+      },
+      "zone": {
+        "calm": "Sustainable",
+        "building": "Hard build",
+        "overload": "Overload"
+      },
+      "zone_desc": {
+        "calm": "Load below your usual — room to add",
+        "building": "Dense build with recovery — the working zone",
+        "overload": "Strain above your usual — add rest days"
+      },
+      "acwr_status": {
+        "low": "detraining",
+        "sweet": "optimal",
+        "caution": "aggressive",
+        "danger": "risk"
+      },
+      "zones_title": "Zones"
+    },
     "recent_sessions": "Recent sessions",
     "no_swim_data": "No swim sessions found in this period",
     "tip": {

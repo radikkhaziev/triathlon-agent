@@ -20,6 +20,7 @@ import SleepTrend from './pages/SleepTrend'
 import BodyTrend from './pages/BodyTrend'
 import LoadDetail from './pages/LoadDetail'
 import EnduranceDetail from './pages/EnduranceDetail'
+import StrainDetail from './pages/StrainDetail'
 import WellnessHistory from './pages/WellnessHistory'
 import PersonalEdit from './pages/PersonalEdit'
 import PlanScreen from './pages/PlanScreen'
@@ -156,7 +157,12 @@ export default function App() {
       <Route path="/wellness/sleep" element={dataRoute(SleepTrend)} />
       <Route path="/wellness/body" element={dataRoute(BodyTrend)} />
       <Route path="/wellness/load" element={dataRoute(LoadDetail)} />
-      <Route path="/wellness/endurance" element={dataRoute(EnduranceDetail)} />
+      {/* Endurance Score moved to Trends → Load (2026-05-31). Detail lives
+          under `/trends/*` so the bottom-nav highlights Trends and the back
+          link returns there. Legacy `/wellness/endurance` redirects for
+          bookmarks / in-flight links. */}
+      <Route path="/wellness/endurance" element={<Navigate to="/trends/endurance" replace />} />
+      <Route path="/wellness/strain" element={dataRoute(StrainDetail)} />
       <Route path="/wellness/history" element={dataRoute(WellnessHistory)} />
       <Route path="/wellness/:metric" element={dataRoute(MetricDetail)} />
       <Route path="/coach" element={dataRoute(Coach)} />
@@ -168,6 +174,7 @@ export default function App() {
       <Route path="/activities" element={<Navigate to="/calendar" replace />} />
       <Route path="/activity/:id" element={dataRoute(Activity)} />
       <Route path="/trends" element={dataRoute(Dashboard)} />
+      <Route path="/trends/endurance" element={dataRoute(EnduranceDetail)} />
       <Route path="/weekly" element={dataRoute(WeeklyReports)} />
       <Route path="/weekly/:weekStart" element={dataRoute(WeeklyReport)} />
       <Route path="*" element={<Navigate to="/" />} />

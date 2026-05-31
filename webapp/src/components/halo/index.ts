@@ -30,6 +30,7 @@ export {
   zoneFor as enduranceZoneFor,
 } from './EnduranceScore'
 export type { EnduranceZoneDef } from './EnduranceScore'
+export { TrainingStrainCard, BandGauge, STRAIN_ZONE_COLOR, ACWR_STATUS_COLOR } from './TrainingStrain'
 export { default as BottomSheet } from './BottomSheet'
 export type { DatePill } from './DateStrip'
 export type { ScrubItem } from './ChartScrubber'

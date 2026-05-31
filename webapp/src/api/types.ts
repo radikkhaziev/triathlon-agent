@@ -887,3 +887,46 @@ export interface EnduranceScoreResponse {
   trend: EnduranceTrendPoint[]
   period: EndurancePeriod
 }
+
+// ─── Training Strain (Foster monotony/strain + ACWR) ──────────────────────
+
+export type StrainZoneId = 'calm' | 'building' | 'overload'
+export type AcwrStatus = 'low' | 'sweet' | 'caution' | 'danger'
+export type StrainBandSource = 'percentile' | 'monotony_fallback'
+
+export interface StrainBands {
+  calm_max: number
+  hard_min: number
+  source: StrainBandSource
+}
+
+export interface TrainingStrainCurrent {
+  strain: number
+  monotony: number
+  weekly_load: number
+  weekly_load_delta: number
+  acwr: number | null
+  acwr_status: AcwrStatus | null
+  zone: StrainZoneId
+  bands: StrainBands
+  insufficient_data: boolean
+}
+
+export interface StrainDailyLoad {
+  date: string  // "YYYY-MM-DD"
+  tss: number
+}
+
+export interface StrainTrendPoint {
+  date: string  // "YYYY-MM-DD"
+  strain: number
+  monotony: number
+  weekly_load: number
+}
+
+export interface TrainingStrainResponse {
+  current: TrainingStrainCurrent
+  daily_load_7d: StrainDailyLoad[]
+  trend: StrainTrendPoint[]
+  period: EndurancePeriod
+}

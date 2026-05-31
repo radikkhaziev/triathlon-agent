@@ -105,10 +105,10 @@ export default function EnduranceDetail() {
       <div className="-mx-4 -mt-4 md:-mb-8 min-h-screen bg-halo-bg px-4 md:px-9 font-sans text-halo-ink">
         <header className="flex items-center justify-between gap-3 px-1 pt-[18px] pb-3.5">
           <Link
-            to="/wellness"
+            to="/trends"
             className="inline-flex items-center gap-1.5 py-1.5 pl-1 pr-2.5 text-sm font-medium text-halo-ink-dim no-underline"
           >
-            <span className="text-lg leading-none">‹</span> {t('nav.today')}
+            <span className="text-lg leading-none">‹</span> {t('nav.trends')}
           </Link>
           <div className="min-w-0 flex-1 text-right md:text-left">
             <div className="truncate text-[15px] font-semibold tracking-[-0.2px] md:text-[20px]">{t('load.endurance.title')}</div>
@@ -145,7 +145,7 @@ function DetailBody({
 
   // Cold-start / <14d HRV data — backend flags it so we don't render a
   // misleading "score 0 / Detrained" gauge. Mirrors EnduranceScoreCard's
-  // home-card branch; reachable here via deep-link to `/wellness/endurance`.
+  // card branch; reachable here via deep-link to `/trends/endurance`.
   if (data.current.insufficient_data) {
     return (
       <div className="flex flex-col gap-3.5 pb-6">

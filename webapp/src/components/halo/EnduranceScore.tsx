@@ -1,9 +1,9 @@
 // Endurance Score — composite "where am I in my training cycle" headline
 // (5 zones: Detrained → Recovering → Maintaining → Productive → Peaking).
 //
-// Lives on Wellness home (between Recovery and Training load), with a
-// dedicated detail route at `/wellness/endurance`. Spec:
-// docs/ENDURANCE_SCORE_SPEC.md. Halo design: direction-b-halo.jsx:3414-3635.
+// Lives on the Trends → Load tab (above the sport switcher), with a dedicated
+// detail route at `/trends/endurance`. Spec: docs/ENDURANCE_SCORE_SPEC.md.
+// Halo design: direction-b-halo.jsx:3414-3635.
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
@@ -170,8 +170,8 @@ export function BadgePlate({ icon, label, zoneColor }: { icon: string; label: st
   )
 }
 
-// Card placed on Wellness home between Recovery hero and Training load.
-// Tap → /wellness/endurance for the full-screen detail (zone bands + trend).
+// Card placed on the Trends → Load tab, above the sport switcher.
+// Tap → /trends/endurance for the full-screen detail (zone bands + trend).
 // Owns its own fetch — period `3m` is arbitrary (the card ignores `trend`).
 export function EnduranceScoreCard() {
   const { t } = useTranslation()
@@ -202,7 +202,7 @@ export function EnduranceScoreCard() {
   const zone = zoneFor(current.score)
   const delta = current.delta_vs_week_ago
   const deltaSign = delta >= 0 ? '+' : ''
-  const goDetail = () => navigate('/wellness/endurance')
+  const goDetail = () => navigate('/trends/endurance')
 
   if (current.insufficient_data) {
     return (
