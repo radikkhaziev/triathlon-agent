@@ -288,7 +288,7 @@
     "power_zones": "Зоны мощности",
     "hr_zones": "Зоны ЧСС",
     "pace_zones": "Зоны темпа",
-    "stat_duration": "Продолжительность",
+    "stat_duration": "Время",
     "stat_intensity": "Интенсивность",
     "blocks": "блоков: {{count}}",
     "structure": "Структура",
