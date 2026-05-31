@@ -38,6 +38,7 @@ from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivit
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target, project_sport_load_forward, recompute_today_loads
 from data.ml.race_predict import predict_splits_with_ci
 from data.redis_client import get_redis
+from data.training_strain import acwr, acwr_status, compute_training_strain
 from data.utils import extract_sport_atl, extract_sport_ctl, normalize_sport
 from mcp_server.tools.progress import compute_efficiency_trend
 from tasks.actors import actor_user_wellness
@@ -1045,6 +1046,125 @@ async def endurance_score(
             "insufficient_data": insufficient,
         },
         "trend": trend,
+        "period": period,
+    }
+
+
+# Strain percentile bands always use the full available year of history (stable
+# zones regardless of the viewed period); only the trend slice follows `period`.
+_STRAIN_HISTORY_DAYS = 365
+
+
+@router.get("/api/training-strain")
+async def training_strain(
+    period: str = Query(default="3m", pattern="^(1m|3m|6m|1y)$"),
+    user: User = Depends(require_viewer),
+) -> dict:
+    """Foster training strain/monotony + ACWR — «how hard is the build, is it
+    sustainable». Computed on-the-fly (no storage table): daily TSS rolled into
+    7-day monotony/strain, zoned against the athlete's own trailing-year strain
+    distribution. See ``data/training_strain.py``.
+
+    Period chooses the visible trend window (1m/3m/6m/1y). The percentile bands
+    are always derived from the full year so the zone doesn't flip when the user
+    switches the chart range. Detail screen also gets the last-7-day daily TSS
+    bars (which explain the monotony value visually).
+    """
+    today = local_today()
+    uid = get_data_user_id(user)
+    trend_days = _ENDURANCE_PERIOD_DAYS[period]
+    trend_start = today - timedelta(days=trend_days - 1)
+    history_start = today - timedelta(days=_STRAIN_HISTORY_DAYS - 1)
+    # Fetch back an extra acute-window so the oldest trend/history point has a
+    # full trailing 7-day window.
+    fetch_start = (history_start - timedelta(days=7)).isoformat()
+    today_iso = today.isoformat()
+
+    async with get_session() as session:
+        act_rows = (
+            await session.execute(
+                select(Activity.start_date_local, Activity.icu_training_load).where(
+                    Activity.user_id == uid,
+                    Activity.start_date_local >= fetch_start,
+                    Activity.start_date_local <= today_iso,
+                    Activity.icu_training_load.isnot(None),
+                )
+            )
+        ).all()
+
+        wellness_row = (
+            await session.execute(
+                select(Wellness.ctl, Wellness.atl)
+                .where(
+                    Wellness.user_id == uid,
+                    Wellness.date <= today_iso,
+                    Wellness.ctl.isnot(None),
+                    Wellness.atl.isnot(None),
+                )
+                .order_by(Wellness.date.desc())
+                .limit(1)
+            )
+        ).first()
+
+    # Sum TSS per calendar day (start_date_local is an ISO string; the date is
+    # its first 10 chars). Rest days simply never appear — the pure module fills
+    # them with 0 inside each window.
+    daily_tss: dict[date, float] = {}
+    for sdl, load in act_rows:
+        day = date.fromisoformat(sdl[:10])
+        daily_tss[day] = daily_tss.get(day, 0.0) + float(load or 0.0)
+
+    ctl = float(wellness_row.ctl) if wellness_row and wellness_row.ctl is not None else None
+    atl = float(wellness_row.atl) if wellness_row and wellness_row.atl is not None else None
+
+    res = compute_training_strain(
+        ref_date=today,
+        daily_tss_by_date=daily_tss,
+        atl=atl,
+        ctl=ctl,
+        trend_start=trend_start,
+        history_start=history_start,
+    )
+
+    week_delta = round(res.weekly_load - res.weekly_load_prev, 1)
+    # Last-7-day daily TSS for the detail bar chart (oldest → newest).
+    daily_load_7d = [
+        {
+            "date": (today - timedelta(days=i)).isoformat(),
+            "tss": round(daily_tss.get(today - timedelta(days=i), 0.0), 1),
+        }
+        for i in range(6, -1, -1)
+    ]
+
+    return {
+        "current": {
+            "strain": res.strain,
+            "monotony": res.monotony,
+            "weekly_load": res.weekly_load,
+            "weekly_load_delta": week_delta,
+            "acwr": res.acwr,
+            # Status from the UNrounded ratio — res.acwr is rounded to 2dp,
+            # which would misclassify values just past a band edge (1.304 →
+            # 1.30 → sweet, but it's actually caution).
+            "acwr_status": acwr_status(acwr(atl, ctl)),
+            "zone": res.zone_id,
+            "bands": {
+                "calm_max": round(res.bands.calm_max, 1),
+                "hard_min": round(res.bands.hard_min, 1),
+                "source": res.bands.source,
+            },
+            "insufficient_data": res.insufficient_data,
+        },
+        "daily_load_7d": daily_load_7d,
+        "trend": [
+            {
+                "date": p.dt.isoformat(),
+                "strain": round(p.strain, 1),
+                "monotony": round(p.monotony, 2),
+                "weekly_load": round(p.weekly_load, 1),
+            }
+            for p in res.trend
+        ],
         "period": period,
     }
 

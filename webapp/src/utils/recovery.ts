@@ -167,16 +167,16 @@ export const RECOVERY_CHIP = {
 
 export const RECOVERY_REC_COPY = {
   en: {
-    zone2_ok: 'Z2 training — full volume',
-    zone1_long: 'aerobic base only, Z1-Z2',
-    zone1_short: 'light activity, 30-45 min',
-    skip: 'rest day — no training',
+    zone2_ok: 'Train in Z2 — full volume',
+    zone1_long: 'Aerobic base only — Z1–Z2',
+    zone1_short: 'Light activity, 30–45 min',
+    skip: 'Rest day — no training',
   },
   ru: {
-    zone2_ok: 'тренировка Z2 — полный объём',
-    zone1_long: 'только аэробная база, Z1-Z2',
-    zone1_short: 'лёгкая активность, 30-45 мин',
-    skip: 'отдых — не тренироваться',
+    zone2_ok: 'Тренируйся в Z2 — полный объём',
+    zone1_long: 'Только аэробная база — Z1–Z2',
+    zone1_short: 'Лёгкая активность, 30–45 мин',
+    skip: 'День отдыха — без тренировки',
   },
 } as const
 

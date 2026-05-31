@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
-import { InfoIcon, InfoPanel, PeriodFilter } from '../components/halo'
+import { EnduranceScoreCard, InfoIcon, InfoPanel, PeriodFilter } from '../components/halo'
 import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
@@ -1585,6 +1585,10 @@ export default function LoadTab() {
   // lives inside `EfDriftBlock`.
   return (
     <>
+      {/* Endurance Score sits above the sport switcher — it's a composite,
+          cross-sport, slow-moving read, so it belongs to the Trends/Load tab
+          (not the daily Wellness home) and ahead of the per-sport cards. */}
+      <EnduranceScoreCard />
       <SportSegmented value={sport} onChange={setSport} />
       {sport === 'swim' && <PeriodFilter value={swimPeriod} onChange={setSwimPeriod} />}
       {sport === 'swim' ? <SwimTrends days={PERIOD_DAYS[swimPeriod]} /> : <BikeRunTrends sport={sport} />}

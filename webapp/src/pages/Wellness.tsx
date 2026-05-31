@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
-import { TopBar, Gauge, MiniRangeGauge, StackedBar, DateStrip, EnduranceScoreCard, type DatePill } from '../components/halo'
+import { TopBar, Gauge, MiniRangeGauge, StackedBar, DateStrip, TrainingStrainCard, type DatePill } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import TodayWorkoutCard from '../components/TodayWorkoutCard'
@@ -180,35 +180,33 @@ export default function Wellness() {
           /* Mobile: single column (prototype `BWellness`). Desktop
              (`BdWellness` + Endurance redesign at direction-b-desktop.jsx:555):
              1.4fr / 1fr — Row 1-2: Recovery hero (col 1) + Endurance Score
-             (col 2) as twin heroes. Row 3: Sleep + Training Load as a peer
-             2-col row (used to live inside Recovery's right column). Row 4+:
-             HRV/RHR, Body, Coach teaser full width. Flat DOM keeps mobile
-             order: Recovery → Endurance → HRV/RHR → Sleep → Load → Body →
-             Coach (Endurance moved from Trends → Load to Wellness home per
-             direction-b-halo.jsx:666-677). */
+             (col 2). Col 2 rows 1-2: Training Load + Training Strain (the
+             «training-cycle» pair). Row 3: Sleep (col 1) + HRV/RHR (col 2).
+             Row 4+: Workout, Body, Coach teaser full width. Endurance Score
+             was moved out to Trends → Load (slow-moving composite, not a daily
+             read). */
           <div className="flex flex-col gap-3.5 pb-4 md:grid md:grid-cols-[1.4fr_1fr] md:items-start md:gap-[18px] md:[grid-auto-rows:max-content]">
             <div className="md:col-start-1 md:row-start-1 md:row-span-2">
               <RecoveryHero data={data} lang={lang} showBreakdown={showBreakdown} onToggle={() => setShowBreakdown(s => !s)} t={t} />
             </div>
-            {/* Mobile flex-col order: Recovery → HRV/RHR → Sleep → Endurance →
-                Load → Workout → Body → Coach. Endurance sits right above Load
-                so the «training-cycle» pair reads as a block. Desktop reflows
-                via md:row-start-N (Endurance keeps the col 2 row 1-2 twin-hero
-                slot next to Recovery; row 3 holds Sleep + Load). */}
-            <div className="md:col-span-2 md:col-start-1 md:row-start-4">
+            {/* Mobile flex-col order: Recovery → HRV/RHR → Sleep → Strain →
+                Load → Workout → Body → Coach. Desktop reflows via
+                md:row-start-N (HRV/RHR drops to col 2 row 3 next to Sleep). */}
+            <div className="md:col-start-2 md:row-start-3">
               <PairedMetrics data={data} t={t} />
             </div>
             <div className="md:col-start-1 md:row-start-3">
               <SleepCard data={data} t={t} />
             </div>
-            {/* Endurance Score — composite training-cycle headline. Mobile:
-                immediately above Training Load (paired «training-cycle» group).
-                Desktop: peer to Recovery in col 2, spanning rows 1-2 to match
-                the Recovery hero height. */}
-            <div className="md:col-start-2 md:row-start-1 md:row-span-2">
-              <EnduranceScoreCard />
+            {/* Training Strain + Training load — the «training-cycle» pair, both
+                read off daily TSS. Strain on top («is it sustainable» — the
+                responsive daily read), Load below («how much»). They fill col 2
+                rows 1-2 next to the Recovery hero (Endurance Score moved to
+                Trends → Load, being a slow-moving composite, not a daily read). */}
+            <div className="md:col-start-2 md:row-start-1">
+              <TrainingStrainCard />
             </div>
-            <div className="md:col-start-2 md:row-start-3">
+            <div className="md:col-start-2 md:row-start-2">
               <TrainingLoadCard data={data} />
             </div>
             {/* Plan vs Actual for the selected day — placed right before Body
@@ -216,10 +214,10 @@ export default function Wellness() {
                 Endurance / HRV-RHR / Sleep / Load) → «what you trained» (Plan
                 vs Actual + Body). Mobile follows JSX order, desktop reflows
                 via row-start. */}
-            <div className="md:col-span-2 md:col-start-1 md:row-start-5">
+            <div className="md:col-span-2 md:col-start-1 md:row-start-4">
               <TodayWorkoutCard dateStr={dateStr} currentDate={currentDate} isToday={isToday} />
             </div>
-            <div className="md:col-span-2 md:col-start-1 md:row-start-6">
+            <div className="md:col-span-2 md:col-start-1 md:row-start-5">
               <BodyCard data={data} t={t} />
             </div>
 
@@ -231,7 +229,7 @@ export default function Wellness() {
               <Link
                 to={isToday ? '/coach' : `/coach?date=${dateStr}`}
                 aria-label={t('wellness.coach_note')}
-                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-2 md:col-start-1 md:row-start-7"
+                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-2 md:col-start-1 md:row-start-6"
               >
                 <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-white/10 text-[13px] font-bold tracking-[0.4px]">
                   AI
@@ -405,8 +403,8 @@ function RecoveryHero({
             <div className="flex items-center gap-2.5 rounded-chip px-3 py-2.5" style={{ backgroundColor: arcWash }}>
               <span aria-hidden="true" className="text-lg leading-none">{chip.emoji}</span>
               <div className="min-w-0 flex-1">
-                <div className="text-[11px] font-bold tracking-[0.6px] text-halo-ink">{chip.label}</div>
-                <div className="mt-0.5 text-[13px] leading-snug text-halo-ink-dim">{recCopy}</div>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.5px] text-halo-ink-dim">{chip.label}</div>
+                <div className="mt-0.5 text-[14px] font-semibold leading-snug text-halo-ink">{recCopy}</div>
               </div>
             </div>
           ) : (
