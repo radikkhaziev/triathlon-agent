@@ -224,6 +224,27 @@
     "vs": "vs",
     "of": "of",
     "peak_hr_inline": "peak {{bpm}} bpm",
+    "cmp": {
+      "title": "This session vs similar",
+      "tip": "This session's efficiency markers against your own median across similar workouts (same sport, duration ±30%, IF ±12, last 120 days, 3+ sessions). Signal: green — better than norm, amber — worse, grey — on par.",
+      "pool": "{{n}} in {{days}}d",
+      "col_session": "Session",
+      "col_norm": "Norm",
+      "col_signal": "Signal",
+      "better": "better",
+      "worse": "worse",
+      "normal": "on par",
+      "higher": "higher",
+      "lower": "lower",
+      "marker": {
+        "decoupling": "Decoupling",
+        "ef": "EF",
+        "pace": "Pace",
+        "np": "NP",
+        "avg_hr": "Avg HR",
+        "vi": "VI"
+      }
+    },
     "tip": {
       "plan_vs_actual": "Plan vs actual comparison. Δ shows duration and load drift. Compliance ≥ 95% — on plan, 80–95% — close, below — off-plan.",
       "hr_zones": "Time spent in each heart-rate zone (% of total duration). Z1–Z2 — aerobic base, Z3 — tempo, Z4 — threshold, Z5+ — VO₂max and above. Zones are computed from your LTHR.",
@@ -231,6 +252,9 @@
       "decoupling": "How much your heart rate drifted at the same power towards the end. < 5% — strong aerobic base, 5–10% — normal, > 10% — under-recovered or session too hard.",
       "if": "Intensity Factor — average intensity relative to threshold (Intervals reports it as a percent). ~75 ≈ endurance, ~85 ≈ tempo, > 100 — above FTP / LTHR.",
       "avg_hr": "Average heart rate for the session; «peak» is the maximum reached during this session (not your physiological max HR from settings). Warm-up and cool-down drag the average down.",
+      "np": "Normalized Power — power adjusted for surges, as if you rode steady the whole session. Closer to the real physiological load than average power. Compare across similar sessions.",
+      "vi": "Variability Index — how punchy the ride was: NP / average power. ≈ 1.0 — steady (Z2, TT), above 1.1 — punchy (intervals, group ride, hills).",
+      "pace": "Pace in min/km. Across similar sessions it shows whether you ran faster or slower than usual at comparable duration and intensity.",
       "ess": "TRIMP-equivalent — HR-based training stress. 100 ≈ 1 hour at LTHR. TSS counterpart: TSS is power/pace-based, ESS is HR-based.",
       "tss": "Training Stress Score — total session load relative to your threshold. 100 ≈ 1 hour at FTP / LTHR. Computed from power or pace. ESS is the HR-based counterpart.",
       "dfa": {

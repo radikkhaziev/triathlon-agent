@@ -258,6 +258,19 @@ _CMP_WINDOW_DAYS = 120
 _CMP_DUR_TOL = 0.30
 _CMP_IF_TOL = 12.0
 _CMP_MIN_POOL = 3
+# `activity_details.pace` is unit-ambiguous (sec/km or m/s, by source). Anything
+# below this is m/s and gets inverted to sec/km — mirrors the webapp's
+# `normalizePaceSecPerKm` (PACE_UNIT_THRESHOLD_SEC_PER_KM = 30).
+_PACE_MS_THRESHOLD = 30.0
+
+
+def _pace_to_sec_per_km(value: float | None) -> float | None:
+    """Normalize the unit-ambiguous `pace` field to sec/km so the comparison is
+    always lower-is-better. Values below `_PACE_MS_THRESHOLD` are treated as m/s
+    and inverted; sec/km values pass through."""
+    if not value or value <= 0:
+        return None
+    return 1000.0 / value if value < _PACE_MS_THRESHOLD else value
 
 
 def _cmp_marker(
@@ -302,6 +315,11 @@ async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
     `{available, pool_n, markers}`; `available=False` with a `reason` when the
     sport is unsupported or the pool is too thin to be a meaningful norm.
     """
+    if activity.is_race:
+        # Race effort vs an easy-session norm is apples-to-oranges (the pool is
+        # non-race by design). Short-circuit before any pool query — the webapp
+        # also hides the block for races.
+        return {"available": False, "pool_n": 0, "reason": "race"}
     sport = _sport_group(activity.type)
     ref_if = detail.intensity_factor if detail else None
     ref_dur = activity.moving_time
@@ -377,11 +395,13 @@ async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
             _cmp_marker("ef", detail.efficiency_factor, median(ef_vals), len(ef_vals), lower_is_better=False)
         )
 
-    # Pace (run, m/s — higher=faster) / Normalized power (bike) — higher is better.
+    # Pace (run) — normalize the unit-ambiguous field to sec/km, then lower is
+    # better. NP (bike) — higher is better.
     if sport == "run":
-        pace_vals = [d.pace for _, d in pool if d.pace and d.pace > 0]
-        if detail.pace and detail.pace > 0 and len(pace_vals) >= _CMP_MIN_POOL:
-            markers.append(_cmp_marker("pace", detail.pace, median(pace_vals), len(pace_vals), lower_is_better=False))
+        ref_pace = _pace_to_sec_per_km(detail.pace)
+        pace_vals = [p for _, d in pool if (p := _pace_to_sec_per_km(d.pace)) is not None]
+        if ref_pace is not None and len(pace_vals) >= _CMP_MIN_POOL:
+            markers.append(_cmp_marker("pace", ref_pace, median(pace_vals), len(pace_vals), lower_is_better=True))
     else:
         np_vals = [d.normalized_power for _, d in pool if d.normalized_power]
         if detail.normalized_power and len(np_vals) >= _CMP_MIN_POOL:
@@ -403,7 +423,7 @@ async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
     if not markers:
         return {"available": False, "pool_n": len(pool), "reason": "no_markers"}
 
-    return {"available": True, "pool_n": len(pool), "markers": markers}
+    return {"available": True, "pool_n": len(pool), "markers": markers, "window_days": _CMP_WINDOW_DAYS}
 
 
 def _group_weekly(entries: list[dict], sport: str) -> list[dict]:

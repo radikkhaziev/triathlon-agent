@@ -451,9 +451,38 @@ export interface ActivityDetailsResponse {
   } | null
   is_race?: boolean
   race?: RaceInfo | null
+  // "This session vs your norm" — deterministic markers against a pool of
+  // similar past sessions (same sport, duration ±30%, IF ±12, 120d). Computed
+  // server-side (`compute_activity_comparison`). `available=false` (thin/no
+  // pool, unsupported sport) → the block is hidden.
+  comparison?: ActivityComparison | null
   details: ActivityDetails | null
   hrv: ActivityHRV | null
   weather: ActivityWeatherInfo | null
+}
+
+export interface ActivityComparisonMarker {
+  // efficiency/intensity marker compared against the athlete's own median
+  key: 'decoupling' | 'ef' | 'pace' | 'np' | 'avg_hr' | 'vi'
+  value: number
+  norm_median: number
+  pool_n: number
+  delta: number
+  // verdict vs norm — 'neutral' both for no-verdict markers (avg_hr, vi) and
+  // for verdict markers landing within 5% of the norm
+  band: 'better' | 'worse' | 'neutral'
+  // present only for `decoupling` — its own traffic-light status
+  status?: string
+}
+
+export interface ActivityComparison {
+  available: boolean
+  pool_n: number
+  reason?: string
+  // pool lookback window in days — server-driven so the «{n} за {days} дн.»
+  // header can't drift from the backend's `_CMP_WINDOW_DAYS`
+  window_days?: number
+  markers?: ActivityComparisonMarker[]
 }
 
 export interface TrainingLoadSeries {
