@@ -3,7 +3,7 @@
 from sqlalchemy import select
 
 from data.db import Wellness, get_session
-from data.metrics import recompute_today_loads
+from data.metrics import recompute_today_loads, recompute_today_ramp
 from mcp_server.app import mcp
 from mcp_server.context import get_current_user_id
 from tasks.dto import local_today
@@ -38,11 +38,12 @@ def _row_to_dict(row: Wellness) -> dict:
 
 
 async def _apply_today_loads_override(user_id: int, record: dict) -> None:
-    """Replace `ctl`/`atl` in a wellness dict with the actual-only recompute.
+    """Replace `ctl`/`atl`/`ramp_rate` in a wellness dict with the actual-only recompute.
 
-    Intervals.icu bakes today's planned workouts into ctl/atl, so morning-time
-    reads look as if today's session is already done. Mutates `record` in
-    place. No-op if yesterday's wellness row is missing.
+    Intervals.icu bakes today's planned workouts into ctl/atl/rampRate, so
+    morning-time reads look as if today's session is already done. Mutates
+    `record` in place; de-plans ramp to stay consistent with ctl/atl. No-op if
+    yesterday's wellness row is missing.
     """
     recomputed = await recompute_today_loads(user_id)
     if recomputed is None:
@@ -50,6 +51,9 @@ async def _apply_today_loads_override(user_id: int, record: dict) -> None:
     ctl, atl, _ = recomputed
     record["ctl"] = ctl
     record["atl"] = atl
+    projected_ramp = await recompute_today_ramp(user_id, ctl)
+    if projected_ramp is not None:
+        record["ramp_rate"] = projected_ramp
 
 
 @mcp.tool()

@@ -63,7 +63,7 @@
     "optimal": "Оптимум",
     "race_a": "Гонка A",
     "weeks_out": "через {{count}} нед.",
-    "to_target": "до цели",
+    "to_target": "от цели CTL",
     "fitness_ctl": "Форма (CTL)",
     "ctl_needed": "+{{delta}} нужно · {{weeks}} нед.",
     "taper": "тейпер",

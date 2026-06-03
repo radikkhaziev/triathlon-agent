@@ -417,3 +417,71 @@ class TestRecomputeTodayLoads:
 
         result = await metrics.recompute_today_loads(1)
         assert result == metrics._project_loads_one_day(50.0, 50.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# DB-integration: recompute_today_ramp
+# ---------------------------------------------------------------------------
+
+
+_WEEK_AGO = _TODAY - timedelta(days=7)
+
+
+async def _seed_wellness_at(user_id: int, dt: date, *, ctl: float | None) -> None:
+    """Plant a wellness row at an arbitrary date with just CTL — the 7-day-ago
+    baseline `recompute_today_ramp` reads."""
+    from datetime import datetime, timezone
+
+    from data.db import Wellness, get_session
+
+    async with get_session() as s:
+        s.add(Wellness(user_id=user_id, date=dt.isoformat(), ctl=ctl, updated=datetime.now(timezone.utc)))
+        await s.commit()
+
+
+class TestRecomputeTodayRamp:
+    """DB-integration: `recompute_today_ramp` returns projected weekly ramp as
+    de-planned-today-CTL minus the (settled) CTL from 7 days ago, matching how
+    Intervals.icu defines rampRate. Keeps ramp consistent with the de-planned
+    CTL/ATL/TSB shown beside it on the today screen."""
+
+    async def test_returns_none_when_no_week_ago_row(self, monkeypatch):
+        from data import metrics
+
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert await metrics.recompute_today_ramp(1, ctl_today=55.0) is None
+
+    async def test_returns_none_when_week_ago_has_no_ctl(self, monkeypatch):
+        from data import metrics
+
+        await _seed_wellness_at(1, _WEEK_AGO, ctl=None)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert await metrics.recompute_today_ramp(1, ctl_today=55.0) is None
+
+    async def test_positive_ramp(self, monkeypatch):
+        """Fitness climbing across the week → positive ramp."""
+        from data import metrics
+
+        await _seed_wellness_at(1, _WEEK_AGO, ctl=50.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert await metrics.recompute_today_ramp(1, ctl_today=55.5) == pytest.approx(5.5)
+
+    async def test_negative_ramp_on_detraining(self, monkeypatch):
+        """Detraining week → negative ramp, must not clamp to zero."""
+        from data import metrics
+
+        await _seed_wellness_at(1, _WEEK_AGO, ctl=60.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert await metrics.recompute_today_ramp(1, ctl_today=56.2) == pytest.approx(-3.8)
+
+    async def test_week_ago_scoped_per_user(self, monkeypatch):
+        """Another user's week-ago row must not leak into this user's ramp."""
+        from data import metrics
+        from data.db import User, get_session
+
+        async with get_session() as s:
+            s.add(User(id=2, chat_id="other_user", role="user"))
+            await s.commit()
+        await _seed_wellness_at(2, _WEEK_AGO, ctl=10.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert await metrics.recompute_today_ramp(1, ctl_today=55.0) is None

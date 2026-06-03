@@ -248,6 +248,164 @@ async def compute_efficiency_trend(
     return response
 
 
+# Loosened "similar session" match for the per-activity comparison block.
+# Coverage over precision: the strict same-bucket + dominant-zone + TSB match
+# left long/notable sessions at pool 0-1 (validated on real data 2026-06-03).
+# ±30% duration + ±12 IF, no zone/TSB filter, 120d lifts routine sessions to
+# pool 5-14 while keeping "similar" honest. Genuinely unique long efforts stay
+# below _CMP_MIN_POOL and render an empty state rather than a 1-sample "norm".
+_CMP_WINDOW_DAYS = 120
+_CMP_DUR_TOL = 0.30
+_CMP_IF_TOL = 12.0
+_CMP_MIN_POOL = 3
+
+
+def _cmp_marker(
+    key: str,
+    value: float,
+    norm: float,
+    pool_n: int,
+    *,
+    lower_is_better: bool | None,
+    status: str | None = None,
+) -> dict:
+    """One "this vs norm" row. `band` colours the delta; `lower_is_better=None`
+    means the marker is neutral (avg HR, VI) — show the delta without a verdict."""
+    delta = value - norm
+    band = "neutral"
+    if lower_is_better is not None and norm:
+        if abs(delta) / abs(norm) < 0.05:
+            band = "neutral"
+        else:
+            worse = (delta > 0) if lower_is_better else (delta < 0)
+            band = "worse" if worse else "better"
+    marker = {
+        "key": key,
+        "value": round(value, 3),
+        "norm_median": round(norm, 3),
+        "pool_n": pool_n,
+        "delta": round(delta, 3),
+        "band": band,
+    }
+    if status is not None:
+        marker["status"] = status
+    return marker
+
+
+async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
+    """Deterministic "this session vs your norm" markers for the activity page.
+
+    No Claude, no migration — pure aggregation over existing `activity_details`.
+    Pool = same sport, non-race, duration ±30%, IF ±12, last 120d (see
+    `_CMP_*`). Decoupling median is taken over valid-for-decoupling pool members
+    only (short/high-VI sessions would poison it). Returns
+    `{available, pool_n, markers}`; `available=False` with a `reason` when the
+    sport is unsupported or the pool is too thin to be a meaningful norm.
+    """
+    sport = _sport_group(activity.type)
+    ref_if = detail.intensity_factor if detail else None
+    ref_dur = activity.moving_time
+    if sport not in ("bike", "run") or detail is None or ref_if is None or not ref_dur:
+        return {"available": False, "pool_n": 0, "reason": "unsupported"}
+
+    since = date.today() - timedelta(days=_CMP_WINDOW_DAYS)
+    activities, _ = await Activity.get_range(user_id, since, date.today())
+
+    dur_lo, dur_hi = ref_dur * (1 - _CMP_DUR_TOL), ref_dur * (1 + _CMP_DUR_TOL)
+    candidates = [
+        a
+        for a in activities
+        if a.id != activity.id
+        and not a.is_race
+        and _sport_group(a.type) == sport
+        and a.moving_time
+        and dur_lo <= a.moving_time <= dur_hi
+    ]
+    if not candidates:
+        return {"available": False, "pool_n": 0, "reason": "no_similar"}
+
+    detail_map = await ActivityDetail.get_bulk([a.id for a in candidates])
+    pool: list[tuple] = []
+    for a in candidates:
+        d = detail_map.get(a.id)
+        if d is None or d.intensity_factor is None:
+            continue
+        if abs(d.intensity_factor - ref_if) <= _CMP_IF_TOL:
+            pool.append((a, d))
+
+    if len(pool) < _CMP_MIN_POOL:
+        return {"available": False, "pool_n": len(pool), "reason": "thin_pool"}
+
+    markers: list[dict] = []
+
+    # Decoupling — lower is better, median over valid-for-decoupling pool only.
+    ref_dec_valid = is_valid_for_decoupling(
+        activity_type=activity.type,
+        moving_time=ref_dur,
+        variability_index=detail.variability_index,
+        hr_zone_times=detail.hr_zone_times,
+        decoupling=detail.decoupling,
+    )
+    valid_dec = [
+        d.decoupling
+        for a, d in pool
+        if d.decoupling is not None
+        and is_valid_for_decoupling(
+            activity_type=a.type,
+            moving_time=a.moving_time,
+            variability_index=d.variability_index,
+            hr_zone_times=d.hr_zone_times,
+            decoupling=d.decoupling,
+        )
+    ]
+    if ref_dec_valid and detail.decoupling is not None and len(valid_dec) >= _CMP_MIN_POOL:
+        markers.append(
+            _cmp_marker(
+                "decoupling",
+                detail.decoupling,
+                median(valid_dec),
+                len(valid_dec),
+                lower_is_better=True,
+                status=decoupling_status(detail.decoupling),
+            )
+        )
+
+    # Efficiency factor — higher is better.
+    ef_vals = [d.efficiency_factor for _, d in pool if d.efficiency_factor and d.efficiency_factor > 0]
+    if detail.efficiency_factor and detail.efficiency_factor > 0 and len(ef_vals) >= _CMP_MIN_POOL:
+        markers.append(
+            _cmp_marker("ef", detail.efficiency_factor, median(ef_vals), len(ef_vals), lower_is_better=False)
+        )
+
+    # Pace (run, m/s — higher=faster) / Normalized power (bike) — higher is better.
+    if sport == "run":
+        pace_vals = [d.pace for _, d in pool if d.pace and d.pace > 0]
+        if detail.pace and detail.pace > 0 and len(pace_vals) >= _CMP_MIN_POOL:
+            markers.append(_cmp_marker("pace", detail.pace, median(pace_vals), len(pace_vals), lower_is_better=False))
+    else:
+        np_vals = [d.normalized_power for _, d in pool if d.normalized_power]
+        if detail.normalized_power and len(np_vals) >= _CMP_MIN_POOL:
+            markers.append(
+                _cmp_marker("np", detail.normalized_power, median(np_vals), len(np_vals), lower_is_better=False)
+            )
+
+    # Average HR — neutral context (lower at same pace is good, but only paired
+    # with EF; on its own it's just "where today sat").
+    hr_vals = [a.average_hr for a, _ in pool if a.average_hr]
+    if activity.average_hr and len(hr_vals) >= _CMP_MIN_POOL:
+        markers.append(_cmp_marker("avg_hr", activity.average_hr, median(hr_vals), len(hr_vals), lower_is_better=None))
+
+    # Variability index — neutral (closer to 1.0 = steadier, but not "better").
+    vi_vals = [d.variability_index for _, d in pool if d.variability_index]
+    if detail.variability_index and len(vi_vals) >= _CMP_MIN_POOL:
+        markers.append(_cmp_marker("vi", detail.variability_index, median(vi_vals), len(vi_vals), lower_is_better=None))
+
+    if not markers:
+        return {"available": False, "pool_n": len(pool), "reason": "no_markers"}
+
+    return {"available": True, "pool_n": len(pool), "markers": markers}
+
+
 def _group_weekly(entries: list[dict], sport: str) -> list[dict]:
     """Group activity entries by ISO week."""
     weeks: dict[str, list[dict]] = defaultdict(list)

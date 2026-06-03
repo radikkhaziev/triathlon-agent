@@ -12,9 +12,11 @@ from mcp_server.context import get_current_user_id
 
 
 def _pct(current: float | None, target: float | None) -> float | None:
+    # Integer rounding matches the webapp gauge (api/routers/dashboard.py) so
+    # the number Claude quotes in chat lines up with what the athlete sees.
     if current is None or not target or target <= 0:
         return None
-    return round(current / target * 100, 1)
+    return round(current / target * 100)
 
 
 @mcp.tool()
