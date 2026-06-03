@@ -18,6 +18,8 @@ import {
   stripWorkoutPrefix,
 } from '../lib/formatters'
 import type {
+  ActivityComparison,
+  ActivityComparisonMarker,
   ActivityDetailsResponse,
   ActivityDetails,
   ActivityWeatherInfo,
@@ -129,6 +131,22 @@ export default function Activity() {
               t={t}
             />
           )}
+
+          {/* This session vs your norm — design `BActivityWorkout`
+              (direction-b-halo.jsx:2225-2319). Deterministic markers vs the
+              athlete's own median over a pool of similar past sessions; the
+              backend hides itself (`available:false`) when the pool is thin.
+              The design's weekly decoupling sparkline is omitted — the
+              `/activity/:id/details` payload carries only the marker rows, not
+              the weekly series, so we render the honest superset. Workout-only,
+              like the prototype: a race effort vs easy-session norm is
+              apples-to-oranges. */}
+          {!data.is_race &&
+            data.comparison?.available &&
+            data.comparison.markers &&
+            data.comparison.markers.length > 0 && (
+              <SessionVsNorm comparison={data.comparison} t={t} />
+            )}
 
           {!d ? (
             <ErrorMessage message={t('activities.no_details')} />
@@ -845,6 +863,123 @@ function PlanVsActualMiniBody({
           )}
         </div>
       ))}
+    </div>
+  )
+}
+
+// "This session vs your norm" — design `BActivityWorkout` (direction-b-halo.jsx:
+// 2225-2319). Session / Norm / Signal table; same card chrome and column rhythm
+// as Plan vs Actual so it reads as a native part of the screen. Each marker
+// carries a server-computed `band` verdict — green «better», amber «worse», dim
+// «on par». No-verdict markers (avg_hr, vi) always come back neutral; for those
+// the signal degrades to a plain higher / lower / on-par direction read.
+// Fallback only — the window is normally server-driven via `comparison.window_days`.
+const CMP_WINDOW_DAYS = 120
+
+// Per-marker tooltip — reuses the existing metric tips (ef / decoupling /
+// avg_hr already live under `activities.tip.*`); np / vi / pace were added
+// alongside. One map so the row tooltip stays in lock-step with the marker keys.
+const CMP_TIP_KEY: Record<ActivityComparisonMarker['key'], string> = {
+  decoupling: 'activities.tip.decoupling',
+  ef: 'activities.tip.ef',
+  pace: 'activities.tip.pace',
+  np: 'activities.tip.np',
+  avg_hr: 'activities.tip.avg_hr',
+  vi: 'activities.tip.vi',
+}
+
+function fmtCmpValue(key: ActivityComparisonMarker['key'], v: number): string {
+  switch (key) {
+    case 'decoupling':
+      return `${v.toFixed(1)}%`
+    case 'ef':
+    case 'vi':
+      return v.toFixed(2)
+    case 'avg_hr':
+      return `${Math.round(v)}`
+    case 'np':
+      return `${Math.round(v)} W`
+    case 'pace': {
+      // Raw `detail.pace` is unit-ambiguous (sec/km or m/s); normalize, then
+      // render as min/km — same path the Pace card uses. No «/km» suffix: the
+      // «Темп» row label already carries the unit, and repeating it on both the
+      // session and norm cells just crowds the columns.
+      const secPerKm = normalizePaceSecPerKm(v)
+      const p = secPerKm ? fmtPace(secPerKm) : null
+      return p ?? '—'
+    }
+    default:
+      return `${v}`
+  }
+}
+
+function SessionVsNorm({ comparison, t }: { comparison: ActivityComparison; t: TFn }) {
+  const markers = comparison.markers ?? []
+  // Single-key tip — card header keyed 'card', each marker row keyed by its
+  // marker key; one panel open at a time (same pattern as Plan vs Actual).
+  const [openTip, setOpenTip] = useState<string | null>(null)
+  const toggle = (k: string) => setOpenTip(prev => (prev === k ? null : k))
+  const signalOf = (m: ActivityComparisonMarker): { tone: string; note: string } => {
+    if (m.band === 'better') return { tone: 'var(--color-status-green)', note: t('activities.cmp.better') }
+    if (m.band === 'worse') return { tone: 'var(--color-amber)', note: t('activities.cmp.worse') }
+    // Neutral band — verdict markers within 5% read «on par»; no-verdict
+    // markers (avg_hr, vi) keep a directional read off the raw delta.
+    const rel = m.norm_median ? (m.value - m.norm_median) / Math.abs(m.norm_median) : 0
+    const note = rel > 0.05 ? t('activities.cmp.higher') : rel < -0.05 ? t('activities.cmp.lower') : t('activities.cmp.normal')
+    return { tone: 'var(--color-ink-dim)', note }
+  }
+  return (
+    <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
+      <div className="flex items-baseline justify-between gap-3 border-b border-halo-border pb-2.5">
+        <div className="flex items-center">
+          <span className="text-sm font-semibold tracking-[-0.2px]">{t('activities.cmp.title')}</span>
+          <InfoIcon open={openTip === 'card'} onClick={() => toggle('card')} />
+        </div>
+        <span className="text-[11px] font-medium text-halo-ink-dim">
+          {t('activities.cmp.pool', { n: comparison.pool_n, days: comparison.window_days ?? CMP_WINDOW_DAYS })}
+        </span>
+      </div>
+      {openTip === 'card' && <InfoPanel>{t('activities.cmp.tip')}</InfoPanel>}
+      <div className="mt-2.5 flex items-center border-b border-halo-border pb-1.5">
+        <div className="flex-1" />
+        <div className="min-w-[70px] text-right text-[9px] font-bold uppercase tracking-[0.6px] text-halo-ink-dimmer">
+          {t('activities.cmp.col_session')}
+        </div>
+        <div className="min-w-[60px] text-right text-[9px] font-bold uppercase tracking-[0.6px] text-halo-ink-dimmer">
+          {t('activities.cmp.col_norm')}
+        </div>
+        <div className="min-w-[74px] text-right text-[9px] font-bold uppercase tracking-[0.6px] text-halo-ink-dimmer">
+          {t('activities.cmp.col_signal')}
+        </div>
+      </div>
+      {markers.map((m, i) => {
+        const sig = signalOf(m)
+        const tipKey = CMP_TIP_KEY[m.key]
+        return (
+          <div key={m.key} className={i < markers.length - 1 ? 'border-b border-halo-border' : undefined}>
+            <div className="flex items-center py-2.5">
+              <div className="flex flex-1 items-center text-[13px] font-medium text-halo-ink-dim">
+                <span>{t(`activities.cmp.marker.${m.key}`)}</span>
+                {tipKey && <InfoIcon open={openTip === m.key} onClick={() => toggle(m.key)} />}
+              </div>
+              <div className="min-w-[70px] text-right text-[14px] font-semibold tabular-nums tracking-[-0.2px]">
+                {fmtCmpValue(m.key, m.value)}
+              </div>
+              <div className="min-w-[60px] text-right text-[14px] font-medium text-halo-ink-dim tabular-nums tracking-[-0.1px]">
+                {fmtCmpValue(m.key, m.norm_median)}
+              </div>
+              <div className="min-w-[74px] text-right text-[11px] font-semibold" style={{ color: sig.tone }}>
+                {sig.note}
+              </div>
+            </div>
+            {tipKey && openTip === m.key && (
+              <div className="pb-2.5">
+                <InfoPanel>{t(tipKey)}</InfoPanel>
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

@@ -9,7 +9,7 @@ from config import settings
 from data.db import Activity, ActivityDetail, ActivityHrv, ActivityWeather, Race, ScheduledWorkout, User, get_session
 from data.utils import format_duration, serialize_activity_details, serialize_activity_hrv
 from mcp_server.tools.polarization import get_polarization_multi_window
-from mcp_server.tools.progress import compute_efficiency_trend
+from mcp_server.tools.progress import compute_activity_comparison, compute_efficiency_trend
 
 router = APIRouter()
 
@@ -118,6 +118,13 @@ async def activity_details(
                     ),
                 }
 
+        # "This session vs your norm" — deterministic markers against a pool of
+        # similar past sessions (same sport, duration ±30%, IF ±12, 120d). No AI,
+        # no migration. `available=False` (thin/no pool, unsupported sport) → the
+        # webapp hides the block. Computed inside the session so `detail`/`activity`
+        # stay attached; the function opens its own read sessions for the pool.
+        comparison = await compute_activity_comparison(uid, activity, detail)
+
     return {
         "activity_id": activity.id,
         "type": activity.type,
@@ -162,6 +169,7 @@ async def activity_details(
             if race
             else None
         ),
+        "comparison": comparison,
         "details": serialize_activity_details(detail) if detail else None,
         "hrv": serialize_activity_hrv(hrv) if hrv and hrv.processing_status == "processed" else None,
         # Outdoor weather block — populated from ACTIVITY_UPLOADED webhook when
