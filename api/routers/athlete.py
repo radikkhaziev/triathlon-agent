@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from api.deps import get_data_user_id, require_athlete, require_viewer
 from api.dto import AthleteGoalPatchRequest, AthleteProfilePatchRequest
-from data.db import AthleteGoal, User
+from data.db import ActivityHrv, AthleteGoal, User
+from data.db.dto import MeasuredThresholdsDTO
 from tasks.dto import local_today
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,26 @@ async def list_athlete_goals(
             for g in goals
         ],
     }
+
+
+@router.get("/api/athlete/measured-thresholds")
+async def get_measured_thresholds(
+    user: User = Depends(require_viewer),
+) -> MeasuredThresholdsDTO:
+    """Our DFA-α1 ramp-test thresholds (HRVT2 per sport).
+
+    Distinct from the Intervals.icu-synced values in ``/auth/me``'s ``profile``
+    block — this is what *we* measured (latest ramp-test HRVT2 with confidence +
+    measurement date). Powers the Settings "measured vs auto-synced" threshold
+    card. VO2max is not here: the card keeps the Intervals VO2max as sync-only,
+    and our composite VO2max lives on the Endurance Score surface.
+
+    Read-only — ``require_viewer`` so demo/viewer sessions see the owner's
+    measured thresholds on the read-only tour.
+    """
+    data_uid = get_data_user_id(user)
+    measured = await ActivityHrv.get_latest_measured(data_uid)
+    return MeasuredThresholdsDTO(thresholds=measured)
 
 
 @router.patch("/api/athlete/goal/{goal_id}")

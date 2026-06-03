@@ -12,6 +12,8 @@ import type {
   AthleteGoalsResponse,
   AuthMeResponse,
   IntervalsStatus,
+  MeasuredThreshold,
+  MeasuredThresholdsResponse,
   SportTag,
   SportType,
 } from '../api/types'
@@ -120,6 +122,10 @@ export default function Settings() {
   // goals so the athlete can edit each one independently.
   const [goals, setGoals] = useState<AthleteGoal[]>([])
   const [goalSaveError, setGoalSaveError] = useState<string | null>(null)
+  // Our-measured ramp-test thresholds (DFA α1) — separate fetch so the card
+  // gracefully degrades to auto-synced-only when this request fails or returns
+  // nothing (no ramp test yet). Never blocks the rest of Settings.
+  const [measured, setMeasured] = useState<MeasuredThresholdsResponse | null>(null)
   const [sports, setSports] = useState<SportTag[] | null>(null)
   const [sportsSaveError, setSportsSaveError] = useState<string | null>(null)
 
@@ -179,6 +185,16 @@ export default function Settings() {
         // (page reload) will retry.
         setGoals([])
       })
+  }, [isAuthenticated])
+
+  // Our-measured thresholds — separate fetch. On failure / no tests, leave
+  // `measured=null` so the Пороги card silently falls back to auto-synced-only
+  // tiles (the DFA-α1 secondary line just doesn't appear).
+  useEffect(() => {
+    if (!isAuthenticated) return
+    apiFetch<MeasuredThresholdsResponse>('/api/athlete/measured-thresholds')
+      .then(setMeasured)
+      .catch(() => setMeasured(null))
   }, [isAuthenticated])
 
   // Resolve `avatar_url` → object URL so the <img> can render. The endpoint
@@ -548,38 +564,78 @@ export default function Settings() {
         </Panel>
       )}
 
-      {/* Thresholds — read-only, auto-synced from Intervals.icu sport settings.
-          Prototype renders these as a 2-col stat grid (small label / big
-          value / unit) rather than the legacy stacked label↔value rows. */}
-      {profile && (profile.lthr_run || profile.lthr_bike || profile.ftp || profile.css || profile.vo2max) && (
-        <Panel
-          label={t('settings.profile.thresholds_title')}
-          hint={t('settings.profile.auto_synced')}
-        >
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3.5">
-            {profile.ftp != null && (
-              <StatTile label={t('settings.profile.ftp')} value={String(profile.ftp)} unit="W" />
+      {/* Пороги — dual-source thresholds (Halo · direction-b-extras). The
+          Intervals value stays the headline number for every metric; for the
+          three we can measure ourselves (FTP, LTHR·run, LTHR·bike — via DFA-α1
+          ramp tests) a small secondary line surfaces OUR test value +
+          confidence (R²) + date beneath it. CSS (no swim method) and VO₂max
+          (composite — lives in Endurance Score) stay sync-only and render the
+          muted fallback shape — also what a measured tile collapses to when no
+          test exists or its confidence couldn't be graded. */}
+      {profile && (profile.lthr_run || profile.lthr_bike || profile.ftp || profile.css || profile.vo2max) && (() => {
+        const runRow = measured?.thresholds.find(m => m.sport === 'Run')
+        const bikeRow = measured?.thresholds.find(m => m.sport === 'Ride')
+        const lang = i18n.language
+        const cssVal =
+          profile.css != null
+            ? `${Math.floor(Number(profile.css) / 60)}:${String(Math.round(Number(profile.css) % 60)).padStart(2, '0')}`
+            : null
+        // Each metric carries its Intervals headline + (where we measure it) our
+        // DFA-α1 test line. Drop metrics whose Intervals value is missing.
+        const metrics: { key: string; label: string; unit: string; sync: string; our: OurThreshold | null }[] = [
+          profile.ftp != null && { key: 'ftp', label: t('settings.profile.ftp'), unit: 'W', sync: String(profile.ftp), our: ourLine(bikeRow, 'power', lang) },
+          profile.lthr_run != null && { key: 'lthr_run', label: t('settings.profile.lthr_run'), unit: 'bpm', sync: String(profile.lthr_run), our: ourLine(runRow, 'hr', lang) },
+          profile.lthr_bike != null && { key: 'lthr_bike', label: t('settings.profile.lthr_bike'), unit: 'bpm', sync: String(profile.lthr_bike), our: ourLine(bikeRow, 'hr', lang) },
+          cssVal != null && { key: 'css', label: t('settings.profile.css'), unit: '/100m', sync: cssVal, our: null },
+          profile.vo2max != null && { key: 'vo2max', label: 'VO₂max', unit: '', sync: String(profile.vo2max), our: null },
+        ].filter(Boolean) as { key: string; label: string; unit: string; sync: string; our: OurThreshold | null }[]
+        // Partition by whether OUR test exists: accent full-width tiles for
+        // measured metrics, the recessed 2-col grid for everything else
+        // (sync-only metrics + measurable ones with no trusted test yet).
+        const measuredTiles = metrics
+          .filter(m => m.our)
+          .map(m => <ThreshTile key={m.key} label={m.label} unit={m.unit} sync={m.sync} our={m.our} t={t} />)
+        const syncTiles = metrics
+          .filter(m => !m.our)
+          .map(m => <ThreshTile key={m.key} label={m.label} unit={m.unit} sync={m.sync} our={null} t={t} />)
+        return (
+          <Panel label={t('settings.profile.thresholds_title')}>
+            {/* Legend — only when we actually have a measured tile to explain.
+                With no ramp tests the card degrades to a plain sync-only grid. */}
+            {measuredTiles.length > 0 && (
+              <div className="mb-3 flex items-center gap-4">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-halo-brand" />
+                  <span className="text-[11px] text-halo-ink-dim">{t('settings.profile.measured_legend')}</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="box-border h-2 w-2 rounded-full border-[1.5px] border-halo-ink-dimmer" />
+                  <span className="text-[11px] text-halo-ink-dim">{t('settings.profile.auto_synced')}</span>
+                </span>
+              </div>
             )}
-            {profile.lthr_run != null && (
-              <StatTile label={t('settings.profile.lthr_run')} value={String(profile.lthr_run)} unit="bpm" />
+            {/* Mobile: measured tiles stack full-width (the dual-source line
+                needs the room). Desktop (md+, widened to 1180px beside the
+                sidebar): 3-across grid, matching the desktop BdSettings card. */}
+            {measuredTiles.length > 0 && (
+              <div className="flex flex-col gap-2.5 md:grid md:grid-cols-3 md:gap-3.5">{measuredTiles}</div>
             )}
-            {profile.lthr_bike != null && (
-              <StatTile label={t('settings.profile.lthr_bike')} value={String(profile.lthr_bike)} unit="bpm" />
+            {syncTiles.length > 0 && (
+              <>
+                {measuredTiles.length > 0 && (
+                  <div className="my-3 flex items-center gap-2.5 md:my-4">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-halo-ink-dimmer">
+                      {t('settings.profile.sync_only')}
+                    </span>
+                    <span className="h-px flex-1 bg-halo-border" />
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 md:gap-3.5">{syncTiles}</div>
+              </>
             )}
-            {profile.css != null && (
-              <StatTile
-                label={t('settings.profile.css')}
-                value={`${Math.floor(Number(profile.css) / 60)}:${String(Math.round(Number(profile.css) % 60)).padStart(2, '0')}`}
-                unit="/100m"
-              />
-            )}
-            {/* VO₂max — technical term, literal (prototype Thresholds tile). */}
-            {profile.vo2max != null && (
-              <StatTile label="VO₂max" value={String(profile.vo2max)} unit="" />
-            )}
-          </div>
-        </Panel>
-      )}
+          </Panel>
+        )
+      })()}
 
       {/* Intervals.icu Connection — the prototype collapses this to a tiny
           "Live + Disconnect" card, but the real app needs the full
@@ -1050,15 +1106,98 @@ function SportTypeSelect({
   )
 }
 
-// Threshold stat tile — prototype's 2-col grid cell: small dim label on top,
-// big value + small unit below. Purely presentational.
-function StatTile({ label, value, unit }: { label: string; value: string; unit: string }) {
+// ── Dual-source thresholds (Halo redesign · direction-b-extras BxThreshTile) ──
+// Confidence = R² tier of the DFA-α1 ramp-test regression, the cross-card
+// signal grading how much we trust OUR measurement. high → brand cobalt,
+// medium → amber, low → coral. Keyed by the backend's hrvt2_confidence buckets.
+type ConfTier = 'high' | 'medium' | 'low'
+const CONF_CLASS: Record<ConfTier, { dot: string; text: string }> = {
+  high: { dot: 'bg-halo-brand', text: 'text-halo-brand' },
+  medium: { dot: 'bg-halo-amber', text: 'text-halo-amber' },
+  low: { dot: 'bg-halo-coral', text: 'text-halo-coral' },
+}
+
+// ISO date → localized short form ("2026-05-12" → "12 мая" / "May 12").
+function formatMeasuredDate(iso: string, lang: string): string {
+  const d = new Date(`${iso}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-US', { day: 'numeric', month: 'short' })
+}
+
+type OurThreshold = { value: string; conf: ConfTier; date: string }
+
+// Build the "our test" secondary line from a measured row. Returns null (→
+// tile renders the sync-only fallback) when no row, no value, or the
+// confidence bucket is missing / untrusted.
+function ourLine(row: MeasuredThreshold | undefined, kind: 'hr' | 'power', lang: string): OurThreshold | null {
+  if (!row) return null
+  const conf = row.hrvt2_confidence
+  if (conf !== 'high' && conf !== 'medium' && conf !== 'low') return null
+  const raw = kind === 'power' ? row.hrvt2_power : row.hrvt2_hr
+  if (raw == null) return null
+  return { value: String(Math.round(raw)), conf, date: formatMeasuredDate(row.measured_at, lang) }
+}
+
+// One threshold tile, two shapes sharing the component:
+//  • measured (our != null) → faint cobalt wash + left accent bar. The
+//    Intervals value stays the headline; OUR test value rides beneath it as a
+//    small secondary line with a confidence dot (R² tier) + date.
+//  • sync-only (our == null) → muted fallback on the recessed surface: just
+//    the auto-synced number + an "авто-синк" tag. Also the graceful fallback
+//    when no ramp test exists or its confidence couldn't be graded.
+function ThreshTile({
+  label,
+  unit,
+  sync,
+  our,
+  t,
+}: {
+  label: string
+  unit: string
+  sync: string
+  our: OurThreshold | null
+  t: (k: string) => string
+}) {
+  if (!our) {
+    return (
+      <div className="rounded-chip border border-halo-border bg-halo-surface-2 px-3 py-3 md:px-4 md:py-3.5">
+        <div className="text-[11px] text-halo-ink-dim">{label}</div>
+        <div className="mt-1 flex items-baseline gap-1">
+          <span className="text-[20px] font-semibold tracking-tight text-halo-ink">{sync}</span>
+          {unit && <span className="text-[11px] text-halo-ink-dimmer">{unit}</span>}
+        </div>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <span className="box-border h-[7px] w-[7px] rounded-full border-[1.5px] border-halo-ink-dimmer" />
+          <span className="text-[10px] font-semibold tracking-wide text-halo-ink-dimmer">
+            {t('settings.profile.auto_synced')}
+          </span>
+        </div>
+      </div>
+    )
+  }
+  const c = CONF_CLASS[our.conf]
   return (
-    <div>
+    <div
+      className="rounded-chip border border-l-[3px] border-halo-border border-l-halo-brand px-3.5 py-3 md:px-4 md:py-3.5"
+      style={{ background: 'color-mix(in srgb, var(--color-brand) 4.5%, transparent)' }}
+    >
       <div className="text-[11px] text-halo-ink-dim">{label}</div>
-      <div className="mt-0.5 flex items-baseline gap-1">
-        <span className="text-[20px] font-semibold tracking-tight text-halo-ink">{value}</span>
-        <span className="text-[11px] text-halo-ink-dimmer">{unit}</span>
+      {/* Intervals value — the headline number. */}
+      <div className="mt-1 flex items-baseline gap-1">
+        <span className="text-[24px] font-bold tracking-tight text-halo-ink">{sync}</span>
+        <span className="text-[12px] text-halo-ink-dim">{unit}</span>
+        <span className="ml-0.5 text-[10px] font-semibold tracking-wide text-halo-ink-dimmer">
+          {t('settings.profile.auto_synced')}
+        </span>
+      </div>
+      {/* Our DFA-α1 test value — small secondary line, confidence by dot. */}
+      <div className="mt-2 flex items-center gap-1.5 border-t border-dashed border-halo-border pt-2">
+        <span className={`h-[7px] w-[7px] shrink-0 rounded-full ${c.dot}`} />
+        <span className="text-[11px] text-halo-ink-dim">
+          {t('settings.profile.measured_test')} <b className="font-bold text-halo-ink">{our.value}</b>
+          <span className={`font-semibold ${c.text}`}> · {t(`settings.profile.confidence.${our.conf}`)}</span>
+          <span className="text-halo-ink-dimmer"> · {our.date}</span>
+        </span>
       </div>
     </div>
   )

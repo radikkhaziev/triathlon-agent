@@ -358,6 +358,14 @@
       "age": "Возраст",
       "thresholds_title": "Пороги",
       "auto_synced": "авто-синк",
+      "measured_legend": "Измерено · DFA α1",
+      "sync_only": "Только авто-синк",
+      "measured_test": "тест",
+      "confidence": {
+        "high": "высокое",
+        "medium": "среднее",
+        "low": "низкое"
+      },
       "lthr_run": "ПАНО · бег",
       "lthr_bike": "ПАНО · вело",
       "ftp": "FTP",

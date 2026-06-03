@@ -46,6 +46,22 @@ export interface AthleteGoalsResponse {
   goals: AthleteGoal[]
 }
 
+// Our-measured ramp-test threshold (DFA α1) for one sport — distinct from the
+// Intervals.icu-synced values in AuthMeResponse.profile. Served by
+// GET /api/athlete/measured-thresholds. HRVT2 ≈ LTHR/FTP, confidence = R² tier.
+export interface MeasuredThreshold {
+  sport: 'Run' | 'Ride'
+  measured_at: string // ISO date the threshold was detected on
+  activity_id: string
+  hrvt2_hr: number | null
+  hrvt2_power: number | null // W (Ride)
+  hrvt2_confidence: 'high' | 'medium' | 'low' | null
+}
+
+export interface MeasuredThresholdsResponse {
+  thresholds: MeasuredThreshold[]
+}
+
 export type SportTag = 'swim' | 'ride' | 'run'
 
 export interface AuthMeResponse {
