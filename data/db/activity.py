@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .dto import MeasuredThresholdDTO
     from .user import UserDTO
 
 from sqlalchemy import (
@@ -528,6 +529,56 @@ class ActivityHrv(Base):
             .order_by(cls.activity_id)
         )
         return list(result.scalars().all())
+
+    @classmethod
+    @dual
+    def get_latest_measured(cls, user_id: int, *, session: Session) -> list["MeasuredThresholdDTO"]:
+        """Latest *measured* ramp-test thresholds per sport (Run, Ride).
+
+        One row per sport — the most recent ``processed`` activity of
+        good/moderate HRV quality that produced a detected HRVT2. Mirrors the
+        drift-detector filter in ``User.detect_threshold_drift`` so the Settings
+        card and the drift alert agree on which test is "current". Powers the
+        "measured vs auto-synced" threshold card.
+        """
+        from .dto import MeasuredThresholdDTO
+
+        out: list[MeasuredThresholdDTO] = []
+        for sport in ("Ride", "Run"):
+            # Lead with ActivityHrv columns so the FROM anchors to activity_hrv,
+            # then JOIN activities — same column ordering as detect_threshold_drift.
+            row = session.execute(
+                select(
+                    cls.hrvt2_hr,
+                    cls.hrvt2_power,
+                    cls.hrvt2_confidence,
+                    Activity.id,
+                    Activity.start_date_local,
+                )
+                .join(Activity, Activity.id == cls.activity_id)
+                .where(
+                    Activity.user_id == user_id,
+                    Activity.type == sport,
+                    cls.processing_status == "processed",
+                    cls.hrvt2_hr.isnot(None),
+                    cls.hrv_quality.in_(["good", "moderate"]),
+                )
+                .order_by(Activity.start_date_local.desc())
+                .limit(1)
+            ).first()
+            if not row:
+                continue
+            out.append(
+                MeasuredThresholdDTO(
+                    sport=sport,
+                    activity_id=row[3],
+                    measured_at=str(row[4]),
+                    hrvt2_hr=row[0],
+                    hrvt2_power=row[1],
+                    hrvt2_confidence=row[2],
+                )
+            )
+        return out
 
 
 class ActivityDetail(Base):

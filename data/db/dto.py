@@ -104,6 +104,36 @@ class AthleteThresholdsDTO(BaseModel):
     threshold_pace_run: float | None = None  # sec/km
 
 
+class MeasuredThresholdDTO(BaseModel):
+    """Latest *our-measured* ramp-test threshold (DFA α1) for one sport.
+
+    Distinct from `AthleteThresholdsDTO`, which mirrors Intervals.icu's
+    auto-synced sport-settings. HRVT2 (α1=0.50) ≈ LTHR / FTP, carried with its
+    confidence tier (high | medium | low — R² × local point density) so the UI
+    can label "тест 168 · high · 12 May" against the auto-synced value. Scoped
+    to the fields the Settings card actually renders — HRVT1 / threshold-pace
+    live in `activity_hrv` for the activity-detail view, not here.
+    """
+
+    sport: str  # "Run" | "Ride"
+    measured_at: str  # activity date (ISO) the threshold was detected on
+    activity_id: str
+    hrvt2_hr: float | None = None
+    hrvt2_power: float | None = None  # W (Ride)
+    hrvt2_confidence: str | None = None  # high | medium | low
+
+
+class MeasuredThresholdsDTO(BaseModel):
+    """Aggregate of all *our-computed* thresholds for the Settings card.
+
+    VO2max is intentionally absent: the card shows the Intervals-synced VO2max
+    (sync-only tile), and our composite VO2max lives on the Endurance Score
+    surface, not here — see the threshold-card design decision.
+    """
+
+    thresholds: list[MeasuredThresholdDTO] = []
+
+
 class AthleteGoalDTO(BaseModel):
     """Active goal summary."""
 

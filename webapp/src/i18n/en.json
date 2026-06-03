@@ -354,6 +354,14 @@
       "age": "Age",
       "thresholds_title": "Thresholds",
       "auto_synced": "auto-synced",
+      "measured_legend": "Measured · DFA α1",
+      "sync_only": "Auto-sync only",
+      "measured_test": "test",
+      "confidence": {
+        "high": "high",
+        "medium": "medium",
+        "low": "low"
+      },
       "lthr_run": "LTHR · run",
       "lthr_bike": "LTHR · bike",
       "ftp": "FTP",
