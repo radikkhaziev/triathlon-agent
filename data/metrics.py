@@ -558,6 +558,28 @@ async def recompute_today_loads(user_id: int) -> tuple[float, float, float] | No
     return _project_loads_one_day(prev.ctl, prev.atl, tss_today)
 
 
+async def recompute_today_ramp(user_id: int, ctl_today: float) -> float | None:
+    """Projected weekly ramp consistent with the de-planned today CTL.
+
+    Intervals.icu's ``rampRate`` is the 7-day CTL change (``CTL_today − CTL_7d_ago``,
+    verified empirically), so the value it ships for today carries the same
+    planned-workout inflation that `recompute_today_loads` strips out of CTL/ATL.
+    Recompute it against the projected CTL so ramp stays consistent with the
+    de-planned CTL/ATL/TSB shown next to it.
+
+    `ctl_today` is the projected (de-planned) CTL from `recompute_today_loads`.
+    Returns None if the 7-day-ago wellness row is missing — caller should fall
+    back to the raw `ramp_rate` Intervals.icu reported.
+    """
+    week_ago = local_today() - timedelta(days=7)
+    prev = await Wellness.get(user_id, week_ago)
+    if prev is None or prev.ctl is None:
+        return None
+    # 1 dp to match the de-planned CTL/ATL/TSB it sits beside — ramp is derived
+    # from the 1-dp projected CTL, so extra precision would be spurious.
+    return round(ctl_today - prev.ctl, 1)
+
+
 def project_sport_load_forward(
     today_ctl: float,
     today_atl: float,

@@ -63,7 +63,7 @@
     "optimal": "Optimal",
     "race_a": "Race A",
     "weeks_out": "{{count}} weeks out",
-    "to_target": "to target",
+    "to_target": "of CTL target",
     "fitness_ctl": "Fitness (CTL)",
     "ctl_needed": "+{{delta}} needed · {{weeks}} weeks",
     "taper": "taper",

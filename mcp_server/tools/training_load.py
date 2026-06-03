@@ -3,7 +3,7 @@
 from sqlalchemy import select
 
 from data.db import Wellness, get_session
-from data.metrics import recompute_today_loads
+from data.metrics import recompute_today_loads, recompute_today_ramp
 from data.utils import extract_sport_ctl
 from data.utils import tsb_zone as _tsb_zone
 from mcp_server.app import mcp
@@ -23,13 +23,18 @@ async def get_training_load(date: str) -> dict:
         return {"error": f"No data for {date}"}
 
     ctl, atl = row.ctl, row.atl
-    # Intervals.icu bakes today's planned workouts into ctl/atl, so morning
-    # reads look as if today's session is already done. Recompute from
-    # yesterday + actually-completed activities. sport_ctl/ramp_rate untouched.
+    ramp_rate = row.ramp_rate
+    # Intervals.icu bakes today's planned workouts into ctl/atl/rampRate, so
+    # morning reads look as if today's session is already done. Recompute from
+    # yesterday + actually-completed activities; de-plan ramp to match. sport_ctl
+    # untouched.
     if date == local_today().isoformat():
         recomputed = await recompute_today_loads(user_id)
         if recomputed is not None:
             ctl, atl, _ = recomputed
+            projected_ramp = await recompute_today_ramp(user_id, ctl)
+            if projected_ramp is not None:
+                ramp_rate = projected_ramp
 
     tsb = round(ctl - atl, 1) if ctl is not None and atl is not None else None
     sport_ctl = extract_sport_ctl(row.sport_info)
@@ -39,10 +44,10 @@ async def get_training_load(date: str) -> dict:
         "ctl": ctl,
         "atl": atl,
         "tsb": tsb,
-        "ramp_rate": row.ramp_rate,
+        "ramp_rate": ramp_rate,
         "sport_ctl": sport_ctl,
         "interpretation": {
             "tsb_zone": _tsb_zone(tsb),
-            "ramp_safe": row.ramp_rate <= 7 if row.ramp_rate else None,
+            "ramp_safe": ramp_rate <= 7 if ramp_rate is not None else None,
         },
     }
