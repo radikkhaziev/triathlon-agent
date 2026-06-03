@@ -504,11 +504,12 @@ function TargetLineChart({
   const targetClamped = Math.max(yMin, Math.min(yMax, target))
   const ty = yOf(targetClamped)
 
-  const { svgRef, idx: scrubIdx, handlers } = useChartScrubber(N, pad.l, innerW)
+  const { svgRef, idx: rawScrubIdx, handlers } = useChartScrubber(N, pad.l, innerW)
+  // Snap is purely x-based, so it can land on a gap (null datapoint). Hide the
+  // scrubber there rather than show a value-less, date-only callout.
+  const scrubIdx = rawScrubIdx != null && values[rawScrubIdx] != null ? rawScrubIdx : null
   const scrubItems: ScrubItem[] =
-    scrubIdx == null || values[scrubIdx] == null
-      ? []
-      : [{ label: '', value: Math.round(values[scrubIdx] as number), color: lineColor }]
+    scrubIdx == null ? [] : [{ label: '', value: Math.round(values[scrubIdx] as number), color: lineColor }]
   const scrubDate = scrubIdx == null ? '' : fmtScrubDate(rawDates?.[scrubIdx]) || labels[scrubIdx] || ''
 
   return (

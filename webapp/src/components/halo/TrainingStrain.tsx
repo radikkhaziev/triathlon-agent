@@ -138,7 +138,9 @@ export function TrainingStrainCard() {
       tabIndex={0}
       aria-label={t('load.strain.title')}
       onKeyDown={e => {
-        if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+        // role="link" → activate on Enter only; Space is button semantics and
+        // should keep its default page-scroll behaviour.
+        if (e.key === 'Enter' && e.target === e.currentTarget) {
           e.preventDefault()
           goDetail()
         }
