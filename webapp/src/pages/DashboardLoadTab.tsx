@@ -3,7 +3,16 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
-import { EnduranceScoreCard, InfoIcon, InfoPanel, PeriodFilter } from '../components/halo'
+import {
+  ChartScrubLine,
+  EnduranceScoreCard,
+  fmtScrubDate,
+  InfoIcon,
+  InfoPanel,
+  PeriodFilter,
+  useChartScrubber,
+  type ScrubItem,
+} from '../components/halo'
 import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { apiFetch } from '../api/client'
 import { CHART_COLORS } from '../lib/constants'
@@ -434,6 +443,7 @@ function TargetLineChart({
   title,
   values,
   labels,
+  rawDates,
   target,
   targetLabel,
   lineColor,
@@ -444,6 +454,8 @@ function TargetLineChart({
   title: string
   values: (number | null)[]
   labels: string[]
+  /** ISO `YYYY-MM-DD` per point for the scrub callout; falls back to `labels`. */
+  rawDates?: string[]
   target: number
   targetLabel: string
   lineColor: string
@@ -492,11 +504,25 @@ function TargetLineChart({
   const targetClamped = Math.max(yMin, Math.min(yMax, target))
   const ty = yOf(targetClamped)
 
+  const { svgRef, idx: scrubIdx, handlers } = useChartScrubber(N, pad.l, innerW)
+  const scrubItems: ScrubItem[] =
+    scrubIdx == null || values[scrubIdx] == null
+      ? []
+      : [{ label: '', value: Math.round(values[scrubIdx] as number), color: lineColor }]
+  const scrubDate = scrubIdx == null ? '' : fmtScrubDate(rawDates?.[scrubIdx]) || labels[scrubIdx] || ''
+
   return (
     <div className="mt-3.5 rounded-chip border border-halo-border bg-halo-bg p-3.5">
       <div className="text-center text-[13px] font-bold tracking-[-0.1px]">{title}</div>
       <div ref={wrapRef} className="w-full">
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="mt-2.5 block">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        height={H}
+        className="mt-2.5 block overflow-visible"
+        {...handlers}
+      >
         {yTicks.map((tick, i) => (
           <g key={i}>
             <line
@@ -566,6 +592,19 @@ function TargetLineChart({
             {l.label}
           </text>
         ))}
+
+        {/* Scrubber — invisible hit target + crosshair callout. */}
+        <rect x={pad.l} y={pad.t} width={innerW} height={innerH} fill="transparent" style={{ cursor: 'crosshair' }} />
+        <ChartScrubLine
+          idx={scrubIdx}
+          dateLabel={scrubDate}
+          items={scrubItems}
+          x={xOf}
+          padT={pad.t}
+          innerH={innerH}
+          W={W}
+          padR={pad.r}
+        />
       </svg>
       </div>
     </div>
@@ -677,6 +716,7 @@ function BikeReadinessCard() {
           title="CTL Bike — 12 weeks"
           values={ctlValues}
           labels={chronological.map(w => shortDate(w.week_end))}
+          rawDates={chronological.map(w => w.week_end)}
           target={targets.ctl}
           targetLabel={`${distance} target ${targets.ctl}`}
           lineColor={ZONE_FILL.low}
@@ -917,6 +957,7 @@ function MarathonShapeCard() {
           title="Marathon Shape — 12 weeks"
           values={shapeValues}
           labels={chronological.map(w => shortDate(w.week_end))}
+          rawDates={chronological.map(w => w.week_end)}
           target={required}
           targetLabel={`${distance} ${required.toFixed(1)}`}
           lineColor="var(--color-amber)"
@@ -971,6 +1012,16 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
 
   const vals = weekly.map(w => w.ef_mean as number)
   const N = vals.length
+
+  const H = 200
+  const pad = { l: 32, r: 10, t: 14, b: 26 }
+  const innerW = W - pad.l - pad.r
+  const innerH = H - pad.t - pad.b
+
+  // Hook must run on every render — keep it above the early return so the call
+  // order stays identical when `weekly` flips from <2 to ≥2 items.
+  const { svgRef, idx: scrubIdx, handlers } = useChartScrubber(N, pad.l, innerW)
+
   if (N < 2) {
     return (
       <div className={CARD}>
@@ -989,10 +1040,6 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
   const improving = deltaPct > 0
   const deltaColor = improving ? ZONE_FILL.low : 'var(--color-coral)'
 
-  const H = 200
-  const pad = { l: 32, r: 10, t: 14, b: 26 }
-  const innerW = W - pad.l - pad.r
-  const innerH = H - pad.t - pad.b
   const rawMin = Math.min(...vals)
   const rawMax = Math.max(...vals)
   const yMin = Math.floor((rawMin - 0.05) * 10) / 10
@@ -1016,6 +1063,9 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
     xLabels.push({ i: idx, label: weekly[idx].week.replace(/^\d{4}-/, '') })
   }
 
+  const scrubItems: ScrubItem[] =
+    scrubIdx == null ? [] : [{ label: 'EF', value: vals[scrubIdx].toFixed(2), color: ZONE_FILL.low }]
+
   return (
     <div className={CARD}>
       <div className="flex items-center justify-between">
@@ -1032,7 +1082,14 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
         Efficiency Factor — {sportLabel}
       </div>
       <div ref={wrapRef} className="w-full">
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="mt-2.5 block">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        height={H}
+        className="mt-2.5 block overflow-visible"
+        {...handlers}
+      >
         {ticks.map((tk, i) => (
           <g key={i}>
             <line
@@ -1065,6 +1122,19 @@ function EfTrendCard({ data, sport }: { data: ProgressResponse; sport: 'bike' | 
             {l.label}
           </text>
         ))}
+
+        {/* Scrubber — invisible hit target + crosshair callout. */}
+        <rect x={pad.l} y={pad.t} width={innerW} height={innerH} fill="transparent" style={{ cursor: 'crosshair' }} />
+        <ChartScrubLine
+          idx={scrubIdx}
+          dateLabel={scrubIdx == null ? '' : weekly[scrubIdx].week.replace(/^\d{4}-/, '')}
+          items={scrubItems}
+          x={xOf}
+          padT={pad.t}
+          innerH={innerH}
+          W={W}
+          padR={pad.r}
+        />
       </svg>
       </div>
     </div>
@@ -1261,6 +1331,15 @@ function SwimTrendCard({
   const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const dUnit = deltaUnit ?? unit
   const N = weekly.length
+
+  const H = 150
+  const pad = { l: 32, r: 10, t: 14, b: 22 }
+  const innerW = W - pad.l - pad.r
+  const innerH = H - pad.t - pad.b
+
+  // Hook must run on every render — keep it above the early return (see EfTrendCard).
+  const { svgRef, idx: scrubIdx, handlers } = useChartScrubber(N, pad.l, innerW)
+
   if (N < 2) return null
 
   const vals = weekly.map(w => w.value)
@@ -1272,10 +1351,6 @@ function SwimTrendCard({
   const improving = deltaAbs < 0
   const deltaColor = improving ? ZONE_FILL.low : 'var(--color-coral)'
 
-  const H = 150
-  const pad = { l: 32, r: 10, t: 14, b: 22 }
-  const innerW = W - pad.l - pad.r
-  const innerH = H - pad.t - pad.b
   const rawMin = Math.min(...vals)
   const rawMax = Math.max(...vals)
   const range = rawMax - rawMin || 1
@@ -1294,6 +1369,9 @@ function SwimTrendCard({
 
   // `weekly[].week` is an ISO-week key (`2026-W12`) — drop the year → `W12`.
   const wkLabel = (iso: string) => iso.replace(/^\d{4}-/, '')
+
+  const scrubItems: ScrubItem[] =
+    scrubIdx == null ? [] : [{ label: '', value: formatValue(vals[scrubIdx]), color }]
 
   return (
     <div className={CARD}>
@@ -1319,7 +1397,14 @@ function SwimTrendCard({
       </div>
 
       <div ref={wrapRef} className="w-full">
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} className="mt-2 block">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        height={H}
+        className="mt-2 block overflow-visible"
+        {...handlers}
+      >
         {ticks.map((v, i) => (
           <g key={i}>
             <line
@@ -1351,6 +1436,19 @@ function SwimTrendCard({
             {wkLabel(weekly[i].week)}
           </text>
         ))}
+
+        {/* Scrubber — invisible hit target + crosshair callout. */}
+        <rect x={pad.l} y={pad.t} width={innerW} height={innerH} fill="transparent" style={{ cursor: 'crosshair' }} />
+        <ChartScrubLine
+          idx={scrubIdx}
+          dateLabel={scrubIdx == null ? '' : wkLabel(weekly[scrubIdx].week)}
+          items={scrubItems}
+          x={xOf}
+          padT={pad.t}
+          innerH={innerH}
+          W={W}
+          padR={pad.r}
+        />
       </svg>
       </div>
     </div>
