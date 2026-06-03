@@ -131,26 +131,32 @@ export function TrainingStrainCard() {
   const acwrColor = current.acwr_status ? ACWR_STATUS_COLOR[current.acwr_status] : 'var(--color-ink-dim)'
 
   return (
-    <div className={`${CARD} pt-[14px]`}>
+    <div
+      className={`${CARD} cursor-pointer pt-[14px] transition-colors hover:bg-halo-surface-2`}
+      onClick={goDetail}
+      role="link"
+      tabIndex={0}
+      aria-label={t('load.strain.title')}
+      onKeyDown={e => {
+        // role="link" → activate on Enter only; Space is button semantics and
+        // should keep its default page-scroll behaviour.
+        if (e.key === 'Enter' && e.target === e.currentTarget) {
+          e.preventDefault()
+          goDetail()
+        }
+      }}
+    >
       <div className="flex items-center">
         <span className={EYEBROW}>{t('load.strain.title')}</span>
-        <InfoIcon open={tipOpen} onClick={() => setTipOpen(v => !v)} />
+        {/* The «i» toggles the tooltip — stop propagation so it doesn't also
+            navigate to the detail route via the card-wide click handler. */}
+        <span onClick={e => e.stopPropagation()}>
+          <InfoIcon open={tipOpen} onClick={() => setTipOpen(v => !v)} />
+        </span>
         <span aria-hidden="true" className="ml-auto text-[15px] leading-none text-halo-ink-dimmer">›</span>
       </div>
       {tipOpen && <InfoPanel>{t('load.strain.tooltip')}</InfoPanel>}
-      <div
-        className="mt-2 cursor-pointer"
-        onClick={goDetail}
-        role="link"
-        tabIndex={0}
-        aria-label={t('load.strain.title')}
-        onKeyDown={e => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            goDetail()
-          }
-        }}
-      >
+      <div className="mt-2">
         <div className="flex items-baseline justify-between">
           <span className="text-[22px] font-semibold leading-none" style={{ color: zoneColor }}>
             {t(`load.strain.zone.${current.zone}`)}

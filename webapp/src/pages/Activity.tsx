@@ -634,7 +634,7 @@ function ActivityHero({
   // 3-col stat block — values depend on the sport.
   //   Duration   — always present
   //   Mid stat   — Ride: NP (W) · Run: Pace · Swim: Pace · else: blank
-  //   Intensity  — IF * 100 (one decimal → integer percent)
+  //   Intensity  — IF, already a percent from Intervals (~76 = endurance) — no *100
   const midStat = (() => {
     if (isBike && det?.normalized_power) return { k: 'NP', v: `${Math.round(det.normalized_power)}`, unit: ' W' }
     if (isRun && runPace) return { k: t('plan.target_pace'), v: fmtPace(runPace) ?? '—', unit: '/km' }
@@ -642,7 +642,7 @@ function ActivityHero({
     if (data.average_hr != null) return { k: t('plan.target_hr'), v: String(data.average_hr), unit: ' bpm' }
     return null
   })()
-  const intensityPct = det?.intensity_factor != null ? Math.round(det.intensity_factor * 100) : null
+  const intensityPct = det?.intensity_factor != null ? Math.round(det.intensity_factor) : null
 
   return (
     <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
