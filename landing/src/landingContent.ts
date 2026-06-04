@@ -101,7 +101,7 @@ export const COPY: Record<Lang, LandingCopy> = {
     cta_demo_sub: 'Демо на готовых данных',
 
     hero_eyebrow: 'Умная аналитика выносливости',
-    hero_title: ['Читает тело,', 'а не данные'],
+    hero_title: ['Читает твоё тело,', 'а не данные'],
     hero_lead: 'Твоё тело уже всё сказало — recovery, HRV и план на день. Каждое утро, в Telegram.',
 
     proof_sub: 'Подключается к источникам, которыми ты уже пользуешься',

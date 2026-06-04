@@ -219,7 +219,7 @@ export default function Landing() {
               <div style={aKicker}>{t.hero_eyebrow}</div>
               <h1 style={{ fontSize: wide ? 56 : 'clamp(34px, 9vw, 44px)', lineHeight: 1.02, fontWeight: 700,
                 letterSpacing: -1.6, margin: '16px 0 0', textWrap: 'balance' }}>
-                {t.hero_title[0]}<br/><span style={{ color: BRAND.cobalt }}>{t.hero_title[1]}</span>
+                {t.hero_title[0]}<br/><span style={{ color: BRAND.cobalt, textDecoration: 'line-through', textDecorationThickness: '0.07em' }}>{t.hero_title[1]}</span>
               </h1>
               <p style={{ fontSize: wide ? 18 : 16.5, lineHeight: 1.55, color: BRAND.dim, margin: '18px 0 0',
                 maxWidth: 420, marginLeft: wide ? 0 : 'auto', marginRight: wide ? 0 : 'auto', textWrap: 'pretty' }}>{t.hero_lead}</p>
