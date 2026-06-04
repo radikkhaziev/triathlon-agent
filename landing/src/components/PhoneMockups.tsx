@@ -3,7 +3,7 @@
 // Ported 1:1 from the Claude Design handoff (landing/landing-mockups.jsx).
 // Text inside the phone is EN-only by design decision (it depicts the app).
 import type { CSSProperties, ReactNode } from 'react'
-import { BRAND } from './landingContent'
+import { BRAND } from '../landingContent'
 
 const mkFont = BRAND.sans
 

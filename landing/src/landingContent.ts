@@ -1,12 +1,7 @@
 // ── Endurai landing · brand tokens + bilingual copy ─────────────────────
-// Ported 1:1 from the Claude Design handoff (landing/landing-data.jsx, final
-// revision q3xdSpTQ...). One content model drives the single "Спокойный"
-// (calm / premium) variant.
-//
-// BRAND mirrors the prototype's self-contained token set. It overlaps the Halo
-// CSS vars (--color-brand etc.) but the landing renders with inline styles, so
-// the constants live here to stay pixel-faithful — `warm`, `cool`, `green`,
-// `greenWash` have no exact Halo-token equivalent.
+// Ported 1:1 from the Claude Design handoff (final revision q3xdSpTQ...).
+// Single "Спокойный" (calm / premium) variant. Rendered with inline styles to
+// stay pixel-faithful, so BRAND lives here as a self-contained token set.
 
 export const BRAND = {
   cobalt: '#3b6dff',
@@ -106,7 +101,7 @@ export const COPY: Record<Lang, LandingCopy> = {
     cta_demo_sub: 'Демо на готовых данных',
 
     hero_eyebrow: 'Умная аналитика выносливости',
-    hero_title: ['Перестань гадать', 'о форме'],
+    hero_title: ['Читает тело,', 'а не данные'],
     hero_lead: 'Твоё тело уже всё сказало — recovery, HRV и план на день. Каждое утро, в Telegram.',
 
     proof_sub: 'Подключается к источникам, которыми ты уже пользуешься',
@@ -180,7 +175,7 @@ export const COPY: Record<Lang, LandingCopy> = {
     cta_demo_sub: 'Runs on ready-made demo data',
 
     hero_eyebrow: 'Intelligent endurance analytics',
-    hero_title: ['Stop guessing', 'your form'],
+    hero_title: ['Reads your body,', 'not data'],
     hero_lead: 'Your body already spoke — recovery, HRV and a daily plan. Every morning, in Telegram.',
 
     proof_sub: 'Plugs into the sources you already use',
