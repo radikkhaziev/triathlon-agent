@@ -109,7 +109,7 @@ export const COPY: Record<Lang, LandingCopy> = {
     how_kicker: 'Как это работает',
     how_title: 'От данных — к решению за одно утро',
     how_steps: [
-      { n: '01', t: 'Подключи источник', d: 'Intervals.icu через OAuth или экспорт из Garmin. Минута — и история тренировок у Endurai.' },
+      { n: '01', t: 'Подключи источник', d: 'Intervals.icu через OAuth. Минута — и история тренировок у Endurai.' },
       { n: '02', t: 'Endurai считает форму', d: 'Recovery, HRV, RHR, сон, CTL / ATL / TSB — каждую ночь, пока ты спишь.' },
       { n: '03', t: 'Утром — отчёт в Telegram', d: 'Одна цифра готовности, светофор по HRV и план на день со смыслом.' },
       { n: '04', t: 'Спрашивай бота', d: 'Бот знает твою историю и цели. Ответы — персональные, а не из методички.' },
@@ -183,7 +183,7 @@ export const COPY: Record<Lang, LandingCopy> = {
     how_kicker: 'How it works',
     how_title: 'From data to decision in one morning',
     how_steps: [
-      { n: '01', t: 'Connect a source', d: 'Intervals.icu via OAuth, or a Garmin export. One minute and your history is in Endurai.' },
+      { n: '01', t: 'Connect a source', d: 'Intervals.icu via OAuth. One minute and your history is in Endurai.' },
       { n: '02', t: 'Endurai reads your form', d: 'Recovery, HRV, RHR, sleep, CTL / ATL / TSB — every night while you sleep.' },
       { n: '03', t: 'Morning report in Telegram', d: 'One readiness number, an HRV traffic light and a plan that explains itself.' },
       { n: '04', t: 'Ask the bot', d: 'It knows your history and goals. Answers are personal, not from a textbook.' },
