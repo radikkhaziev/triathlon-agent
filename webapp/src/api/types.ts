@@ -537,6 +537,39 @@ export interface ActivitiesSeries {
   planned: { date: string; sport: string; tss: number }[]
 }
 
+// GET /api/taper-plan — deterministic pre-race taper budget (same envelope as
+// the `get_taper_plan` MCP tool; shared data/taper_service.py resolution).
+// `available: false` (no future race / no data) or `confidence: 'early'`
+// (race >21d out, empty daily_targets) → the LoadDetail overlay stays hidden.
+export interface TaperDailyTarget {
+  date: string
+  target_tss: number
+  pct_of_peak: number
+  note: string | null
+}
+
+export interface TaperPlan {
+  available: boolean
+  reason?: string
+  // Human-readable next step accompanying some refusal reasons
+  hint?: string
+  race_date?: string
+  days_to_race?: number
+  event_name?: string | null
+  race_distance_class?: 'long' | 'standard' | 'short'
+  // Resolved inputs the plan was built from (debug/inspection)
+  inputs?: { ctl_now: number; atl_now: number; peak_daily_load: number }
+  taper_start_date?: string
+  taper_days?: number
+  tau_taper?: number
+  volume_reduction_pct?: number
+  daily_targets?: TaperDailyTarget[]
+  projected_race_day?: { ctl: number; atl: number; tsb: number; p_banister: number; tsb_zone: string } | null
+  rules?: string[]
+  confidence?: 'early' | 'ok' | 'late'
+  warnings?: string[]
+}
+
 // Forward CTL projection from the recent 14-day ramp rate. ``projected_date``
 // is filled when a date is reachable; ``reason`` explains the null cases
 // (declining/flat/insufficient_data) or ``already_at_target`` for an honest

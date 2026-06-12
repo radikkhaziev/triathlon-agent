@@ -1,6 +1,6 @@
 # Durability — Theory & Methodology
 
-> Спутник `docs/DURABILITY_CLASSIFIER_SPEC.md`. Теоретическая база, без implementation details.
+> Standalone theory note. Классификатор закрыт (см. [`durability-postmortem.md`](durability-postmortem.md)); теоретическая база переживает закрытие. Без implementation details.
 
 ---
 

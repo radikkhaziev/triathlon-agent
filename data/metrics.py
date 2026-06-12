@@ -2,7 +2,7 @@
 
 HRV recovery analysis (dual-algorithm), RHR baseline, trend analysis,
 ESS (Banister TRIMP), per-sport CTL, combined recovery scoring,
-and cardiac drift (decoupling) analysis.
+cardiac drift (decoupling) analysis, and the deterministic taper planner.
 """
 
 import math
@@ -15,7 +15,7 @@ import numpy as np
 
 from data.db import Activity, HrvAnalysis, RhrAnalysis, Wellness
 from data.intervals.dto import RecoveryScoreDTO, RecoveryStateDTO, RhrStatusDTO, RmssdStatusDTO, TrendResultDTO
-from data.utils import is_bike, is_run
+from data.utils import is_bike, is_run, tsb_zone
 from tasks.dto import local_today
 
 # ---------------------------------------------------------------------------
@@ -1112,4 +1112,264 @@ def delta_vs_target(low_pct: float, mid_pct: float, high_pct: float, band: dict)
         "high_over": high_over,
         "issues": issues,
         "verdict": issues[0] if issues else "on_target",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Taper Planner
+# ---------------------------------------------------------------------------
+
+# Per-class corridors from docs/knowledge/taper.md (Bosquet / Le Meur / Smyth /
+# Fortes / Divsalar). `days` is the taper length corridor INCLUSIVE of race day
+# (the spec's example counts 2026-06-15..2026-06-28 as 14 days with race day
+# last). `reduction` is the overall volume cut vs peak daily load, in %, over
+# the training days only (race day's zero is not a training choice). `min_ctl`
+# is the coarse "fitness actually banked" guard (spec §4.4) — below it a deep
+# taper has nothing to release, so the grid clamps to the shortest class length.
+_TAPER_CLASS_PARAMS: dict[str, dict] = {
+    "long": {"days": (14, 21), "reduction": (50.0, 65.0), "min_ctl": 60.0},
+    "standard": {"days": (10, 14), "reduction": (41.0, 60.0), "min_ctl": 45.0},
+    "short": {"days": (7, 14), "reduction": (50.0, 70.0), "min_ctl": 35.0},
+}
+_TAPER_TAU_GRID = (3, 4, 5)
+# Past this horizon the plan is an estimate: CTL at taper start is unknowable,
+# so daily targets are withheld (false precision) — see spec §6, decision 2026-06-12.
+# CONTRACT: api/routers/dashboard.py:_FORECAST_FALLBACK_DAYS (28) must stay >=
+# this value so race day is always on the LoadDetail chart axis when the
+# taper overlay is visible.
+_TAPER_EARLY_HORIZON_DAYS = 21
+_TAPER_LANDING_ZONES = ("fresh", "transition")
+_TAPER_DEGENERATE_TAU = 4
+
+# User-facing rules stay Russian (spec §3 output contract); Claude translates
+# per user language downstream. Two-phase bump and sprint priming ship as
+# optional hints, not daily_targets entries — evidence base is weaker (§7).
+_TAPER_RULES = [
+    "Держи интенсивность: race-pace/качественные сессии оставь, режь объём через длительность.",
+    "Держи частоту сессий — не выкидывай тренировочные дни.",
+    "Опционально: +20–30% load за 3 дня до гонки (two-phase bump) — доказательная база слабее основного консенсуса.",
+    "Опционально: раз в неделю 3–6×10–30с спринтов с полным отдыхом внутри лёгкой сессии "
+    "(нейромышечный priming; данные из off-season, экстраполировать осторожно).",
+]
+
+
+def _simulate_taper_candidate(
+    ctl_now: float,
+    atl_now: float,
+    today: date_type,
+    race_date: date_type,
+    length: int,
+    tau: int,
+    peak: float,
+) -> dict:
+    """Forward-simulate one (length, tau) taper candidate to race morning.
+
+    The schedule runs `length - 1` training days `w(i) = peak·e^(−(i+1)/τ)`
+    from `taper_start = race_date − (length−1)`, then race day at zero load.
+    The decay starts at i+1 so day 0 is already reduced (~78% of peak at τ=4) —
+    prescribing a full peak-load session as the first taper day would
+    contradict the "cut duration" rule. The race-day series entry (zero load)
+    IS race-morning state: one decay step past the last training day.
+    Pre-taper days hold steady at `ctl_now` — the EMA steady-state assumption
+    ("keep training as before").
+    """
+    taper_start = race_date - timedelta(days=length - 1)
+    schedule = [(taper_start + timedelta(days=i), peak * math.exp(-(i + 1) / tau)) for i in range(length - 1)]
+    schedule.append((race_date, 0.0))
+
+    ctl, atl = ctl_now, atl_now
+    loads = {d: w for d, w in schedule if d > today}
+    if taper_start == today:
+        # `project_sport_load_forward` starts at today+1; today's planned
+        # opener must roll the morning state forward first.
+        ctl, atl, _ = _project_loads_one_day(ctl, atl, schedule[0][1])
+    cur = today + timedelta(days=1)
+    while cur < taper_start:
+        loads[cur] = ctl_now
+        cur += timedelta(days=1)
+
+    ctl_series, atl_series = project_sport_load_forward(ctl, atl, loads, race_date, today)
+    ctl_race, atl_race = ctl_series[-1][1], atl_series[-1][1]
+    train_loads = [w for _, w in schedule[:-1]]
+    reduction = round((1 - statistics.fmean(train_loads) / peak) * 100, 1)
+
+    daily_targets = []
+    for i, (d, w) in enumerate(schedule):
+        note = None
+        if i == 0:
+            note = "режь длительность, не интенсивность"
+        elif d == race_date:
+            note = "race day"
+        daily_targets.append({"date": d, "target_tss": round(w), "pct_of_peak": round(w / peak * 100), "note": note})
+
+    tsb_race = round(ctl_race - atl_race, 1)
+    return {
+        "taper_start_date": taper_start,
+        "taper_days": length,
+        "tau_taper": tau,
+        "reduction": reduction,
+        "daily_targets": daily_targets,
+        "ctl_race": ctl_race,
+        "atl_race": atl_race,
+        "tsb_race": tsb_race,
+        "tsb_zone": tsb_zone(tsb_race),
+        "p_race": round(ctl_race - 2 * atl_race, 1),
+    }
+
+
+def _degenerate_taper_plan(
+    ctl_now: float,
+    atl_now: float,
+    today: date_type,
+    race_date: date_type,
+    peak: float,
+    params: dict,
+    warnings: list[str],
+) -> dict:
+    """Race is tomorrow — no grid-search, just the tail of a canonical taper.
+
+    Today's target is what the last training day of the shortest class-length
+    taper (τ=4) would prescribe — a small opener (~10% of peak), then race.
+    """
+    min_days = params["days"][0]
+    opener = peak * math.exp(-(min_days - 1) / _TAPER_DEGENERATE_TAU)
+    ctl, atl, _ = _project_loads_one_day(ctl_now, atl_now, opener)
+    ctl_race, atl_race, tsb_race = _project_loads_one_day(ctl, atl, 0.0)
+    return {
+        "taper_start_date": today,
+        "taper_days": 2,
+        "tau_taper": _TAPER_DEGENERATE_TAU,
+        # Single-training-day window: reduction == the opener's cut, not a
+        # multi-day mean like the grid path produces.
+        "volume_reduction_pct": round((1 - opener / peak) * 100, 1),
+        "daily_targets": [
+            {"date": today, "target_tss": round(opener), "pct_of_peak": round(opener / peak * 100), "note": None},
+            {"date": race_date, "target_tss": 0, "pct_of_peak": 0, "note": "race day"},
+        ],
+        "projected_race_day": {
+            "ctl": ctl_race,
+            "atl": atl_race,
+            "tsb": tsb_race,
+            "p_banister": round(ctl_race - 2 * atl_race, 1),
+            "tsb_zone": tsb_zone(tsb_race),
+        },
+        "rules": list(_TAPER_RULES),
+        "confidence": "late",
+        "warnings": warnings + ["degenerate_window"],
+    }
+
+
+def build_taper_plan(
+    *,
+    race_date: date_type,
+    today: date_type,
+    ctl_now: float,
+    atl_now: float,
+    peak_daily_load: float,
+    race_distance_class: str = "standard",
+) -> dict:
+    """Deterministic taper schedule: daily TSS targets from today to race day.
+
+    Pure function (no I/O) per docs/TAPER_PLANNER_SPEC.md Phase 1. Grid-search
+    over taper length (class corridor, §5) × τ_taper (3–5). EMA math is the
+    exp-decay form shared with `project_sport_load_forward` (NOT the linearised
+    `1/τ` recursion the spec sketches — that would drift from Intervals.icu
+    values).
+
+    Selection tiers: TSB landing constraint first (else best-by-p + warning),
+    then the volume-reduction corridor — candidates outside it are dropped in
+    favour of the nearest ones (spec §4.5: clamp length/τ, not volume), then
+    max Banister form `p = CTL − 2·ATL` on race morning. In practice the
+    corridor dominates: reduction is a near-injective function of (length, τ)
+    alone, so the corridor filter usually collapses the pool to one candidate
+    and p acts as a tie-break — the chosen (length, τ) is a class property,
+    largely independent of the athlete's CTL/ATL (which drive the projection,
+    not the choice).
+
+    `confidence`: "early" (>21d out — `daily_targets` AND `projected_race_day`
+    withheld as false precision, start date is an estimate), "ok", or "late"
+    (window too short for the class corridor).
+    Raises ValueError on race in the past, non-positive peak, unknown class.
+    """
+    if race_distance_class not in _TAPER_CLASS_PARAMS:
+        raise ValueError(f"unknown race_distance_class: {race_distance_class!r}")
+    if race_date <= today:
+        raise ValueError("race_date must be in the future")
+    if peak_daily_load <= 0:
+        raise ValueError("peak_daily_load must be positive")
+
+    params = _TAPER_CLASS_PARAMS[race_distance_class]
+    days_to_race = (race_date - today).days
+    warnings: list[str] = []
+    if ctl_now < params["min_ctl"]:
+        warnings.append("low_ctl")
+
+    if days_to_race < 2:
+        return _degenerate_taper_plan(ctl_now, atl_now, today, race_date, peak_daily_load, params, warnings)
+
+    lo_days, hi_days = params["days"]
+    if "low_ctl" in warnings:
+        hi_days = lo_days  # shallowest taper — nothing banked to release; τ is still grid-searched
+    hi_days = min(hi_days, days_to_race + 1)  # taper_start can't precede today
+    lo_days = min(lo_days, hi_days)
+    if hi_days < params["days"][0]:
+        warnings.append("short_window")
+
+    candidates = [
+        _simulate_taper_candidate(ctl_now, atl_now, today, race_date, length, tau, peak_daily_load)
+        for length in range(lo_days, hi_days + 1)
+        for tau in _TAPER_TAU_GRID
+    ]
+
+    pool = [c for c in candidates if c["tsb_zone"] in _TAPER_LANDING_ZONES]
+    if not pool:
+        pool = candidates
+        warnings.append("tsb_lands_outside_target")
+    red_lo, red_hi = params["reduction"]
+
+    def corridor_dist(c: dict) -> float:
+        return max(red_lo - c["reduction"], c["reduction"] - red_hi, 0.0)
+
+    best_dist = min(corridor_dist(c) for c in pool)
+    pool = [c for c in pool if corridor_dist(c) <= best_dist + 1e-9]
+    best = max(pool, key=lambda c: c["p_race"])
+
+    early = days_to_race > _TAPER_EARLY_HORIZON_DAYS
+    if early:
+        # tsb_lands_outside_target is a verdict of the same flat-held-CTL
+        # simulation whose projection is withheld below — leaking it would
+        # re-assert the suppressed precision. low_ctl stays: it's computed
+        # from today's actual CTL, not the simulation.
+        if "tsb_lands_outside_target" in warnings:
+            warnings.remove("tsb_lands_outside_target")
+        warnings.append("early_estimate")
+        confidence = "early"
+    elif days_to_race + 1 < params["days"][0]:
+        confidence = "late"
+    else:
+        confidence = "ok"
+
+    return {
+        "taper_start_date": best["taper_start_date"],
+        "taper_days": best["taper_days"],
+        "tau_taper": best["tau_taper"],
+        "volume_reduction_pct": best["reduction"],
+        "daily_targets": [] if early else best["daily_targets"],
+        # Early mode withholds the projection too: it's simulated from today's
+        # CTL/ATL held flat for 20+ days — the same false precision the gate
+        # exists to suppress. Phase 2 re-runs closer to race day for real numbers.
+        "projected_race_day": (
+            None
+            if early
+            else {
+                "ctl": best["ctl_race"],
+                "atl": best["atl_race"],
+                "tsb": best["tsb_race"],
+                "p_banister": best["p_race"],
+                "tsb_zone": best["tsb_zone"],
+            }
+        ),
+        "rules": list(_TAPER_RULES),
+        "confidence": confidence,
+        "warnings": warnings,
     }

@@ -44,6 +44,11 @@
 
   --color-amber: #d18b00;
   --color-coral: #d94640;
+
+  /* Taper-budget overlay (LoadDetail). Deliberately outside the sport
+     palette (amber/brand/coral) and status colors — the stepped budget
+     line must never be read as a fourth sport. */
+  --color-taper: #8b5cf6;
 }
 
 

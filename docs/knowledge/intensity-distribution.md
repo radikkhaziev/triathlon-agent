@@ -80,8 +80,8 @@ PI > 2.0  → polarized
 | Отклонение от таргета | `data/metrics.py:delta_vs_target` | ✅ Phase 1 |
 | Trend-сигналы (дрейф/тейпер/деролд) | `data/metrics.py:compute_polarization_trends` | ✅ было |
 | target/delta внутри окон | `mcp_server/tools/polarization.py:get_polarization_multi_window` | ✅ Phase 1 |
-| Target-линия в UI + проактивный prompt | webapp / `bot/prompts.py` | ⏳ Phase 2 |
-| Авто-деривация фазы из календаря гонок | — | ⏳ Phase 3 |
+| Target-линия в UI + проактивный prompt | webapp / `bot/prompts.py` | ✅ Phase 2 |
+| Авто-деривация фазы из календаря гонок | `mcp_server/tools/polarization.py:_phase_from_upcoming` (≤14d до гонки → peak, иначе base) | ✅ Phase 3 (полная периодизация не строилась — base=build=pyramidal делает её no-op) |
 
 **Вне scope:** power/pace-распределение (остаёмся на HR-зонах), генерация корректирующих сессий (это `suggest_workout`), свим (зонное распределение шумное у любителя).
 

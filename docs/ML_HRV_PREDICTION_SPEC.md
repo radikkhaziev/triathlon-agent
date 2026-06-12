@@ -21,6 +21,7 @@
 | `data/db/garmin_*` | 9 таблиц, куда ложатся парсенные Garmin-данные |
 | `data/db/wellness.py`, `activity.py`, `iqos_daily.py`, `mood_checkins.py` | Остальные data sources |
 | `pyproject.toml` | `xgboost>=3.2.0`, `shap>=0.51.0` уже установлены |
+| [ISGlobal DLNM study](https://forum.intervals.icu/t/predicting-how-training-load-affects-your-hrv-help-us-build-personalised-models/130263) | Внешнее исследование load→HRV (Distributed Lag Non-Linear Models): эффект нагрузки на HRV отложенный и нелинейный, пик через несколько дней. Идея для §5: lag-фичи `tss_lag_0..lag_7` вместо одного «вчерашнего TSS». Результаты — ECSS Лозанна, июль 2026 |
 
 ---
 

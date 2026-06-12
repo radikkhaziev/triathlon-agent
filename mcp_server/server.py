@@ -27,6 +27,7 @@ import mcp_server.tools.ramp_tests  # noqa: F401
 import mcp_server.tools.recovery  # noqa: F401
 import mcp_server.tools.rhr  # noqa: F401
 import mcp_server.tools.scheduled_workouts  # noqa: F401
+import mcp_server.tools.taper  # noqa: F401
 import mcp_server.tools.training_load  # noqa: F401
 import mcp_server.tools.training_log  # noqa: F401
 import mcp_server.tools.update_zones  # noqa: F401

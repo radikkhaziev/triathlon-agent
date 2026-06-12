@@ -9,7 +9,7 @@ import { useApi } from '../hooks/useApi'
 import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 import { fmtDateYmd } from '../lib/formatters'
 import { TSB_ZONES, tsbZoneOf } from '../lib/constants'
-import type { ActivitiesSeries, TrainingLoadSeries, WellnessResponse } from '../api/types'
+import type { ActivitiesSeries, TaperDailyTarget, TaperPlan, TrainingLoadSeries, WellnessResponse } from '../api/types'
 
 /**
  * Training load detail (prototype `BLoadDetail` / `BLoadChart` /
@@ -36,6 +36,16 @@ const RANGE_DAYS: Record<Range, number> = { '1m': 30, '3m': 90, '6m': 180, '1y':
 
 const LOAD_COLOR = { ctl: 'var(--color-brand)', atl: 'var(--color-coral)' }
 const SPORT_COLOR = { swim: 'var(--color-amber)', ride: 'var(--color-brand)', run: 'var(--color-coral)' }
+// Taper budget overlay — geometry (stepped line vs bars) + its own token keep
+// "scheduled plan" and "recommended budget" visually distinct (spec Phase 4).
+const TAPER_COLOR = 'var(--color-taper)'
+// Single visibility gate for ALL taper surfaces (TSS overlay, legend chip,
+// TSB race dot) — they must agree, or the legend points at nothing. Covers
+// the 1m window (30d past + up to 28d forecast ≈ 58); when the overlay is
+// visible SportTssChart stays in daily mode (a TSS budget averaged into
+// weekly bars is noise). 3m+ axes (118+ slots) would render ~2px bars, so
+// the overlay hides there entirely — consistently, on every surface.
+const TAPER_AXIS_MAX_DAYS = 70
 
 const fmtMd = (ymd: string) => {
   const p = ymd.split('-')
@@ -70,6 +80,16 @@ export default function LoadDetail() {
   const pastDays = RANGE_DAYS[range]
   const { data: load, loading, error } = useApi<TrainingLoadSeries>(`/api/training-load?days=${pastDays}`)
   const { data: acts } = useApi<ActivitiesSeries>(`/api/activities?days=${pastDays}`)
+  // Taper budget overlay (spec Phase 4). Hidden unless a plan with daily
+  // targets exists — `available: false` and early mode (empty targets) both
+  // degrade to "no overlay", so the chart never depends on this fetch.
+  const { data: taperPlan } = useApi<TaperPlan>('/api/taper-plan')
+  const taperTargets: TaperDailyTarget[] | null =
+    taperPlan?.available && taperPlan.daily_targets && taperPlan.daily_targets.length > 0
+      ? taperPlan.daily_targets
+      : null
+  // The one gate every taper surface shares (see TAPER_AXIS_MAX_DAYS).
+  const taperOnChart = taperTargets != null && load != null && load.dates.length <= TAPER_AXIS_MAX_DAYS
   const today = fmtDateYmd(new Date())
   const { data: wellness } = useApi<WellnessResponse>(`/api/wellness-day?date=${today}`)
   const w = wellness?.has_data ? wellness : null
@@ -231,11 +251,19 @@ export default function LoadDetail() {
                       .map((d, i) => ({ d, v: load.tsb[i] }))
                       .filter((p): p is { d: string; v: number } => p.v != null)
                     const todayIdxFull = paired.findIndex(p => p.d === load.today_date)
+                    // Taper's projected race-day landing — only when the race
+                    // date is inside the chart axis (it may sit past the
+                    // forecast horizon on short windows; then no marker).
+                    const raceIdx =
+                      taperOnChart && taperPlan?.race_date && taperPlan.projected_race_day
+                        ? paired.findIndex(p => p.d === taperPlan.race_date)
+                        : -1
                     return (
                       <TsbZoneChart
                         dates={paired.map(p => p.d)}
                         tsb={paired.map(p => p.v)}
                         todayIdx={todayIdxFull >= 0 ? todayIdxFull : null}
+                        raceDay={raceIdx >= 0 ? { idx: raceIdx, tsb: taperPlan!.projected_race_day!.tsb } : null}
                       />
                     )
                   })()}
@@ -266,11 +294,18 @@ export default function LoadDetail() {
                     run={load.dates.map(d => tssByDate[d]?.run ?? 0)}
                     show={sportVis}
                     todayIdx={load.dates.indexOf(load.today_date)}
+                    taper={taperOnChart ? taperTargets : null}
                   />
                   <div className="mt-2 flex flex-wrap justify-center gap-1.5">
                     <LegendToggle on={sportVis.swim} color={SPORT_COLOR.swim} label="Swim" square onClick={() => toggleSport('swim')} />
                     <LegendToggle on={sportVis.ride} color={SPORT_COLOR.ride} label="Ride" square onClick={() => toggleSport('ride')} />
                     <LegendToggle on={sportVis.run} color={SPORT_COLOR.run} label="Run" square onClick={() => toggleSport('run')} />
+                    {taperOnChart && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] text-halo-ink-dim">
+                        <span className="h-0.5 w-3 rounded-sm" style={{ background: TAPER_COLOR }} />
+                        Taper budget
+                      </span>
+                    )}
                   </div>
                 </Card>
 
@@ -679,10 +714,15 @@ function TsbZoneChart({
   dates,
   tsb,
   todayIdx = null,
+  raceDay = null,
 }: {
   dates: string[]
   tsb: number[]
   todayIdx?: number | null
+  // Taper planner's projected race-day TSB landing (spec Phase 4): one dot at
+  // the race date. Deliberately NOT a second dashed curve — two dash styles
+  // in the same axes are unreadable (spec decisions log 2026-06-12).
+  raceDay?: { idx: number; tsb: number } | null
 }) {
   const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 160
@@ -800,6 +840,22 @@ function TsbZoneChart({
             />
           ))
       })}
+      {/* Race-day landing dot — the taper plan's projected TSB. Value can
+          exceed the fixed y-domain (deep transition); clamp the dot but keep
+          the real number in the label so nothing is silently misplaced. */}
+      {raceDay && raceDay.idx >= 0 && raceDay.idx < N && (() => {
+        const v = Math.max(yMin, Math.min(yMax, raceDay.tsb))
+        const zone = tsbZoneOf(raceDay.tsb)
+        return (
+          <g>
+            <circle cx={x(raceDay.idx)} cy={y(v)} r="4.5" fill={TAPER_COLOR} opacity="0.25" />
+            <circle cx={x(raceDay.idx)} cy={y(v)} r="2.8" fill={zone.line} stroke="var(--color-surface)" strokeWidth="1.2" />
+            <text x={x(raceDay.idx) - 5} y={y(v) - 6} fontSize="9" fontWeight="600" fill={zone.line} textAnchor="end">
+              RACE {raceDay.tsb >= 0 ? '+' : ''}{Math.round(raceDay.tsb)}
+            </text>
+          </g>
+        )
+      })()}
       {/* Today rule + TODAY badge — dashed vertical line at the actual/forecast
           handoff, with a small uppercase label so the user reads the split. */}
       {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (
@@ -857,9 +913,10 @@ function TsbZoneChart({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Daily TSS by sport — stacked Swim/Ride/Run bars. Past ~45 days the window
-// auto-aggregates to weekly bars so bars stay readable. No forecast / planned
-// bars.
+// Daily TSS by sport — stacked Swim/Ride/Run bars. Past ~45 slots the window
+// auto-aggregates to weekly bars so bars stay readable — UNLESS the taper
+// overlay is present (then daily, see `weekly`). Future bars render as
+// forecast (hatched planned workouts); taper budget draws as a stepped line.
 //
 // `swim`/`ride`/`run` MUST be the same length as `dates` and index-aligned to
 // it — the caller builds them via `dates.map(...)`, so a weekly chunk `[i, i+6]`
@@ -873,6 +930,7 @@ function SportTssChart({
   run,
   show,
   todayIdx = null,
+  taper = null,
 }: {
   dates: string[]
   swim: number[]
@@ -883,6 +941,14 @@ function SportTssChart({
   // 0.55 + diagonal-hatched pattern overlay so the eye reads them as "future"
   // distinct from the solid past actuals. Null → no split (legacy past-only).
   todayIdx?: number | null
+  // Taper-budget daily targets (spec Phase 4): a stepped LINE over the future
+  // bars — geometry separates "scheduled plan" (bars) from "recommended
+  // budget" (line); a bar poking above the line = a day over budget. A
+  // non-null prop forces DAILY mode (weekly aggregation would average the
+  // budget into noise) — the caller guarantees the axis fits (gated by
+  // `taperOnChart` / TAPER_AXIS_MAX_DAYS, the shared gate for all taper
+  // surfaces). The last entry is race day (target 0).
+  taper?: TaperDailyTarget[] | null
 }) {
   const [wrapRef, W] = useMeasuredWidth<HTMLDivElement>(320)
   const H = 200
@@ -892,8 +958,12 @@ function SportTssChart({
   const N = dates.length
 
   type Bar = { date: string; sw: number; ri: number; rn: number; isForecast: boolean }
+  // Daily mode whenever the taper overlay is present — see the `taper` prop
+  // doc. Without it the 1m window (30d past + forecast extension ≈ 58 slots)
+  // would aggregate weekly and silently drop the overlay.
+  const weekly = N > 45 && !taper
   const bars: Bar[] = []
-  if (N > 45) {
+  if (weekly) {
     // Weekly aggregation. A week is forecast only when ALL 7 days are past
     // todayIdx; mixed weeks (today falls inside) render as actual so we don't
     // accidentally mark "this week" — partially done — as forecast.
@@ -923,15 +993,27 @@ function SportTssChart({
   }
   const M = bars.length
 
+  // Taper budget points mapped onto chart indices — a non-null `taper` means
+  // daily mode (bar index === date index). Off-axis targets (race past the
+  // forecast horizon) are silently dropped; the step line just ends at the edge.
+  const taperPts = taper
+    ? taper.map(t => ({ i: dates.indexOf(t.date), tss: t.target_tss })).filter(p => p.i >= 0)
+    : []
+  const taperByIdx = new Map(taperPts.map(p => [p.i, p.tss]))
+  // Race day = the taper plan's last entry (target 0); marker only when on-axis.
+  const raceIdx = taper && taper.length > 0 ? dates.indexOf(taper[taper.length - 1].date) : -1
+
   const stackTotal = bars.map(
     b => (show.swim ? b.sw : 0) + (show.ride ? b.ri : 0) + (show.run ? b.rn : 0),
   )
-  const rawMax = Math.max(60, ...stackTotal)
+  // Budget line must fit the y-domain even when planned bars are small/zero —
+  // otherwise the overlay renders off-scale above the plot.
+  const rawMax = Math.max(60, ...stackTotal, ...taperPts.map(p => p.tss))
   const niceStep = rawMax > 800 ? 200 : rawMax > 400 ? 100 : rawMax > 200 ? 50 : rawMax > 100 ? 25 : 20
   const yMax = Math.ceil(rawMax / niceStep) * niceStep
 
   const slotW = innerW / M
-  const barW = Math.max(2, slotW * (N > 45 ? 0.74 : 0.78))
+  const barW = Math.max(2, slotW * (weekly ? 0.74 : 0.78))
   const xOf = (i: number) => pad.l + i * slotW + (slotW - barW) / 2
   const yOf = (v: number) => pad.t + innerH - (v / yMax) * innerH
 
@@ -950,6 +1032,9 @@ function SportTssChart({
           ...(show.swim ? [{ label: 'Swim', value: Math.round(scrubBar.sw), color: SPORT_COLOR.swim }] : []),
           ...(show.ride ? [{ label: 'Ride', value: Math.round(scrubBar.ri), color: SPORT_COLOR.ride }] : []),
           ...(show.run ? [{ label: 'Run', value: Math.round(scrubBar.rn), color: SPORT_COLOR.run }] : []),
+          ...(scrubIdx != null && taperByIdx.has(scrubIdx)
+            ? [{ label: 'Taper', value: Math.round(taperByIdx.get(scrubIdx)!), color: TAPER_COLOR }]
+            : []),
         ]
 
   return (
@@ -1006,6 +1091,13 @@ function SportTssChart({
           />
         )
       })()}
+      {/* Taper window tint — painted under the bars so the budget region
+          reads as a zone, not a layer hiding data. */}
+      {taperPts.length > 0 && (() => {
+        const x0 = pad.l + taperPts[0].i * slotW
+        const x1 = pad.l + (taperPts[taperPts.length - 1].i + 1) * slotW
+        return <rect x={x0} y={pad.t} width={Math.max(0, x1 - x0)} height={innerH} fill={TAPER_COLOR} opacity="0.05" />
+      })()}
       {bars.map((b, i) => {
         const segs = [
           { v: show.swim ? b.sw : 0, c: SPORT_COLOR.swim },
@@ -1040,6 +1132,41 @@ function SportTssChart({
           </g>
         )
       })}
+      {/* Taper budget — stepped line across day slots, drawn OVER the bars:
+          a bar poking above the line is a day over budget, which is the
+          whole point of the overlay. */}
+      {taperPts.length > 0 && (() => {
+        let d = ''
+        taperPts.forEach((p, k) => {
+          const x0 = pad.l + p.i * slotW
+          const x1 = pad.l + (p.i + 1) * slotW
+          const yv = yOf(p.tss).toFixed(1)
+          d += (k === 0 ? `M ${x0.toFixed(1)} ${yv}` : ` V ${yv}`) + ` H ${x1.toFixed(1)}`
+        })
+        return (
+          <path d={d} fill="none" stroke={TAPER_COLOR} strokeWidth="1.8" strokeLinejoin="round" opacity="0.9" />
+        )
+      })()}
+      {/* Race-day flag — anchors the right edge of the taper window. */}
+      {raceIdx >= 0 && (() => {
+        const rx = pad.l + (raceIdx + 0.5) * slotW
+        return (
+          <>
+            <line x1={rx} y1={pad.t} x2={rx} y2={H - pad.b} stroke={TAPER_COLOR} strokeWidth="1" opacity="0.6" />
+            <text
+              x={rx - 4}
+              y={pad.t + 8}
+              fontSize="9"
+              fontWeight="600"
+              letterSpacing="0.6"
+              fill={TAPER_COLOR}
+              textAnchor="end"
+            >
+              RACE
+            </text>
+          </>
+        )
+      })()}
       {/* Today rule + TODAY badge — same treatment as LoadLineChart/TsbZoneChart
           so the actual/forecast handoff reads identically across all three. */}
       {todayIdx != null && todayIdx >= 0 && todayIdx < N - 1 && (() => {
@@ -1086,7 +1213,7 @@ function SportTssChart({
       <rect x={pad.l} y={pad.t} width={innerW} height={innerH} fill="transparent" style={{ cursor: 'crosshair' }} />
       <ChartScrubLine
         idx={scrubIdx}
-        dateLabel={fmtScrubDate(scrubBar?.date) + (N > 45 ? ' (wk)' : '')}
+        dateLabel={fmtScrubDate(scrubBar?.date) + (weekly ? ' (wk)' : '')}
         items={scrubItems}
         x={i => xOf(i) + barW / 2}
         padT={pad.t}
