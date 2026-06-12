@@ -12,7 +12,7 @@ from fastapi import Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
 from api.auth import _get_jwt_secret
-from api.deps import require_viewer
+from api.deps import is_demo, require_viewer
 from api.dto import IntervalsAuthInitResponse
 from config import settings
 from data.db import User, UserDTO, get_session
@@ -75,7 +75,7 @@ async def intervals_oauth_init(user: User = Depends(require_viewer)) -> Interval
     Returns ``{authorize_url}`` — the Intervals.icu /oauth/authorize URL with our
     ``client_id``, ``redirect_uri``, ``scope``, and a short-lived signed ``state`` JWT.
     """
-    if user.role == "demo":
+    if is_demo(user):
         raise HTTPException(status_code=403, detail="Read-only demo mode")
 
     # Issue #266 gate: OAuth callback dispatches `_actor_send_goal_notification`
@@ -267,7 +267,7 @@ async def intervals_oauth_disconnect(user: User = Depends(require_viewer)) -> di
     Does NOT delete athlete_id or synced data — only revokes the API connection.
     The user can reconnect via ``/auth/init`` at any time.
     """
-    if user.role == "demo":
+    if is_demo(user):
         raise HTTPException(status_code=403, detail="Read-only demo mode")
 
     async with get_session() as session:

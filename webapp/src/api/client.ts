@@ -51,6 +51,10 @@ export async function apiFetch<T>(endpoint: string, opts: RequestInit = {}): Pro
 
   if (res.status === 401) {
     localStorage.removeItem('auth_token')
+    // Clear the role too — a stale 'demo' role would keep isDemo-driven UI
+    // (canned samples) rendering after the server already rejected the token
+    // (e.g. DEMO_ENABLED kill switch flipped mid-session).
+    localStorage.removeItem('auth_role')
     if (window.location.pathname !== '/login') {
       window.location.href = '/login'
     }
@@ -81,6 +85,10 @@ export async function apiFetchBlob(endpoint: string, opts: RequestInit = {}): Pr
 
   if (res.status === 401) {
     localStorage.removeItem('auth_token')
+    // Clear the role too — a stale 'demo' role would keep isDemo-driven UI
+    // (canned samples) rendering after the server already rejected the token
+    // (e.g. DEMO_ENABLED kill switch flipped mid-session).
+    localStorage.removeItem('auth_role')
     if (window.location.pathname !== '/login') {
       window.location.href = '/login'
     }

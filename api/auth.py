@@ -72,16 +72,19 @@ def verify_code(code: str) -> str | None:
     return entry["chat_id"]
 
 
-def create_jwt(chat_id: str, *, purpose: str | None = None) -> str:
+def create_jwt(chat_id: str, *, purpose: str | None = None, ttl_seconds: int | None = None) -> str:
     """Create a JWT token for the given chat_id.
 
     Optional `purpose` claim: 'demo' for read-only demo access.
+    `ttl_seconds` overrides the default `JWT_EXPIRY_DAYS` lifetime — demo
+    tokens use 24h so the DEMO_ENABLED kill switch takes effect within a day.
     """
     header = {"alg": "HS256", "typ": "JWT"}
+    now = int(time.time())
     payload = {
         "sub": chat_id,
-        "iat": int(time.time()),
-        "exp": int(time.time()) + settings.JWT_EXPIRY_DAYS * 86400,
+        "iat": now,
+        "exp": now + (ttl_seconds if ttl_seconds is not None else settings.JWT_EXPIRY_DAYS * 86400),
     }
     if purpose:
         payload["purpose"] = purpose

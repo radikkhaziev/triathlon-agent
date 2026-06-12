@@ -9,6 +9,7 @@ import TodayWorkoutCard from '../components/TodayWorkoutCard'
 import { useDayNav } from '../hooks/useDayNav'
 import { useChangelog } from '../hooks/useChangelog'
 import { useApi } from '../hooks/useApi'
+import { useAuth } from '../auth/useAuth'
 import { apiFetch, ApiError } from '../api/client'
 import { num, relativeTime, fmtDateYmd } from '../lib/formatters'
 import { tsbZoneOf } from '../lib/constants'
@@ -62,6 +63,7 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 export default function Wellness() {
   const { t, i18n } = useTranslation()
+  const { isDemo } = useAuth()
   // `?date=` deep-link — the All-history calendar opens a past day here.
   // useDayNav clamps it to ≤ today; only read once, on mount.
   const [searchParams] = useSearchParams()
@@ -225,7 +227,7 @@ export default function Wellness() {
                 reverses G3=(b)). Single-line peek at ai_recommendation; the
                 recovery chip+rec stays the authoritative "what to do today".
                 Only when the backend actually produced a note. */}
-            {data.ai_recommendation?.trim() && (
+            {(isDemo || data.ai_recommendation?.trim()) && (
               <Link
                 to={isToday ? '/coach' : `/coach?date=${dateStr}`}
                 aria-label={t('wellness.coach_note')}
@@ -239,7 +241,8 @@ export default function Wellness() {
                     {t('wellness.coach_note')}
                   </span>
                   <span className="mt-[3px] block truncate text-[13px] leading-snug text-white/90">
-                    {teaserText(data.ai_recommendation)}
+                    {/* Demo: server stubs the note — teaser shows the canned sample's first line. */}
+                    {isDemo ? t('demo.coach_teaser') : teaserText(data.ai_recommendation ?? '')}
                   </span>
                 </span>
                 <span aria-hidden="true" className="shrink-0 text-lg leading-none text-white/55">›</span>

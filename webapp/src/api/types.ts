@@ -220,6 +220,9 @@ export interface WellnessResponseData extends WellnessResponseBase {
   body: BodyData
   stress: StressData
   ai_recommendation: string | null
+  // Demo sessions get the AI text stubbed server-side; the UI renders a
+  // canned English sample instead (docs/DEMO_PUBLIC_ACCESS_SPEC.md Phase 2).
+  demo_stub?: boolean
   updated_at?: string | null
 }
 
@@ -721,9 +724,12 @@ export interface RacePlanInner {
   contingencies: RacePlanContingency[]
 }
 
+// Both fields optional: the demo stub returns `payload: {}` (see
+// GET /api/race-plan demo branch), and the renderer already treats every
+// section as absent-able (JSONB has no schema enforcement).
 export interface RacePlanPayload {
-  plan: RacePlanInner
-  confidence_tier: ConfidenceTier
+  plan?: RacePlanInner
+  confidence_tier?: ConfidenceTier
 }
 
 // Shape returned by GET /api/race-plan and POST /api/race-plan/generate.
@@ -736,6 +742,9 @@ export interface RacePlanResponse {
   payload: RacePlanPayload
   // note surfaces on regenerate / cached responses; UI renders it as a hint.
   note?: string
+  // Demo sessions get `payload: {}` + this flag (server-side stub). The panel
+  // skips the fetch for demo anyway — this is the wire contract for tests.
+  demo_stub?: boolean
 }
 
 // PR2.5: optional course/weather hints. Mirrors RaceConditions Pydantic model

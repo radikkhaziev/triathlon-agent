@@ -4,7 +4,9 @@ import ReactMarkdown from 'react-markdown'
 import Layout from '../components/Layout'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
+import DemoSampleBadge from '../components/DemoSampleBadge'
 import { useApi } from '../hooks/useApi'
+import { useAuth } from '../auth/useAuth'
 import { fmtDateYmd } from '../lib/formatters'
 import type { WellnessResponse } from '../api/types'
 
@@ -28,8 +30,11 @@ export default function Coach() {
   const date = dateParam && ISO_DATE_RE.test(dateParam) && dateParam <= todayYmd ? dateParam : todayYmd
   const isToday = date === todayYmd
 
+  const { isDemo } = useAuth()
   const { data, loading, error } = useApi<WellnessResponse>(`/api/wellness-day?date=${date}`)
-  const ai = (data?.has_data && data.ai_recommendation?.trim()) || null
+  // Demo never receives the real note (server stubs it) — render the canned
+  // English sample so the page shows the product's form, not an empty state.
+  const ai = isDemo ? t('demo.coach_sample') : (data?.has_data && data.ai_recommendation?.trim()) || null
 
   // Eyebrow + back-link reflect the day: "this morning" only reads right for
   // today; a past day shows its date and returns to /wellness on that date.
@@ -59,6 +64,7 @@ export default function Coach() {
           <div className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">
             {eyebrow}
           </div>
+          {isDemo && <DemoSampleBadge textKey="demo.sample_badge" />}
           {loading && <LoadingSpinner />}
           {error && <ErrorMessage message={t('wellness.load_error')} />}
           {!loading && !error && (

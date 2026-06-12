@@ -149,6 +149,33 @@ class TestGetRacePlan:
             resp = await c.get("/api/race-plan")
         assert resp.status_code == 422
 
+    async def test_demo_gets_stub_without_ai_payload(self):
+        """Demo sessions must never receive the plan's AI free-text — the
+        endpoint returns a `demo_stub` envelope with an empty payload and the
+        frontend renders a canned sample (docs/DEMO_PUBLIC_ACCESS_SPEC.md
+        Phase 2)."""
+        await _seed_goal(goal_id=1)
+        await RacePlan.save(
+            user_id=1,
+            goal_id=1,
+            model_version="v1-test",
+            payload={
+                "plan": {"warmup": "разогрев с личным контекстом", "legs": []},
+                "confidence_tier": "high",
+            },
+        )
+
+        client = _build_client(role="demo")
+        async with client as c:
+            resp = await c.get("/api/race-plan", params={"goal_id": 1})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["demo_stub"] is True
+        assert body["payload"] == {}
+        assert body["confidence_tier"] == "high"
+        assert "разогрев" not in resp.text
+
 
 # ---------------------------------------------------------------------------
 # POST /api/race-plan/generate

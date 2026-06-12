@@ -121,9 +121,8 @@ def _build_wellness_snapshots(rows) -> list[WellnessSnapshot]:
             dt = date.fromisoformat(str(w_date)[:10])
         except (TypeError, ValueError):
             continue
-        sc = extract_sport_ctl(sport_info) or {}
-        eftp = extract_sport_eftp(sport_info) or {}
-        ride_eftp = eftp.get("ride")
+        sc = extract_sport_ctl(sport_info)
+        ride_eftp = extract_sport_eftp(sport_info).get("ride")
         out.append(
             WellnessSnapshot(
                 dt=dt,

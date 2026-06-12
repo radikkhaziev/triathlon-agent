@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.deps import get_data_user_id, require_viewer
+from api.deps import get_data_user_id, is_demo, require_viewer
 from bot.formatter import STATUS_EMOJI
 from config import settings
 from data.db import HrvAnalysis, RhrAnalysis, User, Wellness, get_session
@@ -427,7 +427,10 @@ async def wellness_day(
             "has_next": has_next,
         }
 
-    result = await _build_wellness_response(row, target, uid, language=user.language or "ru")
+    # Demo gets English for the deterministic verdict/meaning strings (the
+    # owner's row says "ru"); the AI free-text is stubbed out below.
+    language = "en" if is_demo(user) else (user.language or "ru")
+    result = await _build_wellness_response(row, target, uid, language=language)
     # Intervals.icu bakes today's planned workouts into ctl/atl/rampRate, so the
     # morning view looks as if the day's session is already done. Recompute
     # from yesterday's loads + actually-completed activities; de-plan ramp to match.
@@ -444,4 +447,11 @@ async def wellness_day(
     result["is_today"] = target == today
     result["has_prev"] = has_prev
     result["has_next"] = has_next
+    if is_demo(user):
+        # AI free-text is generated from mood check-ins / IQOS / user_facts and
+        # routinely interpolates intimate content — never serialize it to demo.
+        # Frontend renders a canned English sample off `demo_stub` instead.
+        # See docs/DEMO_PUBLIC_ACCESS_SPEC.md Phase 2.
+        result["ai_recommendation"] = None
+        result["demo_stub"] = True
     return result

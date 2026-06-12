@@ -1,4 +1,3 @@
-import hmac
 import logging
 import os
 import time
@@ -10,10 +9,9 @@ from fastapi.responses import FileResponse
 from pydantic import TypeAdapter
 
 from api.auth import create_jwt, verify_code, verify_telegram_widget_auth
-from api.deps import get_current_user, get_data_user_id
+from api.deps import get_current_user, get_data_user_id, is_demo
 from api.dto import (
     BackfillStatusResponse,
-    DemoAuthRequest,
     SetLanguageRequest,
     SportsUpdateRequest,
     TelegramWidgetAuthRequest,
@@ -41,10 +39,17 @@ _MCP_CONFIG_RATE_WINDOW_SEC = 60.0
 _mcp_config_last_access: dict[int, float] = {}
 _MCP_ALLOWED_ROLES = {"athlete", "owner"}
 
-# Rate limit for demo login: max 5 attempts per IP per 5 minutes
+# Rate limit for demo token mint: max 5 per IP per 5 minutes
 _DEMO_RATE_WINDOW_SEC = 300.0
 _DEMO_MAX_ATTEMPTS = 5
 _demo_attempts: dict[str, list[float]] = {}
+
+# Demo tokens are short-lived as a hard ceiling / hygiene measure. The actual
+# kill switch is INSTANT: `get_current_user` rejects `purpose="demo"` tokens
+# whenever DEMO_ENABLED is off (api/deps.py) — do not treat this TTL as the
+# revocation mechanism or assume extending it is safe.
+# See docs/DEMO_PUBLIC_ACCESS_SPEC.md Phase 3.
+_DEMO_TOKEN_TTL_SEC = 24 * 3600
 
 # Retry-backfill anti-spam rate limit — one successful call per hour per user.
 # Separate from the business cooldowns in `_backfill_retry_retry_after`:
@@ -122,15 +127,29 @@ def _backfill_retry_retry_after(state: UserBackfillState, now: datetime) -> int 
 
 
 @router.post("/api/auth/demo")
-async def auth_demo(request: Request, body: DemoAuthRequest) -> dict:
-    """Authenticate with demo password for read-only access to owner's data."""
-    demo_pw = settings.DEMO_PASSWORD.get_secret_value()
-    if not demo_pw:
+async def auth_demo(request: Request) -> dict:
+    """Issue a read-only demo token — public, passwordless.
+
+    Gated by ``DEMO_ENABLED`` — checked here at mint AND in ``get_current_user``
+    at every verification, so flipping the flag off revokes existing tokens
+    instantly. Per-IP rate limit guards the mint endpoint (each token is just
+    a DB-read amplifier, but no point handing them out in bulk). 24h TTL
+    (``_DEMO_TOKEN_TTL_SEC``) is a hygiene ceiling, not the revocation path.
+    """
+    if not settings.DEMO_ENABLED:
         raise HTTPException(status_code=404, detail="Demo mode is disabled")
 
     # Rate limit by IP
     client_ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
+    # Lazy prune — the key space is attacker-controlled on a public endpoint
+    # (IPv6), so drop IPs whose newest attempt fell out of the window. Same
+    # watermark pattern as `_retry_backfill_last_success`.
+    if len(_demo_attempts) > 512:
+        cutoff = now - _DEMO_RATE_WINDOW_SEC
+        stale = [ip for ip, ts in _demo_attempts.items() if not ts or ts[-1] <= cutoff]
+        for ip in stale:
+            _demo_attempts.pop(ip, None)
     attempts = _demo_attempts.get(client_ip, [])
     attempts = [t for t in attempts if now - t < _DEMO_RATE_WINDOW_SEC]
     if len(attempts) >= _DEMO_MAX_ATTEMPTS:
@@ -138,18 +157,13 @@ async def auth_demo(request: Request, body: DemoAuthRequest) -> dict:
     attempts.append(now)
     _demo_attempts[client_ip] = attempts
 
-    password = body.password.strip()
-    if not password or not hmac.compare_digest(password, demo_pw):
-        logger.info("Demo login failed from ip=%s", client_ip)
-        raise HTTPException(status_code=401, detail="Invalid demo password")
-
     owner = await User.get_owner()
     if not owner:
         raise HTTPException(status_code=503, detail="Demo not available")
 
-    token = create_jwt(str(owner.chat_id), purpose="demo")
+    token = create_jwt(str(owner.chat_id), purpose="demo", ttl_seconds=_DEMO_TOKEN_TTL_SEC)
     logger.info("Demo login from ip=%s", client_ip)
-    return {"token": token, "role": "demo", "expires_in_days": settings.JWT_EXPIRY_DAYS}
+    return {"token": token, "role": "demo", "expires_in_hours": _DEMO_TOKEN_TTL_SEC // 3600}
 
 
 @router.post("/api/auth/verify-code")
@@ -307,7 +321,7 @@ async def auth_me(user: User | None = Depends(get_current_user)) -> dict:
             else None
         ),
     }
-    if user.role == "demo":
+    if is_demo(user):
         result["language"] = "en"
         result["intervals"] = {"athlete_id": "demo", "scope": None, "connected": True}
         # Demo browses owner data read-only and never triggers Telegram I/O.
@@ -357,7 +371,7 @@ async def auth_avatar(user: User | None = Depends(get_current_user)) -> FileResp
     are daily at most (morning report sync); a stale 5-min cache is fine
     and saves dashboard polls from re-reading the file.
     """
-    if not user or user.role == "demo":
+    if not user or is_demo(user):
         raise HTTPException(status_code=404, detail="Not found")
     path = avatar_path(user.chat_id)
     if not os.path.isfile(path):
@@ -374,7 +388,7 @@ async def set_language(body: SetLanguageRequest, user: User | None = Depends(get
     """Update user language preference."""
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if user.role == "demo":
+    if is_demo(user):
         raise HTTPException(status_code=403, detail="Read-only demo mode")
 
     async with get_session() as session:
@@ -396,7 +410,7 @@ async def set_sports(body: SportsUpdateRequest, user: User | None = Depends(get_
     """
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if user.role == "demo":
+    if is_demo(user):
         raise HTTPException(status_code=403, detail="Read-only demo mode")
 
     canonical = body.canonical()
@@ -522,7 +536,7 @@ async def auth_retry_backfill(user: User | None = Depends(get_current_user)) -> 
     # Demo requests resolve to the owner's `user.id` via `get_data_user_id`,
     # so letting them touch the rate-limit dict would let a demo session
     # starve (or share the budget of) the actual owner.
-    if user.role == "demo":
+    if is_demo(user):
         raise HTTPException(status_code=403, detail="Read-only demo mode")
     if not user.athlete_id:
         raise HTTPException(status_code=400, detail="No Intervals.icu account connected")
