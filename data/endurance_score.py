@@ -134,6 +134,10 @@ class WellnessSnapshot:
     ctl: float | None
     ramp_rate: float | None
     sport_ctl: dict[str, float] = field(default_factory=dict)  # keys: "Ride"/"Run"/"Swim"
+    # Intervals.icu eFTP from wellness.sport_info on this date — date-specific
+    # (unlike athlete_settings.ftp which only holds the current value), so
+    # backfill/trend get the real fitness arc. None for users without power.
+    ride_eftp: float | None = None
 
 
 @dataclass(frozen=True)
@@ -190,6 +194,7 @@ class EnduranceScoreResult:
 def vo2max_composite(
     athlete: AthleteProfile,
     sport_ctl: dict[str, float],
+    ride_eftp: float | None = None,
 ) -> float:
     """Compute composite VO2max weighted by sport-CTL share.
 
@@ -197,6 +202,10 @@ def vo2max_composite(
       · Bike — Storer (needs ftp + weight + age)
       · Run  — Daniels (needs threshold_pace)
       · Swim — proxy = run (no industry-standard formula from swim pace)
+
+    Bike FTP precedence: ``ride_eftp`` (date-specific, from wellness sport_info)
+    wins over ``athlete.ftp_w`` (current athlete_settings value, goes stale
+    between manual updates and is wrong for historical trend points).
 
     Fallbacks:
       · No FTP → bike = run (if available) else DEFAULT_VO2MAX
@@ -206,7 +215,8 @@ def vo2max_composite(
     age = athlete.age or 40
     weight_kg = athlete.weight_kg or 75.0
 
-    vo2_bike = vo2max_bike_storer(athlete.ftp_w, weight_kg, age) if athlete.ftp_w is not None else None
+    ftp_w = ride_eftp if ride_eftp is not None else athlete.ftp_w
+    vo2_bike = vo2max_bike_storer(ftp_w, weight_kg, age) if ftp_w is not None else None
     vo2_run = (
         vo2max_run_daniels(athlete.threshold_pace_sec_per_km) if athlete.threshold_pace_sec_per_km is not None else None
     )
@@ -478,7 +488,7 @@ def compute_endurance_score(
     components, per-sport decomposition, zone classification, and badge.
     """
     sport_ctl = dict(latest_wellness.sport_ctl)
-    vo2 = vo2max_composite(athlete, sport_ctl)
+    vo2 = vo2max_composite(athlete, sport_ctl, ride_eftp=latest_wellness.ride_eftp)
 
     base = round(100.0 * vo2)
     long_term = round(long_term_bonus(_weekly_ctl_avg(wellness_56d, ref_date, weeks=8)))
@@ -503,7 +513,9 @@ def compute_endurance_score(
         recent_badge_ids=recent_badge_ids,
     )
 
-    insufficient = athlete.ftp_w is None and athlete.threshold_pace_sec_per_km is None
+    insufficient = (
+        athlete.ftp_w is None and latest_wellness.ride_eftp is None and athlete.threshold_pace_sec_per_km is None
+    )
     return EnduranceScoreResult(
         score=score,
         zone_id=zone.id,

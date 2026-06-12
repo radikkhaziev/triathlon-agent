@@ -43,7 +43,7 @@ from data.endurance_score import (
     classify_zone,
     compute_endurance_score,
 )
-from data.utils import extract_sport_ctl
+from data.utils import extract_sport_ctl, extract_sport_eftp
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,8 @@ def _build_wellness_snapshots(rows) -> list[WellnessSnapshot]:
         except (TypeError, ValueError):
             continue
         sc = extract_sport_ctl(sport_info) or {}
+        eftp = extract_sport_eftp(sport_info) or {}
+        ride_eftp = eftp.get("ride")
         out.append(
             WellnessSnapshot(
                 dt=dt,
@@ -132,6 +134,7 @@ def _build_wellness_snapshots(rows) -> list[WellnessSnapshot]:
                     "Run": float(sc.get("run") or 0.0),
                     "Swim": float(sc.get("swim") or 0.0),
                 },
+                ride_eftp=float(ride_eftp) if ride_eftp is not None else None,
             )
         )
     return out

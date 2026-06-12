@@ -66,7 +66,7 @@ VO₂max-композит задаёт «потолок-якорь» (≈3500–
 vo2max_bike = (10.51 * ftp_w + 6.35 * weight_kg - 10.49 * age + 519.3) / weight_kg
 ```
 
-Источник: `athlete_settings.power_zones_bike.ftp`, `users.weight_kg`, `users.age`.
+Источник `ftp_w` (приоритет, изменено 2026-06-12): **`wellness.sport_info[Ride].eftp` на `ref_date`** → fallback `athlete_settings.power_zones_bike.ftp`. eFTP date-specific (есть в каждой wellness-строке у атлетов с пауэрметром, ~50% юзеров) и автообновляется Intervals.icu — ручной FTP в settings протухает между обновлениями (реальный кейс: settings 225 Вт с декабрьского пика при текущем eFTP 207.8) и одинаков для всех точек тренда. Вес/возраст: `users.weight_kg`, `users.age`.
 
 **Run (Daniels VDOT)** — от threshold pace:
 
@@ -96,7 +96,7 @@ vo2max_composite = (
 Источник sport-CTL: `extract_sport_ctl(wellness_row.sport_info)` (см. `data/utils.py:81`).
 
 **Fallback при отсутствии исходных данных:**
-- Нет `ftp` → `vo2max_bike = vo2max_run` (если run есть), иначе `vo2max_bike = 40` (default для AG-male 40–44).
+- Нет `eftp` в sport_info → `athlete_settings.ftp`; нет и его → `vo2max_bike = vo2max_run` (если run есть), иначе `vo2max_bike = 40` (default для AG-male 40–44).
 - Нет `threshold_pace` → симметрично.
 - Нет ни одного — `score = None` для этой недели (карточка показывает «недостаточно данных»).
 
@@ -782,7 +782,7 @@ Garmin = 5773, наша ≈ 5660. **Drift −2%** — отлично, внутр
 - **Q2: Swim VO₂max proxy = run.** Если у атлета нет run-данных (только swim+bike) — fallback на bike. Корректно ли это? Нужно валидировать на одном-двух non-running swimmer'ах. **→ Отложено, edge case.**
 - **Q3: «Other»-bucket в per-sport breakdown.** Дизайн (`direction-b-halo.jsx:3419`) показывает Other=4.41% — что туда попадает? Strength training, walks, hiking? Сейчас в спеке — gap до 100% от total CTL. **→ Уточнить при имплементации Phase 1.**
 - **Q4: ~~Zones-секция на detail-экране~~** — **РЕШЕНО 2026-05-25**: keep, но в новой 5-зонной конфигурации (см. §3.8 + §11.J/K). Дизайн `direction-b-halo.jsx:3596-3617` рендерит 6-строчную легенду — при имплементации Phase 1 frontend'а схлопнуть до 5 строк, изменить лейблы на русские (Растренирован/Восстанавливаюсь/Поддерживаю/Развиваюсь/На пике), обновить пороги (0/3000/4500/5500/6500). Цвета остаются.
-- **Q6: Historical trend использует текущие thresholds для всех точек.** Backfill (CLI или fallback-compute) фетчит `athlete_settings.ftp` / `pace_zones_run.threshold_pace` на момент **запроса**, а не на момент `ref_date`. Атлет, прошедший ramp-test 2 недели назад, увидит post-test пороги в Base для всех точек тренда — старые недели выглядят стабильно, хотя в реальности тогда были другие пороги. Bonuses (LongTerm/Recent/Duration/Consistency/Recovery) считаются правильно (используют дату-специфичные wellness/activities), но Base-shift невозможен без historical athlete_settings. Согласовано с Q5 (delayed detrain detection) — это связанная задача. **→ Phase 3:** добавить `athlete_settings_history` таблицу либо снапшотить thresholds в `endurance_scores.components` при write'е (доступ к историческим thresholds через прошлые ES-rows).
+- **Q6: Historical trend использует текущие thresholds для всех точек.** Backfill (CLI или fallback-compute) фетчит `athlete_settings.ftp` / `pace_zones_run.threshold_pace` на момент **запроса**, а не на момент `ref_date`. Атлет, прошедший ramp-test 2 недели назад, увидит post-test пороги в Base для всех точек тренда — старые недели выглядят стабильно, хотя в реальности тогда были другие пороги. Bonuses (LongTerm/Recent/Duration/Consistency/Recovery) считаются правильно (используют дату-специфичные wellness/activities), но Base-shift невозможен без historical athlete_settings. **Частично закрыто 2026-06-12 для bike:** `ftp_w` теперь берётся из `wellness.sport_info[Ride].eftp` на `ref_date` (date-specific, см. §3.1) — историческая Base-кривая по вело корректна. Run threshold_pace остаётся current-only (pace в sport_info нет). Согласовано с Q5 (delayed detrain detection) — это связанная задача. **→ Phase 3:** добавить `athlete_settings_history` таблицу либо снапшотить thresholds в `endurance_scores.components` при write'е (доступ к историческим thresholds через прошлые ES-rows).
 - **Q5: Задержка детектирования детрейна (Base не падает быстро).** Когда атлет уходит в перерыв 2+ недели, `athlete_settings.power_zones_bike.ftp` и `pace_zones_run.threshold_pace` остаются на старых значениях до следующего ramp-теста или Intervals.icu eFTP-decay (~4–6 недель). За это время VO₂max-Base не отражает реальное падение формы (тесты `test_detrain_2026_02_01`). Apr 2026 (2 месяца) уже корректно классифицируется как Восстанавливаюсь, но Feb 2026 (2 недели) — Поддерживаю. **Это физиологически корректно** (VO₂max действительно не падает за 2 недели), но визуально выглядит так, будто карточка не реагирует. Возможный refinement в Phase 3: коррекция Base'а через свежесть thresholds (`athlete_settings.updated_at` или eFTP-trend в `wellness.sport_info`). **→ Отложено, edge case.**
 
 ---

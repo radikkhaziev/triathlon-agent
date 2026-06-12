@@ -2,7 +2,15 @@
 
 import pytest
 
-from data.utils import HRV_ELIGIBLE_TYPES, extract_sport_atl, extract_sport_ctl, is_bike, is_run, normalize_sport
+from data.utils import (
+    HRV_ELIGIBLE_TYPES,
+    extract_sport_atl,
+    extract_sport_ctl,
+    extract_sport_eftp,
+    is_bike,
+    is_run,
+    normalize_sport,
+)
 
 
 class TestNormalizeSport:
@@ -107,6 +115,28 @@ class TestExtractSportAtl:
         """Entry with only ctl set → atl extraction returns None for that sport."""
         sport_info = [{"type": "Run", "ctl": 20.0}]
         assert extract_sport_atl(sport_info) == {"swim": None, "ride": None, "run": None}
+
+
+class TestExtractSportEftp:
+    def test_ride_eftp_rounded(self):
+        """Real Intervals.icu payload shape — eftp carries full float precision."""
+        sport_info = [{"type": "Ride", "eftp": 207.82047, "wPrime": 17460.5, "ctl": 24.8}]
+        result = extract_sport_eftp(sport_info)
+        assert result == {"swim": None, "ride": 207.8, "run": None}
+
+    def test_no_power_sports_stay_none(self):
+        """Swim never has eftp; Run only for run-power users."""
+        sport_info = [
+            {"type": "Swim", "ctl": 6.8},
+            {"type": "Run", "ctl": 20.8},
+            {"type": "Ride", "eftp": 210.5, "ctl": 24.0},
+        ]
+        result = extract_sport_eftp(sport_info)
+        assert result == {"swim": None, "ride": 210.5, "run": None}
+
+    def test_empty(self):
+        assert extract_sport_eftp(None) == {"swim": None, "ride": None, "run": None}
+        assert extract_sport_eftp([]) == {"swim": None, "ride": None, "run": None}
 
 
 class TestDTONormalization:
