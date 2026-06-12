@@ -102,6 +102,15 @@ def extract_sport_atl(sport_info: list[dict] | None) -> dict[str, float | None]:
     return _extract_sport_field(sport_info, "atl", legacy_key="atlLoad")
 
 
+def extract_sport_eftp(sport_info: list[dict] | None) -> dict[str, float | None]:
+    """Extract per-sport eFTP from sport_info JSON.
+
+    Intervals.icu fills `eftp` only for sports with power data (Ride when a
+    power meter exists, Run for run-power users) — missing sports stay None.
+    """
+    return _extract_sport_field(sport_info, "eftp")
+
+
 def _extract_sport_field(
     sport_info: list[dict] | None,
     key: str,

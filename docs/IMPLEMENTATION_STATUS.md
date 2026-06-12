@@ -21,6 +21,14 @@ Legacy scheduler jobs `scheduler_scheduled_workouts` / `scheduler_wellness` / `s
 
 ---
 
+## Endurance Score: Base от date-specific eFTP (2026-06-12)
+
+**Trigger:** score падал при росте объёма. Диагноз: Base −190 за 5 дней из-за (а) смены бегового порога 287→305 с/км в Intervals (~−150) и (б) роста доли вело-CTL при вело-блоке — вело-VO2 ниже бегового, композит проседает by design. Попутно вскрылось: `athlete_settings.ftp = 225` завис на декабрьском пике при текущем eFTP 207.8 → Base завышен ~+110.
+
+**Что сделано:** `ftp_w` для Storer теперь берётся из `wellness.sport_info[Ride].eftp` на `ref_date` (приоритет) с fallback на `athlete_settings.ftp`. Новый `extract_sport_eftp` в `data/utils.py`; `WellnessSnapshot.ride_eftp`; параметр `ride_eftp` в `vo2max_composite`; `insufficient_data` учитывает eFTP. Покрытие eFTP: каждый день за 14+ мес у атлетов с пауэрметром (~50% юзеров), остальные — на старом fallback-пути без регрессий. Бонус: историческая Base-кривая по вело теперь date-specific — Q6 спеки частично закрыт (run threshold остаётся current-only, pace в sport_info нет). Спека §3.1 + Q6 обновлены, тесты: 3 в `TestVO2maxComposite`, 2 e2e, 3 на `extract_sport_eftp`.
+
+---
+
 ## Endurance Score — Phase 1 + 2 (2026-05-25)
 
 Composite 0..8000 endurance metric across all sports — replaces «coming soon»-placeholder in Dashboard Load-таб. Spec: `docs/ENDURANCE_SCORE_SPEC.md`. **Drift vs Garmin anchor (5773) = −2% on real Radik data.**

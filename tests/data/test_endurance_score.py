@@ -301,6 +301,26 @@ class TestVO2maxComposite:
         # bike 35.0*0.422 + run 52.1*0.425 + swim 52.1*0.137 = 14.8 + 22.1 + 7.1 ≈ 44.0
         assert 43.5 < result < 45.5
 
+    def test_ride_eftp_overrides_settings_ftp(self):
+        # Stale manual FTP 225 in settings, date-specific eFTP 207.8 — eFTP wins.
+        athlete = AthleteProfile(age=43, weight_kg=78.5, ftp_w=225.0, threshold_pace_sec_per_km=None)
+        with_eftp = vo2max_composite(athlete, {"Ride": 20.0}, ride_eftp=207.8)
+        assert round(with_eftp, 1) == 35.0  # Storer at 207.8, not 225
+        without_eftp = vo2max_composite(athlete, {"Ride": 20.0})
+        assert without_eftp > with_eftp  # 225 would inflate
+
+    def test_ride_eftp_fallback_to_settings_ftp(self):
+        # No eFTP (user without power meter in sport_info) → settings FTP used.
+        athlete = AthleteProfile(age=43, weight_kg=78.5, ftp_w=207.8, threshold_pace_sec_per_km=None)
+        result = vo2max_composite(athlete, {"Ride": 20.0}, ride_eftp=None)
+        assert round(result, 1) == 35.0
+
+    def test_ride_eftp_alone_enables_bike_vo2(self):
+        # No settings FTP at all — eFTP still unlocks the Storer branch.
+        athlete = AthleteProfile(age=43, weight_kg=78.5, ftp_w=None, threshold_pace_sec_per_km=None)
+        result = vo2max_composite(athlete, {"Ride": 20.0}, ride_eftp=207.8)
+        assert round(result, 1) == 35.0
+
 
 # ─── Zones ────────────────────────────────────────────────────────────────
 
@@ -679,3 +699,48 @@ class TestComputeEnduranceScoreEdgeCases:
         assert result.insufficient_reason == "no_thresholds"
         # Score still returned (Base from DEFAULT_VO2MAX)
         assert result.score == round(100 * DEFAULT_VO2MAX)  # 4000
+
+    def test_ride_eftp_alone_is_sufficient(self):
+        # No settings thresholds, but the wellness snapshot carries eFTP —
+        # Base computes from Storer, not flagged insufficient.
+        athlete = AthleteProfile(age=43, weight_kg=78.5, ftp_w=None, threshold_pace_sec_per_km=None)
+        latest = WellnessSnapshot(
+            dt=REF_DATE,
+            ctl=None,
+            ramp_rate=None,
+            sport_ctl={"Ride": 20.0},
+            ride_eftp=207.8,
+        )
+        result = compute_endurance_score(
+            ref_date=REF_DATE,
+            athlete=athlete,
+            latest_wellness=latest,
+            wellness_56d=[],
+            activities_28d=[],
+            activities_8w=[],
+        )
+        assert result.insufficient_data is False
+        # Storer at 207.8/78.5/43 ≈ 35.04 — base uses the unrounded composite.
+        assert result.components.base == round(100 * vo2max_bike_storer(207.8, 78.5, 43))
+
+    def test_ride_eftp_drives_base_over_stale_ftp(self):
+        # Radik's real case: settings FTP stuck at 225 (Dec peak), eFTP 207.8.
+        athlete = AthleteProfile(age=43, weight_kg=78.5, ftp_w=225.0, threshold_pace_sec_per_km=287)
+        latest = WellnessSnapshot(
+            dt=REF_DATE,
+            ctl=41.6,
+            ramp_rate=None,
+            sport_ctl={"Ride": 17.6, "Run": 17.7, "Swim": 5.7},
+            ride_eftp=207.8,
+        )
+        result = compute_endurance_score(
+            ref_date=REF_DATE,
+            athlete=athlete,
+            latest_wellness=latest,
+            wellness_56d=[],
+            activities_28d=[],
+            activities_8w=[],
+        )
+        # eFTP 207.8 → bike 35.0 → composite ≈ 44.8; stale FTP 225 would give
+        # bike 37.3 → composite ≈ 45.8. Assert the eFTP value won.
+        assert 44.5 < result.vo2max_composite < 45.1
