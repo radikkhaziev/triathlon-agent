@@ -11,6 +11,33 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## Public demo access — Phase 1-3 complete (2026-06-12)
+
+Публичный read-only демо-доступ к live-данным владельца без пароля. Spec: `docs/DEMO_PUBLIC_ACCESS_SPEC.md` (все open questions закрыты owner sign-off'ом 2026-06-12).
+
+**Ключевое архитектурное решение:** dual-write EN-переводов AI-текста ОТКЛОНЁН — PII живёт *внутри* AI-текста (morning report генерится из mood/IQOS/`user_facts`), перевод унёс бы утечку в английский дословно. Вместо этого AI free-text демо-сессии не сериализуется вовсе (`demo_stub: true`), фронт рендерит рукописный английский sample с бейджем «Sample…». Закрывает дыру by construction, убивает миграцию/translate-pass/backfill.
+
+- **Phase 1 — централизация demo-чека:** предикат `is_demo(user)` в `api/deps.py` заменил 8 ad-hoc `user.role == "demo"` сравнений (auth.py, oauth.py, deps.py). Inventory sign-off: race notes / вес / возраст / workout rationale (ru) — показываем; mood/IQOS/facts API-эндпоинтов не имеют (MCP-only), их единственный канал к демо — AI-текст — закрыт Phase 2.
+- **Phase 2 — AI-text stub + samples:** `GET /api/wellness-day` → `ai_recommendation: null` + `demo_stub: true` + детерминированные verdict-строки на английском; `GET /api/race-plan` → пустой `payload` + `demo_stub` (defense-in-depth — фронт для демо вообще не делает fetch). Фронт: `Coach.tsx` / teaser в `Wellness.tsx` / `RacePlanPanel.tsx` рендерят канонические English samples (`i18n demo.*` + TSX-константа `DEMO_SAMPLE_PLAN`), бейдж — `DemoSampleBadge.tsx`. Русские названия/описания тренировок в демо оставлены как есть (решение sign-off).
+- **Phase 3 — passwordless (Option A):** `POST /api/auth/demo` без пароля, гейт `DEMO_ENABLED` bool (заменил `DEMO_PASSWORD` SecretStr, `DemoAuthRequest` удалён), TTL 24h (`create_jwt(ttl_seconds=)`), кнопка «Try demo mode» на `/login` минтит в один клик.
+
+**Security review findings — применены в том же диффе:**
+
+- High: per-IP rate limit минта ключевался на IP прокси — api-сервис в compose получил `--proxy-headers --forwarded-allow-ips=172.28.0.1` (фиксированный gateway compose-сети, задан через ipam). НЕ `*`: Caddy APPEND-ит X-Forwarded-For, с `*` uvicorn доверял бы attacker-supplied leftmost-записи (безлимитный минт). С пином uvicorn ≥0.30 идёт по XFF справа-налево до первого недоверенного хопа = реальный клиент. Порт опубликован только на `127.0.0.1` — соединиться может лишь хостовый Caddy.
+- Medium: kill switch мгновенный — `get_current_user` отвергает `purpose="demo"` токены при `DEMO_ENABLED=false`, не дожидаясь TTL.
+- Medium: `_demo_attempts` — lazy prune ключей (IPv6 = attacker-controlled key space на публичном эндпоинте).
+- Low: session-auth принимает только `purpose ∈ (None, "demo")` — OAuth-state JWT (тот же signing secret) больше не реплеится как логин. Тестовая фикстура `test_deps_dormant_user.py` приведена к реальному контракту (`purpose=None`).
+
+**Tests:** `tests/api/test_auth_demo.py` (kill switch, TTL=24h byte-level, rate limit + per-IP изоляция, purpose allowlist, 503 без owner) + `TestDemoStub` в `test_wellness_day.py` + `test_demo_gets_stub_without_ai_payload` в `test_race_plan_routes.py` — все с негативными ассертами (приватная строка отсутствует в сыром ответе). 475 api-тестов зелёные.
+
+**Deferred (задокументировано):** Redis-миграция rate-лимитеров — по триггерам `MULTI_TENANT_SECURITY_SPEC.md` §5; workout rationale показывается as-is (ru) — при замеченной утечке факта добавляется в стаб-лист одной строкой.
+
+**Второй раунд ревью (тот же день):** M3 — 401-handler в `webapp/src/api/client.ts` чистит и `auth_role` (stale `demo` роль рисовала canned-сэмплы после kill switch); M4 — `RacePlanPayload.plan/confidence_tier` в TS-контракте стали optional (demo-стаб отдаёт `payload: {}`); L1 — `test_demo_role_scrubs_identity` усилен avatar_url-ассертом + whole-response sweep на PII-маркеры (ловит будущие поля над scrub-блоком compute-then-scrub шейпа auth_me); L3 — комменты в auth.py больше не подают TTL как kill switch; L4 — позитивный EN-ассерт в `test_demo_gets_english_meaning_strings`.
+
+**Deploy note:** api-контейнер требует recreate + `docker compose down/up` для пересоздания сети (фиксированный subnet 172.28.0.0/16); `DEMO_ENABLED` default `True` — выключение через `.env`.
+
+---
+
 ## api_key auth retired + stale-user deactivation (2026-05-27)
 
 Legacy `intervals_auth_method='api_key'` path removed. The last api_key user is deactivated by migration `a8b9c0d1e2f3`; columns `api_key_encrypted`, `preferred_model`, `intervals_auth_method` dropped. `intervals_oauth_scope` kept across `clear_oauth_tokens` — it's load-bearing for future scope-validation UX (telling the user "we couldn't update zones because you didn't grant SETTINGS:WRITE"). `IntervalsClient` collapsed to OAuth-only (`access_token` required, no Basic auth path).

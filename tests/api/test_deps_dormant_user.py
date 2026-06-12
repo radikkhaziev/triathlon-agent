@@ -34,9 +34,11 @@ def _user(*, is_active: bool, role: str = "athlete", athlete_id: str | None = "i
 
 @pytest.fixture
 def jwt_token():
-    """Stub `verify_jwt` to return a chat_id with non-demo purpose. Tests
-    that need demo purpose override via their own patch."""
-    with patch("api.deps.verify_jwt", return_value=("999", "user")):
+    """Stub `verify_jwt` to return a chat_id with a plain session token
+    (purpose=None — the only non-demo purpose session auth accepts; foreign
+    purposes like OAuth state are rejected outright). Tests that need demo
+    purpose override via their own patch."""
+    with patch("api.deps.verify_jwt", return_value=("999", None)):
         yield "Bearer fake-jwt"
 
 

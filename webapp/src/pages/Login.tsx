@@ -34,11 +34,7 @@ export default function Login() {
   const [alreadyAuth, setAlreadyAuth] = useState(false)
   const [botUsername, setBotUsername] = useState<string | null>(null)
   const widgetContainerRef = useRef<HTMLDivElement>(null)
-  const [demoPassword, setDemoPassword] = useState('')
   const [demoSubmitting, setDemoSubmitting] = useState(false)
-  // Presentational only: the prototype surfaces demo as a text link that
-  // reveals the (password-gated) demo form. Does not touch auth logic.
-  const [showDemo, setShowDemo] = useState(false)
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -145,16 +141,14 @@ export default function Login() {
     }
   }
 
-  const handleDemo = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!demoPassword.trim()) return
+  // Public passwordless demo — one click mints a 24h read-only token
+  // (docs/DEMO_PUBLIC_ACCESS_SPEC.md Phase 3, Option A).
+  const handleDemo = async () => {
     setDemoSubmitting(true)
     setMessage('')
     try {
       const data = await apiFetch<{ token: string; role: string }>('/api/auth/demo', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: demoPassword }),
       })
       setJwt(data.token, data.role as 'demo')
       setMessage(t('login.success'))
@@ -238,32 +232,14 @@ export default function Login() {
           )}
         </div>
 
-        {showDemo ? (
-          <form onSubmit={handleDemo} className="mt-3.5 flex gap-2">
-            <input
-              type="password"
-              value={demoPassword}
-              onChange={e => setDemoPassword(e.target.value)}
-              placeholder={t('login.demo_placeholder')}
-              className="flex-1 rounded-chip border border-halo-border bg-halo-surface px-3 py-2.5 text-sm text-halo-ink outline-none focus:border-halo-brand font-sans"
-            />
-            <button
-              type="submit"
-              disabled={demoSubmitting}
-              className="rounded-chip border border-halo-border bg-halo-surface-2 px-4 py-2.5 text-sm font-semibold text-halo-ink disabled:opacity-50 font-sans"
-            >
-              {demoSubmitting ? t('login.demo_checking') : t('login.demo_submit')}
-            </button>
-          </form>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowDemo(true)}
-            className="mt-3.5 w-full border-none bg-transparent py-3 text-[13px] font-semibold text-halo-ink-dim"
-          >
-            {t('login.try_demo')}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={handleDemo}
+          disabled={demoSubmitting}
+          className="mt-3.5 w-full border-none bg-transparent py-3 text-[13px] font-semibold text-halo-ink-dim disabled:opacity-50"
+        >
+          {demoSubmitting ? t('login.demo_checking') : t('login.try_demo')}
+        </button>
       </div>
 
       {/* Legal footer */}

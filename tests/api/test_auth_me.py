@@ -8,6 +8,7 @@ backend gate change, but the user never sees the /start prompt).
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -147,9 +148,16 @@ class TestIdentityExposed:
         owner.display_name/username в /api/auth/me → leak в Settings/Sidebar.
         Контракт: demo-блок pin'ит identity в None (как `intervals.athlete_id`
         → "demo")."""
-        result = await auth_me(user=_user(role="demo", display_name="Radik Khaziev", username="radik"))
+        result = await auth_me(user=_user(role="demo", display_name="Секретное Имя", username="secret_handle"))
         assert result["display_name"] is None
         assert result["username"] is None
+        assert result["avatar_url"] is None
+        # Future-proofing against the compute-then-scrub shape of auth_me: a
+        # new field added ABOVE the demo-scrub block leaks unless someone
+        # remembers the scrub line. Whole-response sweep catches that class.
+        dumped = json.dumps(result, default=str, ensure_ascii=False)
+        assert "Секретное" not in dumped
+        assert "secret_handle" not in dumped
 
 
 class TestProfilePersonalFields:

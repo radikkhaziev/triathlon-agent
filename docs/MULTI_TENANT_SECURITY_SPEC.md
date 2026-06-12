@@ -40,8 +40,8 @@ Schema: 36 tables, 13 with `user_id` FK + index (migrations `268670b22cd7` users
 |---|---|---|
 | **Owner** | Владелец инстанса | Полный доступ |
 | **Viewer** | Друг через share-link | Read-only webapp |
-| **Anonymous** | Случайный | Только лендинг |
-| **Attacker — external** | Атакует API endpoints | Rate limiting на verify-code/демо |
+| **Anonymous** | Случайный | Лендинг + public demo (passwordless mint `POST /api/auth/demo`, read-only, 24h TTL, instant kill switch `DEMO_ENABLED` — accepted 2026-06-12, см. `DEMO_PUBLIC_ACCESS_SPEC.md`) |
+| **Attacker — external** | Атакует API endpoints | Rate limiting на verify-code/демо-mint (per-IP — uvicorn `--proxy-headers --forwarded-allow-ips=<gateway>` в compose; пин обязателен, `*` делает XFF спуфабельным т.к. Caddy append-ит) |
 | **Attacker — tenant** | Другой пользователь системы | **Новый actor — multi-tenant** |
 
 ### Threats
@@ -281,7 +281,7 @@ Schema: 36 tables, 13 with `user_id` FK + index (migrations `268670b22cd7` users
 
 | File:line | Key | Limit | Назначение |
 |---|---|---|---|
-| `api/routers/auth.py:37-44` | `_demo_attempts[ip]` | 5 / 5 min | Demo password brute-force shield |
+| `api/routers/auth.py:42-51` | `_demo_attempts[ip]` | 5 / 5 min | Public demo-mint throttle (passwordless с 2026-06-12; per-IP via `--proxy-headers` + pinned `forwarded-allow-ips`, lazy prune) |
 | `api/routers/auth.py:38` | `_mcp_config_last_access[user.id]` | 1 / 60 s | MCP token disclosure anti-spam |
 | `api/routers/auth.py:64` | `_retry_backfill_last_success[user.id]` | 1 / 1 h | Bootstrap backfill retry button |
 | `api/routers/intervals/oauth.py:99` | OAuth init | (см. файл) | Anti-flood OAuth initiation |

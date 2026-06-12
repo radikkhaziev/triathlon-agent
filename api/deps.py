@@ -31,12 +31,24 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
     tg_display_name: str | None = None
     tg_language_code: str | None = None
     from_init_data = False
-    is_demo = False
+    is_demo_token = False
 
     if authorization.startswith("Bearer "):
         jwt_token = authorization[7:]
         chat_id, purpose = verify_jwt(jwt_token)
-        is_demo = purpose == "demo"
+        # Session auth accepts only plain session JWTs (no purpose) and demo
+        # tokens. Other purposes share the signing secret but are NOT sessions
+        # (e.g. "intervals_oauth" state JWTs transit through redirect URLs and
+        # browser history) — reject them here so a leaked state token can
+        # never be replayed as a login.
+        if purpose not in (None, "demo"):
+            return None
+        is_demo_token = purpose == "demo"
+        # Instant kill switch: flipping DEMO_ENABLED off invalidates
+        # already-minted demo tokens at verification time — no waiting out
+        # the 24h TTL when the door must close NOW.
+        if is_demo_token and not settings.DEMO_ENABLED:
+            return None
     else:
         bot_token = settings.TELEGRAM_BOT_TOKEN.get_secret_value()
         if bot_token:
@@ -76,7 +88,7 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
         user = await User.get_by_chat_id(chat_id, include_inactive=True)
 
     if user:
-        if is_demo:
+        if is_demo_token:
             # Demo tokens grant read-only access to owner's data.
             # Set a virtual role that frontend and deps can check.
             user.role = "demo"  # type: ignore[assignment]  # virtual, not persisted
@@ -127,6 +139,17 @@ def _verify_and_parse_init_data(init_data: str, bot_token: str) -> dict | None:
     return parsed
 
 
+def is_demo(user: User | None) -> bool:
+    """True when the session is a read-only public demo.
+
+    The demo JWT (`purpose="demo"`) resolves to the OWNER's User row with a
+    virtual `role="demo"` set in `get_current_user`. Every endpoint-level
+    demo branch (write rejection, PII scrub, AI-text stub) must go through
+    this predicate — see docs/DEMO_PUBLIC_ACCESS_SPEC.md Phase 1.
+    """
+    return user is not None and user.role == "demo"
+
+
 async def require_viewer(user: User | None = Depends(get_current_user)) -> User:
     """Require authenticated user. Returns User object.
 
@@ -153,7 +176,7 @@ async def require_athlete(user: User | None = Depends(get_current_user)) -> User
     """Require active athlete with Intervals.icu credentials configured."""
     if not user:
         raise HTTPException(status_code=401, detail="Telegram authorization required")
-    if user.role == "demo":
+    if is_demo(user):
         raise HTTPException(status_code=403, detail="Read-only demo mode")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is deactivated")

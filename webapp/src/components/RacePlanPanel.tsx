@@ -1,8 +1,52 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ApiError, apiFetch } from '../api/client'
-import type { InheritableRace, RaceConditionsInput, RacePlanLeg, RacePlanResponse } from '../api/types'
+import { useAuth } from '../auth/useAuth'
+import type { InheritableRace, RaceConditionsInput, RacePlanInner, RacePlanLeg, RacePlanResponse } from '../api/types'
+import DemoSampleBadge from './DemoSampleBadge'
 import RaceConditionsForm from './RaceConditionsForm'
+
+// Hand-written sample plan for demo sessions — the server stubs the real
+// payload (its free-text is generated from private athlete context), so the
+// panel shows the product's form on canned English data instead. English-only
+// by design: demo language is pinned to "en" (docs/DEMO_PUBLIC_ACCESS_SPEC.md
+// Phase 2; structured data stays a TSX constant rather than i18n keys).
+const DEMO_SAMPLE_PLAN: RacePlanInner = {
+  headline: 'Even pacing wins this course — hold back for the first 20 minutes.',
+  warmup: 'Race morning: 10 min easy spin + 3×30s builds, then 5 min swim loosen-up ending 20 min before the start.',
+  legs: [
+    {
+      leg: 'swim',
+      distance: '1.9 km',
+      pacing: { low: '1:55', target: '1:50', cap: '1:45' },
+      notes: 'Settle through the first 200 m, then find feet to draft.',
+    },
+    {
+      leg: 'bike',
+      distance: '90 km',
+      pacing: { low: '180 W', target: '195 W', cap: '210 W' },
+      hr_ceiling_bpm: 152,
+      notes: 'Cap power on the climbs — this race is won on the run.',
+    },
+    {
+      leg: 'run',
+      distance: '21.1 km',
+      pacing: { low: '5:30', target: '5:15', cap: '5:00' },
+      notes: 'First 3 km strictly easy, then settle at target pace.',
+    },
+  ],
+  fueling: {
+    carbs_g_per_hour: 80,
+    fluid_ml_per_hour: 750,
+    sodium_mg_per_hour: 600,
+    notes: 'Start fueling at minute 15 on the bike, nothing solid after the bike.',
+  },
+  transitions: [],
+  contingencies: [
+    { scenario: 'hot day', plan: 'Add 250 ml/h of fluid and drop the run target by 10s/km.' },
+    { scenario: 'HR spikes early on the bike', plan: 'Sit up for 5 min, eat, reassess at the next corridor check.' },
+  ],
+}
 
 // Refresh icon for the "Recalculate plan" CTA (prototype `RacePlanCard`).
 function RefreshIcon() {
@@ -126,6 +170,7 @@ function RacePill({ daysRemaining, isEarly }: { daysRemaining: number; isEarly: 
 
 export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: number; daysRemaining: number }) {
   const { t } = useTranslation()
+  const { isDemo } = useAuth()
   const formatErrorMessage = useErrorMessage()
 
   const [plan, setPlan] = useState<RacePlanResponse | null>(null)
@@ -141,6 +186,12 @@ export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: numbe
   const [inheritableRaces, setInheritableRaces] = useState<InheritableRace[] | null>(null)
 
   useEffect(() => {
+    // Demo renders the canned sample — no fetch (the server would stub the
+    // payload anyway, see GET /api/race-plan demo branch).
+    if (isDemo) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError(null)
     apiFetch<RacePlanResponse>(`/api/race-plan?goal_id=${goalId}`)
@@ -165,7 +216,7 @@ export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: numbe
         })
       })
       .finally(() => setLoading(false))
-  }, [goalId])
+  }, [goalId, isDemo])
 
   const generate = async (forceRegen: boolean) => {
     setGenerating(true)
@@ -211,7 +262,8 @@ export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: numbe
   }
 
   // No plan yet → invite generation. Surface inline error from a failed prior attempt.
-  if (!plan) {
+  // Demo never lands here — it renders the sample below regardless of plan state.
+  if (!plan && !isDemo) {
     return (
       <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
         <div className="flex items-start justify-between gap-3">
@@ -256,7 +308,7 @@ export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: numbe
   // optional sections even when JSON-schema marks them required (observed in
   // prod plan_id=1 where ``contingencies`` was absent). Treat every section
   // as optional in the renderer — better empty card than white-screen exception.
-  const inner = plan.payload?.plan ?? {}
+  const inner: Partial<RacePlanInner> = isDemo ? DEMO_SAMPLE_PLAN : (plan?.payload?.plan ?? {})
   const legs = inner.legs ?? []
   const fueling = inner.fueling
   const transitions = inner.transitions ?? []
@@ -265,8 +317,10 @@ export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: numbe
     <div className="rounded-card border border-halo-border bg-halo-surface p-[18px] shadow-card">
       <div className="flex items-start justify-between gap-3">
         <div className="text-[15px] font-semibold tracking-[-0.2px]">{t('race_plan.title')}</div>
-        <RacePill daysRemaining={daysRemaining} isEarly={plan.confidence_tier === 'early'} />
+        <RacePill daysRemaining={daysRemaining} isEarly={!isDemo && plan?.confidence_tier === 'early'} />
       </div>
+
+      {isDemo && <DemoSampleBadge textKey="demo.race_plan_badge" />}
 
       {inner.headline && (
         <div className="mb-3 mt-3 border-l-2 border-halo-brand pl-2 text-sm italic text-halo-ink-dim">
@@ -357,55 +411,61 @@ export default function RacePlanPanel({ goalId, daysRemaining }: { goalId: numbe
         </>
       )}
 
-      <div className="mt-4 flex items-center justify-between border-t border-halo-border pt-2 text-[10px] text-halo-ink-dim">
-        <span>
-          {t('race_plan.footer_generated', {
-            when: plan.generated_at
-              ? new Date(plan.generated_at).toLocaleString(undefined, {
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              : '',
-            model: plan.model_version,
-          })}
-        </span>
-      </div>
+      {/* Footer / conditions / regenerate are real-plan chrome — meaningless
+          for the demo sample (and regenerate would 403 on a demo token). */}
+      {!isDemo && plan && (
+        <>
+          <div className="mt-4 flex items-center justify-between border-t border-halo-border pt-2 text-[10px] text-halo-ink-dim">
+            <span>
+              {t('race_plan.footer_generated', {
+                when: plan.generated_at
+                  ? new Date(plan.generated_at).toLocaleString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : '',
+                model: plan.model_version,
+              })}
+            </span>
+          </div>
 
-      {/* L1: surface the service-emitted note (e.g. "regenerated in place 1/1 today") so
-          the athlete gets confirmation text, not just a silently-updated panel. */}
-      {plan.note && <div className="mt-1 text-[11px] italic text-halo-ink-dim">{plan.note}</div>}
+          {/* L1: surface the service-emitted note (e.g. "regenerated in place 1/1 today") so
+              the athlete gets confirmation text, not just a silently-updated panel. */}
+          {plan.note && <div className="mt-1 text-[11px] italic text-halo-ink-dim">{plan.note}</div>}
 
-      <RaceConditionsForm
-        goalId={goalId}
-        value={conditions}
-        onChange={setConditions}
-        open={conditionsFormOpen}
-        onOpenChange={setConditionsFormOpen}
-        inheritable={inheritableRaces}
-        onInheritableLoaded={setInheritableRaces}
-      />
+          <RaceConditionsForm
+            goalId={goalId}
+            value={conditions}
+            onChange={setConditions}
+            open={conditionsFormOpen}
+            onOpenChange={setConditionsFormOpen}
+            inheritable={inheritableRaces}
+            onInheritableLoaded={setInheritableRaces}
+          />
 
-      {error && (
-        <div className="mt-2 text-[11px] text-halo-coral" role="status">
-          <span aria-hidden="true">⚠ </span>
-          {error.status === 429 ? (
-            <RateLimitNotice detail={error.detail as { retry_after_sec?: number; next_available_at?: string }} />
-          ) : (
-            formatErrorMessage(error)
+          {error && (
+            <div className="mt-2 text-[11px] text-halo-coral" role="status">
+              <span aria-hidden="true">⚠ </span>
+              {error.status === 429 ? (
+                <RateLimitNotice detail={error.detail as { retry_after_sec?: number; next_available_at?: string }} />
+              ) : (
+                formatErrorMessage(error)
+              )}
+            </div>
           )}
-        </div>
-      )}
 
-      <button
-        onClick={() => generate(true)}
-        disabled={generating || error?.status === 429}
-        className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-[12px] border border-halo-border py-3 text-sm font-semibold text-halo-ink hover:bg-halo-surface-2 disabled:opacity-50"
-      >
-        {generating ? <Spinner /> : <RefreshIcon />}
-        {generating ? t('race_plan.regenerating') : t('race_plan.regenerate_cta')}
-      </button>
+          <button
+            onClick={() => generate(true)}
+            disabled={generating || error?.status === 429}
+            className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-[12px] border border-halo-border py-3 text-sm font-semibold text-halo-ink hover:bg-halo-surface-2 disabled:opacity-50"
+          >
+            {generating ? <Spinner /> : <RefreshIcon />}
+            {generating ? t('race_plan.regenerating') : t('race_plan.regenerate_cta')}
+          </button>
+        </>
+      )}
     </div>
   )
 }

@@ -34,4 +34,7 @@ RUN poetry install --only main --no-interaction --no-ansi
 
 EXPOSE 8000
 
+# Proxy-header handling (real client IPs for rate limits) is configured in
+# docker-compose.yml api.command — it pins --forwarded-allow-ips to the compose
+# network gateway, which this image cannot know at build time.
 CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from api.deps import get_data_user_id, require_athlete, require_viewer
+from api.deps import get_data_user_id, is_demo, require_athlete, require_viewer
 from data.db import AthleteGoal, Race, RacePlan, User, get_session
 from data.race_plan_service import build_race_plan
 
@@ -68,6 +68,20 @@ async def get_race_plan(
     row = await RacePlan.get_latest_for_race(goal_id, user_id=uid)
     if row is None:
         raise HTTPException(status_code=404, detail="No plan generated yet")
+
+    if is_demo(user):
+        # The payload's free-text (headline / warmup / leg notes / contingencies)
+        # is AI-generated from private athlete context — never serialize it to
+        # demo. The frontend skips this fetch entirely for demo sessions and
+        # renders a canned sample; this branch is defense-in-depth.
+        # See docs/DEMO_PUBLIC_ACCESS_SPEC.md Phase 2.
+        return {
+            "model_version": row.model_version,
+            "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+            "confidence_tier": (row.payload or {}).get("confidence_tier", "mid"),
+            "demo_stub": True,
+            "payload": {},
+        }
 
     return _format_plan_response(row)
 

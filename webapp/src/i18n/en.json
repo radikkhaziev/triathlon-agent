@@ -46,8 +46,6 @@
     "submit": "Log in",
     "already_auth": "You are already logged in.",
     "go_home": "Go to home",
-    "demo_placeholder": "Demo password",
-    "demo_submit": "View demo",
     "demo_checking": "Checking...",
     "brand_tagline": "Your AI training partner for triathlon. Built on top of Intervals.icu.",
     "sign_in": "Sign in",
@@ -578,5 +576,11 @@
   "personal_edit": {
     "subtitle": "Age, weight and per-sport max HR. Only age is editable today.",
     "no_profile": "Profile not loaded yet."
+  },
+  "demo": {
+    "sample_badge": "Sample — in the real app this note is generated daily from your HRV, sleep and training load.",
+    "race_plan_badge": "Sample — in the real app this plan is generated from your training history, zones and race-day projection.",
+    "coach_teaser": "Recovery 78 — good. Green light for today's 4×8' Z4 bike intervals…",
+    "coach_sample": "**Recovery: 78 — good.** HRV is back within your baseline (3-day avg 92 ms vs 7-day 89 ms) and resting HR is steady at 47. Sleep came in at 7h 40m with a solid deep-sleep share.\n\nGreen light for today's **4×8' Z4 bike intervals** — TSB at −8 sits in the productive zone, so quality work will land well. Keep the recoveries honest in Z1 and cap the last interval if heart rate drifts above the corridor.\n\n- Fuel: 60–80 g carbs/h on the bike\n- Hydrate before the session, not during the first interval\n- Tomorrow stays easy: 40' Z2 run to absorb the load"
   }
 }

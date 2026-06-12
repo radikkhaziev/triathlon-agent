@@ -36,18 +36,22 @@ _SEED_DATE = "2026-01-15"
 _STATUS_ENUM = {"green", "yellow", "red", "insufficient_data"}
 
 
-@pytest.fixture
-def client():
+def _build_client(role: str = "owner") -> AsyncClient:
     test_app = FastAPI()
     test_app.include_router(wellness_router)
 
     mock_user = MagicMock()
     mock_user.id = 1
-    mock_user.role = "owner"
+    mock_user.role = role
     mock_user.is_active = True
     mock_user.language = "ru"
     test_app.dependency_overrides[require_viewer] = lambda: mock_user
     return AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test")
+
+
+@pytest.fixture
+def client():
+    return _build_client()
 
 
 async def _seed_wellness(
@@ -55,6 +59,7 @@ async def _seed_wellness(
     readiness_level: str | None = None,
     recovery_category: str | None = "moderate",
     banister_recovery: float | None = None,
+    ai_recommendation: str | None = None,
 ) -> None:
     """Insert a wellness row directly (mirrors test_dashboard._seed_wellness —
     `recovery_*` is computed locally, not via the Intervals DTO)."""
@@ -70,6 +75,7 @@ async def _seed_wellness(
                 readiness_score=62,
                 readiness_level=readiness_level,
                 banister_recovery=banister_recovery,
+                ai_recommendation=ai_recommendation,
                 hrv=52.0,
                 updated=datetime.now(timezone.utc),
             )
@@ -467,3 +473,36 @@ class TestStreakCounts:
         # today + day-1 above, day-2 breaks → streak == 2
         assert data["hrv"]["streak_above_baseline"] == 2
         assert "2 утра подряд" in data["hrv"]["meaning"]
+
+
+class TestDemoStub:
+    """Demo sessions must never receive the AI free-text — it's generated from
+    mood check-ins / IQOS / user_facts and routinely interpolates intimate
+    content (docs/DEMO_PUBLIC_ACCESS_SPEC.md Phase 2). Deterministic verdict
+    strings switch to English for demo regardless of the owner's language."""
+
+    async def test_demo_gets_stub_instead_of_ai_text(self):
+        await _seed_wellness(ai_recommendation="Вчера 12 стиков, тревожность 4/5 — личный текст")
+        data = await _get(_build_client(role="demo"))
+
+        assert data["demo_stub"] is True
+        assert data["ai_recommendation"] is None
+        assert "стиков" not in str(data)
+
+    async def test_owner_still_gets_ai_text_verbatim(self):
+        await _seed_wellness(ai_recommendation="Утренний отчёт без купюр")
+        data = await _get(_build_client(role="owner"))
+
+        assert data["ai_recommendation"] == "Утренний отчёт без купюр"
+        assert "demo_stub" not in data
+
+    async def test_demo_gets_english_meaning_strings(self):
+        """The owner's row says language='ru', but demo verdicts render in
+        English (the AI text is stubbed; deterministic strings translate)."""
+        await _seed_wellness()
+        await _seed_analysis(hrv_status="green", rhr_status="green")
+        data = await _get(_build_client(role="demo"))
+
+        meaning = data["hrv"]["meaning"]
+        # Positive assert — an empty/None meaning must fail, not pass silently.
+        assert meaning and "parasympathetic" in meaning

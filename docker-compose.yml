@@ -55,7 +55,15 @@ services:
 
   api:
     build: .
-    command: uvicorn api.server:app --host 0.0.0.0 --port 8000
+    # --proxy-headers: the demo-mint per-IP rate limit keys on request.client.host;
+    # without XFF parsing every visitor shares Caddy's IP (one bucket = trivial DoS
+    # of the public demo button, zero per-attacker throttle).
+    # forwarded-allow-ips is PINNED to the compose network gateway (host-side Caddy
+    # reaches the published 127.0.0.1 port through it) — never "*": Caddy APPENDS to
+    # X-Forwarded-For, and with "*" uvicorn would trust the attacker-supplied leftmost
+    # entry (unlimited token mint). With a pinned trust list uvicorn ≥0.30 walks XFF
+    # right-to-left and stops at the first untrusted hop = the real client IP.
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=172.28.0.1
     env_file: .env
     environment:
       TZ: ${TIMEZONE:-Europe/Belgrade}
@@ -115,6 +123,15 @@ services:
     ports:
       - "127.0.0.1:8080:80"
     restart: unless-stopped
+
+# Fixed subnet so the api service can pin uvicorn's --forwarded-allow-ips to the
+# gateway IP (see api.command). Host-published ports enter the network through it.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
 
 volumes:
   pgdata:

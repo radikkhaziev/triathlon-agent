@@ -49,7 +49,7 @@ GET  /api/progress?sport=bike&days=90   — aerobic efficiency trend (EF/SWOLF/p
 GET  /api/polarization?sport=run&days=28 — zone distribution (Low/Mid/High) + multi-window + signals
 GET  /api/fitness-projection            — CTL/ATL/rampRate decay curve (from FITNESS_UPDATED webhook)
 POST /api/auth/verify-code              — verify one-time code → JWT
-POST /api/auth/demo                     — demo password → JWT with role=demo (read-only owner data)
+POST /api/auth/demo                     — passwordless demo mint (gated by DEMO_ENABLED, 24h TTL) → JWT with role=demo (read-only owner data)
 GET  /api/auth/me                       — auth status + language + intervals connection + profile/goal
 GET  /api/auth/mcp-config                — per-user MCP config (rate-limited, audit-logged)
 PUT  /api/auth/language                 — update user language (ru/en)
@@ -70,7 +70,7 @@ GET  /static/workouts/{date}-{slug}.html — generated workout HTML (StaticFiles
 
 **Dashboard API** (real per-user, in `api/routers/dashboard.py`): `/api/training-load`, `/api/activities`, `/api/recovery-trend`, `/api/weekly-recap`, `/api/goal` (`{has_goal: false}` when no active race; React hides the Goal tab in that case). Activities/recap drop sports that don't normalize to Swim/Ride/Run (yoga, hike, weights → not on the chart and excluded from week TSS). Still mock in `api/dashboard_routes.py`: `/api/dashboard` (legacy, no current consumer after Today page removal), `/api/jobs/morning-report`.
 
-**Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256, 15-min freshness) or `Bearer <jwt>`. Demo mode: `POST /api/auth/demo` with `DEMO_PASSWORD` → JWT with `purpose=demo` claim, resolved to owner's User with virtual `role="demo"` (read-only, mutation endpoints blocked via `require_athlete`). Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id, blocks demo), `require_owner`. `get_data_user_id(user)` always returns `user.id`. API DTOs centralized in `api/dto.py`.
+**Auth:** Two methods in `Authorization` header — Telegram initData (HMAC-SHA256, 15-min freshness) or `Bearer <jwt>`. Demo mode: `POST /api/auth/demo` (public passwordless mint, gated by `DEMO_ENABLED`, per-IP rate limit, 24h TTL) → JWT with `purpose=demo` claim, resolved to owner's User with virtual `role="demo"` (read-only, mutation endpoints blocked via `require_athlete`). Resolves to `User` object via `get_current_user()`. Dependencies: `require_viewer` (any authenticated user), `require_athlete` (active + athlete_id, blocks demo), `require_owner`. `get_data_user_id(user)` always returns `user.id`. API DTOs centralized in `api/dto.py`.
 
 ---
 

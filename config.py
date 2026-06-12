@@ -59,8 +59,10 @@ class Settings(BaseSettings):
     JWT_SECRET: SecretStr = SecretStr("")  # If empty, falls back to TELEGRAM_BOT_TOKEN
     JWT_EXPIRY_DAYS: int = 7  # JWT token lifetime
 
-    # Demo mode: shared password for read-only access to owner's data. Empty = disabled.
-    DEMO_PASSWORD: SecretStr = SecretStr("")
+    # Demo mode: public passwordless read-only access to owner's data.
+    # False = mint endpoint 404s AND already-issued demo tokens are rejected
+    # at verification (instant kill switch, see api/deps.py:get_current_user).
+    DEMO_ENABLED: bool = True
 
     # Strava signature: auto-rename activities with AI-generated promo title/description.
     # Global kill-switch + per-user allowlist (CSV of user IDs). Both must pass for the
