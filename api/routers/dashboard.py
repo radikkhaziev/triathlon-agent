@@ -38,6 +38,7 @@ from data.marathon_shape import DAYS_FOR_WEEK_KM, MIN_KM_FOR_LONGJOG, RunActivit
 from data.metrics import PROJECTION_WINDOW_DAYS, project_ctl_target, project_sport_load_forward, recompute_today_loads
 from data.ml.race_predict import predict_splits_with_ci
 from data.redis_client import get_redis
+from data.taper_service import get_taper_plan_for_user
 from data.training_strain import acwr, acwr_status, compute_training_strain
 from data.utils import extract_sport_atl, extract_sport_ctl, normalize_sport
 from mcp_server.tools.progress import compute_efficiency_trend
@@ -74,6 +75,9 @@ _SPORT_MAP = {
 # draws forward as zero-load decay over this window. 28 days covers a full ATL
 # collapse (4×τ_ATL) and ~half a CTL half-life — visible answer to "what if
 # I stop training" without bloating the chart axis.
+# CONTRACT: must stay >= data/metrics.py:_TAPER_EARLY_HORIZON_DAYS (21) — the
+# LoadDetail taper overlay renders only when the race is within that horizon,
+# and race day must land on the chart axis even with zero planned workouts.
 _FORECAST_FALLBACK_DAYS = 28
 
 
@@ -313,6 +317,19 @@ def _last_non_null(values: list[float | None]) -> float | None:
         if v is not None:
             return v
     return None
+
+
+@router.get("/api/taper-plan")
+async def taper_plan(user: User = Depends(require_viewer)) -> dict:
+    """Deterministic taper plan for the LoadDetail taper overlay.
+
+    Same envelope as the `get_taper_plan` MCP tool (shared
+    `data/taper_service.py` resolution — chat and webapp can never disagree).
+    `{available: False, reason}` when there's no future race / no data; the
+    frontend renders nothing in that case. `confidence="early"` ships empty
+    `daily_targets` — the overlay stays hidden until the race is ≤3 weeks out.
+    """
+    return await get_taper_plan_for_user(get_data_user_id(user))
 
 
 @router.get("/api/activities")
