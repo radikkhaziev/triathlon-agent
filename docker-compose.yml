@@ -63,7 +63,7 @@ services:
     # X-Forwarded-For, and with "*" uvicorn would trust the attacker-supplied leftmost
     # entry (unlimited token mint). With a pinned trust list uvicorn ≥0.30 walks XFF
     # right-to-left and stops at the first untrusted hop = the real client IP.
-    command: uvicorn api.server:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=172.28.0.1
+    command: uvicorn api.server:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-172.28.0.1}
     env_file: .env
     environment:
       TZ: ${TIMEZONE:-Europe/Belgrade}
@@ -130,8 +130,8 @@ networks:
   default:
     ipam:
       config:
-        - subnet: 172.28.0.0/16
-          gateway: 172.28.0.1
+        - subnet: ${COMPOSE_NET_SUBNET:-172.28.0.0/16}
+          gateway: ${COMPOSE_NET_GATEWAY:-172.28.0.1}
 
 volumes:
   pgdata:

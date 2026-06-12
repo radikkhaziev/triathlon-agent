@@ -29,7 +29,10 @@ def _request(ip: str = "203.0.113.7") -> SimpleNamespace:
 
 
 def _jwt_payload(token: str) -> dict:
-    return json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
+    seg = token.split(".")[1]
+    # Pad to a multiple of 4 — payload length varies with timestamps, so a
+    # constant "==" would make decoding time-dependent.
+    return json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
 
 
 @pytest.fixture(autouse=True)
