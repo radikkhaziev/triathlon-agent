@@ -104,7 +104,7 @@ export default function Wellness() {
       <div className="-mx-4 -mt-4 md:-mb-8 min-h-screen bg-halo-bg px-4 md:px-9 font-sans text-halo-ink">
         <TopBar title={t('nav.today')} right={rightDate} subtitle={t('wellness.desktop_subtitle')} />
 
-        {isToday && unread && changelog && (
+        {isToday && unread && changelog && !isDemo && (
           <a
             href={changelog.url}
             target="_blank"
