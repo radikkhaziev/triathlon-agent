@@ -346,8 +346,10 @@ async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
     Pool = same sport, non-race, duration ±30%, IF ±12, last 120d (see
     `_CMP_*`). Decoupling median is taken over valid-for-decoupling pool members
     only (short/high-VI sessions would poison it). Returns
-    `{available, pool_n, markers}`; `available=False` with a `reason` when the
-    sport is unsupported or the pool is too thin to be a meaningful norm.
+    `{available: True, pool_n, markers, window_days}` on success, or
+    `{available: False, pool_n, reason}` when the sport is unsupported or the pool
+    is too thin to be a meaningful norm (`reason` ∈ race / unsupported / no_similar
+    / thin_pool / no_markers).
 
     Sync twin for Dramatiq actors: `compute_activity_comparison_sync`.
     """

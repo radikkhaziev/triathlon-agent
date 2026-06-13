@@ -878,7 +878,7 @@ def _render_form_context(activity: Activity, wellness: Wellness | None) -> list[
             lines.append(f"Recovery: {wellness.recovery_score:.0f}/100 ({wellness.recovery_category or ''})")
         if wellness.ctl is not None:
             lines.append(f"CTL (форма): {wellness.ctl:.0f}")
-        tsb = (wellness.ctl - wellness.atl) if wellness.ctl and wellness.atl else None
+        tsb = (wellness.ctl - wellness.atl) if wellness.ctl is not None and wellness.atl is not None else None
         if tsb is not None:
             lines.append(f"TSB: {tsb:+.0f}")
     return lines
@@ -1047,7 +1047,7 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
         try:
             comparison = compute_activity_comparison_sync(user.id, activity, detail)
         except Exception:
-            logger.warning("Comparison markers failed for %s, proceeding without", activity_id)
+            logger.warning("Comparison markers failed for %s, proceeding without", activity_id, exc_info=True)
 
     # Try Claude, fallback to template
     descriptor, description = _fallback_signature(activity, wellness)

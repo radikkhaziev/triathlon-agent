@@ -19,6 +19,7 @@ from tasks.actors.activities import (
     _generate_signature_prompt,
     _parse_signature_json,
     _render_comparison_markers,
+    _render_form_context,
     _sport_emoji,
 )
 
@@ -153,6 +154,27 @@ class TestFallbackSignature:
         _, body = _fallback_signature(_activity(type="Ride", icu_training_load=None), None)
         first_line = body.splitlines()[0]
         assert "сессия записана" in first_line
+
+
+class TestRenderFormContext:
+    def test_tss_ctl_recovery_tsb_lines(self):
+        lines = _render_form_context(_activity(icu_training_load=80), _wellness(ctl=42, atl=50, recovery_score=92))
+        joined = "\n".join(lines)
+        assert "TSS: 80" in joined
+        assert "CTL (форма): 42" in joined
+        assert "Recovery: 92/100" in joined
+        assert "TSB: -8" in joined
+
+    def test_zero_ctl_still_emits_tsb(self):
+        # Regression: truthiness check dropped TSB when ctl/atl == 0 (new athletes).
+        lines = _render_form_context(_activity(), _wellness(ctl=0, atl=0, recovery_score=None))
+        joined = "\n".join(lines)
+        assert "CTL (форма): 0" in joined
+        assert "TSB: +0" in joined
+
+    def test_no_wellness_only_tss(self):
+        lines = _render_form_context(_activity(icu_training_load=55), None)
+        assert lines == ["TSS: 55"]
 
 
 class TestRenderComparisonMarkers:
