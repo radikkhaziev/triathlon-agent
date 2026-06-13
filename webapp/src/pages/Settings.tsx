@@ -773,9 +773,6 @@ export default function Settings() {
         <div>
           <div className="flex items-baseline justify-between px-1 pb-2">
             <MicroLabel>Goals</MicroLabel>
-            <span className="text-[11px] font-medium text-halo-ink-dim">
-              Тыкни в значение, чтобы изменить
-            </span>
           </div>
           <div className="flex flex-col gap-2">
             {goals.map(g => {
@@ -888,7 +885,7 @@ export default function Settings() {
         // doesn't stretch to match Sports' height when `sportsSaveError`
         // expands the left tile). Design uses `alignItems:'stretch'` — diverging
         // here to preserve the segmented-control proportions.
-        <div className="flex flex-col gap-3.5 md:grid md:grid-cols-[2fr_1fr] md:items-start md:gap-[18px]">
+        <div className={`flex flex-col gap-3.5 ${isDemo ? '' : 'md:grid md:grid-cols-[2fr_1fr] md:items-start md:gap-[18px]'}`}>
           <Panel label="Active sports">
             <div className="flex gap-2">
               {([['swim', 'Swim', 'var(--color-amber)'], ['ride', 'Ride', 'var(--color-brand)'], ['run', 'Run', 'var(--color-coral)']] as const).map(
@@ -918,10 +915,10 @@ export default function Settings() {
               <p className="text-[12px] text-halo-coral mt-2">{sportsSaveError}</p>
             )}
           </Panel>
-          {languageCard}
+          {!isDemo && languageCard}
         </div>
       ) : (
-        languageCard
+        !isDemo && languageCard
       )}
 
       {/* MCP — single config block, prototype `BSettings` (direction-b-extras

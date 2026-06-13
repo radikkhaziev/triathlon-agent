@@ -40,7 +40,7 @@ export default function HaloSidebar() {
   const { t } = useTranslation()
   const location = useLocation()
   const { changelog, unread, markRead } = useChangelog()
-  const { logout } = useAuth()
+  const { logout, isDemo } = useAuth()
 
   const isActive = (path: string) =>
     path === '/' ? location.pathname === '/' : location.pathname.startsWith(path)
@@ -73,7 +73,7 @@ export default function HaloSidebar() {
               <span className="tracking-[-0.1px]">{t(item.labelKey)}</span>
             </Link>
           )
-          if (item.path === '/calendar' && changelog && unread) {
+          if (item.path === '/calendar' && changelog && unread && !isDemo) {
             return [
               link,
               <a
