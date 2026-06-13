@@ -5,7 +5,10 @@ from collections import defaultdict
 from datetime import date, timedelta
 from statistics import median
 
+from sqlalchemy import select
+
 from data.db import Activity, ActivityDetail, AthleteSettings
+from data.db.common import get_sync_session
 from data.db.dto import AthleteThresholdsDTO
 from data.metrics import decoupling_status, is_valid_for_decoupling
 from mcp_server.app import mcp
@@ -305,32 +308,27 @@ def _cmp_marker(
     return marker
 
 
-async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
-    """Deterministic "this session vs your norm" markers for the activity page.
-
-    No Claude, no migration — pure aggregation over existing `activity_details`.
-    Pool = same sport, non-race, duration ±30%, IF ±12, last 120d (see
-    `_CMP_*`). Decoupling median is taken over valid-for-decoupling pool members
-    only (short/high-VI sessions would poison it). Returns
-    `{available, pool_n, markers}`; `available=False` with a `reason` when the
-    sport is unsupported or the pool is too thin to be a meaningful norm.
-    """
+def _comparison_precheck(activity, detail) -> dict | None:
+    """Cheap guards before any DB query. Returns an `available=False` dict to
+    short-circuit, or None to proceed. Shared by the async + sync variants."""
     if activity.is_race:
         # Race effort vs an easy-session norm is apples-to-oranges (the pool is
-        # non-race by design). Short-circuit before any pool query — the webapp
-        # also hides the block for races.
+        # non-race by design). The webapp also hides the block for races.
         return {"available": False, "pool_n": 0, "reason": "race"}
     sport = _sport_group(activity.type)
     ref_if = detail.intensity_factor if detail else None
     ref_dur = activity.moving_time
     if sport not in ("bike", "run") or detail is None or ref_if is None or not ref_dur:
         return {"available": False, "pool_n": 0, "reason": "unsupported"}
+    return None
 
-    since = date.today() - timedelta(days=_CMP_WINDOW_DAYS)
-    activities, _ = await Activity.get_range(user_id, since, date.today())
 
+def _comparison_candidates(activity, activities) -> list:
+    """Same-sport, non-race, duration ±30% peers from the window (pure filter)."""
+    sport = _sport_group(activity.type)
+    ref_dur = activity.moving_time
     dur_lo, dur_hi = ref_dur * (1 - _CMP_DUR_TOL), ref_dur * (1 + _CMP_DUR_TOL)
-    candidates = [
+    return [
         a
         for a in activities
         if a.id != activity.id
@@ -339,10 +337,81 @@ async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
         and a.moving_time
         and dur_lo <= a.moving_time <= dur_hi
     ]
+
+
+async def compute_activity_comparison(user_id: int, activity, detail) -> dict:
+    """Deterministic "this session vs your norm" markers for the activity page.
+
+    No Claude, no migration — pure aggregation over existing `activity_details`.
+    Pool = same sport, non-race, duration ±30%, IF ±12, last 120d (see
+    `_CMP_*`). Decoupling median is taken over valid-for-decoupling pool members
+    only (short/high-VI sessions would poison it). Returns
+    `{available: True, pool_n, markers, window_days}` on success, or
+    `{available: False, pool_n, reason}` when the sport is unsupported or the pool
+    is too thin to be a meaningful norm (`reason` ∈ race / unsupported / no_similar
+    / thin_pool / no_markers).
+
+    Sync twin for Dramatiq actors: `compute_activity_comparison_sync`.
+    """
+    early = _comparison_precheck(activity, detail)
+    if early is not None:
+        return early
+
+    since = date.today() - timedelta(days=_CMP_WINDOW_DAYS)
+    activities, _ = await Activity.get_range(user_id, since, date.today())
+    candidates = _comparison_candidates(activity, activities)
     if not candidates:
         return {"available": False, "pool_n": 0, "reason": "no_similar"}
 
     detail_map = await ActivityDetail.get_bulk([a.id for a in candidates])
+    return _assemble_comparison(activity, detail, candidates, detail_map)
+
+
+def compute_activity_comparison_sync(user_id: int, activity, detail) -> dict:
+    """Synchronous twin of `compute_activity_comparison` for Dramatiq actors.
+
+    `Activity.get_range` / `ActivityDetail.get_bulk` are async-only (`@with_session`),
+    and the global async engine's asyncpg pool is event-loop-bound — running it via
+    `asyncio.run` from a multi-threaded sync worker reuses connections across loops
+    and breaks. So this mirror reads through the thread-safe sync engine instead and
+    delegates to the same pure `_assemble_comparison` core.
+    """
+    early = _comparison_precheck(activity, detail)
+    if early is not None:
+        return early
+
+    since = date.today() - timedelta(days=_CMP_WINDOW_DAYS)
+    with get_sync_session() as session:
+        activities = (
+            session.execute(
+                select(Activity).where(
+                    Activity.user_id == user_id,
+                    Activity.start_date_local >= str(since),
+                    Activity.start_date_local <= str(date.today()),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        candidates = _comparison_candidates(activity, activities)
+        if not candidates:
+            return {"available": False, "pool_n": 0, "reason": "no_similar"}
+
+        detail_rows = (
+            session.execute(select(ActivityDetail).where(ActivityDetail.activity_id.in_([a.id for a in candidates])))
+            .scalars()
+            .all()
+        )
+        detail_map = {d.activity_id: d for d in detail_rows}
+    return _assemble_comparison(activity, detail, candidates, detail_map)
+
+
+def _assemble_comparison(activity, detail, candidates: list, detail_map: dict) -> dict:
+    """Pure marker assembly from a candidate set + their details. Shared by the
+    async + sync variants — no DB access, no Claude."""
+    sport = _sport_group(activity.type)
+    ref_if = detail.intensity_factor
+    ref_dur = activity.moving_time
     pool: list[tuple] = []
     for a in candidates:
         d = detail_map.get(a.id)

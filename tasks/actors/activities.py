@@ -47,6 +47,7 @@ from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
 from data.ml.noise_classifier import classify_activity_row
 from data.utils import HRV_ELIGIBLE_TYPES
+from mcp_server.tools.progress import compute_activity_comparison_sync
 from tasks.actors.athlets import actor_update_zones
 from tasks.actors.endurance import actor_snapshot_endurance_scores
 from tasks.dto import ORMDTO, DateDTO, FitProcessingResultDTO, PaBaselineDTO, local_today
@@ -823,102 +824,147 @@ def _sport_emoji(sport: str | None) -> str:
     return _SPORT_EMOJI.get(sport or "", "💪")
 
 
-def _format_distance(sport: str | None, distance_m: float | None) -> str | None:
-    if not distance_m or distance_m <= 0:
-        return None
-    if sport == "Swim":
-        return f"{distance_m:.0f}m"
-    return f"{distance_m / 1000:.1f}km"
+# Comparison-marker rendering — turns `compute_activity_comparison` output into
+# prompt context. Strava already shows distance/time/pace; the unique value is
+# "this session vs how the athlete usually does this kind of work".
+_CMP_BAND_RU = {"better": "лучше нормы", "worse": "хуже нормы", "neutral": "на уровне нормы"}
 
 
-def _format_pace(sport: str | None, pace_m_per_s: float | None) -> str | None:
-    if not pace_m_per_s or pace_m_per_s <= 0:
-        return None
-    if sport == "Swim":
-        sec = round(100 / pace_m_per_s)
-        return f"{sec // 60}:{sec % 60:02d}/100m"
-    sec = round(1000 / pace_m_per_s)
-    return f"{sec // 60}:{sec % 60:02d}/km"
+def _fmt_pace_sec(sec: float) -> str:
+    sec = round(sec)
+    return f"{sec // 60}:{sec % 60:02d}/км"
 
 
-def _generate_signature_prompt(
-    activity: Activity,
-    detail: ActivityDetail | None,
-    wellness: Wellness | None,
-) -> str:
-    """Build a prompt for Claude to generate title + Instagram-style description."""
-    sport = activity.type or "Activity"
-    lines = [
-        "You are a triathlon coach. Generate a short title and 2-3 sentence description",
-        "for a Strava activity feed, in the same tone as an Instagram story card.",
-        "Be concise, data-driven, no emojis, English only.",
-        "",
-        f"Sport: {sport}",
-        f"Duration: {(activity.moving_time or 0) // 60} min",
+def _render_comparison_markers(comparison: dict) -> list[str]:
+    """Render comparison markers into prompt lines. Empty list when unavailable."""
+    if not comparison or not comparison.get("available"):
+        return []
+    markers = comparison.get("markers") or []
+    if not markers:
+        return []
+
+    out = [
+        f"Сравнение с похожими сессиями атлета (n={comparison.get('pool_n')}, "
+        f"окно {comparison.get('window_days')} дней):"
     ]
-    dist = _format_distance(sport, detail.distance if detail else None)
-    if dist:
-        lines.append(f"Distance: {dist}")
-    pace = _format_pace(sport, detail.pace if detail else None)
-    if pace:
-        lines.append(f"Pace: {pace}")
-    if detail and detail.avg_power:
-        lines.append(f"Avg Power: {int(detail.avg_power)}W")
-    if activity.average_hr:
-        lines.append(f"Avg HR: {activity.average_hr:.0f}")
-    if detail and detail.elevation_gain:
-        lines.append(f"Elevation: {detail.elevation_gain:.0f}m")
+    for m in markers:
+        key, val, norm, band = m["key"], m["value"], m["norm_median"], m.get("band")
+        verdict = _CMP_BAND_RU.get(band, "")
+        if key == "decoupling":
+            line = f"- Decoupling (кардиодрифт, ниже=лучше): {val:.1f}% vs норма {norm:.1f}%"
+        elif key == "ef":
+            line = f"- EF (аэробная эффективность, выше=лучше): {val:.2f} vs норма {norm:.2f}"
+        elif key == "np":
+            line = f"- Норм. мощность (выше=лучше): {val:.0f}W vs норма {norm:.0f}W"
+        elif key == "pace":
+            line = f"- Темп (ниже=лучше): {_fmt_pace_sec(val)} vs норма {_fmt_pace_sec(norm)}"
+        elif key == "avg_hr":
+            line = f"- Средний пульс (нейтрально, но контекст): {val:.0f} vs норма {norm:.0f}"
+        elif key == "vi":
+            line = f"- VI (ровность, ближе к 1.0=ровнее): {val:.2f} vs норма {norm:.2f}"
+        else:
+            continue
+        out.append(f"{line} — {verdict}" if verdict else line)
+    return out
+
+
+def _render_form_context(activity: Activity, wellness: Wellness | None) -> list[str]:
+    """Training-load / form / recovery context — none of which Strava surfaces."""
+    lines: list[str] = []
     if activity.icu_training_load:
         lines.append(f"TSS: {activity.icu_training_load:.0f}")
     if wellness:
         if wellness.recovery_score is not None:
             lines.append(f"Recovery: {wellness.recovery_score:.0f}/100 ({wellness.recovery_category or ''})")
         if wellness.ctl is not None:
-            lines.append(f"CTL: {wellness.ctl:.0f}")
-        tsb = (wellness.ctl - wellness.atl) if wellness.ctl and wellness.atl else None
+            lines.append(f"CTL (форма): {wellness.ctl:.0f}")
+        tsb = (wellness.ctl - wellness.atl) if wellness.ctl is not None and wellness.atl is not None else None
         if tsb is not None:
             lines.append(f"TSB: {tsb:+.0f}")
+    return lines
+
+
+def _generate_signature_prompt(
+    activity: Activity,
+    wellness: Wellness | None,
+    comparison: dict | None = None,
+) -> str:
+    """Build a prompt for Claude to generate a Russian title + feed description.
+
+    The text is for the public Strava feed (read by others, not the athlete), so:
+    third person, no second-person address, and NO distance/time/pace/elevation —
+    Strava already shows those. The unique angle is the comparison markers ("vs the
+    athlete's norm for this kind of session") plus training-load/form context.
+    """
+    sport = activity.type or "Activity"
+    cmp_lines = _render_comparison_markers(comparison or {})
+    lines = [
+        "Ты — триатлон-тренер. Сгенерируй короткий заголовок и описание на 2-3 предложения",
+        "для публичной ленты Strava (его читают ДРУГИЕ люди, не сам атлет).",
+        "Пиши на русском, в третьем лице про атлета, без обращения на «ты». Без эмодзи.",
+        "",
+        f"Спорт: {sport}",
+    ]
+    lines.extend(_render_form_context(activity, wellness))
+    if cmp_lines:
+        lines.append("")
+        lines.extend(cmp_lines)
 
     lines.append("")
-    lines.append("Rules:")
-    lines.append("- Title: max 40 chars. Short workout type + key metric, e.g. 'Easy Run 10k',")
-    lines.append("  'Endurance Swim 1.8k', 'Tempo Ride 45min'. No emojis (one is added automatically).")
-    lines.append("- Description: 2-3 sentences. Mention key insight about intensity, efficiency,")
-    lines.append("  or recovery. No emojis, no hashtags, no promotional tone.")
-    lines.append("- Do NOT include any link or signature (added automatically).")
+    lines.append("Правила:")
+    lines.append("- НЕ упоминай дистанцию, время, темп и набор высоты — это уже видно в Strava.")
+    lines.append("  Пиши только то, чего там нет: сравнение с нормой атлета, нагрузку, форму, эффективность.")
+    if cmp_lines:
+        lines.append("- Опирайся на сравнение с похожими сессиями: выбери 2-3 самых содержательных маркера.")
+        lines.append("  Пульс/VI — нейтральные: используй как контекст («та же работа на пульсе ниже нормы»),")
+        lines.append("  а не выбрасывай. Decoupling может отсутствовать для интервалов — это нормально.")
+    else:
+        lines.append("- Сравнения с нормой нет — опиши смысл сессии через нагрузку (TSS), форму и восстановление.")
+    lines.append("- Заголовок: до 40 символов. Смысловой тип сессии, БЕЗ дистанции/времени/темпа.")
+    lines.append("  Например: «Интервалы Z4 — экономичный пульс», «Аэробный объём, Z1-2». Без эмодзи.")
+    lines.append("- Описание: 2-3 предложения. Без хэштегов, без рекламного тона.")
+    lines.append("- НЕ добавляй ссылку или подпись (добавляются автоматически).")
     lines.append("")
-    lines.append('Respond as JSON: {"title": "...", "description": "..."}')
+    lines.append('Ответь как JSON: {"title": "...", "description": "..."}')
     return "\n".join(lines)
+
+
+_SPORT_RU = {
+    "Run": "Бег",
+    "TrailRun": "Трейл",
+    "Ride": "Вело",
+    "VirtualRide": "Вело на станке",
+    "MountainBikeRide": "МТБ",
+    "Swim": "Плавание",
+    "Walk": "Прогулка",
+    "Hike": "Поход",
+    "WeightTraining": "Силовая",
+    "Workout": "Тренировка",
+}
 
 
 def _fallback_signature(
     activity: Activity,
-    detail: ActivityDetail | None,
     wellness: Wellness | None,
 ) -> tuple[str, str]:
-    """Template-based fallback when Claude is unavailable."""
+    """Template fallback (Claude down / thin pool). Russian, no Strava duplicates —
+    no distance/time/pace; lead with training-load and form context instead."""
     sport = activity.type or "Activity"
-    dist = _format_distance(sport, detail.distance if detail else None)
-    descriptor = f"{sport} · {dist}" if dist else sport
-
-    desc_bits: list[str] = []
-    duration_min = (activity.moving_time or 0) // 60
-    if duration_min:
-        desc_bits.append(f"{duration_min} min session")
-    pace = _format_pace(sport, detail.pace if detail else None)
-    if pace:
-        desc_bits.append(f"pace {pace}")
-    if activity.average_hr:
-        desc_bits.append(f"avg HR {int(activity.average_hr)}")
-    if desc_bits:
-        joined = ", ".join(desc_bits)
-        summary = joined[:1].upper() + joined[1:] + "."
+    sport_ru = _SPORT_RU.get(sport, sport)
+    tss = activity.icu_training_load
+    if tss:
+        descriptor = f"{sport_ru} · {tss:.0f} TSS"
+        summary = f"{tss:.0f} TSS в копилку."
     else:
-        summary = f"{sport} session logged."
+        descriptor = sport_ru
+        summary = f"{sport_ru} — сессия записана."
 
     desc_lines = [summary]
-    if wellness and wellness.recovery_score is not None:
-        desc_lines.append(f"Readiness {wellness.recovery_score:.0f}/100.")
+    if wellness:
+        if wellness.ctl is not None:
+            desc_lines.append(f"Форма (CTL) {wellness.ctl:.0f}.")
+        if wellness.recovery_score is not None:
+            desc_lines.append(f"Восстановление {wellness.recovery_score:.0f}/100.")
 
     return descriptor, _compose_description(desc_lines)
 
@@ -992,10 +1038,21 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
     if _already_signed(current_name, current_desc):
         return
 
+    # "This session vs the athlete's norm" markers — the unique, feed-worthy angle
+    # that Strava never shows. Reuses the deterministic comparison from the activity
+    # page via its sync twin (the async path's asyncpg pool is event-loop-bound and
+    # unsafe to drive with asyncio.run from a multi-threaded sync worker).
+    comparison: dict | None = None
+    if detail is not None:
+        try:
+            comparison = compute_activity_comparison_sync(user.id, activity, detail)
+        except Exception:
+            logger.warning("Comparison markers failed for %s, proceeding without", activity_id, exc_info=True)
+
     # Try Claude, fallback to template
-    descriptor, description = _fallback_signature(activity, detail, wellness)
+    descriptor, description = _fallback_signature(activity, wellness)
     try:
-        prompt = _generate_signature_prompt(activity, detail, wellness)
+        prompt = _generate_signature_prompt(activity, wellness, comparison)
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY.get_secret_value())
         resp = client.messages.create(
             model="claude-sonnet-4-6",
