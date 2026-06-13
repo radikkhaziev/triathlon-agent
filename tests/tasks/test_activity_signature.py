@@ -1,9 +1,11 @@
 """Tests for Strava signature helpers in tasks/actors/activities.py.
 
 Covers the pure helpers used by actor_rename_activity:
-- _sport_emoji, _format_distance, _format_pace
+- _sport_emoji
 - _compose_description, _parse_signature_json
-- _already_signed, _fallback_signature
+- _already_signed
+- _fallback_signature (Russian, no Strava duplicates)
+- _render_comparison_markers, _generate_signature_prompt
 """
 
 from types import SimpleNamespace
@@ -14,9 +16,9 @@ from tasks.actors.activities import (
     _already_signed,
     _compose_description,
     _fallback_signature,
-    _format_distance,
-    _format_pace,
+    _generate_signature_prompt,
     _parse_signature_json,
+    _render_comparison_markers,
     _sport_emoji,
 )
 
@@ -27,16 +29,16 @@ def _activity(**kw):
     return SimpleNamespace(**defaults)
 
 
-def _detail(**kw):
-    defaults = dict(distance=10_000.0, pace=3.3, avg_power=None, elevation_gain=50.0)
-    defaults.update(kw)
-    return SimpleNamespace(**defaults)
-
-
 def _wellness(**kw):
     defaults = dict(recovery_score=85.0, recovery_category="good", ctl=20.0, atl=30.0)
     defaults.update(kw)
     return SimpleNamespace(**defaults)
+
+
+def _comparison(markers, **kw):
+    defaults = dict(available=True, pool_n=7, window_days=120, markers=markers)
+    defaults.update(kw)
+    return defaults
 
 
 class TestSportEmoji:
@@ -53,44 +55,6 @@ class TestSportEmoji:
 
     def test_none_falls_back(self):
         assert _sport_emoji(None) == "💪"
-
-
-class TestFormatDistance:
-    def test_run_formats_kilometers(self):
-        assert _format_distance("Run", 9_940) == "9.9km"
-
-    def test_swim_formats_meters(self):
-        assert _format_distance("Swim", 1_800) == "1800m"
-
-    def test_zero_returns_none(self):
-        assert _format_distance("Run", 0) is None
-
-    def test_none_returns_none(self):
-        assert _format_distance("Run", None) is None
-
-
-class TestFormatPace:
-    def test_run_pace_per_km(self):
-        # 3.33 m/s ≈ 5:00/km
-        assert _format_pace("Run", 3.333) == "5:00/km"
-
-    def test_swim_pace_per_100m(self):
-        # 0.74 m/s ≈ 2:15/100m
-        assert _format_pace("Swim", 0.7407) == "2:15/100m"
-
-    def test_zero_returns_none(self):
-        assert _format_pace("Run", 0) is None
-
-    def test_none_returns_none(self):
-        assert _format_pace("Swim", None) is None
-
-    def test_run_pace_rounds_not_floors(self):
-        # 3.21 m/s → 311.53 sec/km. int() → 5:11, round() → 5:12.
-        assert _format_pace("Run", 3.21) == "5:12/km"
-
-    def test_swim_pace_rounds_not_floors(self):
-        # 0.76 m/s → 131.58 sec/100m. int() → 2:11, round() → 2:12.
-        assert _format_pace("Swim", 0.76) == "2:12/100m"
 
 
 class TestComposeDescription:
@@ -153,50 +117,98 @@ class TestAlreadySigned:
 
 
 class TestFallbackSignature:
-    def test_title_has_sport_and_distance(self):
-        descriptor, _ = _fallback_signature(_activity(type="Run"), _detail(distance=9_940), None)
-        assert descriptor == "Run · 9.9km"
+    def test_title_has_russian_sport_and_tss(self):
+        descriptor, _ = _fallback_signature(_activity(type="Run", icu_training_load=80), None)
+        assert descriptor == "Бег · 80 TSS"
 
-    def test_swim_uses_meters(self):
-        descriptor, _ = _fallback_signature(_activity(type="Swim"), _detail(distance=1_800, pace=0.74), None)
-        assert descriptor == "Swim · 1800m"
+    def test_swim_russian(self):
+        descriptor, _ = _fallback_signature(_activity(type="Swim", icu_training_load=19), None)
+        assert descriptor == "Плавание · 19 TSS"
 
-    def test_no_detail_falls_back_to_sport(self):
-        descriptor, _ = _fallback_signature(_activity(type="Ride"), None, None)
-        assert descriptor == "Ride"
+    def test_no_tss_falls_back_to_sport(self):
+        descriptor, _ = _fallback_signature(_activity(type="Ride", icu_training_load=None), None)
+        assert descriptor == "Вело"
 
-    def test_summary_preserves_avg_hr_casing(self):
-        # Regression: previously .capitalize() lowercased mid-string tokens, giving "avg hr".
-        _, body = _fallback_signature(_activity(average_hr=140), _detail(), None)
-        assert "avg HR 140" in body
-        assert "avg hr" not in body
+    def test_no_strava_duplicates_in_body(self):
+        # Distance/time/pace are Strava's job — must not leak into the description.
+        # Exercise the rich branch (TSS + CTL + recovery), not just the generic one.
+        _, body = _fallback_signature(_activity(icu_training_load=80), _wellness(ctl=42, recovery_score=92))
+        for token in ("km", "/km", "min session", "avg HR", "10.0"):
+            assert token not in body
 
-    def test_summary_not_lowercased(self):
-        # Regression guard: build an activity where the first desc bit is a word
-        # (average_hr=None, pace=None) so the summary starts with "... session"
-        # — verify the leading letter wasn't lowercased by .capitalize().
-        _, body = _fallback_signature(
-            _activity(moving_time=3600, average_hr=None),
-            _detail(pace=None),
-            None,
-        )
-        first_line = body.splitlines()[0]
-        # Must start uppercase or digit; never lowercase.
-        assert not first_line[0].islower()
+    def test_tss_summary(self):
+        _, body = _fallback_signature(_activity(icu_training_load=80), None)
+        assert "80 TSS в копилку." in body
 
-    def test_readiness_appended_when_wellness_present(self):
-        _, body = _fallback_signature(_activity(), _detail(), _wellness(recovery_score=92))
-        assert "Readiness 92/100." in body
+    def test_ctl_and_recovery_lines(self):
+        _, body = _fallback_signature(_activity(), _wellness(ctl=42, recovery_score=92))
+        assert "Форма (CTL) 42." in body
+        assert "Восстановление 92/100." in body
 
     def test_signature_link_always_present(self):
-        _, body = _fallback_signature(_activity(), _detail(), None)
+        _, body = _fallback_signature(_activity(), None)
         assert body.endswith("→ endurai.me")
 
     def test_empty_metrics_uses_generic_summary(self):
-        _, body = _fallback_signature(
-            _activity(moving_time=0, average_hr=None),
-            _detail(distance=0, pace=0),
-            None,
-        )
+        _, body = _fallback_signature(_activity(type="Ride", icu_training_load=None), None)
         first_line = body.splitlines()[0]
-        assert "session logged" in first_line
+        assert "сессия записана" in first_line
+
+
+class TestRenderComparisonMarkers:
+    def test_unavailable_returns_empty(self):
+        assert _render_comparison_markers({"available": False}) == []
+        assert _render_comparison_markers({}) == []
+
+    def test_available_no_markers_returns_empty(self):
+        assert _render_comparison_markers(_comparison([])) == []
+
+    def test_header_has_pool_and_window(self):
+        out = _render_comparison_markers(
+            _comparison([{"key": "ef", "value": 1.23, "norm_median": 1.20, "band": "better"}])
+        )
+        assert "n=7" in out[0]
+        assert "120" in out[0]
+
+    def test_marker_keys_render_with_verdict(self):
+        markers = [
+            {"key": "decoupling", "value": 3.8, "norm_median": 5.2, "band": "better"},
+            {"key": "ef", "value": 1.23, "norm_median": 1.20, "band": "better"},
+            {"key": "np", "value": 169, "norm_median": 178, "band": "worse"},
+            {"key": "avg_hr", "value": 137, "norm_median": 148, "band": "neutral"},
+            {"key": "vi", "value": 1.12, "norm_median": 1.07, "band": "neutral"},
+        ]
+        out = "\n".join(_render_comparison_markers(_comparison(markers)))
+        assert "Decoupling" in out and "3.8%" in out
+        assert "EF" in out and "лучше нормы" in out
+        assert "Норм. мощность" in out and "хуже нормы" in out
+        assert "Средний пульс" in out and "на уровне нормы" in out
+        assert "VI" in out
+
+    def test_pace_marker_formats_min_per_km(self):
+        out = "\n".join(
+            _render_comparison_markers(
+                _comparison([{"key": "pace", "value": 312, "norm_median": 330, "band": "better"}])
+            )
+        )
+        assert "5:12/км" in out
+        assert "5:30/км" in out
+
+
+class TestGenerateSignaturePrompt:
+    def test_russian_third_person_and_no_strava_metrics(self):
+        prompt = _generate_signature_prompt(_activity(), _wellness())
+        assert "третьем лице" in prompt
+        assert "НЕ упоминай дистанцию, время, темп" in prompt
+        # The instruction itself names these words, but no formatted distance/pace value leaks.
+        assert "10.0km" not in prompt
+
+    def test_includes_comparison_when_available(self):
+        cmp = _comparison([{"key": "ef", "value": 1.23, "norm_median": 1.20, "band": "better"}])
+        prompt = _generate_signature_prompt(_activity(), _wellness(), cmp)
+        assert "Сравнение с похожими сессиями" in prompt
+        assert "выбери 2-3" in prompt
+
+    def test_fallback_instruction_when_no_comparison(self):
+        prompt = _generate_signature_prompt(_activity(), _wellness(), None)
+        assert "Сравнения с нормой нет" in prompt

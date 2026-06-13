@@ -10,7 +10,7 @@ from datetime import date, timedelta
 
 from data.db import Activity, ActivityDetail, get_session
 from data.intervals.dto import ActivityDTO
-from mcp_server.tools.progress import compute_activity_comparison
+from mcp_server.tools.progress import compute_activity_comparison, compute_activity_comparison_sync
 
 
 async def _seed_run(
@@ -288,3 +288,39 @@ class TestRideMarkers:
         np_marker = next(m for m in out["markers"] if m["key"] == "np")
         assert np_marker["band"] == "better"
         assert np_marker["norm_median"] == 230
+
+
+class TestSyncTwin:
+    """`compute_activity_comparison_sync` (Dramatiq path) must return the same
+    result as the async original — it reads through the sync engine instead of
+    the event-loop-bound asyncpg pool, but shares the pure `_assemble_comparison`
+    core. See `actor_rename_activity` in `tasks/actors/activities.py`."""
+
+    async def test_sync_matches_async_run(self):
+        today = date.today()
+        ref_act, ref_det = await _seed_run("ref", dt=today, pace=290.0)
+        await _seed_pool(3, base=today, pace=320.0)
+
+        out_async = await compute_activity_comparison(1, ref_act, ref_det)
+        out_sync = compute_activity_comparison_sync(1, ref_act, ref_det)
+
+        assert out_sync == out_async
+        assert out_sync["available"] is True
+
+    async def test_sync_thin_pool_unavailable(self):
+        today = date.today()
+        ref_act, ref_det = await _seed_run("ref", dt=today)
+        await _seed_pool(2, base=today)
+
+        out_sync = compute_activity_comparison_sync(1, ref_act, ref_det)
+
+        assert out_sync["available"] is False
+        assert out_sync["reason"] == "thin_pool"
+
+    async def test_sync_race_short_circuits_before_query(self):
+        today = date.today()
+        ref_act, ref_det = await _seed_run("ref", dt=today, is_race=True)
+
+        out_sync = compute_activity_comparison_sync(1, ref_act, ref_det)
+
+        assert out_sync == {"available": False, "pool_n": 0, "reason": "race"}
