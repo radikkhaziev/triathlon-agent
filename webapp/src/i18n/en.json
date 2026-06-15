@@ -195,7 +195,11 @@
     "todays_workout": "Workout",
     "refresh_running": "Refreshing…",
     "refresh_wait": "Wait {{sec}}s",
-    "last_7_nights": "Last 7 nights"
+    "last_7_nights": "Last 7 nights",
+    "recovery_7d": "Recovery · 7 days",
+    "week_avg": "avg {{val}} this week",
+    "range_min": "min {{val}}",
+    "range_max": "max {{val}}"
   },
   "activities": {
     "title": "Activity",
