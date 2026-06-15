@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
-import { TopBar, Gauge, MiniRangeGauge, StackedBar, DateStrip, TrainingStrainCard, type DatePill } from '../components/halo'
+import { TopBar, Gauge, MiniRangeGauge, StackedBar, DateStrip, TrainingStrainCard, EnduranceScoreCard, type DatePill } from '../components/halo'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import TodayWorkoutCard from '../components/TodayWorkoutCard'
@@ -22,7 +22,7 @@ import {
   STATUS_EMOJI,
   type RmssdStatus,
 } from '../utils/recovery'
-import type { WellnessResponse, WellnessResponseData } from '../api/types'
+import type { WellnessResponse, WellnessResponseData, RecoveryTrendSeries } from '../api/types'
 
 const fmtPct = (n: number) => (n >= 0 ? '+' : '') + num(n) + '%'
 const fmtDelta = (n: number) => (n >= 0 ? '+' : '') + num(n)
@@ -72,6 +72,14 @@ export default function Wellness() {
     dateParam && ISO_DATE_RE.test(dateParam) ? parseYmd(dateParam) : undefined,
   )
   const { data, loading, error, reload } = useApi<WellnessResponse>(`/api/wellness-day?date=${dateStr}`)
+  // Desktop-only Row 3 (HRV / RHR / Recovery · 7d) sparkline cards — prototype
+  // `BdWellness` rows 1360-1474. Backed by /api/recovery-trend (the same endpoint
+  // RecoveryTrend.tsx + WellnessHistory.tsx already consume). The series is
+  // anchored to real "today" (the endpoint has no date param), so we only fetch
+  // — and only render the sparkline cards — when the selected day IS today;
+  // otherwise the spark would contradict the past-day headline values. Passing
+  // `null` to useApi skips the request entirely on non-today views.
+  const { data: trend } = useApi<RecoveryTrendSeries>(isToday ? '/api/recovery-trend?days=7' : null)
   const { changelog, unread, markRead } = useChangelog()
   const [showBreakdown, setShowBreakdown] = useState(false)
 
@@ -179,47 +187,68 @@ export default function Wellness() {
         )}
 
         {!loading && !error && data?.has_data && (
-          /* Mobile: single column (prototype `BWellness`). Desktop
-             (`BdWellness` + Endurance redesign at direction-b-desktop.jsx:555):
-             1.4fr / 1fr — Row 1-2: Recovery hero (col 1) + Endurance Score
-             (col 2). Col 2 rows 1-2: Training Load + Training Strain (the
-             «training-cycle» pair). Row 3: Sleep (col 1) + HRV/RHR (col 2).
-             Row 4+: Workout, Body, Coach teaser full width. Endurance Score
-             was moved out to Trends → Load (slow-moving composite, not a daily
-             read). */
-          <div className="flex flex-col gap-3.5 pb-4 md:grid md:grid-cols-[1.4fr_1fr] md:items-start md:gap-[18px] md:[grid-auto-rows:max-content]">
-            <div className="md:col-start-1 md:row-start-1 md:row-span-2">
+          /* Mobile: single column (prototype `BWellness`), DOM order
+             Recovery → HRV/RHR → Sleep → Strain → Load → Workout → Body →
+             Coach (byte-identical — desktop-only cards carry `hidden`, so they
+             drop out of mobile flow). Desktop (prototype `BdWellness`
+             direction-b-desktop.jsx:1078): 12-col grid in the design's rows —
+             Row1 Recovery(7) + Endurance(5); Row2 Sleep + Strain + Load;
+             Row3 HRV + RHR + Recovery·7d (sparkline cards, desktop-only);
+             Row4 Body; then Workout + Coach full-width. Endurance Score lives
+             on both Today (desktop) and Trends — desktop has room, mobile
+             stays lean. */
+          <div className="flex flex-col gap-3.5 pb-4 md:grid md:grid-cols-12 md:items-start md:gap-[18px] md:[grid-auto-rows:max-content]">
+            <div className="md:col-start-1 md:col-span-7 md:row-start-1">
               <RecoveryHero data={data} lang={lang} showBreakdown={showBreakdown} onToggle={() => setShowBreakdown(s => !s)} t={t} />
             </div>
-            {/* Mobile flex-col order: Recovery → HRV/RHR → Sleep → Strain →
-                Load → Workout → Body → Coach. Desktop reflows via
-                md:row-start-N (HRV/RHR drops to col 2 row 3 next to Sleep). */}
-            <div className="md:col-start-2 md:row-start-3">
+            {/* Endurance Score — desktop-only (composite slow read; mobile keeps
+                it on Trends → Load only). Self-fetches /api/endurance-score. */}
+            <div className="hidden md:col-start-8 md:col-span-5 md:row-start-1 md:block">
+              <EnduranceScoreCard />
+            </div>
+            {/* HRV + RHR combined tile — mobile always. On desktop it shows only
+                for a past selected date (`!isToday`), standing in for the
+                today-anchored Row-3 sparkline cards so the selected-day snapshot
+                stays visible. On today, desktop hides it and uses the sparklines. */}
+            <div className={isToday ? 'md:hidden' : 'md:col-start-1 md:col-span-8 md:row-start-3'}>
               <PairedMetrics data={data} t={t} />
             </div>
-            <div className="md:col-start-1 md:row-start-3">
+            {/* Row 2 (design Row1b): Sleep · Strain · Load — three equal cols. */}
+            <div className="md:col-start-1 md:col-span-4 md:row-start-2">
               <SleepCard data={data} t={t} />
             </div>
-            {/* Training Strain + Training load — the «training-cycle» pair, both
-                read off daily TSS. Strain on top («is it sustainable» — the
-                responsive daily read), Load below («how much»). They fill col 2
-                rows 1-2 next to the Recovery hero (Endurance Score moved to
-                Trends → Load, being a slow-moving composite, not a daily read). */}
-            <div className="md:col-start-2 md:row-start-1">
+            <div className="md:col-start-5 md:col-span-4 md:row-start-2">
               <TrainingStrainCard />
             </div>
-            <div className="md:col-start-2 md:row-start-2">
+            <div className="md:col-start-9 md:col-span-4 md:row-start-2">
               <TrainingLoadCard data={data} />
             </div>
+            {/* Row 3 (design Row2): HRV · RHR · Recovery·7d — sparkline cards,
+                desktop-only AND today-only (the 7-day series is anchored to real
+                today; for a past selected date the PairedMetrics tile above takes
+                Row-3 instead, and the trend fetch is skipped). */}
+            {isToday && (
+              <>
+                <div className="hidden md:col-start-1 md:col-span-4 md:row-start-3 md:block">
+                  <MetricTrendCard metric="hrv" data={data} trend={trend} lang={lang} t={t} />
+                </div>
+                <div className="hidden md:col-start-5 md:col-span-4 md:row-start-3 md:block">
+                  <MetricTrendCard metric="rhr" data={data} trend={trend} lang={lang} t={t} />
+                </div>
+                <div className="hidden md:col-start-9 md:col-span-4 md:row-start-3 md:block">
+                  <RecoveryTrendMiniCard data={data} trend={trend} lang={lang} t={t} />
+                </div>
+              </>
+            )}
             {/* Plan vs Actual for the selected day — placed right before Body
                 so the screen reads top-to-bottom as «how you feel» (Recovery /
                 Endurance / HRV-RHR / Sleep / Load) → «what you trained» (Plan
                 vs Actual + Body). Mobile follows JSX order, desktop reflows
                 via row-start. */}
-            <div className="md:col-span-2 md:col-start-1 md:row-start-4">
+            <div className="md:col-span-12 md:col-start-1 md:row-start-4">
               <TodayWorkoutCard dateStr={dateStr} currentDate={currentDate} isToday={isToday} />
             </div>
-            <div className="md:col-span-2 md:col-start-1 md:row-start-5">
+            <div className="md:col-span-12 md:col-start-1 md:row-start-5">
               <BodyCard data={data} t={t} />
             </div>
 
@@ -231,7 +260,7 @@ export default function Wellness() {
               <Link
                 to={isToday ? '/coach' : `/coach?date=${dateStr}`}
                 aria-label={t('wellness.coach_note')}
-                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-2 md:col-start-1 md:row-start-6"
+                className="flex w-full items-center gap-3 rounded-[18px] bg-halo-ink p-3.5 text-left text-white no-underline shadow-card md:col-span-12 md:col-start-1 md:row-start-6"
               >
                 <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-white/10 text-[13px] font-bold tracking-[0.4px]">
                   AI
@@ -532,6 +561,183 @@ function PairedMetrics({ data, t }: { data: WellnessResponseData; t: TFn }) {
         )
       })}
     </div>
+  )
+}
+
+// Shared 7-point sparkline for the desktop Row-3 trend cards (prototype
+// `BdWellness` rows 1394-1406). Null days (gaps) are skipped — the line
+// connects only present points; <2 points → fixed-height spacer so the card
+// height stays stable while data loads.
+function Spark({ values, color }: { values: (number | null)[]; color: string }) {
+  const N = values.length
+  const present = values
+    .map((v, i) => ({ i, v }))
+    .filter((p): p is { i: number; v: number } => p.v != null)
+  if (present.length < 2) return <div className="mt-3.5 h-[60px]" />
+  const W = 200
+  const H = 50
+  const vs = present.map(p => p.v)
+  const lo = Math.min(...vs)
+  const hi = Math.max(...vs)
+  const pad = (hi - lo) * 0.15 + 0.5
+  const yMin = lo - pad
+  const yMax = hi + pad
+  // present.length >= 2 guaranteed above ⇒ N >= 2, so (N - 1) is never 0.
+  const x = (i: number) => (i / (N - 1)) * W
+  const y = (v: number) => H - ((v - yMin) / (yMax - yMin)) * H
+  const line = present.map((p, k) => `${k === 0 ? 'M' : 'L'} ${x(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ')
+  const area = `${line} L ${x(present[present.length - 1].i).toFixed(1)} ${H} L ${x(present[0].i).toFixed(1)} ${H} Z`
+  return (
+    <svg viewBox={`0 0 ${W} ${H + 10}`} width="100%" height={H + 10} preserveAspectRatio="none" className="mt-3.5 block overflow-visible">
+      <path d={area} fill={color} opacity="0.1" />
+      <path d={line} fill="none" stroke={color} strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+      {present.map((p, k) => (
+        <circle
+          key={p.i}
+          cx={x(p.i)}
+          cy={y(p.v)}
+          r={k === present.length - 1 ? 3.5 : 2}
+          fill={k === present.length - 1 ? color : '#fff'}
+          stroke={color}
+          strokeWidth="1.4"
+        />
+      ))}
+    </svg>
+  )
+}
+
+// Weekday labels under a spark — derived from real trend dates via Intl (not
+// hardcoded RU as the prototype drew them; data-honest i18n, §9.3 precedent).
+function SparkDays({ dates, lang }: { dates: string[] | undefined; lang: string }) {
+  const fmt = new Intl.DateTimeFormat(lang, { weekday: 'short' })
+  const labels = (dates ?? []).slice(-7).map(d => fmt.format(parseYmd(d.slice(0, 10))))
+  if (labels.length === 0) return null
+  return (
+    <div className="mt-1 flex justify-between text-[9px] font-semibold tracking-[0.3px] text-halo-ink-dimmer">
+      {labels.map((d, i) => (
+        <span key={i}>{d}</span>
+      ))}
+    </div>
+  )
+}
+
+// HRV / RHR desktop sparkline card (prototype `BdWellness` rows 1361-1422):
+// value + delta + 7-day spark + min/max range strip. Mobile keeps the combined
+// PairedMetrics tile. Whole card → /wellness/:metric drill-down.
+function MetricTrendCard({
+  metric,
+  data,
+  trend,
+  lang,
+  t,
+}: {
+  metric: 'hrv' | 'rhr'
+  data: WellnessResponseData
+  trend: RecoveryTrendSeries | null
+  lang: string
+  t: TFn
+}) {
+  const block = metric === 'hrv' ? data.hrv : data.rhr
+  const status = (block?.status ?? 'insufficient_data') as RmssdStatus
+  const sColor = `var(--color-status-${status === 'insufficient_data' ? 'gray' : status})`
+  const last7 = ((metric === 'hrv' ? trend?.hrv : trend?.rhr) ?? []).slice(-7)
+  const today = block?.today
+  const unit = metric === 'hrv' ? t('wellness.ms') : 'bpm'
+  // HRV → % vs baseline; RHR has no %-delta (inverted bpm metric) so use its
+  // raw 30-day delta. Both keep the design's delta line, so the two cards stay
+  // the same height in the row.
+  const deltaText =
+    metric === 'hrv'
+      ? data.hrv?.delta_pct != null
+        ? fmtPct(data.hrv.delta_pct)
+        : null
+      : data.rhr?.delta_30d != null
+        ? fmtDelta(data.rhr.delta_30d)
+        : null
+  const lo = block?.lower_bound
+  const hi = block?.upper_bound
+  return (
+    <Link
+      to={`/wellness/${metric}`}
+      className="block rounded-card border border-halo-border bg-halo-surface p-[18px] no-underline text-inherit shadow-card transition-colors hover:bg-halo-surface-2"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">{metric.toUpperCase()}</span>
+        <span className="flex items-center gap-1.5 text-[13px] leading-none">
+          {STATUS_EMOJI[status]}
+          <span aria-hidden="true" className="text-halo-ink-dimmer">›</span>
+        </span>
+      </div>
+      <div className="mt-2 flex items-baseline gap-1.5">
+        <span className="text-[34px] font-semibold tracking-[-1px] text-halo-ink">
+          {today != null ? num(today, metric === 'rhr' ? 0 : 1) : '--'}
+        </span>
+        <span className="text-[13px] text-halo-ink-dim">{unit}</span>
+      </div>
+      {deltaText != null && (
+        <div className="text-[12px] font-semibold" style={{ color: sColor }}>
+          {deltaText} {t('wellness.vs_baseline')}
+        </div>
+      )}
+      <Spark values={last7} color={sColor} />
+      <SparkDays dates={trend?.dates} lang={lang} />
+      {lo != null && hi != null && today != null && (
+        <div className="mt-3">
+          <MiniRangeGauge lo={lo} hi={hi} cur={today} color={sColor} loLabel={num(lo, 0)} hiLabel={num(hi, 0)} />
+        </div>
+      )}
+    </Link>
+  )
+}
+
+// Recovery · 7-day trend card (prototype `BdWellness` rows 1424-1474): today's
+// score + week average + 7-day spark + min/today/max strip. Desktop Row-3 third
+// slot; whole card → /wellness/recovery.
+function RecoveryTrendMiniCard({
+  data,
+  trend,
+  lang,
+  t,
+}: {
+  data: WellnessResponseData
+  trend: RecoveryTrendSeries | null
+  lang: string
+  t: TFn
+}) {
+  const score = data.recovery?.score != null ? Math.round(data.recovery.score) : null
+  const last7 = (trend?.recovery ?? []).slice(-7)
+  const present = last7.filter((v): v is number => v != null)
+  const avg = present.length ? Math.round(present.reduce((a, b) => a + b, 0) / present.length) : null
+  const lo = present.length ? Math.round(Math.min(...present)) : null
+  const hi = present.length ? Math.round(Math.max(...present)) : null
+  return (
+    <Link
+      to="/wellness/recovery"
+      className="block rounded-card border border-halo-border bg-halo-surface p-[18px] no-underline text-inherit shadow-card transition-colors hover:bg-halo-surface-2"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.6px] text-halo-ink-dim">{t('wellness.recovery_7d')}</span>
+        <span aria-hidden="true" className="text-[15px] leading-none text-halo-ink-dimmer">›</span>
+      </div>
+      <div className="mt-2 flex items-baseline gap-1">
+        <span className="text-[34px] font-semibold tracking-[-1px] text-halo-ink">{score ?? '--'}</span>
+        <span className="text-[13px] text-halo-ink-dim">/ 100</span>
+      </div>
+      {avg != null && <div className="text-[12px] font-semibold text-halo-ink-dim">{t('wellness.week_avg', { val: avg })}</div>}
+      <Spark values={last7} color="var(--color-status-green)" />
+      <SparkDays dates={trend?.dates} lang={lang} />
+      {lo != null && hi != null && (
+        <div className="mt-3 flex items-center justify-between text-[11px] font-semibold text-halo-ink-dim">
+          <span>{t('wellness.range_min', { val: lo })}</span>
+          {score != null && (
+            <span className="text-halo-ink">
+              {t('common.today_badge')} {score}
+            </span>
+          )}
+          <span>{t('wellness.range_max', { val: hi })}</span>
+        </div>
+      )}
+    </Link>
   )
 }
 

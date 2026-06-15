@@ -195,7 +195,11 @@
     "todays_workout": "Тренировка",
     "refresh_running": "Обновляю…",
     "refresh_wait": "Ждите {{sec}}с",
-    "last_7_nights": "Последние 7 ночей"
+    "last_7_nights": "Последние 7 ночей",
+    "recovery_7d": "Восстановление · 7 дней",
+    "week_avg": "среднее {{val}} за неделю",
+    "range_min": "мин {{val}}",
+    "range_max": "макс {{val}}"
   },
   "activities": {
     "title": "Активность",
