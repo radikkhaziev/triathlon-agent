@@ -41,6 +41,41 @@ def vo2max_run_daniels(threshold_pace_sec_per_km: float) -> float:
 # Default for AG-male 40-44 when no thresholds known (rough Cooper median).
 DEFAULT_VO2MAX = 40.0
 
+# ─── Detrain decay (spec §13.1) ─────────────────────────────────────
+#
+# The VO2max anchor (FTP / threshold pace) barely moves on a training break —
+# run threshold pace is pinned to the last test, bike eFTP decays only over
+# 4-6 weeks. So a 3-month layoff leaves `base` near its trained value, and the
+# score never reflects the lost fitness. We scale the VO2max input by a detrain
+# factor keyed to CTL relative to the athlete's own recent peak: CTL falls fast
+# on a break (τ=42d), so it's the signal that actually tracks the layoff.
+#
+# Floor 0.78 = VO2max loses ~15-25% with sustained detraining, not more (Coyle
+# et al. 1984). A trained athlete off for months is NOT couch-potato-detrained
+# — the floor encodes that. The downward-only shape means a never-trained user
+# (ctl_peak≈0) gets factor 1.0, no inflation: their bonuses are ~0 anyway.
+#
+# Linearity is provisional — flagged for calibration in spec §13.3 (sqrt may
+# fit the «VO2max preserved for the first 2-3 weeks» physiology better). Keep
+# the mapping isolated in `detrain_factor` so tuning touches one function.
+DETRAIN_FLOOR = 0.78
+DETRAIN_SPAN = 1.0 - DETRAIN_FLOOR
+
+
+def detrain_factor(ctl_now: float | None, ctl_peak_26w: float | None) -> float:
+    """Scale factor for the VO2max anchor based on CTL vs own recent peak.
+
+    Returns 1.0 (no decay) when there's no peak to decay from — a brand-new
+    user (``ctl_peak_26w`` None or ≤0) has nothing to lose, and a missing
+    ``ctl_now`` means we can't measure the drop. Otherwise maps the ratio
+    ``ctl_now / ctl_peak_26w`` (clamped 0..1) linearly onto ``[DETRAIN_FLOOR, 1.0]``.
+    """
+    if not ctl_peak_26w or ctl_peak_26w <= 0 or ctl_now is None:
+        return 1.0
+    ratio = min(max(ctl_now / ctl_peak_26w, 0.0), 1.0)
+    return DETRAIN_FLOOR + DETRAIN_SPAN * ratio
+
+
 # ─── Bonuses configuration ─────────────────────────────────────────
 
 LONG_TERM_TARGET_CTL = 80.0  # CTL above which LongTerm caps at 1000
@@ -183,6 +218,12 @@ class EnduranceScoreResult:
     components: EnduranceComponents
     per_sport: list[PerSport]
     badge: Badge | None
+    # Detrain decay (spec §13.1): factor ∈ [DETRAIN_FLOOR, 1.0] applied to the
+    # VO2max anchor, plus the peak it was measured against. 1.0 = no decay
+    # (full fitness or no peak history). Persisted in components_json for
+    # debugging + trend introspection.
+    detrain_factor: float = 1.0
+    ctl_peak_26w: float | None = None
     # Diagnostic — included in components_json for post-hoc debugging.
     insufficient_data: bool = False
     insufficient_reason: str | None = None
@@ -465,6 +506,11 @@ def compute_endurance_score(
     wellness_56d: Sequence[WellnessSnapshot],
     activities_28d: Sequence[EnduranceActivity],
     activities_8w: Sequence[EnduranceActivity],
+    # Detrain decay (spec §13.1): the athlete's own CTL peak over the trailing
+    # 26 weeks. None → no decay (factor 1.0), e.g. brand-new user with no
+    # history or the Phase-1 fallback path. `ctl_now` is read from
+    # ``latest_wellness.ctl``.
+    ctl_peak_26w: float | None = None,
     # Optional inputs for badge engine. If not provided — badge is None.
     zone_yesterday_id: str | None = None,
     scores_last_90d: Sequence[int] = (),
@@ -490,7 +536,13 @@ def compute_endurance_score(
     sport_ctl = dict(latest_wellness.sport_ctl)
     vo2 = vo2max_composite(athlete, sport_ctl, ride_eftp=latest_wellness.ride_eftp)
 
-    base = round(100.0 * vo2)
+    # Detrain decay (spec §13.1) — scale the VO2max anchor down when CTL has
+    # fallen well below the athlete's own recent peak. No-op (factor 1.0) at
+    # full fitness or without peak history, so the §8 calibration anchors are
+    # unchanged. `base` reflects the decayed anchor; `vo2max_composite` in the
+    # result keeps the raw value for introspection.
+    factor = detrain_factor(latest_wellness.ctl, ctl_peak_26w)
+    base = round(100.0 * vo2 * factor)
     long_term = round(long_term_bonus(_weekly_ctl_avg(wellness_56d, ref_date, weeks=8)))
     recent = round(recent_bonus(latest_wellness.ramp_rate))
     duration = round(duration_bonus(activities_28d))
@@ -530,6 +582,8 @@ def compute_endurance_score(
         ),
         per_sport=per_sport,
         badge=badge,
+        detrain_factor=round(factor, 4),
+        ctl_peak_26w=round(ctl_peak_26w, 1) if ctl_peak_26w is not None else None,
         insufficient_data=insufficient,
         insufficient_reason="no_thresholds" if insufficient else None,
     )
@@ -542,6 +596,7 @@ __all__ = [
     "compute_badge",
     "compute_endurance_score",
     "DEFAULT_VO2MAX",
+    "DETRAIN_FLOOR",
     "ENDURANCE_MAX",
     "ENDURANCE_ZONES",
     "EnduranceActivity",
@@ -552,6 +607,7 @@ __all__ = [
     "WellnessSnapshot",
     "classify_zone",
     "consistency_bonus",
+    "detrain_factor",
     "duration_bonus",
     "long_term_bonus",
     "per_sport_breakdown",

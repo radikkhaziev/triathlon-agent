@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from data.db import (
     Activity,
@@ -60,6 +60,12 @@ _ACTOR_DEBOUNCE_SECONDS = 300
 _ACTIVITY_LOOKBACK_DAYS = 8 * 7 + 4 * 7 + 28  # 8w + 4w buffer + 28d (Duration/Recovery)
 # Wellness — only need 8 weeks back from ref_date for LongTermBonus avg.
 _WELLNESS_LOOKBACK_DAYS = 8 * 7
+# Detrain decay (spec §13.1) — CTL peak window. 26 weeks (182d) is wide
+# enough to catch the athlete's last real fitness peak before a long break,
+# narrow enough that a multi-year-old peak doesn't anchor today's decay. A
+# dedicated scalar MAX query, not a widening of the 56d fetch above (which
+# would pull ~3× the rows just to throw most away).
+_CTL_PEAK_LOOKBACK_DAYS = 26 * 7
 # Badge engine — `top_10_percentile` needs 365 daily snapshots, `in_form_3m`
 # needs 84, `best_90d` needs 30+ minimum. Pulling 365 covers all three.
 _BADGE_HISTORY_DAYS = 365
@@ -213,6 +219,25 @@ def _fetch_wellness_snapshots(user_id: int, ref_date: date, session) -> list[Wel
     return _build_wellness_snapshots(rows)
 
 
+def _fetch_ctl_peak_26w(user_id: int, ref_date: date, session) -> float | None:
+    """Max CTL over the trailing 26 weeks — the detrain-decay reference peak.
+
+    Date-specific (``Wellness.date <= ref_date``) so trend backfill anchors
+    each historical point to the peak that preceded *it*, not today's. Returns
+    None when there's no CTL history in the window (new user) → no decay.
+    """
+    start = ref_date - timedelta(days=_CTL_PEAK_LOOKBACK_DAYS)
+    peak = session.execute(
+        select(func.max(Wellness.ctl)).where(
+            Wellness.user_id == user_id,
+            Wellness.date >= start.isoformat(),
+            Wellness.date <= ref_date.isoformat(),
+            Wellness.ctl.isnot(None),
+        )
+    ).scalar()
+    return float(peak) if peak is not None else None
+
+
 def _fetch_badge_history(
     user_id: int,
     ref_date: date,
@@ -296,6 +321,15 @@ def compute_for(user_id: int, ref_date: date, *, session=None) -> EnduranceScore
     yesterday_id, scores_90d, scores_365d, zones_84d, recent_badge_ids = _fetch_badge_history(
         user_id, ref_date, session
     )
+    # Detrain decay contract (spec §13.1): `ctl_now` = latest_wellness.ctl,
+    # sourced from the 56d window above, while `ctl_peak_26w` spans 182d. If
+    # the last 56d hold no wellness row, ctl_now is None → factor 1.0 (decay
+    # off). This does NOT hit the target layoff case — Intervals.icu writes
+    # wellness daily regardless of training, so CTL keeps decaying and a
+    # connected athlete always has a fresh ctl_now. The no-op only triggers on
+    # a >56d gap in wellness data itself (Intervals disconnected / watch not
+    # worn), where there's no current CTL to measure the drop against anyway.
+    ctl_peak_26w = _fetch_ctl_peak_26w(user_id, ref_date, session)
 
     return compute_endurance_score(
         ref_date=ref_date,
@@ -304,6 +338,7 @@ def compute_for(user_id: int, ref_date: date, *, session=None) -> EnduranceScore
         wellness_56d=[s for s in wellness_snapshots if cutoff_56d <= s.dt <= ref_date],
         activities_28d=[a for a in activities if cutoff_28d <= a.dt <= ref_date],
         activities_8w=[a for a in activities if cutoff_8w <= a.dt <= ref_date],
+        ctl_peak_26w=ctl_peak_26w,
         zone_yesterday_id=yesterday_id,
         scores_last_90d=scores_90d,
         scores_last_365d=scores_365d,
@@ -374,6 +409,8 @@ def _serialize_components(result: EnduranceScoreResult) -> dict:
         "badge": (
             {"id": result.badge.id, "label": result.badge.label, "icon": result.badge.icon} if result.badge else None
         ),
+        "detrain_factor": result.detrain_factor,
+        "ctl_peak_26w": result.ctl_peak_26w,
         "insufficient_data": result.insufficient_data,
         "insufficient_reason": result.insufficient_reason,
     }
@@ -404,6 +441,8 @@ def _result_from_row(row: EnduranceScore) -> EnduranceScoreResult:
         ),
         per_sport=per_sport,
         badge=badge,
+        detrain_factor=c.get("detrain_factor", 1.0),
+        ctl_peak_26w=c.get("ctl_peak_26w"),
         insufficient_data=c.get("insufficient_data", False),
         insufficient_reason=c.get("insufficient_reason"),
     )

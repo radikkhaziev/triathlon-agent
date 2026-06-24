@@ -1,6 +1,7 @@
 # Endurance Score — composite endurance state across all sports
 
-> Status: 🟢 **Phase 1 + 2 shipped** (2026-05-25). Drift vs Garmin anchor −2% on real data. 156 tests green. Phase 3 deferred — no triggering pain, see §9.
+> Status: 🟢 **Phase 1 + 2 shipped** (2026-05-25). Drift vs Garmin anchor −2% on real data. 156 tests green.
+> 🟡 **Phase 3 — Dynamic-range redesign specced** (2026-06-24, not yet built) — base decay + personal-relative zones, fixes «всегда в одной зоне» + «3 мес. без тренировок ≠ Растренирован». Full spec §13, plan in §9.
 >
 > Дизайн: `design-package/endurai/direction-b-halo.jsx:3396-3622` (карточка `EnduranceScoreCard` + детальный экран `BEnduranceScoreDetail`).
 
@@ -685,6 +686,19 @@ Garmin = 5773, наша ≈ 5660. **Drift −2%** — отлично, внутр
 
 **Acceptance:** ✅ 6 integration tests (multi-tenant, period filter, fallback, JSONB serialize, invalid period 422). Roundtrip migration verified.
 
+### Phase 3 — Dynamic-range redesign (specced 2026-06-24, not yet built)
+
+**Триггер сработал.** Два реальных наблюдения атлета вскрыли структурный дефект, а не косметику (полный разбор + формулы — §13):
+
+1. **«Я почти всегда в одной зоне.»** Балл = `100·VO₂max` (медленный якорь 3500–5500) + бонусы (рябь ±200/нед). Зона приколочена к VO₂max, неделя-к-неделе не двигается. Зоны калиброваны под популяцию, не под одного атлета → резолюция для индивида плохая.
+2. **«Jan–Mar 2026 без тренировок — должен быть Растренирован, а показывал Восстанавливаюсь.»** У VO₂max-якоря нет detrain-decay; пол метрики ~4000 (даже `DEFAULT_VO2MAX=40` → `100·40`). «Растренирован» (<3000) недостижим для любого, у кого выставлен порог. Противоречит §11.K.
+
+Два дефекта = две парные правки (детали, формулы, acceptance — §13):
+
+- [x] **§13.1 — Base decay.** ✅ (2026-06-24, backend) `detrain_factor(ctl_now, ctl_peak_26w) ∈ [0.78, 1.0]` в `data/endurance_score.py`; `ctl_peak_26w` = `max(wellness.ctl)` за 182d в `data/endurance_score_service.py:_fetch_ctl_peak_26w`; `detrain_factor`/`ctl_peak_26w` в `EnduranceScoreResult` + components JSONB. 10 новых тестов, все 70 зелёные. Закрывает старый **Q5 refinement**. Acceptance скорректирован — см. §13.3 (absolute <3000 недостижим и не нужен; Растренирован приходит из §13.2). **Остаётся:** backfill `--force` + прогон harness §13.3 на пересчитанной истории для калибровки `DETRAIN_FLOOR`/окна/linearity.
+- [ ] **§13.2 — Personal-relative zones.** Границы зон из собственного распределения атлета (квинтили скользящих 12 мес), а не фиксированные пороги. Закрывает «всегда в одной зоне» И «детрейн → Растренирован». Семантика зон смещается «гоночная форма» → «относительно твоей нормы» — §3.8 guidance-таблица переписывается (§13.2).
+- [ ] **§13.3 — Validation harness** на годовой истории Радика (5 якорных фаз из §3.8 + detrain-anchor). §13.1 unit-часть ✅; остаётся прогон на реальной пересчитанной истории + калибровка.
+
 ### Phase 3 — Optional / deferred (no triggering pain — see §12)
 
 Все пункты ниже — nice-to-have без блокера. Открываются по конкретному триггеру:
@@ -693,7 +707,6 @@ Garmin = 5773, наша ≈ 5660. **Drift −2%** — отлично, внутр
 - [ ] **ES в morning report / weekly summary** (Level 3 в §7.0) → open когда захочется habit-форма «ES сегодня +15 vs неделя» в утреннем отчёте
 - [ ] **Calibration anchor logging** → open когда наберётся 3+ Garmin-снимков ES на разных CTL для scale-fit
 - [ ] **Age/sex-нормирование zone-порогов** → open при росте user-base за пределы single-male-40-44
-- [ ] **Q5 refinement — Base decay через свежесть thresholds** → open если delayed detrain detection начнёт смущать в реальных кейсах
 - [ ] **Q6 refinement — historical thresholds для trend backfill** → open если honest peak Nov 2025 в trend будет занижен и это явная проблема
 
 ---
@@ -796,10 +809,116 @@ Garmin = 5773, наша ≈ 5660. **Drift −2%** — отлично, внутр
 | 2026-05-25 | Trend chart переделан: zone bands + zone-coloured line runs + y-axis snap к границам зон | Старый чарт (одна цветная линия, y-ticks step 250) не передавал «где я по ladder зон». Новый чарт читается как «вот так я двигался по зонам», current zone выделен сильнее (opacity 0.12 vs 0.06). `buildRuns` паттерн уже работает в TSB-чарте `LoadDetail.tsx`. |
 | 2026-05-25 | Карточка владеет собственным fetch'ем; детальный экран — своим (с period state) | Раньше LoadTab держал shared `enduranceData` для card+detail с общим `endurancePeriod`. После split на два роута это duplicate fetch (card на `/wellness`, detail на `/wellness/endurance`) — приемлемая цена за независимость компонентов. |
 | 2026-05-31 | **Реверс 2026-05-25**: карточка возвращена с Wellness home обратно в Trends → Load tab, над sport-свитчером (`DashboardLoadTab.tsx`). Детальный экран переехал `/wellness/endurance` → `/trends/endurance` (старый путь оставлен редиректом для закладок; back-ссылка ведёт в Trends, нижнее меню подсвечивает Trends). | Endurance Score — медленно-меняющийся composite (base = 100·VO₂max стоит на статичных порогах, шевелится только после ramp-теста / eFTP-decay). Для понимания «как я сегодня» он не важен и занимал hero-слот на daily home. Место над sport-свитчером логично: показатель межспортивный, читается до per-sport drill'ов. Освободившийся col-2 слот на `/wellness` занял новый Training Strain (отзывчивая метрика — ей там и место). |
+| 2026-06-24 | **Phase 3 — Dynamic-range redesign заспечена** (§13). Признано, что демотирование 2026-05-31 лечило симптом, а не дефект: «медленность» — следствие того, что `100·VO₂max` доминирует и не decay'ит. Решение — base decay (диапазон вниз) + personal-relative zones (резолюция). Код не трогаем, пока план не подтверждён. | Реальные наблюдения атлета: (1) «всегда в одной зоне» — зоны под популяцию, не под индивида; (2) полный детрейн Jan–Mar 2026 уперся в 4161 «Восстанавливаюсь» вместо «Растренирован» <3000, потому что VO₂max-якорь без detrain-decay держит пол ~4000. Оба — структурные, не косметика. См. §13. |
 
 ---
 
-## 13. References
+## 13. Phase 3 — Dynamic-range redesign (planned, not yet built)
+
+> Заспечено 2026-06-24. Источник — два реальных наблюдения атлета (см. §9 Phase 3 headline). Меняет §3 формулу (добавляет detrain-decay к VO₂max-якорю) и §3.8 zoning (фиксированные пороги → personal-relative). Shipped Phase 1+2 формула в §3 остаётся записью того, что было live; эта секция описывает **дельту**.
+
+### 13.0 Диагноз — почему два дефекта структурны
+
+`ES = 100·VO₂max_composite + бонусы(≤2000)` ([`data/endurance_score.py:485`](../data/endurance_score.py)).
+
+- **Доминирует `100·VO₂max`** (3500–5500). VO₂max считается только из FTP/threshold pace + вес + возраст ([`vo2max_composite`](../data/endurance_score.py), :194) — без какого-либо detrain-decay. Бонусы капнуты на ~2000, на практике дают 800–1400 и колеблются ±100–200/нед.
+- **Дефект 1 — резолюция.** За неделю балл двигается ±200 при ширине зоны 1000–1500 → зону не покинуть. Зоны (3000/4500/5500/6500) откалиброваны под популяционный диапазон AG-атлета, а не под собственный размах одного атлета (±~600 вокруг якоря в пределах сезона). Метрика разрешает **сезоны**, а UI приглашает смотреть её **ежедневно** — timescale mismatch.
+- **Дефект 2 — пол метрики.** Run threshold pace приколочен к последнему тесту (в `sport_info` его нет, decay'я нет); bike eFTP decay'ит медленно (лаг 4–6 нед, частично). Даже `DEFAULT_VO2MAX=40` ([:42](../data/endurance_score.py)) → база `100·40 = 4000`. «Растренирован» (<3000) требует VO₂max <30 — недостижимо для любого, у кого выставлен порог. Реальный кейс: полный детрейн Jan–Mar 2026 уперся в 4161 «Восстанавливаюсь». Прямо противоречит §11.K («Detrained <3000 — 3+ месяца break'а»).
+
+Дефекты ортогональны: base decay (§13.1) даёт сырому баллу размах вниз; personal zones (§13.2) — недельную чувствительность поверх. Делать **в паре** — каждая по отдельности неполна (зоны без decay болтаются в узкой полосе; decay без зон даёт размах, но зоны всё ещё под популяцию).
+
+### 13.1 Base decay — детрейн роняет VO₂max-якорь
+
+Душить VO₂max-вход детрейн-фактором от CTL относительно собственного недавнего пика:
+
+```python
+# CTL_peak_26w — max(wellness.ctl) за trailing 182d (собственный недавний пик).
+# CTL_now — ctl на ref_date (см. контракт ниже). Оба из wellness, date-specific.
+DETRAIN_FLOOR = 0.78          # VO₂max теряет ~15–25% при полном детрейне, не уходит в ноль (Coyle 1984)
+DETRAIN_SPAN  = 1.0 - DETRAIN_FLOOR   # 0.22
+
+def detrain_factor(ctl_now: float | None, ctl_peak_26w: float | None) -> float:
+    # Нет пика / нет current-CTL → нечего или нечем мерить decay → fallback 1.0.
+    # `not ctl_peak_26w` ловит и None и 0.0; `ctl_now is None` — разрыв wellness (см. контракт).
+    if not ctl_peak_26w or ctl_peak_26w <= 0 or ctl_now is None:
+        return 1.0                   # инфляции диванного нет: бонусы всё равно ~0, база = 100·VO₂max(default)
+    ratio = min(max(ctl_now / ctl_peak_26w, 0.0), 1.0)
+    return DETRAIN_FLOOR + DETRAIN_SPAN * ratio
+
+vo2max_eff = vo2max_threshold * detrain_factor(ctl_now, ctl_peak_26w)
+ES = 100 * vo2max_eff + bonuses
+```
+
+> **Контракт `ctl_now` (M1, асимметрия окон).** `ctl_now = latest_wellness.ctl`, где `latest_wellness` — самая свежая строка из **56-дневной** выборки (`_fetch_wellness_snapshots`), тогда как `ctl_peak_26w` — из отдельного **182-дневного** запроса. Следствие: если в последних 56 днях до `ref_date` **нет ни одной wellness-строки**, `ctl_now = None` → `factor = 1.0` (decay молча отключается), даже если пик в 182д-окне нашёлся. **На целевой сценарий это НЕ влияет:** Intervals.icu пишет wellness (CTL/ATL/HRV/RHR) **ежедневно** независимо от тренировок — CTL продолжает decay'ить и записываться даже в полный 3-месячный layoff, поэтому у подключённого атлета `ctl_now` всегда свежий и decay работает. No-op срабатывает только при разрыве самих wellness-данных >56д (атлет отключил Intervals / перестал носить часы) — там у нас и нет current-CTL, чтобы честно измерить просадку, так что 1.0 — корректный ответ, а не баг. Если в Phase 3 понадобится graceful degradation на разрывах — брать `ctl_now` как most-recent CTL из того же 182д-окна.
+
+**Поведение:**
+- Полная форма (CTL у пика) → фактор 1.0, база не трогается → shipped-калибровка §3.8 (Jun/Nov 2025) сохраняется.
+- 3 мес. off (CTL ~20% пика) → фактор ~0.82; VO₂max 45 → 37; база 4500 → ~3700 = **Восстанавливаюсь** (absolute). Absolute «Растренирован» <3000 для фита недостижим и не нужен — приходит из personal-zone §13.2 (дно = твой <p10). См. коррекцию §13.3.
+- Decay только **вниз** и только при потере уже набранной валюты — ровно то, что Garmin требует «3–4 неделями данных». Не воскрешает зарубленный мультипликатив §11.A (тот награждал высокий VO₂max без тренировок; здесь `CTL_peak≈0` → фактор 1.0, но бонусы 0 и сравнивать не с чем).
+
+**Tension — double-count CTL.** CTL уже входит в `LongTermBonus` (cap 1000). Роли разные: бонус **добавляет** (0..1000), фактор **масштабирует потолок** (0.78..1.0). Это сознательно усиливает сигнал детрейна с двух сторон — приемлемо, т.к. цель именно «детрейн должен быть виден». **Альтернатива, если на валидации окажется too punchy:** завязать decay на ортогональный сигнал — `eFTP-trend` (`wellness.sport_info[Ride].eftp` slope) или дни-с-последней-качественной-сессии — вместо CTL. Решаем по §13.3.
+
+**Параметры под калибровку** (фиксируем на валидации §13.3, не на глаз): `DETRAIN_FLOOR`, окно пика (182d), линейность ratio (возможно sqrt — детрейн нелинеен, быстрее в первые 3 нед).
+
+### 13.2 Personal-relative zones — границы из собственного распределения
+
+Фиксированные пороги (0/3000/4500/5500/6500) → **квинтили скользящего собственного распределения** атлета.
+
+```
+window = trailing 365d of own daily ES snapshots (endurance_scores)
+если len(window) < MIN_HISTORY_DAYS (≈120): fallback на фиксированные пороги §3.8 (cold-start)
+boundaries = percentile(window, [10, 30, 70, 90])   # 5 зон: <p10 / p10–30 / p30–70 / p70–90 / >p90
+```
+
+**Новая семантика зон** (переписывает §3.8 guidance-таблицу — «гоночная форма» → «относительно твоей нормы»):
+
+| Зона | Перцентиль | Что значит | Что делать |
+|---|---|---|---|
+| **Растренирован** | <p10 | заметно ниже твоей годовой нормы — детрейн/болезнь/длинный break | начни возврат с easy Z1/Z2, без структуры |
+| **Восстанавливаюсь** | p10–p30 | ниже нормы, отстраиваешься | постепенный ramp ≤+3 TSS/нед, фокус на постоянстве |
+| **Поддерживаю** | p30–p70 | твой обычный коридор | держишь форму; если цель — добавь long-сессию |
+| **Развиваюсь** | p70–p90 | выше нормы, активный build | ramp +5–7 TSS/нед, не больше |
+| **На пике** | >p90 | лучшее за год — гоночная форма для тебя | taper за 2–3 нед, не нарастить ещё |
+
+**Что переписывается:**
+- §3.8 — таблица семантики + калибровочная таблица (5 фаз Радика → пересчитать по personal boundaries).
+- `ENDURANCE_ZONES` пороги становятся **per-user**, считаются в сервисе на write/read, не константа во фронте. Frontend (`ENDURANCE_ZONES` в `webapp/src/components/halo/EnduranceScore.tsx:31`) получает boundaries из API-ответа, а не хардкодит. **Цвета/id/лейблы зон остаются** — меняется только маппинг score→zone.
+- API `/api/endurance-score` добавляет `zone_boundaries` в ответ (+ флаг `personalized: bool` для cold-start fallback).
+- Badge rule-engine §3.9 #1 (zone breakthrough) и #3 (top-10% percentile) уже совместимы — #3 буквально становится «На пике».
+
+**Open: gauge.** §1 критики (прошлый разговор) — 5-цветная радуга-дуга декоративна. При personal zones имеет смысл одноцветная дуга (заливка = перцентиль текущего балла, цвет = текущая зона). **Отложено в §13, решаем после backend-части** — это чисто визуальный слой.
+
+### 13.3 Validation harness
+
+> **Коррекция 2026-06-24 (при имплементации §13.1).** Исходный acceptance «Detrain bottom → Растренирован (<p10 **И сырой <3000**)» оказался **внутренне противоречив** и снят. Раскладка: VO₂max-композит Радика ≈43–44 → база ≈4300–4400. Даже на полном `DETRAIN_FLOOR=0.78` база падает только до `≈4400·0.78 ≈ 3450` — всё ещё выше 3000. Пробить <3000 требует factor <0.68, т.е. потерю VO₂max >32% — это уровень дивана (Coyle 1984: детрейн теряет максимум ~15–25%). Тренированный атлет после 3 мес. простоя **физически не absolute-detrained** — он сохраняет аэробную базу. Значит «должен быть Растренирован» — **относительное** утверждение («я на дне СВОЕГО диапазона») и закрывается **§13.2 personal zones** (дно 4161 → personal <p10 = Растренирован), а **не** absolute-порогом. Base decay (§13.1) честно расширяет диапазон вниз, но не загоняет фита в absolute <3000 — и не должен.
+
+Детерминированный тест на годовой истории Радика — **acceptance перед merge**:
+
+| Якорь | Дата | Ожидание (новая модель) |
+|---|---|---|
+| Peak pre-injury | 2025-11-15 | На пике (>p90), сырой балл ≥ shipped 6917 (фактор 1.0 у пика) |
+| Base build | 2025-06-01 | Поддерживаю |
+| **Detrain bottom** | Jan–Mar 2026 на дне | **Растренирован по personal-zone (<p10)** — приходит из §13.2, НЕ из absolute-порога. §13.1 отдельно: сырой балл проседает на ~15% vs no-decay (factor у дна ~0.85) ← главный acceptance §13.1 |
+| Возврат, дно | 2026-04-01 | Восстанавливаюсь |
+| Active build | 2026-05-25 | Развиваюсь/Поддерживаю у границы |
+
+- Не должно быть регресса: точки полной формы (фактор ~1.0) остаются в пределах ±5% от shipped сырых баллов. **Структурно гарантировано:** `detrain_factor=1.0` при `ratio≥1` → база не трогается → §8 калибровка (Nov 2025 / May 2026 / Jun 2025) бит-в-бит сохраняется.
+- Калибруем `DETRAIN_FLOOR` / окно пика / linearity по этой таблице, фиксируем найденные значения в §13.1.
+- **§13.1 тесты — ✅ сделано.** Pure: `tests/data/test_endurance_score.py::TestDetrainFactor` + `::TestComputeEnduranceScoreDetrainDecay` (cold-start/пик/дно/ratio>1 clamp/линейная интерполяция + интеграция «decay роняет зону maintaining→recovering» + backward-compat). DB: `tests/data/test_endurance_score_service.py::TestFetchCtlPeak26w` (tenant-scoping — чужой пик не течёт, 182d граница inclusive, future-rows исключены, cold-start → None). Все ES-тесты зелёные. Personal-zone boundary-тесты — при §13.2.
+
+### 13.4 Реализация — порядок
+
+1. **`data/endurance_score.py`** — `detrain_factor` + проброс `vo2max_eff` в `compute_endurance_score`. Нужен `ctl_peak_26w` (новое чтение `max(wellness.ctl)` за 182d — добавить в data-load слой сервиса).
+2. **Backfill** — `python -m cli backfill-endurance-scores --force` пересчитывает все снапшоты под новую формулу (idempotent upsert уже есть). **Сначала** прогнать §13.3 harness на пересчитанной истории.
+3. **Personal zones** — сервис считает `zone_boundaries` из `endurance_scores` истории; API отдаёт их в ответе; frontend читает из ответа вместо хардкода.
+4. **§3.8 / §3.9 / §3 формула** — обновить разделы под новую модель (формула + семантика зон + калибровочная таблица).
+5. Backend-only сначала; gauge-визуал (§13.2 open) — отдельным шагом после.
+
+**Что НЕ трогаем:** storage schema (`endurance_scores` без изменений — `components` JSONB вмещает `detrain_factor`/`ctl_peak`/`zone_boundaries`), триггеры/акторы (§7), multi-tenant контракт (§10).
+
+---
+
+## 14. References
 
 - Garmin Endurance Score user-facing docs: `https://support.garmin.com/` (поиск «Endurance Score»).
 - Firstbeat Analytics white papers: `https://www.firstbeat.com/en/science-and-physiology/` (общая структура VO₂max-based scoring).
