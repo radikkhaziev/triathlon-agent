@@ -2,8 +2,11 @@
 
 from datetime import date, timedelta
 
+import pytest
+
 from data.endurance_score import (
     DEFAULT_VO2MAX,
+    DETRAIN_FLOOR,
     ENDURANCE_MAX,
     AthleteProfile,
     EnduranceActivity,
@@ -12,6 +15,7 @@ from data.endurance_score import (
     compute_badge,
     compute_endurance_score,
     consistency_bonus,
+    detrain_factor,
     duration_bonus,
     long_term_bonus,
     per_sport_breakdown,
@@ -744,3 +748,92 @@ class TestComputeEnduranceScoreEdgeCases:
         # eFTP 207.8 → bike 35.0 → composite ≈ 44.8; stale FTP 225 would give
         # bike 37.3 → composite ≈ 45.8. Assert the eFTP value won.
         assert 44.5 < result.vo2max_composite < 45.1
+
+
+class TestDetrainFactor:
+    """Detrain decay (spec §13.1) — scales the VO2max anchor by CTL relative to
+    the athlete's own 26-week peak. Downward-only; 1.0 = no decay."""
+
+    def test_no_peak_history_no_decay(self):
+        # New user / Phase-1 fallback — nothing to decay from.
+        assert detrain_factor(20.0, None) == 1.0
+
+    def test_zero_peak_no_decay(self):
+        assert detrain_factor(20.0, 0.0) == 1.0
+
+    def test_missing_ctl_now_no_decay(self):
+        # Can't measure the drop without today's CTL.
+        assert detrain_factor(None, 60.0) == 1.0
+
+    def test_full_fitness_no_decay(self):
+        # ctl_now == peak → ratio 1.0 → factor 1.0 (calibration anchors unchanged).
+        assert detrain_factor(60.0, 60.0) == 1.0
+
+    def test_above_peak_clamps_to_one(self):
+        # A new peak forming mid-window must not inflate above 1.0.
+        assert detrain_factor(70.0, 60.0) == 1.0
+
+    def test_deep_detrain_hits_floor(self):
+        # CTL collapsed → floor (VO2max loses ~15-25%, not more — Coyle 1984).
+        assert detrain_factor(0.0, 60.0) == pytest.approx(DETRAIN_FLOOR)
+
+    def test_half_ratio_interpolates_linearly(self):
+        expected = DETRAIN_FLOOR + (1.0 - DETRAIN_FLOOR) * 0.5
+        assert detrain_factor(30.0, 60.0) == pytest.approx(expected)
+
+
+class TestComputeEnduranceScoreDetrainDecay:
+    """Spec §13.1 — base decay gives the score real downward range on a layoff.
+
+    Mirrors `test_detrain_2026_02_01` (the legacy no-decay anchor) but feeds a
+    realistic 26-week CTL peak so the decay actually engages.
+    """
+
+    def _athlete(self):
+        return AthleteProfile(age=43, weight_kg=78.5, ftp_w=207.8, threshold_pace_sec_per_km=287)
+
+    def _detrain_feb_2026(self, ctl_peak_26w):
+        latest = WellnessSnapshot(
+            dt=date(2026, 2, 1),
+            ctl=19.6,
+            ramp_rate=-3.56,
+            sport_ctl={"Ride": 10.1, "Run": 7.0, "Swim": 2.0},
+        )
+        wellness_56d = [
+            WellnessSnapshot(dt=date(2026, 2, 1) - timedelta(days=i), ctl=20 - i * 0.1, ramp_rate=None)
+            for i in range(56)
+        ]
+        # One Other-type 5min session — no training bonuses, isolates the base.
+        activities = [EnduranceActivity(date(2026, 1, 26), "Other", 5 * 60, 1.0, None, None)]
+        return compute_endurance_score(
+            ref_date=date(2026, 2, 1),
+            athlete=self._athlete(),
+            latest_wellness=latest,
+            wellness_56d=wellness_56d,
+            activities_28d=activities,
+            activities_8w=activities,
+            ctl_peak_26w=ctl_peak_26w,
+        )
+
+    def test_default_no_peak_is_backward_compatible(self):
+        # No ctl_peak → factor 1.0 / peak None → identical to the legacy anchor.
+        r = self._detrain_feb_2026(ctl_peak_26w=None)
+        assert r.detrain_factor == 1.0
+        assert r.ctl_peak_26w is None
+        assert r.zone_id == "maintaining"
+
+    def test_decay_drops_zone_below_no_decay(self):
+        no_decay = self._detrain_feb_2026(ctl_peak_26w=None)
+        # Nov-2025 peak fitness ≈ CTL 60 sits inside the trailing 26w window.
+        with_decay = self._detrain_feb_2026(ctl_peak_26w=60.0)
+        # ctl 19.6 vs peak 60 → ratio ≈ 0.33 → factor ≈ 0.85.
+        assert with_decay.detrain_factor < 0.90
+        assert with_decay.ctl_peak_26w == 60.0
+        # Base decayed ~15% → score drops a full zone: maintaining → recovering.
+        assert with_decay.score < no_decay.score - 400
+        assert with_decay.zone_id == "recovering"
+
+    def test_peak_equal_to_now_no_decay(self):
+        # If the window's peak is today's value, there's been no decline.
+        r = self._detrain_feb_2026(ctl_peak_26w=19.6)
+        assert r.detrain_factor == 1.0
