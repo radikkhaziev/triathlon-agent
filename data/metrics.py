@@ -534,7 +534,7 @@ def _project_loads_one_day(
     return round(ctl, 1), round(atl, 1), round(ctl - atl, 1)
 
 
-async def recompute_today_loads(user_id: int) -> tuple[float, float, float] | None:
+async def recompute_today_loads(user_id: int, today: date_type | None = None) -> tuple[float, float, float] | None:
     """Today's (CTL, ATL, TSB) from yesterday's wellness + today's completed TSS.
 
     Intervals.icu reports today's CTL/ATL with **planned** workouts baked in,
@@ -542,10 +542,14 @@ async def recompute_today_loads(user_id: int) -> tuple[float, float, float] | No
     This helper rolls yesterday's loads forward by one day and adds only
     activities that actually appear in `activities` for today.
 
+    Pass `today` to pin the reference day — callers that already snapshotted
+    `local_today()` avoid a midnight race where the second internal call rolls
+    over to the next day. Defaults to `local_today()`.
+
     Returns None if yesterday's wellness row is missing or has no CTL/ATL —
     caller should fall back to whatever Intervals.icu reported.
     """
-    today = local_today()
+    today = today or local_today()
     yesterday = today - timedelta(days=1)
 
     prev = await Wellness.get(user_id, yesterday)
@@ -553,6 +557,31 @@ async def recompute_today_loads(user_id: int) -> tuple[float, float, float] | No
         return None
 
     activities = await Activity.get_for_date(user_id, today)
+    tss_today = sum(a.icu_training_load or 0.0 for a in activities)
+
+    return _project_loads_one_day(prev.ctl, prev.atl, tss_today)
+
+
+def recompute_today_loads_sync(user_id: int, today: date_type | None = None) -> tuple[float, float, float] | None:
+    """Sync twin of `recompute_today_loads` for dramatiq actors.
+
+    Same actual-only de-planning: rolls yesterday's wellness loads forward one
+    day and adds only the TSS of activities that actually appear for today, so
+    callers don't surface Intervals.icu's planned-workout-inflated CTL/ATL.
+    Pass `today` to pin the reference day (avoids a midnight race when the caller
+    already snapshotted `local_today()`); defaults to `local_today()`.
+    `Wellness.get` / `Activity.get_for_date` are @dual — called without await
+    here they dispatch to their sync paths. Returns None if yesterday's wellness
+    row is missing or has no CTL/ATL.
+    """
+    today = today or local_today()
+    yesterday = today - timedelta(days=1)
+
+    prev = Wellness.get(user_id, yesterday)
+    if prev is None or prev.ctl is None or prev.atl is None:
+        return None
+
+    activities = Activity.get_for_date(user_id, today)
     tss_today = sum(a.icu_training_load or 0.0 for a in activities)
 
     return _project_loads_one_day(prev.ctl, prev.atl, tss_today)

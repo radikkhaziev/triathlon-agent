@@ -45,6 +45,7 @@ from data.hrv_activity import (
 )
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import ActivityDTO
+from data.metrics import recompute_today_loads_sync
 from data.ml.noise_classifier import classify_activity_row
 from data.utils import HRV_ELIGIBLE_TYPES
 from mcp_server.tools.progress import compute_activity_comparison_sync
@@ -1020,6 +1021,24 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
         wellness = session.execute(
             select(Wellness).where(Wellness.user_id == user.id, Wellness.date == dt)
         ).scalar_one_or_none()
+
+        # Intervals.icu bakes today's *planned* workouts into ctl/atl, so a fresh
+        # upload reads as if the planned session inflated form. De-plan to the
+        # actual-only loads (yesterday rolled forward + today's completed TSS)
+        # before it goes into the public Strava signature. Past days are already
+        # actual — planning only inflates today/future — so skip the recompute.
+        # Detach the row first: this de-plan is an in-memory read-only adjustment
+        # for the signature, never persisted — expunge guards against a future
+        # commit() in this block silently overwriting the real Intervals.icu loads.
+        # Snapshot today once and pin the recompute to it — otherwise a run that
+        # crosses midnight could pass this guard for the activity's date while
+        # the recompute internally rolls over to the next day.
+        today = local_today()
+        if wellness is not None and dt == today.isoformat():
+            recomputed = recompute_today_loads_sync(user.id, today)
+            if recomputed is not None:
+                session.expunge(wellness)
+                wellness.ctl, wellness.atl, _ = recomputed
 
     # Idempotency: fetch current name from Intervals.icu and check if already signed
     try:

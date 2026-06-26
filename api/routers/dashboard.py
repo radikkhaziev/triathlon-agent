@@ -516,6 +516,17 @@ async def goal(user: User = Depends(require_viewer)) -> dict:
         rows = result.all()
 
     overall_series: list[tuple[date, float]] = [(date.fromisoformat(d), float(ctl)) for d, ctl, _ in rows]
+
+    # Intervals.icu bakes today's planned workouts into ctl, so the gauge's
+    # "current" CTL (and the ramp-rate projection) would read as if today's
+    # session is already done. De-plan the latest point to yesterday-decayed +
+    # actually-completed TSS — same override the Load tab applies. Per-sport
+    # series left untouched (recompute_today_loads only returns overall ctl).
+    if overall_series and overall_series[-1][0] == today:
+        recomputed = await recompute_today_loads(uid)
+        if recomputed is not None:
+            overall_series[-1] = (overall_series[-1][0], recomputed[0])
+
     sport_series: dict[str, list[tuple[date, float]]] = {"swim": [], "ride": [], "run": []}
     for d, _ctl, sport_info in rows:
         per = extract_sport_ctl(sport_info)
