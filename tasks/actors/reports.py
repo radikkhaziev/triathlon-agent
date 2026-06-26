@@ -28,6 +28,7 @@ from data.db import (
 )
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
+from data.metrics import decoupling_check_sync
 from data.taper_service import get_taper_plan_for_user_sync
 from data.weekly_preview import extract_weekly_preview
 from data.workout_adapter import compute_constraints, is_humango_event, needs_adaptation, parse_humango_description
@@ -69,6 +70,30 @@ def _taper_report_line(envelope: dict) -> str | None:
     return (
         f"Тейпер, до гонки {days_to_race} дн.: таргет на сегодня ~{round(tss)} TSS. "
         f"Режь длительность, держи интенсивность и частоту."
+    )
+
+
+_BASE_BUILDING_SPORT_RU = {"bike": "вело", "run": "бег"}
+
+
+def _base_building_report_line(user_id: int) -> str | None:
+    """Deterministic Base Building Protocol line for the morning report (issue
+    #157). Chronic cardiac drift (>10% on 2 of 3 valid steady-state bike/run
+    efforts) → a standing instruction to keep the day in Z2. Checks both sports;
+    names whichever is chronic. Auto-deactivation is implicit: once the trend
+    recovers the line just stops appearing (no separate "снят" announcement — it
+    would re-fire daily in a stateless report). Russian on purpose — appended to
+    the report prompt, which Claude renders in the user's language. None = no
+    injection."""
+    chronic = [
+        r for r in (decoupling_check_sync(user_id, sport) for sport in ("bike", "run")) if r["status"] == "chronic"
+    ]
+    if not chronic:
+        return None
+    sports = ", ".join(_BASE_BUILDING_SPORT_RU.get(r["sport"], r["sport"]) for r in chronic)
+    return (
+        f"🛑 Base Building Protocol активен ({sports}): хронический аэробный дрейф. "
+        "Сегодня держи всё в Z2 — никаких Z4/Z5 интервалов, восстанавливаем аэробную базу."
     )
 
 
@@ -363,10 +388,20 @@ def actor_compose_user_morning_report(
     except Exception:
         logger.exception("Taper line computation failed for user %d", user.id)
 
+    # Deterministic Base Building Protocol line (issue #157) — same guard: the
+    # decoupling check touches activity history and must never sink the report.
+    base_building_line = ""
+    try:
+        base_building_line = _base_building_report_line(user.id) or ""
+    except Exception:
+        logger.exception("Base building line computation failed for user %d", user.id)
+
+    extra_context = "\n".join(line for line in (taper_line, base_building_line) if line)
+
     # Generate report (no DB lock held — can take 30-120s)
     try:
         mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
-        text = mcp.generate_morning_report_via_mcp(_dt, extra_context=taper_line)
+        text = mcp.generate_morning_report_via_mcp(_dt, extra_context=extra_context)
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.exception("Morning report generation failed for user %d", user.id)

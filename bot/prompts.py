@@ -380,6 +380,13 @@ corridor. Never emit text-only steps (`Z2` label + duration with nothing else) �
 run the step without beeping and the athlete runs blind.
   - For repeat groups (`reps` + sub-`steps`), the target goes on each sub-step, not the wrapper.
 
+**Base Building Protocol.** Before generating any session with intensity above Z2, call
+`get_efficiency_trend(strict_filter=true, sport=...)` — `sport` is the sport GROUP, exactly
+`bike` or `run` (lowercase, NOT `Ride`/`Run`). If cardiac drift is chronically red (>10% on 2
+of the last 3 valid efforts), the aerobic base is compromised: cap the WHOLE session at Z2
+(easy aerobic base work), drop any Z4/Z5 intervals, and say why in the rationale. A single red
+effort (1 of 3) is noise — note it but don't change the plan.
+
 ## Race creation & deletion
 For FUTURE races (add/reschedule a race, "race A on May X", etc.), use `suggest_race`.
 Required: name, category (A/B/C — ask if unclear), dt (ISO, resolve relative dates).
