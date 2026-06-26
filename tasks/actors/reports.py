@@ -28,6 +28,7 @@ from data.db import (
 )
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, ScheduledWorkoutDTO
+from data.taper_service import get_taper_plan_for_user_sync
 from data.weekly_preview import extract_weekly_preview
 from data.workout_adapter import compute_constraints, is_humango_event, needs_adaptation, parse_humango_description
 from tasks.actors.avatars import actor_download_user_avatar
@@ -40,6 +41,35 @@ from .common import is_user_dormant
 from .workout import actor_enrich_humango_workout
 
 logger = logging.getLogger(__name__)
+
+
+def _taper_report_line(envelope: dict) -> str | None:
+    """Deterministic one-liner for the morning report when today is an active
+    taper day (TAPER_PLANNER_SPEC Phase 5). None on refusal envelopes, in early
+    mode (empty ``daily_targets``), or when today isn't a planned taper day.
+    Russian on purpose: it's appended to the report prompt, which Claude renders
+    in the user's language.
+
+    Reports days-to-race (stable, decrements every morning) rather than a
+    "day N of L" counter: ``build_taper_plan`` re-anchors ``taper_start`` to today
+    each morning (length is clamped to the remaining runway, ``data/metrics.py``
+    ~L1342), so today is always ``daily_targets[0]`` — a list-index day number
+    would be stuck at "day 1" with a shrinking L. Days-to-race is the honest
+    signal the plan can support without re-anchoring."""
+    if not envelope.get("available"):
+        return None
+    today_iso = local_today().isoformat()
+    today_target = next((t for t in (envelope.get("daily_targets") or []) if t["date"] == today_iso), None)
+    if today_target is None:
+        return None
+    tss = today_target.get("target_tss")
+    if not tss:  # safety guard: today's target is 0 (would only be the race-day entry)
+        return None
+    days_to_race = envelope.get("days_to_race", 0)
+    return (
+        f"Тейпер, до гонки {days_to_race} дн.: таргет на сегодня ~{round(tss)} TSS. "
+        f"Режь длительность, держи интенсивность и частоту."
+    )
 
 
 @dramatiq.actor(queue_name="default")
@@ -324,10 +354,19 @@ def actor_compose_user_morning_report(
         _wellness_row.ai_recommendation = f"__generating__:{time.time():.0f}"
         session.commit()
 
+    # Deterministic taper line (TAPER_PLANNER_SPEC Phase 5) — guarded: the taper
+    # resolver touches CTL/ATL + activity history, and a failure there must never
+    # take down the critical morning-report path. Empty string = no injection.
+    taper_line = ""
+    try:
+        taper_line = _taper_report_line(get_taper_plan_for_user_sync(user.id)) or ""
+    except Exception:
+        logger.exception("Taper line computation failed for user %d", user.id)
+
     # Generate report (no DB lock held — can take 30-120s)
     try:
         mcp = MCPTool(token=_user_orm.mcp_token, user_id=user.id, language=user.language)
-        text = mcp.generate_morning_report_via_mcp(_dt)
+        text = mcp.generate_morning_report_via_mcp(_dt, extra_context=taper_line)
     except Exception as e:
         sentry_sdk.capture_exception(e)
         logger.exception("Morning report generation failed for user %d", user.id)

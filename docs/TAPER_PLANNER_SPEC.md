@@ -2,7 +2,7 @@
 
 > Детерминированный калькулятор подводки: по дате гонки + текущим CTL/ATL + типу события строит посуточный график снижения нагрузки (TSS-таргеты) и правила («режь длительность, держи частоту и интенсивность»). Без ML — чистая арифметика на impulse-response модели. Методбаза: `docs/knowledge/taper.md`.
 
-**Status:** 📝 SPEC ONLY — код не написан. Ждёт подтверждения scope перед Phase 1.
+**Status:** ✅ Phases 1–5 shipped (Phase 1/2/4 — 2026-06-12; Phase 3/5 — 2026-06-26). Детерминированное ядро + MCP tool + webapp overlay + race-plan блок + morning-report строка. Единый резолвер `data/taper_service.py`.
 
 **Related:**
 
@@ -57,10 +57,12 @@
 - Параметр `race_type` (A/B/C) из сигнатуры убран — ядро коридоры ключует distance-class'ом, не приоритетом гонки; вместо него `race_distance_class`.
 - `fitness_projection` как источник прогнозного CTL для early-режима **не** подключён — заблокировано issue #349 (decay-curve скрывает план, прогноз даёт мусор); early-оценка остаётся flat-CTL симуляцией ядра. Вернуться после фикса #349.
 
-### Phase 3 — интеграция в race-plan (deferred, опц.)
+### Phase 3 — интеграция в race-plan ✅ (2026-06-26)
 
-- [ ] Добавить `taper` блок в `race_plans` JSONB через `build_race_plan` (посуточный объём на последние 1–3 недели).
-- [ ] Решить: инжектить `docs/knowledge/taper.md` в race-plan system prompt или передавать готовый расчёт из `build_taper_plan` как факты (предпочтительно — детерминированный расчёт, не доверять числам LLM).
+- [x] `taper` блок в `race_plans` JSONB через `build_race_plan` (`data/race_plan_service.py`): детерминированный envelope из общего `get_taper_plan_for_user(user_id, goal_id)` пишется в `payload["taper"]` после LLM-вызова (виден и в `dry_run` preview). Omit когда резолвер отказывает — зеркалит условный `race_conditions` блок.
+- [x] **Решено: детерминированный расчёт, НЕ инжект в LLM-контекст.** Числа из `build_taper_plan` пишутся в payload напрямую; промпт Claude их не видит — prose-коридоры race-plan не нуждаются в посуточном TSS, а показ чисел модели спровоцировал бы их пересказ/дрейф. Закрывает открытый вопрос §2.
+
+**Deviations Phase 3:** taper-блок хранит полный envelope сервиса (тот же shape, что у MCP-тула / `GET /api/taper-plan`) — единый контракт для всех потребителей. Тесты: `tests/db/test_race_plan_integration.py::TestTaperBlock` (присутствует при available / отсутствует при refuse).
 
 ### Phase 4 — webapp surface ✅ (2026-06-12)
 
@@ -97,12 +99,31 @@
   API → оверлей просто не рендерится, чарт не зависит от этого fetch'а. Off-axis таргеты
   (гонка за forecast-горизонтом) молча отбрасываются — линия обрывается на краю оси.
 
-### Phase 5 — morning report line (deferred, опц.)
+### Phase 5 — morning report line ✅ (2026-06-26)
 
-- [ ] В окне тейпера детерминированно подмешивать строку в контекст
-  `actor_compose_user_morning_report`: «день N/L тейпера, таргет сегодня ~X TSS, режь
-  длительность — не интенсивность». Без дополнительных вызовов Claude — готовая строка из
-  `build_taper_plan`, модель её только вплетает в текст.
+- [x] В окне тейпера детерминированная строка («тейпер, до гонки N дн.: таргет ~X TSS, режь
+  длительность — держи интенсивность и частоту») подмешивается в prompt
+  `actor_compose_user_morning_report` через новый `extra_context` параметр
+  `MCPTool.generate_morning_report_via_mcp`. Строку считает `_taper_report_line` из
+  `get_taper_plan_for_user_sync`. Без доп. вызовов Claude — модель только вплетает готовую строку.
+
+**Deviations Phase 5:**
+- **Days-to-race, а не «день N/L».** Спека предлагала «день N/L тейпера», но `build_taper_plan`
+  ре-якорит `taper_start` на сегодня каждое утро (длина клампится под остаток рунвея,
+  `data/metrics.py` ~L1342), поэтому сегодня всегда `daily_targets[0]` — «день N» из индекса
+  застрял бы на 1, а L усыхал бы день ото дня. Стабильный честный сигнал, который план реально
+  знает — `days_to_race` (монотонно убывает). N/L потребовал бы второго unclamped grid-search
+  во всех потребителях — не оправдано ради одной строки. (Поймано код-ревью 2026-06-26.)
+- **Sync-twin резолвер** `get_taper_plan_for_user_sync` (primary-goal-only) + `_resolve_loads_sync` /
+  `_resolve_peak_daily_load_sync` — `asyncio.run` из многопоточного воркера запрещён конвенцией
+  (см. `tasks/actors/activities.py`), поэтому реальный twin, как `recompute_today_loads_sync`.
+  Дублируется только I/O-фетч; гейты, `_peak_from_activities` и `_build_envelope` общие → пути
+  не расходятся (тест `test_parity_with_async`).
+- Строка по-русски (идёт в prompt, Claude рендерит на языке юзера — как сам prompt отчёта).
+  Гейт: today в `daily_targets` с `target_tss > 0` (early-режим → пустые targets → строки нет).
+  Вычисление обёрнуто в try/except — сбой тейпера не валит критичный morning-report. Тесты на
+  реальном envelope (не синтетическом): `tests/tasks/test_taper_report_line.py` (вкл. регрессию
+  «countdown убывает morning-to-morning»).
 
 ### Вне scope (всего)
 

@@ -12,8 +12,8 @@ from datetime import date, timedelta
 
 from sqlalchemy import select
 
-from data.db import Activity, AthleteGoal, Wellness, get_session
-from data.metrics import build_taper_plan, recompute_today_loads
+from data.db import Activity, AthleteGoal, Wellness, get_session, get_sync_session
+from data.metrics import build_taper_plan, recompute_today_loads, recompute_today_loads_sync
 from tasks.dto import local_today
 
 _HISTORY_DAYS = 42
@@ -56,11 +56,11 @@ async def _resolve_loads(user_id: int) -> tuple[float, float] | None:
     return float(row.ctl), float(row.atl)
 
 
-async def _resolve_peak_daily_load(user_id: int, today: date, ctl_now: float) -> tuple[float, bool]:
+def _peak_from_activities(activities: list[Activity], today: date, ctl_now: float) -> tuple[float, bool]:
     """`max(ctl_now, median daily TSS of the best rolling 7-day window)` over
     the last 42 days (spec §7 candidate). Returns (value, used_fallback) —
-    fallback is plain `ctl_now` when history is shorter than 2 weeks (§6)."""
-    activities, _ = await Activity.get_range(user_id, today - timedelta(days=_HISTORY_DAYS), today)
+    fallback is plain `ctl_now` when history is shorter than 2 weeks (§6). Pure:
+    shared by the async and sync resolvers so they can't drift."""
     daily: dict[date, float] = {}
     for act in activities:
         if act.icu_training_load is None:
@@ -76,6 +76,11 @@ async def _resolve_peak_daily_load(user_id: int, today: date, ctl_now: float) ->
     best_i = max(range(len(series) - 6), key=lambda i: sum(series[i : i + 7]))
     peak_week_median = statistics.median(series[best_i : best_i + 7])
     return max(ctl_now, peak_week_median), False
+
+
+async def _resolve_peak_daily_load(user_id: int, today: date, ctl_now: float) -> tuple[float, bool]:
+    activities, _ = await Activity.get_range(user_id, today - timedelta(days=_HISTORY_DAYS), today)
+    return _peak_from_activities(activities, today, ctl_now)
 
 
 async def get_taper_plan_for_user(
@@ -138,6 +143,32 @@ async def get_taper_plan_for_user(
     if peak_daily_load <= 0:
         return {"available": False, "reason": "no_training_history", "hint": "No activity load in the last 6 weeks."}
 
+    return _build_envelope(
+        race_dt=race_dt,
+        today=today,
+        event_name=event_name,
+        distance_class=distance_class,
+        ctl_now=ctl_now,
+        atl_now=atl_now,
+        peak_daily_load=peak_daily_load,
+        peak_fallback=peak_fallback,
+    )
+
+
+def _build_envelope(
+    *,
+    race_dt: date,
+    today: date,
+    event_name: str | None,
+    distance_class: str,
+    ctl_now: float,
+    atl_now: float,
+    peak_daily_load: float,
+    peak_fallback: bool,
+) -> dict:
+    """Run `build_taper_plan` on resolved inputs and serialise the envelope.
+    Pure (no I/O) — shared by the async and sync resolvers so the chat, webapp,
+    race-plan and morning-report surfaces can never disagree on the numbers."""
     plan = build_taper_plan(
         race_date=race_dt,
         today=today,
@@ -164,3 +195,84 @@ async def get_taper_plan_for_user(
         "taper_start_date": plan["taper_start_date"].isoformat(),
         "daily_targets": [{**t, "date": t["date"].isoformat()} for t in plan["daily_targets"]],
     }
+
+
+# ---------------------------------------------------------------------------
+#  Sync twin — for the dramatiq morning-report actor (TAPER_PLANNER_SPEC Phase 5)
+# ---------------------------------------------------------------------------
+# `asyncio.run` is unsafe from the multi-threaded sync worker (see
+# `tasks/actors/activities.py` note), so the morning-report path gets a real
+# sync twin rather than a bridge. Same pattern as `recompute_today_loads` /
+# `recompute_today_loads_sync`. Only the I/O fetch is duplicated — the gates,
+# peak-week math (`_peak_from_activities`) and envelope (`_build_envelope`) are
+# shared, so the two paths can't drift.
+
+
+def _resolve_loads_sync(user_id: int) -> tuple[float, float] | None:
+    loads = recompute_today_loads_sync(user_id)
+    if loads is not None:
+        return loads[0], loads[1]
+    with get_sync_session() as session:
+        row = session.execute(
+            select(Wellness.ctl, Wellness.atl)
+            .where(Wellness.user_id == user_id, Wellness.ctl.isnot(None), Wellness.atl.isnot(None))
+            .order_by(Wellness.date.desc())
+            .limit(1)
+        ).first()
+    if row is None:
+        return None
+    return float(row.ctl), float(row.atl)
+
+
+def _resolve_peak_daily_load_sync(user_id: int, today: date, ctl_now: float) -> tuple[float, bool]:
+    with get_sync_session() as session:
+        activities = list(
+            session.execute(
+                select(Activity).where(
+                    Activity.user_id == user_id,
+                    Activity.start_date_local >= str(today - timedelta(days=_HISTORY_DAYS)),
+                    Activity.start_date_local <= str(today),
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return _peak_from_activities(activities, today, ctl_now)
+
+
+def get_taper_plan_for_user_sync(user_id: int) -> dict:
+    """Sync twin of `get_taper_plan_for_user` — primary upcoming goal only (no
+    `goal_id` / `race_date` overrides). Read-only. Same refusal-gate shape
+    (`{available: False, reason}`); on success returns the `_build_envelope`
+    dict. Used by the morning-report actor to precompute a deterministic taper
+    line without an extra Claude tool call (spec Phase 5)."""
+    today = local_today()
+
+    goal_dto = AthleteGoal.get_goal_dto(user_id)  # @dual → sync path
+    if goal_dto is None:
+        return {"available": False, "reason": "no_future_race"}
+    race_dt, event_name = goal_dto.event_date, goal_dto.event_name
+    if race_dt <= today:
+        return {"available": False, "reason": "race_date_in_past"}
+
+    distance_class = _distance_class_from_name(event_name)
+
+    loads = _resolve_loads_sync(user_id)
+    if loads is None:
+        return {"available": False, "reason": "no_wellness_data"}
+    ctl_now, atl_now = loads
+
+    peak_daily_load, peak_fallback = _resolve_peak_daily_load_sync(user_id, today, ctl_now)
+    if peak_daily_load <= 0:
+        return {"available": False, "reason": "no_training_history"}
+
+    return _build_envelope(
+        race_dt=race_dt,
+        today=today,
+        event_name=event_name,
+        distance_class=distance_class,
+        ctl_now=ctl_now,
+        atl_now=atl_now,
+        peak_daily_load=peak_daily_load,
+        peak_fallback=peak_fallback,
+    )

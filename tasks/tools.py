@@ -737,8 +737,13 @@ class MCPTool:
                 return {"text": block["text"]}
         return {}
 
-    def generate_morning_report_via_mcp(self, dt: date | DateDTO | str) -> str | None:
-        """Generate morning report using sync Claude API + MCP tool calls."""
+    def generate_morning_report_via_mcp(self, dt: date | DateDTO | str, extra_context: str = "") -> str | None:
+        """Generate morning report using sync Claude API + MCP tool calls.
+
+        ``extra_context`` is an optional deterministic block (e.g. the taper line,
+        TAPER_PLANNER_SPEC Phase 5) appended to the user prompt for the model to
+        weave into the report — no extra Claude round-trip, the caller computes it.
+        """
         _dt = dt if isinstance(dt, str) else dt.isoformat()
 
         try:
@@ -749,6 +754,8 @@ class MCPTool:
 
             system = get_system_prompt_v2(user_id=self.user_id, language=self.language)
             prompt = f"Сгенерируй утренний отчёт за {_dt}"
+            if extra_context:
+                prompt = f"{prompt}\n\nДополнительный контекст (обязательно учти в отчёте):\n{extra_context}"
 
             messages: list[dict] = [{"role": "user", "content": prompt}]
 
