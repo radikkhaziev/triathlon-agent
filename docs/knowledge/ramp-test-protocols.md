@@ -8,7 +8,7 @@ Architectural sibling: `docs/RAMP_TEST_BIKE_SPEC.md` (status + ссылки), im
 
 ## 1. Method overview — DFA a1
 
-Detrended Fluctuation Analysis (alpha-1 scaling exponent) RR-интервалов в скользящем 120-beat окне. Ключевые точки:
+Detrended Fluctuation Analysis (alpha-1 scaling exponent) RR-интервалов в скользящем 2-минутном (120-сек) окне с шагом 5 сек (`data/hrv_activity.py:calculate_dfa_timeseries`, `window_sec=120`). Ключевые точки:
 
 | DFA a1 | Физиологическая интерпретация |
 |---|---|

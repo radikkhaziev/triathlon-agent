@@ -86,7 +86,9 @@ covered by AC-3 (integration), not yet observed end-to-end.
 
 ## 4. Estimator
 
-For each **terminal** step (skip repeat-group containers; recurse into them):
+Code: `estimate_tss` / `_flatten_steps` / `_step_intensity` in
+`data/intervals/dto.py`. For each **terminal** step (skip repeat-group
+containers, recurse into them):
 
 ```
 IF        = mid(start, end) / 100         # start/end are % of threshold:
@@ -121,65 +123,48 @@ icu_training_load = round( Σ tss_step )    # over the expanded step list
   50→83 / 73→83 / 58→73): **≈ 48 TSS** under this scheme. (HumanGo UI: 30 —
   out of scope to match, see §7.)
 
-**Empirical back-test (2026-05-16).** The 2026-05-15 actual Run was a
-near-identical Z2 endurance session: `moving_time` 2999 s (≈50 min, same as the
-05-17 plan), `avg_hr` 143 (LTHR 172). Intervals' **actual** `icu_training_load`
-for it = **50**. Our scheme's estimate for the 05-17 twin = **≈48** (Δ ≈ 4 %).
-HumanGo's planned 30 undershoots the realised load by ~40 %. Crude HR proxy
-(143/172 → IF 0.83 → ~57) overshoots — consistent with §7's note that the
-`%lthr` path is the rougher one; the pace-midpoint estimate is the closest to
-reality.
+**Empirical back-tests (2026-05-16).** Validated against Intervals'/actual
+figures across pace, power, flat and repeat-group structures — accuracy is
+**per-sport-biased, and the bias is the §9 Phase-3 calibration knob, not a
+blocker**:
+- **Power (`%ftp`)** — near-exact. `CYCLING:Endurance w/ 12min tempo-8` (8460 s,
+  nested 6×+8×): ours ≈130 vs Intervals 134 vs NP-method 134 (Δ ≈3 %);
+  repeat-group expansion verified (Σ = 8460 ✓). Midpoint sits just under NP
+  (NP 4th-powers hard efforts) — fine for a planning estimate.
+- **Pace / easy Run (`%pace`)** — mild **over**-estimate (~+14 %). 05-15 Z2 Run:
+  ours 57 vs actual 50; the 05-17 twin (near-identical 50-min Z2) ours ≈48 vs the
+  realised 50 (Δ ≈4 %). HumanGo's planned 30 *undershoots* realised load by ~40 %
+  (its run threshold is the outlier — §7). The pace-midpoint estimate is the
+  closest to reality; the `%lthr` HR proxy (≈57) is the rougher path.
+- **Swim** — consistent **+10…20 %** over-estimate (full-window dry-run, e.g.
+  41/33, 147/137, 74/69).
 
-Second back-test, structured **power** workout with repeat groups (2026-05-16
-`CYCLING:Endurance w/ 12min tempo-8`, 8460 s, `%ftp`, nested 6× + 8× blocks):
-our scheme = **≈130**, Intervals' own planned `icu_training_load` = **134**, and
-the NP method (NP 166 / FTP 220 → IF 0.755) independently = **≈134**. Δ ≈ 3 %;
-repeat-group expansion verified (Σ durations = 8460 ✓). Midpoint slightly under
-NP (NP 4th-powers hard efforts) — acceptable for a planning estimate.
-
-Together: pace + power, flat steps + repeat groups, both within ~3-4 % of the
-realised/Intervals figure.
-
-**Compliance-gated week back-test (2026-05-11 → 05-16, actual vs estimate).**
-`paired_event_id` matching is loose, so only rows with **compliance = 100 %**
-(plan executed verbatim → clean estimator isolation) count:
-
-| date | sport | actual | ours | Δ | plan |
-|---|---|---|---|---|---|
-| 05-14 | Ride | 36 | 33 | −3 (−8 %) | `CYCLING:12min threshold` |
-| 05-15 | Run | 50 | 57 | +7 (+14 %) | `AI: Run 9K easy Z2` |
-
-Consistent with the earlier results: power near-exact, pace/easy a mild
-**over**-estimate (~+14 %) → the §9 Phase-3 calibration knob, not a blocker.
-Non-100 %-compliance / unpaired rows (05-11, 05-12, 05-13, 05-15 swim) are
-discarded — Δ there is dominated by execution deviation or loose pairing, not
-estimator error.
-
-**Full-window dry-run (2026-05-16 → 05-29, all 23 planned workouts).** Read-only,
-no push. Findings:
-- vs the 8 workouts Intervals already scored: ride −4 (130/134); swims a
-  consistent **+5…+10** (e.g. 41/33, 147/137, 74/69) → ~10-20 % swim
-  over-estimate, a Phase-3 calibration item, not a blocker.
-- Surfaced the **open-step bug** (§4 residual rule): pre-fix a 105-min steady
-  run = 12 TSS; post-fix = **103** (hand-check ≈104). Three runs (05-19/21/24)
-  were affected; all sane after the fix.
-- Coverage is the whole point, quantified: over the 14 days the projection
-  currently sees only **492** load (≈swims only) — hence the decay; our scheme
-  feeds **≈1198**, i.e. the actual plan. (One genuinely huge day, 05-24 ≈250
-  = 105-min run + 109-min swim — real plan content, not an estimator artefact.)
+The full-window dry-run (2026-05-16 → 05-29, 23 planned workouts, read-only) also
+**surfaced the open-step bug** (→ §4 residual rule): a 105-min steady run scored
+12 TSS pre-fix, **103** post-fix (hand-check ≈104; three runs affected). And it
+quantified the **coverage payoff**: over those 14 days the projection currently
+sees only **~492** load (swims only → the decay), vs **~1198** under our scheme
+— i.e. the actual plan.
 
 ## 5. Where it plugs in
 
-| Path | File | Change |
-|---|---|---|
-| Shared | `data/intervals/dto.py` | new `EventExDTO.icu_training_load: int \| None = None` (+ optional `icu_intensity`, deferred) |
-| Shared | **`data/intervals/dto.py`** (NOT `workout_adapter.py`/`metrics.py` — those import `dto`, so the helper there would be a cycle; it operates on `WorkoutStepDTO` which lives in `dto.py`) | `estimate_tss(steps, moving_time) -> int \| None` + `_flatten_steps` + `_step_intensity` (the §4 formula) |
-| AI | `data/intervals/dto.py` `to_intervals_event()` | `icu_training_load=estimate_tss(self.steps, self.duration_minutes*60)` — shared estimator (single algorithm); `target_tss` stays bot-display-only |
-| HumanGo (webhook-time, **core**) | `tasks/actors/workout.py` `actor_enrich_humango_workout` | `icu_training_load=estimate_tss(steps, event.moving_time)` on the `EventExDTO`. Reached via the `CALENDAR_UPDATED` → `actor_user_scheduled_workouts` → `actor_enrich_humango_workout` chain (§3) — owner-required path. |
+Shipped (code-truth). One shared estimator, both push paths:
 
-Open sub-decision: AI path keeps `target_tss` (model-supplied) **or** switches
-to the shared `estimate_tss(steps)` for a single algorithm. Recommendation:
-shared helper everywhere; keep `target_tss` only as the bot display value.
+- **AI** — `to_intervals_event()` in `data/intervals/dto.py` sets
+  `icu_training_load=estimate_tss(self.steps, self.duration_minutes*60)`.
+- **HumanGo (webhook-time, core)** — `actor_enrich_humango_workout`
+  (`tasks/actors/workout.py`) sets `icu_training_load=estimate_tss(steps,
+  event.moving_time)` on the `EventExDTO`, reached via the `CALENDAR_UPDATED` →
+  `actor_user_scheduled_workouts` → `actor_enrich_humango_workout` chain (§3) —
+  owner-required path.
+
+**Placement deviation (decided):** spec first said `workout_adapter.py`/`metrics.py`,
+but `estimate_tss` lives in `data/intervals/dto.py` — the only circular-import-safe
+home (`workout_adapter`→`dto`, never the reverse; the helper operates on
+`WorkoutStepDTO`, which lives in `dto.py`).
+
+**Sub-decision (resolved):** single shared `estimate_tss` everywhere; `target_tss`
+(model-supplied) is kept only as the bot display value, not pushed.
 
 ## 6. Consumption (no change, just the payoff)
 
@@ -230,9 +215,9 @@ chart (1m/3m/6m toggle). No reader changes; this is purely a producer fix.
 
 | # | Scope | Gate |
 |---|---|---|
-| ~~**0**~~ | ✅ **DONE — AC-1 PASS (2026-05-16).** Event 110387946, sent 48 → read-back 48, steps 3→3 intact. Gate cleared; Phase 1 unblocked. | — |
-| ~~**1**~~ | ✅ **DONE.** `EventExDTO.icu_training_load` + `estimate_tss` + `_flatten_steps`/`_step_intensity` in `data/intervals/dto.py` (**placement deviation**: spec said `workout_adapter.py`/`metrics.py`, but `dto.py` is the only circular-import-safe home — `workout_adapter`→`dto`, never the reverse; the helper operates on `WorkoutStepDTO` which lives in `dto.py`). Wired into `to_intervals_event` (AI). 10 unit tests incl. spec anchors 05-17→48, 05-24→103. **AC-2 ✅.** | AC-2 ✅ |
-| ~~**2**~~ | ✅ **CODE-DONE.** `actor_enrich_humango_workout` (`workout.py`) now sets `icu_training_load=estimate_tss(steps, event.moving_time)` on the webhook-time `EventExDTO`. 229 push-path tests green, 0 regressions. **AC-3 pending live observation** (one real `CALENDAR_UPDATED` → enrichment → `FITNESS_UPDATED` cycle showing the projection bump). | AC-3 (live) |
+| ~~**0**~~ | ✅ **DONE — AC-1 PASS (2026-05-16).** Event 110387946, sent 48 → read-back 48, steps 3→3 intact. | — |
+| ~~**1**~~ | ✅ **DONE — AC-2 ✅.** `EventExDTO.icu_training_load` + `estimate_tss` in `data/intervals/dto.py` (placement deviation, §5), wired into AI `to_intervals_event`. 10 unit tests incl. spec anchors 05-17→48, 05-24→103. | AC-2 ✅ |
+| ~~**2**~~ | ✅ **CODE-DONE.** `actor_enrich_humango_workout` (webhook-time `EventExDTO`), 0 regressions. **AC-3 pending live observation** (one real `CALENDAR_UPDATED` → enrichment → `FITNESS_UPDATED` cycle showing the projection bump). | AC-3 (live) |
 | **3** | Empirical calibration: corridor point (mid vs high), `%lthr` proxy, **distance-proportional residual split for distance-only steps** (reintroduces a threshold — only if even-split drifts materially on swim sets), against a sample of completed-vs-planned; optional `icu_intensity` | post-data |
 
 ## 10. Acceptance criteria
@@ -242,10 +227,9 @@ chart (1m/3m/6m toggle). No reader changes; this is purely a producer fix.
   returned 48; `workout_doc.steps` 3→3 intact. Intervals retains an explicit
   planned load on a structured workout and the partial PUT does not clobber
   steps. Gate cleared.
-- **AC-2 — ✅ PASS.** `tests/test_estimate_tss.py`, 10 deterministic cases:
-  midpoint IF², repeat-group expansion, open/residual (single + multi-split),
-  target-less → 0, stepless → None, no-`moving_time` → None, all-rest → None,
-  plus spec anchors 05-17 → 48 and 05-24 → 103 (exact). flake8 clean.
+- **AC-2 — ✅ PASS.** `tests/test_estimate_tss.py`, 10 deterministic cases
+  (midpoint IF², repeat-group expansion, open/residual, target-less → 0,
+  stepless/no-`moving_time`/all-rest → None, spec anchors 05-17 → 48, 05-24 → 103).
 - **AC-3:** after a HumanGo enrichment run, the event carries a non-NULL
   `icu_training_load`; within one `FITNESS_UPDATED` cycle the
   `fitness_projection` ATL shows a bump on that day (parity with the swim-day

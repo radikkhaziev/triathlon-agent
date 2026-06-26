@@ -8,13 +8,13 @@
 
 | Ссылка | Связь |
 |---|---|
-| `tasks/actors/changelog.py` | Dramatiq actor `actor_publish_weekly_changelog` |
+| `tasks/actors/changelog.py` | Actor `actor_publish_weekly_changelog` + `publish_weekly_changelog` (8-шаговый flow), `PROMPT_TEMPLATE`, pre-filter constants |
 | `api/routers/changelog.py` | REST `GET /api/changelog/latest` |
 | `bot/scheduler.py:scheduler_publish_weekly_changelog_job` | Sun 15:00 Belgrade cron |
-| `webapp/src/components/halo/HaloSidebar.tsx` | Unread-badge link (desktop sidebar) |
-| `webapp/src/pages/Wellness.tsx` | Mobile unread teaser (после Halo-port карточка `BotChatBanner`-like) |
-| `webapp/src/hooks/useChangelog.ts` | Singleton fetch hook (shared между HaloSidebar и Wellness teaser) |
-| `data/github.py:LATEST_DISCUSSION_QUERY` | Shared GraphQL query (actor + endpoint) — single source of truth |
+| `data/github.py:LATEST_DISCUSSION_QUERY` | Shared GraphQL query (actor idempotency + endpoint) — single source of truth |
+| `webapp/src/components/halo/HaloSidebar.tsx` | Desktop unread-badge link |
+| `webapp/src/pages/Wellness.tsx` | Mobile unread teaser (inline ink-card) |
+| `webapp/src/hooks/useChangelog.ts` | Singleton fetch hook (shared HaloSidebar + Wellness teaser) |
 | `mcp_server/tools/github.py:create_github_issue` | Reference — паттерн использования `GITHUB_TOKEN` |
 
 POC: Discussion #334 (2026-05-09 — manual через `gh api graphql` для проверки flow до spec'и).
@@ -50,26 +50,17 @@ Pull-модель через GitHub Discussion + sidebar link:
 
 ## 3. Data flow
 
-`Sun 15:00 Belgrade cron → actor_publish_weekly_changelog.send() (no-arg, не per-user) → 8 шагов`:
+Flow реализован в `tasks/actors/changelog.py:publish_weekly_changelog` (8 шагов: idempotency lookup → fetch merged PRs → pre-filter → empty-check → build prompt (top-50 cap, `MAX_PRS_FOR_CLAUDE`) → Claude call → wrap+`createDiscussion` → log). **Никогда не raises** — fail-soft на каждой ветке, любая ошибка → `skipped_error` + Sentry.
 
-1. **Idempotency lookup** — `fetch_latest_discussion()` (`data/github.py`). Если последний Discussion создан в пределах текущей недели (`created_at ≥ week_start = now − 6d`) → `skipped_already_published`. Окно **строго короче** периода cron (7d), иначе прошлонедельный Discussion (~7d) подавлял бы текущий запуск — см. §14, инцидент 2026-05-17.
-2. **Fetch merged PRs** — REST `pulls?state=closed&base=main`, paginated, stop когда `updated_at < since`.
-3. **Pre-filter** (cheap, без Claude — §4).
-4. **Empty?** → log + return (`skipped_no_prs` / `skipped_all_filtered`).
-5. **Build Claude prompt** — title + URL + `body[:1500]` per PR, **top-50** cap (`MAX_PRS_FOR_CLAUDE`).
-6. **Call Claude** (`claude-sonnet-4-6`, `max_tokens=800, temperature=0.3`); если sentinel `NO_USER_FACING_CHANGES` → log + return.
-7. **Wrap output** в Discussion body (§6) → GraphQL `createDiscussion`.
-8. **Log success** с URL + number; `skipped_error` + Sentry на любой ошибке.
-
-Implementation: `tasks/actors/changelog.py:publish_weekly_changelog`. **Никогда не raises** — fail-soft на каждой ветке.
+**Load-bearing idempotency rule:** окно `week_start = now − 6d` **строго короче** периода cron (7d). Иначе прошлонедельный Discussion (~7d) подавлял бы текущий запуск → дайджест молча деградирует в biweekly (инцидент #338, см. §14).
 
 ---
 
 ## 4. Pre-filter rules
 
-Запускается ДО Claude — экономит токены на очевидно internal PR'ах.
+Запускается ДО Claude — экономит токены на очевидно internal PR'ах. Constants в `tasks/actors/changelog.py` (`SKIP_AUTHORS` и т.д.).
 
-- **Authors:** `SKIP_AUTHORS = {"dependabot[bot]", "github-actions[bot]", "renovate[bot]"}`.
+- **Authors:** `dependabot[bot]`, `github-actions[bot]`, `renovate[bot]`.
 - **Title regex hard-drop:** `^(chore|ci|build|test|docs):` (case-insensitive). `perf|style|refactor` **НЕ** в hard-drop — `perf:` обычно user-facing («дашборд в 3× быстрее»), `style:` чаще про UI Tailwind, `refactor:` иногда меняет UX. Trust Claude (+5-7k input tokens worst-case, ~$0.02/неделю).
 - **Labels:** `skip-changelog` / `internal` / `dependencies` → drop.
 - **Dedup key:** `(title.lower().strip(), sha1(body[:200])[:8])` — оставить newest по `merged_at`. **Не title-only** — stacked PRs могут иметь одинаковый title но разные bodies. POC observation: #318/#320 байт-идентичны (re-merge артефакт после force-push).
@@ -79,30 +70,11 @@ Implementation: `tasks/actors/changelog.py:publish_weekly_changelog`. **Нико
 
 ## 5. Claude prompt & output
 
-Source of truth: `tasks/actors/changelog.py:PROMPT_TEMPLATE`. Rules:
-
-- 3-7 буллетов на русском, активный залог («Теперь можно X»).
-- Группировка по темам с emoji-заголовками (🎯 Цели, 🧪 Тесты, 📊 Отчёты, 🔌 Onboarding, 🐛 Багфиксы, 🌐 Webapp, 🤖 Чат).
-- НЕ упоминать PR-номера, файлы, классы, миграции.
-- Если все PR'ы internal → ровно строка `NO_USER_FACING_CHANGES` (sentinel, actor skip publish).
-- Без введения/заключения.
+Source of truth: `tasks/actors/changelog.py:PROMPT_TEMPLATE` (3-7 русских буллетов, активный залог, тематические emoji-заголовки, без PR-номеров/файлов; sentinel `NO_USER_FACING_CHANGES` если всё internal). Model `claude-sonnet-4-6`, `max_tokens=800, temperature=0.3`.
 
 **Body truncation rationale (deviation от initial 500-char):** 1500 chars + `"... [truncated]"` суффикс. Наши PR descriptions в среднем 800-1500 chars («What was done / How to verify»), 500 резали бы именно «How to verify» — ту часть откуда Claude видит user impact. **Worst case с top-50 cap:** 50×1500 ≈ 18.75k input tokens, ~$0.06/прогон. Реалистично 30-40 PR/неделю → ~$0.04/неделю.
 
-Discussion body wrapper:
-
-```markdown
-> Сводка изменений за неделю. Сгенерирована автоматически из merged PR'ов
-> в `main` (пропущены рефакторинги, миграции, обновления зависимостей).
-
-{claude_output}
-
----
-
-[Полный список merged PR'ов за неделю →](https://github.com/{owner}/{repo}/pulls?q=is%3Apr+merged%3A%3E%3D{since}+base%3Amain)
-```
-
-Title format: `✨ Что нового — неделя DD–DD MMM YYYY` (понедельник → воскресенье, месяц на русском).
+Discussion body wrapper (`> Сводка…` blockquote + `{claude_output}` + ссылка на полный список merged PR'ов). Title format: `✨ Что нового — неделя DD–DD MMM YYYY` (понедельник → воскресенье, месяц на русском).
 
 ---
 
@@ -133,48 +105,32 @@ CLI: `python -m cli publish-changelog [--force]`. `--force` обходит idemp
 
 ## 8. REST endpoint
 
-`GET /api/changelog/latest` — `require_viewer` (demo тоже читает).
+`GET /api/changelog/latest` (`require_viewer`, demo тоже читает) — реализация в `api/routers/changelog.py`. Response `{url, title, published_at}` или 404. Load-bearing решения (см. Decisions §14):
 
-| Aspect | Detail |
-|---|---|
-| Response | `{url, title, published_at}` или 404 если Discussion'ов нет |
-| Cache | 1h in-process для **обоих** 200 и 404 — fresh repo с нулём Discussion'ов иначе бил бы GitHub на каждом page load до первой публикации |
-| Single-flight | `asyncio.Lock` против thundering herd на cache miss — concurrent requests делят один upstream fetch (Copilot review #335) |
-| Failure | 503 с `Retry-After: 300` через `HTTPException(headers=...)` (не через `Response.headers` — FastAPI сбрасывает их при подмене body на error JSON) |
-| GraphQL query | `data/github.py:LATEST_DISCUSSION_QUERY` — shared с actor'ом (idempotency lookup), single source of truth; плюс API-процесс не тянет `dramatiq`/`anthropic` ради импорта строки |
-| Token leak guard | `GITHUB_TOKEN` идёт только в outbound `Authorization` header, never в response |
+- **Cache 1h для обоих 200 и 404** — fresh repo с нулём Discussion'ов иначе бил бы GitHub на каждом page load.
+- **`asyncio.Lock` single-flight** против thundering herd на cache miss.
+- **503 + `Retry-After: 300` через `HTTPException(headers=...)`** — не через `Response.headers` (FastAPI сбрасывает их при подмене body на error JSON).
+- **GraphQL query** = `data/github.py:LATEST_DISCUSSION_QUERY`, shared с actor'ом; API-процесс не тянет `dramatiq`/`anthropic` ради импорта строки.
+- `GITHUB_TOKEN` только в outbound `Authorization` header, never в response.
 
 ---
 
 ## 9. Webapp integration
 
-### Unread-only link, dual viewport placement
+**Unread-only link.** Постоянная эмодзи-ссылка для атлета, который changelogs не читает = visual debt. Рендерим только если `cl.url !== localStorage["changelog.last_seen_url"]`; клик → write localStorage + `setUnread(false)` → ссылка исчезает в сессии.
 
-Постоянная эмодзи-ссылка для атлета, который changelogs не читает = visual debt. Рендерим **только** если `cl.url !== localStorage["changelog.last_seen_url"]`. Клик → write localStorage + `setUnread(false)` → ссылка исчезает в этой же сессии.
+Placement (после Halo-port — legacy `Sidebar.tsx` + `BottomTabs.tsx` More-menu удалены):
 
-**Halo redesign update (Phase J/M1/M2):** legacy `Sidebar.tsx` + emoji
-`BottomTabs.tsx` More-menu удалены. Новые точки размещения:
+| Где | Файл |
+|---|---|
+| Desktop sidebar (≥md) — после `/plan`, `flatMap` injection byte-identical | `components/halo/HaloSidebar.tsx` |
+| Mobile Wellness teaser — inline ink-card после `TopBar` (только сегодня, `unread && changelog`) | `pages/Wellness.tsx` |
 
-| Где | Файл | Когда |
-|---|---|---|
-| Desktop sidebar (≥md, 240px) | `components/halo/HaloSidebar.tsx` | После `/plan` в основном nav, как было — `flatMap` injection сохранён byte-identical |
-| Mobile Wellness teaser | `pages/Wellness.tsx` | Inline ink-card после `TopBar` (только сегодня, только при `unread && changelog`) — заменил мобильный More-menu, которого больше нет в Halo `HaloBottomTabs` (4-tab strip без More) |
+**Singleton hook** `useChangelog.ts` (`{changelog, unread, markRead}`): module-level `_inFlight` Promise → один fetch на сессию, иначе Sidebar+teaser дали бы `2× /api/changelog/latest` + рассинхрон localStorage. Auth-gated через `useAuth().isAuthenticated` (иначе центральный `apiFetch` 401-handler редиректил бы `/login` на `/login`). `_inFlight = null` сбрасывается в `.catch()` чтобы transient 503 не залипал хук (M3 fix).
 
-### Singleton hook
+**Storage key — URL, не timestamp:** `localStorage["changelog.last_seen_url"]`. Устойчиво к смене URL Discussion'а; не зависит от часов клиента. Cleared localStorage → один раз «непрочитан» → клик запишет (acceptable). `setItem` обёрнут в `try/catch` (Safari private mode / quota → `QuotaExceededError`, глотаем — page не падает).
 
-`useChangelog.ts` — `{changelog, unread, markRead}`. Module-level singleton `_inFlight` Promise гарантирует один fetch на сессию: Sidebar и BottomTabs делят одну подписку. Без singleton'а получили бы `2× /api/changelog/latest` на page-mount + рассинхрон localStorage. Auth-gated через `useAuth().isAuthenticated` — без gate центральный `apiFetch` 401-handler редиректил бы `/login` на `/login`, ломая login flow.
-
-Failure recovery: `_inFlight = null` сбрасывается при `.catch()`, чтобы один transient 503 не залипал хук до full-page reload (M3 fix).
-
-### Storage key — URL, не timestamp
-
-`localStorage["changelog.last_seen_url"]` хранит URL последнего просмотренного Discussion'а. Преимущества vs timestamp: устойчиво к смене URL Discussion'а; не зависит от часов клиента. Edge case: cleared localStorage → один раз покажется «непрочитан» актуальный changelog → атлет кликнет → запишется. Acceptable.
-
-`setItem` обёрнут в `try/catch` — Safari private mode и переполненный quota бросают `QuotaExceededError`; глотаем (unread-state можно потерять, page не должна падать).
-
-### i18n / types
-
-`sidebar.whats_new` / `sidebar.unread` ru/en (для `aria-label`). `ChangelogLatest: {url, title, published_at}` (ISO).
+**i18n / types:** `sidebar.whats_new` / `sidebar.unread` ru/en (для `aria-label`). `ChangelogLatest: {url, title, published_at}` (ISO).
 
 ---
 
@@ -209,21 +165,14 @@ Body wrapper становится `## 🇷🇺 Русский / <!--LANG-SEPARAT
 
 ## 12. Edge cases
 
+Большинство покрыто §3 (skip-ветки) и §7 (cron grace/coalesce). Нетривиальные:
+
 | Случай | Поведение |
 |---|---|
-| 0 merged PRs за неделю | Skip publish, log info |
-| Все PR'ы отсеяны pre-filter'ом | Skip publish, log info |
-| Claude вернул `NO_USER_FACING_CHANGES` | Skip publish, log info |
-| Claude / GitHub API down | Try-except, retry on next week's run, no fallback |
-| GitHub API down при createDiscussion | Try-except, log to Sentry, retry next week |
-| Дубликаты PR title (same week) | Dedup, оставить newest |
-| PR с пустым body | Use title only — Claude разберётся |
-| >100 PRs за неделю | Top-50 по `merged_at desc` |
-| Webapp: cache miss + GitHub down | 503, sidebar link скрыт |
-| Cron misfired | `misfire_grace_time=7200` (2h grace), `coalesce=True` (no double-publish) |
-| Manual `publish-changelog` Wed + Sun cron | Idempotency-by-week: actor дёргает `fetch_latest_discussion`; если Discussion создан **в пределах текущей недели** (`created_at ≥ now − 6d`) → `skipped_already_published`. `--force` обходит |
-| Прошлонедельный Discussion vs текущий cron | Окно идемпотентности (`now − 6d`) **строго короче** периода cron (7d) → Discussion возрастом ~7d читается как «прошлая неделя», публикация **не** подавляется. Регресс при окне ≥ 7d: дайджест молча деградирует в biweekly (инцидент #338, см. §14) |
+| Manual `publish-changelog` Wed + Sun cron | Idempotency-by-week (`created_at ≥ now − 6d`) → `skipped_already_published`. `--force` обходит |
+| Прошлонедельный Discussion vs текущий cron | Окно (`now − 6d`) **строго короче** периода cron (7d) → Discussion возрастом ~7d читается как «прошлая неделя», публикация не подавляется. Регресс при окне ≥ 7d: biweekly (инцидент #338, §14) |
 | `fetch_latest_discussion` упал (transient GraphQL 5xx) | Best-effort guard — log warning, продолжаем публикацию. Худший случай: дубль за неделю (поправляется руками через `gh`) |
+| PR с пустым body | Use title only — Claude разберётся |
 | Discussion создан с дубликатом title | GitHub разрешает дубли — не блокируем; следующая неделя перезапишет в кэше |
 
 ---

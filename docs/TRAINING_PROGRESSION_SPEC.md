@@ -14,9 +14,10 @@ Target: Δ EF (weekly efficiency factor change) — отвечает на «ка
 | State table | `progression_model_runs` (run metadata, SHAP global JSON, model path, MAE/R²) |
 | Weekly retrain cron | `actor_retrain_progression_model` (Sunday 03:00 Belgrade via `scheduler_ml_retrain_job`, `misfire_grace_time=7200, coalesce=True`, isolated `ml_retrain` Dramatiq queue — see issue #348) |
 | MCP tool | `get_progression_analysis(sport='Ride')` |
-| Weekly report enrichment | «ML insights» секция |
-| Webapp | `ProgressionWidget` на `/progress` + `GET /api/progression` |
+| Weekly report enrichment | tool whitelisted in `tasks/tools.py` weekly-report MCP loop → «ML insights» в `get_system_prompt_weekly` (`bot/prompts.py`) |
 | Model artifacts | `static/models/{user_id}_{sport}_{timestamp}.joblib` |
+
+> No dedicated webapp surface or `/api/progression` endpoint — read-only via MCP / weekly report only (Phase 3 = coaching integration, not a dashboard).
 
 ---
 
@@ -53,7 +54,7 @@ EF бега слишком зависит от внешних условий (т
 
 ## References
 
-- `docs/POLARIZATION_INDEX.md` — shared infra dependency (reализован).
+- `docs/INTENSITY_DISTRIBUTION_SPEC.md` — polarization helper, shared infra dependency (реализован).
 - `docs/ML_RACE_PROJECTION_SPEC.md`, `docs/ML_HRV_PREDICTION_SPEC.md` — sibling ML specs, общий `data/ml/` namespace.
 - Ryan Anderson — *Running Smart with ML and Strava* (Medium): простые фичи (volume + polarization), XGBoost R² 0.6-0.89 — основа подхода.
 - Banister T.W. (1991) — *Modeling elite athletic performance*.

@@ -4,9 +4,7 @@
 
 ## What was built
 
-1. Per-sport CTL on a 200-day window (was 90) — kills warm-up bias (~10-15% → <1%).
-2. Per-sport ATL alongside CTL (τ=7, mirrors CTL storage).
-3. Plan-aware forecast on LoadDetail "By sport" chart — solid past, dashed future, forecast-band tint. Horizon = `max(scheduled_workouts.start_date_local)` across all sports; fallback 28-day zero-load decay when no future workouts.
+Per-sport CTL (200-day window, τ=42) + ATL (τ=7) written to `wellness.sport_info[]`, plus a plan-aware forecast on the LoadDetail "By sport" chart (solid past / dashed future / forecast-band tint). The rationale for each choice lives in the decisions log below; the math + storage live in code (see Key entry points).
 
 ## Decisions log (2026-05-24)
 

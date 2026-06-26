@@ -91,9 +91,14 @@ p(t) = k₁·CTL(t) − k₂·ATL(t),   k₁ = 1,  k₂ ≈ 2
 
 ## Применение в проекте (текущее состояние)
 
-- **Что есть:** система **блокирует** ramp-test в окне ≤14 дней до гонки (`tasks/utils.py`, `PEAK_TAPER_DAYS=14`); race-categories в `docs/BUSINESS_RULES.md` описывают тип тейпера (A/B/C). Mode 2 race-projection грубо допускает `ATL ≈ 0.95·CTL` на день гонки.
-- **Чего нет:** генерации графика снижения объёма, посуточных TSS-таргетов, гайда по структуре тейпер-недель. Закрывается фичей `taper_planner` — см. `docs/TAPER_PLANNER_SPEC.md`.
-- **Потребление этой доки:** reference для разработчиков + методбаза для будущей инъекции в race-plan / workout-generation промпты (сейчас knowledge-доки в промпты не инжектятся).
+Taper planner — Phases 1+2+4 shipped (см. `docs/TAPER_PLANNER_SPEC.md` для статуса/деталей):
+
+- **Детерминированный core** — `data/metrics.py:build_taper_plan` считает посуточные TSS-таргеты + проекцию формы на день гонки по EWMA-рекурсии из этой доки (grid-search по длине/τ_taper). `confidence="early"` >21д до гонки скрывает таргеты/проекцию.
+- **MCP tool** — `get_taper_plan(goal_id?, race_date?, race_distance_class?)` (`mcp_server/tools/taper.py`) + **`GET /api/taper-plan`** — оба через общий resolver `data/taper_service.py:get_taper_plan_for_user`.
+- **Webapp** — stepped budget line / window tint / RACE-флаг + race-day TSB landing-dot на LoadDetail TSS-чарте.
+- **Прочее, что было раньше:** система **блокирует** ramp-test в окне ≤14 дней до гонки (`tasks/utils.py`, `PEAK_TAPER_DAYS=14`); Mode 2 race-projection грубо допускает `ATL ≈ 0.95·CTL` на день гонки.
+- **Остаётся (опционально):** Phase 3/5 — taper-блок внутри race-plan + строка в утреннем отчёте.
+- **Потребление этой доки:** методбаза за `build_taper_plan` (пять рычагов, длительность по событию) + reference для разработчиков. В промпты knowledge-доки пока не инжектятся.
 
 ---
 

@@ -73,7 +73,7 @@ The −30 boundary is intentionally looser than the prior 4-zone canon (which wa
 
 **Two τ in one file:** the recovery R(t) above uses τ=2 days (recovery kinetics — how fast R drifts back to 100 on rest days, daily granularity). CTL/ATL use τ=42d / 7d (adaptation kinetics — how training stimulus transforms into chronic fitness vs. acute fatigue). Different physiological time-scales, same Banister-EMA math.
 
-**Per-sport CTL:** Intervals.icu exposes only global CTL. Local recalculation per-sport via `calculate_sport_ctl(activities, tau=42)` — `data/metrics.py:313`. Useful for multi-sport athletes shifting volume between disciplines.
+**Per-sport CTL:** Intervals.icu exposes only global CTL. Local recalculation per-sport via `calculate_sport_ctl(activities, tau=42)` — `data/metrics.py:494`. Useful for multi-sport athletes shifting volume between disciplines.
 
 ---
 

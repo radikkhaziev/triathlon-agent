@@ -64,98 +64,66 @@ The owner continues to consume the *same* data in Russian (personal `language='r
 
 ---
 
-## 3. Current-state audit (facts — verified against code 2026-06-12)
+## 3. Implementation map (code is source of truth)
 
-**Auth & role plumbing:**
+Where each behaviour lives — see the files, not this doc, for exact shapes.
 
-- `api/routers/auth.py` — `POST /api/auth/demo`: passwordless mint → JWT `purpose="demo"`
-  with **owner's** `chat_id`, 24h TTL. IP rate-limited (5 / 5 min, lazy-pruned;
-  real client IPs via uvicorn `--proxy-headers` with `forwarded-allow-ips` PINNED to the compose-network gateway — `*` would trust attacker-prepended XFF entries (Caddy appends, doesn't overwrite)). `DEMO_ENABLED=false` → endpoint 404s
-  **and** existing demo tokens are rejected at verification (instant kill switch).
-- `api/deps.py:79-94` — `is_demo` → virtual `role="demo"`; `last_action_at` **not** bumped
-  (so demo traffic doesn't keep the owner "alive").
-- `api/deps.py:156` — `require_athlete` / `require_owner` 403 on `role=="demo"` → demo is
-  read-only.
-- **All demo-reachable write surfaces are guarded** (each checks `role == "demo"` → 403):
-  `PUT /api/auth/language`, `PUT /api/auth/sports`, `POST /api/auth/retry-backfill`,
-  `POST /api/intervals/auth/init`, `POST /api/intervals/auth/disconnect`.
-  `GET /api/auth/mcp-config` is role-gated (`_MCP_ALLOWED_ROLES = {"athlete", "owner"}`)
-  — demo **cannot** obtain the owner's `mcp_token` and cannot reach MCP at all.
-  These checks are ad-hoc per endpoint — Phase 1 centralizes them.
-- `api/routers/auth.py:310-343` — `/api/auth/me` already demo-scrubs: `language="en"`,
-  `intervals.athlete_id="demo"`, `display_name=None`, `username=None`, `avatar_url=None`,
-  `bot_chat_initialized=True`, `sports` pinned. `GET /api/auth/avatar` 404s for demo.
-  **This is the redaction pattern to extend.**
+**Auth & role:**
 
-**Data exposure:**
+- `api/routers/auth.py` — `POST /api/auth/demo` passwordless mint → JWT `purpose="demo"`
+  with **owner's** `chat_id`, 24h TTL, per-IP rate limit (5/5min). `/api/auth/me` is the
+  redaction pattern (scrubs name/username/avatar, `intervals.athlete_id="demo"`,
+  `language="en"`, pins `sports`); `GET /api/auth/avatar` 404s for demo.
+- `api/deps.py` — `is_demo(user)` predicate; demo resolves to virtual `role="demo"` in
+  `get_current_user` and does **not** bump owner `last_action_at` (so demo traffic doesn't
+  keep the owner "alive"). `require_athlete` / `require_owner` 403 on demo → read-only.
+  Session-auth purpose allowlist pinned to `(None, "demo")` so an OAuth-state JWT can never
+  be replayed as a login.
 
-- `chat_id` is never serialized by any router — verified.
-- No GPS / polyline / coordinates in any API response — verified.
-- `mood_checkins`, `iqos_daily`, `user_facts` have **no API endpoints** (MCP-only).
-  Their only path to a demo session was *through the AI free-text* — closed by Phase 2.
-- `/api/weekly-reports*` — both endpoints `require_athlete`; demo **cannot** reach them
-  today and this stays (see Decisions log).
+**Gotcha — XFF trust:** real client IPs come via uvicorn `--proxy-headers` with
+`forwarded-allow-ips` PINNED to the compose-network gateway. `*` would trust
+attacker-prepended XFF entries (Caddy appends, doesn't overwrite), defeating the rate limit.
 
-**AI free-text surfaces a demo session CAN reach today:**
+**Verified-safe data surfaces:** `chat_id` never serialized; no GPS/polyline in any
+response; `mood_checkins` / `iqos_daily` / `user_facts` have no API endpoints (MCP-only) —
+their only demo path was *through AI free-text*, closed by the stub. `mcp-config` is
+role-gated (`{"athlete","owner"}`) so demo can't get `mcp_token` / reach MCP. All
+demo-reachable write surfaces (language/sports/retry-backfill/intervals init+disconnect)
+403 on demo. `/api/weekly-reports*` stay `require_athlete`.
 
-| Surface | Endpoint | Demo treatment (Phase 2) |
-| --- | --- | --- |
-| `wellness.ai_recommendation` | `GET /api/wellness-day` (`api/routers/wellness.py:384`), rendered by `Coach.tsx` (full) + `Wellness.tsx` (teaser) | stub → frontend sample |
-| Race plan payload (JSONB, ru free-text) | `GET /api/race-plan` (`require_viewer`) , rendered by `RacePlanPanel.tsx` | stub → frontend sample |
-| Scheduled workout `name` / `description` / `rationale` | `GET /api/scheduled-workouts`, `GET /api/scheduled-workout/{id}` (`api/routers/workouts.py:154-163`), plus `paired.name` in `GET /api/activity/{id}/details` (`api/routers/activities.py:114`) | served as-is (Russian, accepted) — but see §5 rationale row |
+**AI free-text stub (`demo_stub` convention):** `GET /api/wellness-day`
+(`api/routers/wellness.py`) and `GET /api/race-plan` (`api/routers/race_plan.py`) drop the
+AI text and set `demo_stub: true` for demo sessions. Frontend (`Coach.tsx`,
+`RacePlanPanel.tsx`, `DemoSampleBadge.tsx`) renders a hand-written English sample with a
+"Sample" badge off that flag — samples are frontend constants, no backend round-trip, zero
+leak risk. Scheduled-workout `name`/`description`/`rationale` are served **as-is** (Russian,
+accepted — see §5).
 
 ---
 
-## 4. Phases
+## 4. Phases (all shipped 2026-06-12)
 
-### Phase 1 — Sensitive-data redaction (safety gate)
+**Phase 1 — sensitive-data redaction (safety gate):** centralized `is_demo` predicate
+replacing ad-hoc `role == "demo"` checks; PII scrubbed at serialization for every
+demo-reachable endpoint; storage untouched.
 
-Make the demo safe to expose **before** anything else.
+**Phase 2 — AI-text stub + frontend sample:** AI free-text not serialized to demo
+(`demo_stub` flag); frontend renders hand-written EN sample with badge. Why a stub and not
+a translation: the PII lives inside the AI text — not serving it closes the hole **by
+construction** (see §2).
 
-- Define the sensitive-field inventory (§5) — **needs owner sign-off**.
-- Centralize the demo check (helper on `User` or a `deps` predicate, e.g. `is_demo(user)`)
-  instead of ad-hoc `user.role == "demo"` scattered across ~7 endpoints.
-- Inventory every endpoint a demo session can reach (`require_viewer` +
-  `get_current_user`-direct) and scrub PII at serialization when demo. Storage untouched.
-- Tests: for each demo-reachable endpoint, assert a demo token never returns a sensitive
-  field.
+**Phase 3 — public (passwordless) access:** Option A — `POST /api/auth/demo` mints without
+a password; login page has a public "Try the demo" button.
 
-Shippable on its own — demo becomes safe even while still password-gated.
-
-### Phase 2 — AI-text stub + frontend sample
-
-- **Backend:** when demo, AI free-text fields are not serialized — replaced by a stub
-  marker the frontend can branch on:
-  - `GET /api/wellness-day` → `ai_recommendation: null` + `ai_recommendation_demo_stub: true`
-    (or equivalent single convention — pick one shape and reuse it).
-  - `GET /api/race-plan` → same stub convention instead of the payload's free-text.
-- **Frontend:** `Coach.tsx` / `Wellness.tsx` teaser / `RacePlanPanel.tsx` render a
-  hardcoded English sample when the stub flag is set, visually marked, e.g.:
-  > *Sample — in the real app this is generated daily from your HRV, sleep and training
-  > load.* "Your HRV is back within baseline and sleep was solid (7h40). Green light for
-  > today's 4×8' Z4 bike intervals…"
-  Sample texts live as constants in the webapp (i18n en.json) — no backend round-trip,
-  no storage, zero leak risk.
-- Tests: demo token → stub flag + no AI text in response body; owner token → real text
-  unchanged.
-
-### Phase 3 — Public (passwordless) access
-
-**Decided: Option A** (sign-off 2026-06-12) — `POST /api/auth/demo` auto-issues a demo
-token without a password; the login page gets a public "Try the demo" button.
-
-- **Kill switch:** `DEMO_ENABLED` (replaced `DEMO_PASSWORD`) — when off, the mint endpoint
-  404s **and** `get_current_user` rejects existing `purpose="demo"` tokens at
-  verification, so the door closes instantly (security review 2026-06-12 upgraded the
-  original "within a day" design). TTL = 24h stays as the hard ceiling. Session auth
-  also pins the purpose allowlist to `(None, "demo")` — an OAuth-state JWT can never
-  be replayed as a login.
-- **Abuse surface:** demo is read-only, triggers no Telegram I/O, no owner
-  `last_action_at` bump, and cannot reach MCP — it only hits the DB through the API.
-  Keep the per-IP rate limit on the mint endpoint.
-- **Accepted exposure (signed off):** live + public means anyone can observe in
-  near-real-time when the owner trains (activity timestamps), plus race
-  name/date/location from goals. Inherent to "live", consciously accepted.
+- **Kill switch:** `DEMO_ENABLED` (replaced `DEMO_PASSWORD`) — when off, mint 404s **and**
+  `get_current_user` rejects existing `purpose="demo"` tokens at verification, so the door
+  closes **instantly** (security review 2026-06-12 upgraded the original "within a day"
+  design). 24h TTL is a hygiene ceiling, not the revocation path.
+- **Abuse surface:** demo is read-only, triggers no Telegram I/O, no owner `last_action_at`
+  bump, cannot reach MCP — only hits the DB through the API. Per-IP rate limit on mint stays.
+- **Accepted exposure (signed off):** live + public means anyone can observe near-real-time
+  when the owner trains (activity timestamps) plus race name/date/location from goals.
+  Inherent to "live", consciously accepted.
 
 ---
 
