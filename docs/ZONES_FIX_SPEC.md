@@ -4,6 +4,8 @@
 
 `get_zones` had three coupled defects: sport-ambiguous `power_zones` key (last sport wins), %FTP values emitted with `min_w/max_w` labels as if absolute watts, identical bug in `pace_zones` plus inverted-sign comparison. FTP drift detection had no automated path — only LTHR + threshold-pace were pushed to Intervals.
 
+**Units contract (the load-bearing invariant):** `hr_zones` are absolute bpm, `power_zones` are **%FTP** (NOT watts — Intervals stores them pre-normalized), `pace_zones` are %threshold where 100.0 = threshold. Source of truth: `data/db/athlete.py` (the `hr/power/pace_zones` column docstring). The bug was emitting the stored % values dressed as absolute units — the fix converts to absolute (`min_w/max_w`, `min_sec_per_km/_per_100m`) **alongside** the raw `min_pct/max_pct`, never replacing them.
+
 ---
 
 ## Where the code lives
@@ -32,10 +34,9 @@
 
 ## Post-shipped shape (acceptance bar)
 
-- Owner response carries `power_zones_bike` (FTP=208) **и** `power_zones_run` (FTP=366), каждая zone имеет `min_pct/max_pct` + `min_w/max_w`.
-- `pace_zones_run` / `pace_zones_swim` — `min_pct/max_pct` + `min_sec_per_km/_per_100m`.
-- Sentinel handling: `pct == 0` → нет `max_*`; `pct >= 999` → нет `min_*` (zone unbounded upward).
-- `actor_update_zones` пушит FTP в Intervals когда `|drift|>5%` ∧ `R²≥0.7` для Ride.
+- Sport-tagged keys: `power_zones_bike` / `power_zones_run`, `pace_zones_run` / `pace_zones_swim` — each zone carries raw `min_pct/max_pct` **plus** absolute (`min_w/max_w` or `min_sec_per_km/_per_100m`).
+- Sentinel handling: `pct == 0` → no `max_*`; `pct >= 999` → no `min_*` (zone unbounded upward).
+- `actor_update_zones` pushes FTP to Intervals when `|drift| > 5%` ∧ `R² ≥ 0.7` for Ride.
 
 ---
 

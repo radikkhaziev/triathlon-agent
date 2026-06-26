@@ -16,7 +16,7 @@
 
 VO2max answers "how fast can you run", not "do you have the endurance for the distance". CTL shows fitness load, but not "are my legs ready for marathon/HM". Marathon Shape (Runalyze) = `% ratio` of weekly volume + long runs vs VO2max-derived targets. Marathon = 100%, HM ≈ 42.5%, 10K ≈ 17%.
 
-Implementation lives in `data/marathon_shape.py` (pure formulas, no IO) + `api/routers/dashboard.py` `/api/marathon-shape` endpoint + `MarathonShapeWidget` in `webapp/src/pages/Progress.tsx` (under `PolarizationWidget` when `sport='run'`).
+Implementation: `data/marathon_shape.py` (pure formulas, no IO) + `GET /api/marathon-shape` in `api/routers/dashboard.py` + `MarathonShapeCard` in `webapp/src/pages/DashboardLoadTab.tsx` (Halo card).
 
 ## 3. Formulas
 
@@ -68,17 +68,7 @@ shape_pct = 100 * (0.67 * weekly_ratio + 0.33 * longjog_ratio)
 
 Runalyze "Other distances" table shows per-distance Weekly + Long Run targets. Exact scaling formula lives in `RunalyzePluginPanel_Rechenspiele/` PHP plugin — verified NOT trivially derivable from `V^1.135` (linear scaling `marathon × required/100` produces 25 km for HM, actual 33 km).
 
-Empirical factor table calibrated on V≈37 screenshot (2026-05-14):
-
-```python
-_RUNALYZE_DISTANCE_FACTORS = {
-    "10K":      {"weekly": 0.26, "longjog": None},
-    "HM":       {"weekly": 0.57, "longjog": 0.69},
-    "Marathon": {"weekly": 1.00, "longjog": 1.00},
-}
-```
-
-Client-side in `Progress.tsx` (no JSON duplication). Components block recomputes effective targets on picker change without re-fetch.
+Empirical factor table calibrated on V≈37 screenshot (2026-05-14): 10K `weekly 0.26 / longjog None`, HM `0.57 / 0.69`, Marathon `1.00 / 1.00`. Lives client-side as `MS_DISTANCE_FACTORS` in `DashboardLoadTab.tsx` (no JSON duplication); Components block recomputes effective targets on picker change without re-fetch.
 
 **Calibration caveat:** factors derived from a single screenshot V≈37. Drift risk for other VO2max brackets unknown. If production reveals material divergence, escalate to D3.B (full PHP-port).
 
@@ -117,7 +107,7 @@ When `(ci_high − ci_low) / center > 0.20` → footnote "model uncertainty high
 
 ### Caching
 
-Redis cache key `marathon_shape_pred:{user_id}:{today_iso}`, TTL until midnight Belgrade. Graceful fallback on Redis disabled / unreachable / get-write errors — endpoint never breaks because of cache.
+Redis cache (key `marathon_shape_pred:{user_id}:{today_iso}`, TTL to next local midnight), with graceful fallback on Redis disabled / unreachable / read-write errors — endpoint never breaks because of cache. See `_compute_predicted_times` in `api/routers/dashboard.py`.
 
 ## 6. Edge cases
 
@@ -145,7 +135,7 @@ Redis cache key `marathon_shape_pred:{user_id}:{today_iso}`, TTL until midnight 
 - [Runalyze BasicEndurance.php](https://github.com/Runalyze/Runalyze/blob/master/inc/core/Calculation/BasicEndurance.php) — upstream source of `shape_pct`, `target_weekly_km`, `target_longjog_km` formulas.
 - [Marathon Shape help article](https://runalyze.com/help/article/marathon-shape) — UI screenshots, formal "not scientifically based" disclaimer, distance-adjusted target examples.
 - `data/marathon_shape.py` — pure formulas, no IO.
-- `api/routers/dashboard.py` `/api/marathon-shape` — endpoint + `_compute_predicted_times` Redis cache wrapper.
+- `api/routers/dashboard.py` — `/api/marathon-shape` endpoint + `_compute_predicted_times` Redis cache wrapper.
 - `data/ml/race_predict.py:predict_splits_with_ci` — ML pipeline for Phase 1.5 Predicted time/pace.
-- `webapp/src/pages/Progress.tsx` `MarathonShapeWidget` — placement + factor table + UI renderer.
+- `webapp/src/pages/DashboardLoadTab.tsx` — `MarathonShapeCard` + `MS_DISTANCE_FACTORS` table + UI renderer.
 - [`BIKE_READINESS_SPEC.md`](BIKE_READINESS_SPEC.md) — bike parallel widget.
