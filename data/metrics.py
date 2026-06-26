@@ -12,8 +12,9 @@ from datetime import date as date_type
 from datetime import timedelta
 
 import numpy as np
+from sqlalchemy import select
 
-from data.db import Activity, HrvAnalysis, RhrAnalysis, Wellness
+from data.db import Activity, ActivityDetail, HrvAnalysis, RhrAnalysis, Wellness, get_sync_session
 from data.intervals.dto import RecoveryScoreDTO, RecoveryStateDTO, RhrStatusDTO, RmssdStatusDTO, TrendResultDTO
 from data.utils import is_bike, is_run, tsb_zone
 from tasks.dto import local_today
@@ -913,6 +914,118 @@ def decoupling_status(value: float) -> str:
     if av <= 10.0:
         return "yellow"
     return "red"
+
+
+# ---------------------------------------------------------------------------
+# Base Building Protocol — chronic decoupling check (issue #157)
+# ---------------------------------------------------------------------------
+
+# The "2 of 3 red (>10%)" rule is also stated in prose to Claude in the chat
+# system prompt (`bot/prompts.py`, ## Workout generation → Base Building Protocol)
+# so the LLM-steered chat path caps to Z2 too. Keep the two in sync if the
+# threshold/window changes.
+# abs drift % above this counts as "red" — mirrors the decoupling_status red boundary.
+_DECOUPLING_RED_THRESHOLD = 10.0
+# Classify over the most recent N valid-for-decoupling efforts.
+_DECOUPLING_CHECK_WINDOW = 3
+# >= this many reds in the window → chronic (the "2 of 3" rule).
+_DECOUPLING_CHRONIC_MIN_RED = 2
+
+
+def classify_decoupling(values: list[float]) -> str:
+    """Base Building Protocol status from recent cardiac-drift values.
+
+    `values`: decoupling % of the most recent valid-for-decoupling bike/run efforts,
+    oldest→newest. Only the last 3 are weighed:
+      - chronic           — >=2 of 3 red (abs drift >10%): aerobic base compromised
+      - acute             — exactly 1 of 3 red: single bad session, advisory only
+      - normal            — 0 of 3 red
+      - insufficient_data — fewer than 3 valid efforts
+
+    Deterministic and DB-free: the whole point of issue #157 is to take the
+    chronic/acute call away from the LLM. `abs()` matches decoupling_status —
+    negative drift (pulse drops) is graded the same as positive.
+    """
+    if len(values) < _DECOUPLING_CHECK_WINDOW:
+        return "insufficient_data"
+    window = values[-_DECOUPLING_CHECK_WINDOW:]
+    reds = sum(1 for v in window if abs(v) > _DECOUPLING_RED_THRESHOLD)
+    if reds >= _DECOUPLING_CHRONIC_MIN_RED:
+        return "chronic"
+    if reds == 1:
+        return "acute"
+    return "normal"
+
+
+def _valid_decoupling_values(rows: list[tuple], sport_group: str) -> list[float]:
+    """Extract decoupling % of valid steady-state efforts, oldest→newest.
+
+    `rows`: tuples of (start_date_local, type, moving_time, variability_index,
+    hr_zone_times, decoupling, is_race), any order. Races are excluded (peak
+    effort is not a base signal) and `is_valid_for_decoupling` applies the
+    steady-state / duration / zone-adherence filter.
+    """
+    points: list[tuple] = []
+    for start, atype, moving_time, vi, hzt, decoupling, is_race in rows:
+        if is_race:
+            continue
+        if decoupling_sport_group(atype) != sport_group:
+            continue
+        if not is_valid_for_decoupling(atype, moving_time, vi, hzt, decoupling):
+            continue
+        points.append((start, decoupling))
+    points.sort(key=lambda p: p[0])
+    return [v for _, v in points]
+
+
+def _decoupling_result(sport: str, values: list[float]) -> dict:
+    """Wrap the classifier verdict for one sport group.
+
+    No deactivation/transition flag on purpose: the report is stateless and runs
+    daily, so a structural "just flipped out of chronic" signal would re-fire
+    every morning until the next valid effort shifts `values`. Auto-deactivation
+    is expressed by the standing chronic banner simply ceasing to appear once the
+    trend recovers — no separate one-time announcement to get wrong."""
+    return {
+        "sport": sport,
+        "status": classify_decoupling(values),
+        "values": [round(v, 1) for v in values[-_DECOUPLING_CHECK_WINDOW:]],
+        "valid_count": len(values),
+    }
+
+
+# Sport groups that carry a decoupling signal (swim excluded — see decoupling_sport_group).
+_DECOUPLING_SPORT_GROUPS = ("bike", "run")
+
+
+def decoupling_check_sync(user_id: int, sport: str, days_back: int = 90) -> dict:
+    """Base Building Protocol check for one sport GROUP (``"bike"`` / ``"run"``;
+    swim has no decoupling). Read-only, sync — the only consumer is the
+    morning-report actor (Dramatiq is sync). Mirrors the `data/taper_service.py`
+    twin pattern (raw sync session). Returns the `_decoupling_result` dict."""
+    if sport not in _DECOUPLING_SPORT_GROUPS:
+        return _decoupling_result(sport, [])
+    today = local_today()
+    with get_sync_session() as session:
+        rows = session.execute(
+            select(
+                Activity.start_date_local,
+                Activity.type,
+                Activity.moving_time,
+                ActivityDetail.variability_index,
+                ActivityDetail.hr_zone_times,
+                ActivityDetail.decoupling,
+                Activity.is_race,
+            )
+            .join(ActivityDetail, ActivityDetail.activity_id == Activity.id)
+            .where(
+                Activity.user_id == user_id,
+                Activity.start_date_local >= str(today - timedelta(days=days_back)),
+                Activity.start_date_local <= str(today),
+            )
+            .order_by(Activity.start_date_local, Activity.id)
+        ).all()
+    return _decoupling_result(sport, _valid_decoupling_values([tuple(r) for r in rows], sport))
 
 
 # ---------------------------------------------------------------------------
