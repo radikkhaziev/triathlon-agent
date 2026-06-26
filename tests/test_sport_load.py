@@ -419,6 +419,118 @@ class TestRecomputeTodayLoads:
         assert result == metrics._project_loads_one_day(50.0, 50.0, 0.0)
 
 
+def _seed_yesterday_wellness_sync(user_id: int, *, ctl: float | None, atl: float | None) -> None:
+    """Sync twin of `_seed_yesterday_wellness` — must run with no event loop so
+    `@dual` ORM helpers downstream dispatch to their sync paths (mirrors the
+    Dramatiq worker that consumes `recompute_today_loads_sync`)."""
+    from datetime import datetime, timezone
+
+    from data.db import Wellness, get_sync_session
+
+    with get_sync_session() as s:
+        s.add(
+            Wellness(
+                user_id=user_id,
+                date=_YESTERDAY.isoformat(),
+                ctl=ctl,
+                atl=atl,
+                updated=datetime.now(timezone.utc),
+            )
+        )
+        s.commit()
+
+
+def _seed_today_activity_sync(user_id: int, *, activity_id: str, tss: float) -> None:
+    from data.db import Activity
+    from data.intervals.dto import ActivityDTO
+
+    dto = ActivityDTO(
+        id=activity_id,
+        start_date_local=_TODAY,
+        type="Ride",
+        icu_training_load=tss,
+        moving_time=3600,
+    )
+    Activity.save_bulk(user_id, [dto])
+
+
+class TestRecomputeTodayLoadsSync:
+    """Sync twin of `recompute_today_loads`, consumed by the Strava-signature
+    actor (`actor_rename_activity`) to de-plan today's ctl/atl. These are plain
+    sync tests on purpose: `@dual` dispatches on event-loop presence, so the sync
+    twin only resolves to its sync DB path when no loop is running — exactly the
+    Dramatiq-worker condition. Run inside an async test it would yield coroutines."""
+
+    def test_returns_none_when_no_yesterday_wellness(self, monkeypatch):
+        from data import metrics
+
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert metrics.recompute_today_loads_sync(1) is None
+
+    def test_returns_none_when_yesterday_has_no_ctl_atl(self, monkeypatch):
+        """Sleep-only row (CTL/ATL not yet computed by Intervals) is the same
+        as 'no baseline' — caller falls back to whatever Intervals reported."""
+        from data import metrics
+
+        _seed_yesterday_wellness_sync(1, ctl=None, atl=None)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        assert metrics.recompute_today_loads_sync(1) is None
+
+    def test_activity_with_null_tss_treated_as_zero(self, monkeypatch):
+        """Imported activities (e.g. WeightTraining without HR) carry
+        ``icu_training_load=None`` — must treat as 0 TSS, not crash."""
+        from data import metrics
+
+        _seed_yesterday_wellness_sync(1, ctl=50.0, atl=50.0)
+        _seed_today_activity_sync(1, activity_id="snull", tss=None)  # type: ignore[arg-type]
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+
+        result = metrics.recompute_today_loads_sync(1)
+        assert result == metrics._project_loads_one_day(50.0, 50.0, 0.0)
+
+    def test_pure_decay_when_no_activities(self, monkeypatch):
+        from data import metrics
+
+        _seed_yesterday_wellness_sync(1, ctl=50.0, atl=60.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+        result = metrics.recompute_today_loads_sync(1)
+
+        assert result is not None
+        ctl, atl, tsb = result
+        assert ctl == pytest.approx(50.0 * math.exp(-1.0 / 42), abs=0.05)
+        assert atl == pytest.approx(60.0 * math.exp(-1.0 / 7), abs=0.05)
+        assert tsb == round(ctl - atl, 1)
+
+    def test_completed_activities_today_sum_tss(self, monkeypatch):
+        """Matches the async twin: all completed sessions count, planned TSS
+        baked by Intervals does not — that is the whole point of the de-plan."""
+        from data import metrics
+
+        _seed_yesterday_wellness_sync(1, ctl=50.0, atl=50.0)
+        _seed_today_activity_sync(1, activity_id="s1", tss=40.0)
+        _seed_today_activity_sync(1, activity_id="s2", tss=60.0)
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY)
+
+        result = metrics.recompute_today_loads_sync(1)
+        assert result == metrics._project_loads_one_day(50.0, 50.0, 100.0)
+
+    def test_explicit_today_pins_reference_day(self, monkeypatch):
+        """The `today` arg wins over `local_today()` — the actor snapshots the
+        day once and passes it so a midnight rollover can't shift the baseline."""
+        from data import metrics
+
+        _seed_yesterday_wellness_sync(1, ctl=50.0, atl=60.0)
+        # local_today() deliberately returns the *wrong* day; if the param were
+        # ignored, the yesterday lookup would miss and return None.
+        monkeypatch.setattr(metrics, "local_today", lambda: _TODAY + timedelta(days=1))
+        result = metrics.recompute_today_loads_sync(1, _TODAY)
+
+        assert result is not None
+        ctl, atl, _ = result
+        assert ctl == pytest.approx(50.0 * math.exp(-1.0 / 42), abs=0.05)
+        assert atl == pytest.approx(60.0 * math.exp(-1.0 / 7), abs=0.05)
+
+
 # ---------------------------------------------------------------------------
 # DB-integration: recompute_today_ramp
 # ---------------------------------------------------------------------------
