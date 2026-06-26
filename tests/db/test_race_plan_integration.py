@@ -618,3 +618,94 @@ class TestDryRunQuota:
         assert "error" not in out
         # INCR never called for non-dry_run path
         fake_redis.incr.assert_not_called()
+
+
+class TestTaperBlock:
+    """TAPER_PLANNER_SPEC Phase 3 — deterministic ``taper`` block in the race-plan
+    payload. The block comes from the shared resolver, NOT the LLM, so it's
+    asserted independently of the (mocked) Claude output. Omitted when the
+    resolver refuses, mirroring the conditional ``race_conditions`` block."""
+
+    async def test_taper_block_added_when_resolver_available(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from data.race_plan_service import build_race_plan
+
+        goal_id = await _seed_goal()
+        await _seed_8_activities()
+
+        taper_envelope = {
+            "available": True,
+            "race_date": "2026-07-01",
+            "taper_days": 14,
+            "daily_targets": [{"date": "2026-06-20", "target_tss": 70}],
+            "confidence": "ok",
+        }
+
+        with (
+            patch("data.race_plan_service.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch("data.race_plan_service.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch("data.race_plan_service.get_taper_plan_for_user", AsyncMock(return_value=taper_envelope)),
+            patch("anthropic.AsyncAnthropic", _stub_anthropic(_VALID_PLAN_INPUT)),
+            patch("data.race_plan_service.settings") as fake_settings,
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await build_race_plan(user_id=1, goal_id=goal_id, dry_run=True)
+
+        assert "error" not in out
+        # Deterministic block stored verbatim from the resolver envelope.
+        assert out["payload"]["taper"] == taper_envelope
+
+    async def test_taper_block_omitted_when_resolver_refuses(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from data.race_plan_service import build_race_plan
+
+        goal_id = await _seed_goal()
+        await _seed_8_activities()
+
+        with (
+            patch("data.race_plan_service.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch("data.race_plan_service.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch(
+                "data.race_plan_service.get_taper_plan_for_user",
+                AsyncMock(return_value={"available": False, "reason": "no_training_history"}),
+            ),
+            patch("anthropic.AsyncAnthropic", _stub_anthropic(_VALID_PLAN_INPUT)),
+            patch("data.race_plan_service.settings") as fake_settings,
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await build_race_plan(user_id=1, goal_id=goal_id, dry_run=True)
+
+        assert "error" not in out
+        assert "taper" not in out["payload"]
+
+    async def test_taper_resolver_error_omits_block_not_plan(self):
+        """A resolver exception (DB hiccup / logic bug) must NOT sink an
+        otherwise-valid plan — the optional taper block is dropped, the plan
+        survives. Guards the post-Claude failure mode (PR #468 review)."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from data.race_plan_service import build_race_plan
+
+        goal_id = await _seed_goal()
+        await _seed_8_activities()
+
+        with (
+            patch("data.race_plan_service.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch("data.race_plan_service.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch(
+                "data.race_plan_service.get_taper_plan_for_user",
+                AsyncMock(side_effect=RuntimeError("simulated resolver crash")),
+            ),
+            patch("anthropic.AsyncAnthropic", _stub_anthropic(_VALID_PLAN_INPUT)),
+            patch("data.race_plan_service.settings") as fake_settings,
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await build_race_plan(user_id=1, goal_id=goal_id, dry_run=True)
+
+        assert "error" not in out  # plan still generated
+        assert "taper" not in out["payload"]  # block omitted on resolver error

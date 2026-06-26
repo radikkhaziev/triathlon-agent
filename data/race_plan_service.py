@@ -38,6 +38,7 @@ from data.db import (
 from data.db.tracking import ApiUsageDaily
 from data.db.user_fact import UserFact
 from data.redis_client import get_redis
+from data.taper_service import get_taper_plan_for_user
 from tasks.dto import local_today
 
 logger = logging.getLogger(__name__)
@@ -999,6 +1000,25 @@ async def build_race_plan(
     # reset", a stored 0 vs missing key carry different semantics. Cheaper to
     # always write the field than to retrofit later (review N1, 2026-05-09).
     new_regen_count = (existing_regen_count + 1) if will_regen_in_place else 0
+
+    # Deterministic taper block (TAPER_PLANNER_SPEC Phase 3). Same resolver as the
+    # `get_taper_plan` MCP tool / `GET /api/taper-plan`, so chat, webapp and the
+    # race plan can never disagree on the numbers. Computed deterministically and
+    # written straight into the persisted payload — NOT injected into the Claude
+    # context: the plan's prose corridors don't need per-day TSS, and surfacing the
+    # arithmetic to the model would invite it to restate (and drift) values we
+    # already trust. Omitted when the resolver refuses (no history / past race /
+    # etc.), mirroring the conditional `race_conditions` block above.
+    #
+    # Guarded: the taper block is optional, but this runs AFTER the (expensive)
+    # Claude call has already succeeded — an unexpected resolver error (DB hiccup,
+    # logic bug) must not sink an otherwise-valid plan. On failure we omit the
+    # block and keep the plan.
+    try:
+        taper_envelope = await get_taper_plan_for_user(user_id, goal_id=goal.id)
+    except Exception:
+        logger.exception("Taper block resolution failed for user %d, goal %d — omitting", user_id, goal.id)
+        taper_envelope = {"available": False}
     payload: dict[str, Any] = {
         "plan": plan_input,
         "race": context["race"],
@@ -1007,6 +1027,8 @@ async def build_race_plan(
         "model_version": RACE_PLAN_MODEL_VERSION,
         "regen_count_today": new_regen_count,
     }
+    if taper_envelope.get("available"):
+        payload["taper"] = taper_envelope
 
     # ---------- 6. Persist or short-circuit ----------
     if dry_run:

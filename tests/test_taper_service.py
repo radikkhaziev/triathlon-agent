@@ -14,6 +14,7 @@ from data.taper_service import (
     _resolve_loads,
     _resolve_peak_daily_load,
     get_taper_plan_for_user,
+    get_taper_plan_for_user_sync,
 )
 
 TODAY = date(2026, 6, 12)
@@ -239,3 +240,47 @@ class TestDistanceClassHeuristic:
         assert _distance_class_from_name("parkrun Ada Ciganlija") == "short"
         assert _distance_class_from_name("Olympic distance tri") == "standard"
         assert _distance_class_from_name(None) == "standard"
+
+
+class TestSyncResolver:
+    """get_taper_plan_for_user_sync — sync twin for the morning-report actor
+    (Phase 5). Primary-goal-only; same gate shape + envelope as the async path."""
+
+    @staticmethod
+    def _call(goal_dto=None, loads=(60.0, 65.0), peak=(85.0, False)):
+        with (
+            patch("data.taper_service.local_today", return_value=TODAY),
+            patch("data.taper_service.AthleteGoal.get_goal_dto", return_value=goal_dto),
+            patch("data.taper_service._resolve_loads_sync", return_value=loads),
+            patch("data.taper_service._resolve_peak_daily_load_sync", return_value=peak),
+        ):
+            return get_taper_plan_for_user_sync(1)
+
+    def test_no_future_race(self):
+        assert self._call(goal_dto=None)["reason"] == "no_future_race"
+
+    def test_race_in_past(self):
+        assert self._call(goal_dto=_goal(days_out=-3))["reason"] == "race_date_in_past"
+
+    def test_no_wellness_data(self):
+        assert self._call(goal_dto=_goal(), loads=None)["reason"] == "no_wellness_data"
+
+    def test_no_training_history(self):
+        assert self._call(goal_dto=_goal(), peak=(0.0, True))["reason"] == "no_training_history"
+
+    def test_happy_path_infers_class_from_name(self):
+        result = self._call(goal_dto=_goal(days_out=14, name="Ironman 70.3 Italy"))
+        assert result["available"] is True
+        assert result["days_to_race"] == 14
+        assert result["race_distance_class"] == "long"
+        assert isinstance(result["taper_start_date"], str)
+        assert all(isinstance(t["date"], str) for t in result["daily_targets"])
+
+    @pytest.mark.asyncio
+    async def test_parity_with_async(self):
+        # Identical resolved inputs → byte-identical envelope. This is the
+        # "can't drift" guarantee: both paths share `_build_envelope`.
+        goal = _goal(days_out=14, name="Test race")
+        sync_res = self._call(goal_dto=goal)
+        async_res = await _call(goal_dto=goal)  # same defaults: loads (60,65), peak (85,False)
+        assert sync_res == async_res
