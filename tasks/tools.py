@@ -109,12 +109,19 @@ MORNING_TOOLS = [
     {
         "name": "get_goal_progress",
         "description": (
-            "Get race goal progress — overall and per-sport CTL vs targets. "
-            "Shows event name, date, weeks remaining, and percentage of target CTL achieved."
+            "Get race goal progress for ALL active future goals — returns a `goals` array "
+            "(sorted by event_date) with overall and per-sport CTL vs targets per race. "
+            "Each entry shows event name, date, weeks remaining, and percentage of target CTL "
+            "achieved. Pass `goal_id` to narrow to a single goal."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "goal_id": {
+                    "type": "integer",
+                    "description": "Optional — narrow to a single goal by id.",
+                },
+            },
         },
     },
     {

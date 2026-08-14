@@ -53,8 +53,18 @@ def _power_to_zone(low_w: float, high_w: float, ftp: float) -> int:
 
 _SEPARATOR = re.compile(r"={10,}")
 _REPEAT = re.compile(r"repeat\s+(\d+)\s+times", re.IGNORECASE)
-_DURATION_FULL = re.compile(r"duration:\s*(?:(\d+)\s*min)?(?:\s*(\d+)\s*sec)?", re.IGNORECASE)
-_DISTANCE = re.compile(r"distance:\s*(\d+)\s*meters", re.IGNORECASE)
+# Long-ride main blocks carry hours (`duration: 2 hr 50 min`, Aug-2026 format).
+# Anchored to line start so the workout-header `total duration:` never matches
+# (the intro block is dropped only by the step-type gate, not by the splitter).
+_DURATION_FULL = re.compile(
+    r"(?m)^\s*duration:\s*(?:(\d+)\s*hrs?)?(?:\s*(\d+)\s*min)?(?:\s*(\d+)\s*sec)?", re.IGNORECASE
+)
+# Run/Ride steps switched to km (`distance: 1.00 km`) in Aug 2026; Swim keeps meters.
+# Anchored to line start so the workout-header `total distance:` never matches.
+_DISTANCE = re.compile(r"(?m)^\s*distance:\s*([\d.]+)\s*(km|meters?)\b", re.IGNORECASE)
+# Canary for the next silent format drift: a `distance:` line exists but the unit
+# is unrecognized (the Aug-2026 drift ran unnoticed for ~12 days on exactly this).
+_DISTANCE_ANY = re.compile(r"(?m)^\s*distance:\s*\S", re.IGNORECASE)
 _POWER_LOW = re.compile(r"low:\s*([\d.]+)\s*W", re.IGNORECASE)
 _POWER_HIGH = re.compile(r"high:\s*([\d.]+)\s*W", re.IGNORECASE)
 _HR_LOW = re.compile(r"low:\s*([\d.]+)\s*bpm", re.IGNORECASE)
@@ -69,6 +79,28 @@ _PACE_LOW_KM = re.compile(r"low:\s*(\d+):(\d+)\s*per\s*km\b", re.IGNORECASE)
 _PACE_HIGH_KM = re.compile(r"high:\s*(\d+):(\d+)\s*per\s*km\b", re.IGNORECASE)
 
 STEP_TYPES = {"warmup", "interval", "recovery", "cooldown", "rest"}
+
+
+def _step_duration_seconds(text: str) -> int:
+    """Parse ``duration: [N hr] [N min] [N sec]`` from block text → seconds (0 when absent)."""
+    m = _DURATION_FULL.search(text)
+    if not m:
+        return 0
+    hrs, mins, secs = (int(g or 0) for g in m.groups())
+    return hrs * 3600 + mins * 60 + secs
+
+
+def _step_distance_meters(text: str) -> int:
+    """Parse ``distance: N meters`` / ``distance: N.NN km`` from block text → meters (0 when absent)."""
+    m = _DISTANCE.search(text)
+    if not m:
+        if _DISTANCE_ANY.search(text):
+            logger.warning("HumanGo distance present but unit unrecognized — format drift? %r", text[:120])
+        return 0
+    val = float(m.group(1))
+    if m.group(2).lower() == "km":
+        val *= 1000
+    return int(round(val))
 
 
 def parse_humango_description(description: str) -> list[WorkoutStepDTO]:
@@ -136,7 +168,7 @@ def _split_into_blocks(description: str) -> list[str]:
     blocks = []
     for part in parts:
         text = part.strip()
-        if text and not text.startswith("View on HumanGo"):
+        if text and not text.lower().startswith(_HUMANGO_SIGNATURE):
             blocks.append(text)
     return blocks
 
@@ -161,19 +193,8 @@ def _parse_block(block: str) -> WorkoutStepDTO | None:
 
     text_block = "\n".join(lines)
 
-    # Parse duration
-    duration = 0
-    dur_match = _DURATION_FULL.search(text_block)
-    if dur_match:
-        mins = int(dur_match.group(1) or 0)
-        secs = int(dur_match.group(2) or 0)
-        duration = mins * 60 + secs
-
-    # Parse distance (for swim)
-    distance = 0
-    dist_match = _DISTANCE.search(text_block)
-    if dist_match:
-        distance = int(dist_match.group(1))
+    duration = _step_duration_seconds(text_block)
+    distance = _step_distance_meters(text_block)
 
     # Parse targets
     hr = _parse_hr_target(text_block)
@@ -349,7 +370,9 @@ def needs_adaptation(
 # (see docs/HUMANGO_ENRICHMENT_SPEC.md)
 # ---------------------------------------------------------------------------
 
-_HUMANGO_SIGNATURE = "View on HumanGo"
+# Compared case-insensitively: HumanGo silently changed the link text casing
+# («View on HumanGo» → «View on HumanGO», Aug 2026) and may drift again.
+_HUMANGO_SIGNATURE = "view on humango"
 
 # Matches HumanGo's «active recovery» annotation on an interval block — empirically
 # only appears on between-sets bridge intervals (e.g. «PB (Pull Buoy) Active recovery»
@@ -393,14 +416,9 @@ def _humango_is_active_recovery_interval(block_text: str) -> bool:
     if not _HUMANGO_ACTIVE_RECOVERY.search(block_text):
         return False
     has_distance = bool(_DISTANCE.search(block_text))
-    has_duration = bool(_DURATION_FULL.search(block_text) and _DURATION_FULL.search(block_text).group(0))
     # _DURATION_FULL matches even on the literal "duration:" prefix with empty
-    # values, so re-check that at least one of mins/secs is non-zero.
-    if has_duration:
-        m = _DURATION_FULL.search(block_text)
-        mins = int(m.group(1) or 0)
-        secs = int(m.group(2) or 0)
-        has_duration = (mins + secs) > 0
+    # values, so require a non-zero parsed duration.
+    has_duration = _step_duration_seconds(block_text) > 0
     return has_distance and not has_duration
 
 
@@ -526,7 +544,8 @@ def is_humango_event(description: str | None, workout_doc: dict | None) -> bool:
 
     Three AND'd checks; any negative → caller must skip the event:
 
-    1. ``View on HumanGo`` signature in the description (unique to HumanGo's
+    1. ``View on HumanGo`` signature in the description, case-insensitive —
+       HumanGo changed the casing to «HumanGO» in Aug 2026 (unique to their
        shared-calendar push; no other integration writes this string).
     2. ``==========`` separator present — defensive: HumanGo's «rest day» /
        RPE-only entries carry the View-link but no structured blocks, so
@@ -534,7 +553,7 @@ def is_humango_event(description: str | None, workout_doc: dict | None) -> bool:
     3. ``workout_doc.steps`` empty / absent — idempotency. If we (or anyone)
        already populated structured steps, don't overwrite.
     """
-    if not description or _HUMANGO_SIGNATURE not in description:
+    if not description or _HUMANGO_SIGNATURE not in description.lower():
         return False
     if "==========" not in description:
         return False
@@ -670,17 +689,8 @@ def _humango_parse_block_for_enrichment(
 
     text_block = "\n".join(lines)
 
-    duration = 0
-    dur_match = _DURATION_FULL.search(text_block)
-    if dur_match:
-        mins = int(dur_match.group(1) or 0)
-        secs = int(dur_match.group(2) or 0)
-        duration = mins * 60 + secs
-
-    distance = 0
-    dist_match = _DISTANCE.search(text_block)
-    if dist_match:
-        distance = int(dist_match.group(1))
+    duration = _step_duration_seconds(text_block)
+    distance = _step_distance_meters(text_block)
 
     target_key, target = _humango_target_for_step(text_block, sport, thresholds)
 

@@ -7,6 +7,8 @@ from data.intervals.dto import RecoveryScoreDTO, WorkoutStepDTO
 from data.workout_adapter import (
     _humango_announced_total_meters,
     _humango_shrink_repeats_to_announced,
+    _step_distance_meters,
+    _step_duration_seconds,
     _sum_swim_distance,
     compute_constraints,
     estimate_step_zone,
@@ -192,6 +194,79 @@ high: 2:39 per 100 meters
 rest
 
 duration: 0 min 20 sec
+"""
+
+# Aug-2026 format change (production event 129162172): «View on HumanGO»
+# casing, per-step `distance: N.NN km` for Run/Ride (Swim keeps meters).
+RUN_DESCRIPTION_AUG2026 = """sport: running
+
+total distance: 6.12 km
+
+total duration: 44 min 30 sec
+
+Elevation: flat
+
+After completing a thorough warm up - settle into some 1 km Z4 efforts.
+
+View on HumanGO: https://app.humango.ai/myday?date=2026-08-25
+
+==============================
+
+warmup
+
+Aim to reach Z2 by the end of your warm up
+
+duration: 15 min
+
+heart rate:
+
+low: 120 bpm
+
+high: 140 bpm
+
+==============================
+
+======= repeat 2 times =====
+
+==============================
+
+interval
+
+Aim to maintain race intensity if Z4 is too hard
+
+distance: 1.00 km
+
+heart rate:
+
+low: 155 bpm
+
+high: 162 bpm
+
+==============================
+
+recovery
+
+distance: 0.50 km
+
+heart rate:
+
+low: 108 bpm
+
+high: 135 bpm
+
+==============================
+
+cooldown
+
+Gradually lower heart rate to Z1 by the end of your warm down
+
+duration: 10 min
+
+heart rate:
+
+low: 108 bpm
+
+high: 135 bpm
 """
 
 
@@ -409,6 +484,11 @@ class TestIsHumangoEvent:
     def test_rejects_empty_description(self):
         assert is_humango_event(None, None) is False
         assert is_humango_event("", None) is False
+
+    def test_accepts_aug2026_signature_casing(self):
+        # HumanGo changed «View on HumanGo» → «View on HumanGO» in Aug 2026;
+        # detection must be case-insensitive.
+        assert is_humango_event(RUN_DESCRIPTION_AUG2026, None) is True
 
 
 def _thresholds(**kwargs) -> AthleteThresholdsDTO:
@@ -1179,3 +1259,74 @@ class TestHumangoToIntervalsStepsRepeatGroup:
         # Sanity: meter path unchanged.
         desc_m = "sport: swimming\n\ntotal distance: 1700 meters\n\nView on HumanGo: x\n"
         assert _humango_announced_total_meters(desc_m) == 1700
+
+
+class TestHumangoAug2026Format:
+    """Aug-2026 HumanGo export changes: «HumanGO» casing, per-step km
+    distances, hour-based step durations (see RUN_DESCRIPTION_AUG2026)."""
+
+    def test_run_km_distances_preserved_in_enrichment(self):
+        thresholds = _thresholds(lthr_run=170)
+        steps = humango_to_intervals_steps(RUN_DESCRIPTION_AUG2026, "Run", thresholds)
+        assert steps and len(steps) == 3
+
+        warmup, group, cooldown = steps
+        assert warmup.text == "Warm-up" and warmup.duration == 900
+        assert cooldown.text == "Cool-down" and cooldown.duration == 600
+        # Intro `total distance: 6.12 km` must not leak into a step distance.
+        assert warmup.distance is None
+        assert cooldown.distance is None
+
+        assert group.reps == 2 and len(group.steps) == 2
+        interval, recovery = group.steps
+        assert interval.distance == 1000
+        assert recovery.distance == 500
+
+        # Round-trip: %lthr × LTHR ≈ HumanGo's original bpm corridor.
+        assert abs(round(interval.hr["start"] * 170 / 100) - 155) <= 1
+        assert abs(round(interval.hr["end"] * 170 / 100) - 162) <= 1
+
+    def test_run_km_distances_in_legacy_parser(self):
+        steps = parse_humango_description(RUN_DESCRIPTION_AUG2026)
+        assert len(steps) == 3
+        group = steps[1]
+        assert group.reps == 2
+        # Legacy parser folds distance into estimated duration (distance // 2).
+        assert group.steps[0].duration == 500
+
+    def test_step_duration_with_hours(self):
+        # Long-ride main block (production event 129162167): `2 hr 50 min`.
+        desc = (
+            "View on HumanGO: https://app.humango.ai/myday?date=2026-08-22\n\n"
+            "==============================\n\n"
+            "interval\n\nduration: 2 hr 50 min \n\npower:\n\nlow: 101 W\n\nhigh: 126 W\n\n"
+            "==============================\n\n"
+            "cooldown\n\nduration: 10 min \n\npower:\n\nlow: 101 W\n\nhigh: 126 W\n"
+        )
+        thresholds = _thresholds(ftp=200)
+        steps = humango_to_intervals_steps(desc, "Ride", thresholds)
+        assert steps and len(steps) == 2
+        assert steps[0].duration == 2 * 3600 + 50 * 60
+        assert steps[1].duration == 600
+
+    def test_hrs_plural_duration(self):
+        # Defensive: plural `hrs` must not swallow the minutes group.
+        assert _step_duration_seconds("duration: 2 hrs 5 min") == 7500
+        assert _step_duration_seconds("duration: 1 hr") == 3600
+
+    def test_header_total_lines_do_not_leak_into_steps(self):
+        # `total distance:` / `total duration:` are workout headers, not step
+        # fields — the line-start anchor must reject them even inside a block.
+        block = "interval\ntotal distance: 22.32 km\ntotal duration: 50 min"
+        assert _step_distance_meters(block) == 0
+        assert _step_duration_seconds(block) == 0
+
+    def test_unrecognized_distance_unit_logs_drift_canary(self):
+        # Next silent format drift must be visible in logs, not a quiet zero.
+        with patch("data.workout_adapter.logger") as mock_logger:
+            assert _step_distance_meters("distance: 100 metres") == 0
+        assert mock_logger.warning.called
+        # Recognized units stay silent.
+        with patch("data.workout_adapter.logger") as mock_logger:
+            assert _step_distance_meters("distance: 100 meters") == 100
+        assert not mock_logger.warning.called
