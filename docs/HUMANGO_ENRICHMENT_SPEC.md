@@ -38,7 +38,7 @@ Three AND'd checks; any negative → skip the event entirely:
 
 ```python
 def is_humango_event(description: str | None, workout_doc: dict | None) -> bool:
-    if not description or "View on HumanGo" not in description:
+    if not description or "view on humango" not in description.lower():
         return False  # not a HumanGo event
     if "==========" not in description:
         return False  # HumanGo "rest day" / RPE-only — no structured steps to parse
@@ -47,7 +47,7 @@ def is_humango_event(description: str | None, workout_doc: dict | None) -> bool:
     return True
 ```
 
-**Why `View on HumanGo`** — HumanGo embeds `View on HumanGo: https://app.humango.ai/myday?date=YYYY-MM-DD` (or `redirect.humango.ai` domain) in every calendar entry. The string is unique to their source — no other integration writes it. Verified against production descriptions in `tests/bot/test_workout_adapter.py` fixtures.
+**Why `View on HumanGo`** — HumanGo embeds `View on HumanGo: https://app.humango.ai/myday?date=YYYY-MM-DD` (or `redirect.humango.ai` domain) in every calendar entry. The string is unique to their source — no other integration writes it. Verified against production descriptions in `tests/bot/test_workout_adapter.py` fixtures. **Case-insensitive since Aug 2026** — HumanGo silently changed the casing to `View on HumanGO`, which broke the exact-match check (all events synced 2026-08-14+ skipped detection; last old-casing event 2026-08-02).
 
 **Why `==========` separator** — defensive: HumanGo may push «rest day» entries with the View-link but no structured blocks. Without the separator the regex parser would return `[]` and the enrichment would push an empty `steps` list, surfacing zero benefit and risking validator rejection.
 
@@ -113,7 +113,8 @@ If the relevant threshold(s) for the event's sport are missing, skip enrichment 
 |---|---|
 | Sport not in `{Run, Ride, Swim}` (e.g. `WeightTraining`, `Other`) | Skip — HumanGo doesn't push these structured anyway. |
 | Repeat group inside description (`repeat N times`) | Honor — existing `parse_humango_description` already lifts these to `WorkoutStepDTO(reps=N, steps=[...])`. Sub-steps get the same %X conversion. |
-| Step with `distance:` but no `duration:` (interval distance reps) | Preserve `distance` (meters), set `duration=0`. Intervals/Garmin handle distance-based steps natively. |
+| Step with `distance:` but no `duration:` (interval distance reps) | Preserve `distance` (meters), set `duration=0`. Intervals/Garmin handle distance-based steps natively. Since Aug 2026 HumanGo emits Run/Ride step distances in km (`distance: 1.00 km`) — parsed and converted to meters; Swim keeps `N meters`. |
+| Step `duration:` with hours (`duration: 2 hr 50 min`, long-ride main block, Aug 2026 format) | Parsed as `hr*3600 + min*60 + sec`. Previously the regex knew only min/sec and yielded `duration=0`. |
 | Step with no parseable target (RPE-only, e.g. «easy effort») | Emit step with `duration` only — **but** if EVERY step in the workout ends up target-less, the workout is dropped entirely (return `None`). See «fail-closed» below. |
 | Threshold value is zero / negative (corrupted DB) | Treat as missing; skip enrichment with the same log line as cold-start. |
 | Description contains `View on HumanGo` but no `==========` (rest day) | Skip (detection check 2). |
