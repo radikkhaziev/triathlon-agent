@@ -293,6 +293,36 @@ class TestDeauthGuard:
         # the mid-fetch path, not the entry-time path.
         mock_client.get_wellness_range.assert_called_once()
 
+    def test_rate_limit_mid_fetch_propagates_without_mark_failed(self, bootstrap_mocks):
+        """Quota exhaustion is a deferral, not an abort: the error must reach
+        QuotaAwareRetries untouched — no ``mark_failed``, no self-reschedule,
+        cursor untouched — so the same chunk re-runs after ``Retry-After``."""
+        from unittest.mock import MagicMock
+
+        from data.intervals.client import IntervalsRateLimitError
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        oldest = date.today() - timedelta(days=365)
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
+        bootstrap_mocks.session.get.return_value = _mock_db_user(connected=True)
+
+        mock_client = MagicMock()
+        mock_client.get_wellness_range.side_effect = IntervalsRateLimitError(
+            24173, method="GET", path="/athlete/i123/wellness"
+        )
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = mock_client
+        mock_cm.__exit__.return_value = False
+        bootstrap_mocks.client_cls.for_user.return_value = mock_cm
+
+        with pytest.raises(IntervalsRateLimitError):
+            actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat())
+
+        bootstrap_mocks.state_cls.mark_failed.assert_not_called()
+        bootstrap_mocks.state_cls.advance_cursor.assert_not_called()
+        bootstrap_mocks.actor_self.send.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Cursor CAS — message-arg vs DB-cursor mismatch (retry after partial commit)

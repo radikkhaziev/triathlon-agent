@@ -11,6 +11,17 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 ---
 
+## Intervals.icu quota-aware client + settings-sync gating (2026-09-10)
+
+Post-mortem и цифры: `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md` «Intervals.icu rate limits». Триггер — дневная квота OAuth-приложения (8000/day = 100 × 80 авторизованных атлетов) выбита шестью onboarding-бэкфиллами за день; retry-шторм (60 с × 5 в клиенте × 3 в Dramatiq) добил очередь и dead-letter'нул 125 сообщений.
+
+- **Phase 1 — settings-sync только по делу.** `process_wellness_analysis_sync` больше не шлёт `actor_sync_athlete_settings` (было ~365 GET sport-settings на нового юзера). В `actor_user_wellness` вызов гейтится новым `AthleteSettings.is_stale(user_id, max_age=SETTINGS_SYNC_MAX_AGE)` (24h, `tasks/actors/_constants.py`) — страховка от пропущенного `SPORT_SETTINGS_UPDATED` webhook'а за ≤1 запрос/юзер/день.
+- **Phase 2 — quota-aware клиент + middleware.** `data/intervals/client.py`: `QuotaSnapshot` из `X-RateLimit-*` на каждом ответе, `_parse_retry_after` (header → body `retry_after_seconds`), `IntervalsRateLimitError(dramatiq.Retry)` при `Retry-After > 60 с` без sleep. `tasks/middleware.py:QuotaAwareRetries` заменяет `Retries` в брокере: deferral на `retry_after + jitter` без инкремента `retries`, потолок `QUOTA_MAX_DEFER_TOTAL_SEC` (3 суток, по прогнозу) → dead-letter с ERROR. `client.quota` сбрасывается в `None` на ответах без `X-RateLimit-*`, чтобы не тащить устаревший снимок. Воркер/Sentry не шумят (обработка `Retry`).
+- **Tests:** `tests/test_intervals_client.py` (`TestParseRetryAfter` / `TestRecordQuota` / `TestRateLimitRaise` sync+async), `tests/tasks/test_quota_retries.py`, `tests/tasks/test_actors.py` (`TestProcessWellnessAnalysisSync`, `TestActorUserWellnessSettingsGate`), `tests/db/test_athlete_settings.py::TestIsStale`.
+- **Pending:** Phase 3 бюджетный резерв бэкфилла, Phase 4 очередь `backfill` (условно), письмо в Intervals про лимит.
+
+---
+
 ## Public demo access — Phase 1-3 complete (2026-06-12)
 
 Публичный read-only демо-доступ к live-данным владельца без пароля. Spec: `docs/DEMO_PUBLIC_ACCESS_SPEC.md` (все open questions закрыты owner sign-off'ом 2026-06-12).

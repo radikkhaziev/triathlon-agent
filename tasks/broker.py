@@ -2,22 +2,14 @@
 
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
-from dramatiq.middleware import (
-    AgeLimit,
-    CurrentMessage,
-    GroupCallbacks,
-    Pipelines,
-    Retries,
-    ShutdownNotifications,
-    TimeLimit,
-)
+from dramatiq.middleware import AgeLimit, CurrentMessage, GroupCallbacks, Pipelines, ShutdownNotifications, TimeLimit
 from dramatiq.rate_limits.backends import RedisBackend as RedisRateLimiterBackend
 from dramatiq.results import Results
 from dramatiq.results.backends import RedisBackend as RedisResultBackend
 
-import tasks.middleware  # noqa: F401 — patches Actor.message_with_options for Pydantic auto-serialization
 from config import settings
 from sentry_config import init_sentry
+from tasks.middleware import QuotaAwareRetries  # importing also patches Actor.message_with_options (Pydantic)
 
 
 def setup_broker() -> RedisBroker:
@@ -32,7 +24,7 @@ def setup_broker() -> RedisBroker:
         AgeLimit(),
         TimeLimit(),
         ShutdownNotifications(),  # ← graceful shutdown worker
-        Retries(min_backoff=1000, max_backoff=60_000, max_retries=3),
+        QuotaAwareRetries(min_backoff=1000, max_backoff=60_000, max_retries=3),
         CurrentMessage(),
         Pipelines(),  # ← without pipeline it does not work
         Results(backend=result_backend, store_results=True),

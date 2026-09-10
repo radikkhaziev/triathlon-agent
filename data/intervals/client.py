@@ -9,11 +9,12 @@ import logging
 import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 import httpx
 import sentry_sdk
+from dramatiq import Retry
 from pydantic import BaseModel
 
 from data.db import User, UserDTO
@@ -27,6 +28,93 @@ MAX_RETRIES = 5
 RETRY_MAX_DELAY = 60
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 FIT_MAX_SIZE = 50 * 1024 * 1024  # 50 MB
+
+# Intervals.icu quotas are per OAuth app, not per athlete: 100 requests/day
+# per authorized athlete (min 5000, max 50000) and 1/8 of that per rolling
+# 15 minutes (min 2500). Both arrive on every response as
+# ``X-RateLimit-Limit: <15m>,<day>`` / ``X-RateLimit-Remaining: <15m>,<day>``.
+# A 429 carries ``Retry-After`` — seconds until the window reopens, which for
+# the daily quota is «until 00:00 UTC» (hours). Sleeping through that inside
+# a worker thread is pointless, so anything beyond RETRY_MAX_DELAY raises
+# ``IntervalsRateLimitError`` instead (see ``_raise_if_quota_exhausted``).
+# https://forum.intervals.icu/t/api-access-to-intervals-icu/609
+DAILY_QUOTA_WARN_THRESHOLD = 1500
+
+# UTC date on which the low-quota warning already fired in this process —
+# without it every request below the threshold would emit a WARNING line.
+# Per process (N worker processes → N lines/day) and racy across threads
+# (worst case: a duplicate line) — both acceptable for a once-a-day alarm.
+_low_quota_warned_on: date | None = None
+
+
+@dataclass(frozen=True)
+class QuotaSnapshot:
+    """Rate-limit headers from the most recent Intervals.icu response."""
+
+    remaining_15m: int
+    remaining_day: int
+    limit_15m: int | None = None
+    limit_day: int | None = None
+
+    def __str__(self) -> str:
+        limit_15m = self.limit_15m or "?"
+        limit_day = self.limit_day or "?"
+        return f"{self.remaining_15m}/{limit_15m} per 15m, {self.remaining_day}/{limit_day} per day"
+
+
+def _parse_pair(raw: str | None) -> tuple[int, int] | None:
+    """``"2499,0"`` → ``(2499, 0)``; anything malformed → ``None``."""
+    if not raw:
+        return None
+    parts = raw.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0].strip()), int(parts[1].strip())
+    except ValueError:
+        return None
+
+
+def _fmt_duration(seconds: int) -> str:
+    if seconds < 3600:
+        return f"{max(1, round(seconds / 60))} min"
+    hours, rem = divmod(seconds, 3600)
+    return f"{hours}h {rem // 60:02d}m"
+
+
+class IntervalsRateLimitError(Retry):
+    """429 whose ``Retry-After`` exceeds ``RETRY_MAX_DELAY`` — the rolling-15m
+    or daily app-wide quota is exhausted, so in-process sleep-and-retry
+    would only burn a worker thread (and more 429s).
+
+    Subclasses ``dramatiq.Retry`` on purpose — a quota hit is a deferral,
+    not a defect. The Dramatiq worker logs ``Retry`` subclasses at debug
+    instead of «Failed to process message … unhandled exception» at ERROR,
+    and since Sentry sees worker errors only through ``LoggingIntegration
+    (event_level=ERROR)`` (``tasks/broker.py`` replaces the middleware list,
+    so ``DramatiqIntegration``'s ``SentryMiddleware`` is not installed),
+    no Sentry event is produced. ``tasks.middleware.QuotaAwareRetries``
+    re-enqueues the message after ``retry_after`` without consuming a retry
+    slot. Async callers (MCP tools) surface ``str(e)`` to the user; the
+    ``data/`` → ``dramatiq`` import is a deliberate, documented exception.
+    """
+
+    def __init__(
+        self,
+        retry_after: int,
+        *,
+        method: str,
+        path: str,
+        quota: QuotaSnapshot | None = None,
+    ) -> None:
+        self.retry_after = retry_after
+        self.method = method
+        self.path = path
+        self.quota = quota
+        super().__init__(
+            f"Intervals.icu API quota exhausted on {method} {path}, retry after {_fmt_duration(retry_after)}",
+            delay=retry_after * 1000,
+        )
 
 
 class IntervalsAccessError(Exception):
@@ -128,6 +216,10 @@ class IntervalsClientBase:
         self._access_token = access_token
         self._athlete_id = athlete_id
         self._user_id = user_id
+        # Rate-limit headers from the last response. Attached to
+        # ``IntervalsRateLimitError`` for diagnostics; the bootstrap budget
+        # reserve (spec «Intervals.icu rate limits», Phase 3) will read it.
+        self.quota: QuotaSnapshot | None = None
 
     def _http_client_kwargs(self) -> dict:
         return {
@@ -139,14 +231,79 @@ class IntervalsClientBase:
             "timeout": 30.0,
         }
 
-    def _compute_retry_delay(self, resp: httpx.Response, attempt: int) -> float:
-        retry_after = resp.headers.get("Retry-After")
-        if retry_after:
+    @staticmethod
+    def _parse_retry_after(resp: httpx.Response) -> int | None:
+        """Seconds from the ``Retry-After`` header, falling back to the
+        ``retry_after_seconds`` field Intervals.icu puts in the 429 body.
+        HTTP-date form of the header is not used by Intervals — treated as absent."""
+        raw = resp.headers.get("Retry-After")
+        if raw:
             try:
-                return min(float(retry_after), RETRY_MAX_DELAY)
+                return max(1, int(float(raw)))  # floor at 1 s — «0» must never mean «hammer»
             except (ValueError, OverflowError):
                 pass
+        try:
+            body = resp.json()
+        except ValueError:
+            return None
+        if isinstance(body, dict) and isinstance(body.get("retry_after_seconds"), (int, float)):
+            return max(1, int(body["retry_after_seconds"]))
+        return None
+
+    def _compute_retry_delay(self, resp: httpx.Response, attempt: int) -> float:
+        retry_after = self._parse_retry_after(resp)
+        if retry_after is not None:
+            return float(min(retry_after, RETRY_MAX_DELAY))
         return min(2**attempt * 10, RETRY_MAX_DELAY)
+
+    def _record_quota(self, resp: httpx.Response) -> None:
+        """Capture ``X-RateLimit-*`` headers; warn once per UTC day per process
+        when the daily remainder drops below ``DAILY_QUOTA_WARN_THRESHOLD``.
+
+        ``self.quota`` always mirrors the *latest* response: a response
+        without (or with malformed) headers — e.g. the per-second per-IP 429 —
+        resets it to ``None`` rather than letting a stale snapshot from an
+        earlier call masquerade as current in logs / ``IntervalsRateLimitError``.
+        """
+        global _low_quota_warned_on
+        remaining = _parse_pair(resp.headers.get("X-RateLimit-Remaining"))
+        if remaining is None:
+            self.quota = None
+            return
+        limit = _parse_pair(resp.headers.get("X-RateLimit-Limit"))
+        self.quota = QuotaSnapshot(
+            remaining_15m=remaining[0],
+            remaining_day=remaining[1],
+            limit_15m=limit[0] if limit else None,
+            limit_day=limit[1] if limit else None,
+        )
+        today = datetime.now(timezone.utc).date()
+        if self.quota.remaining_day < DAILY_QUOTA_WARN_THRESHOLD and _low_quota_warned_on != today:
+            _low_quota_warned_on = today
+            logger.warning("Intervals.icu daily quota low: %s", self.quota)
+
+    def _raise_if_quota_exhausted(self, method: str, path: str, resp: httpx.Response) -> None:
+        """On 429: a ``Retry-After`` beyond ``RETRY_MAX_DELAY`` means the 15-minute
+        window or the daily quota is gone. Raise ``IntervalsRateLimitError`` so
+        the caller defers the whole unit of work instead of sleeping here.
+        Short/absent ``Retry-After`` (the per-second per-IP limit sends no
+        headers) falls through to the normal sleep-and-retry loop."""
+        retry_after = self._parse_retry_after(resp)
+        if retry_after is None or retry_after <= RETRY_MAX_DELAY:
+            return
+        logger.warning(
+            "Intervals.icu %s %s → 429, quota exhausted (%s), retry after %ds",
+            method,
+            path,
+            self.quota or "no X-RateLimit headers",
+            retry_after,
+        )
+        sentry_sdk.add_breadcrumb(
+            category="intervals_icu",
+            message=f"Quota exhausted on {path}: retry after {retry_after}s",
+            level="warning",
+        )
+        raise IntervalsRateLimitError(retry_after, method=method, path=path, quota=self.quota)
 
     def _log_retry(self, method: str, path: str, status: int, attempt: int, delay: float) -> None:
         logger.warning(
@@ -432,10 +589,13 @@ class IntervalsAsyncClient(IntervalsClientBase):
                     self._log_transport_retry(method, path, e, attempt, delay)
                     await asyncio.sleep(delay)
                     continue
+                self._record_quota(resp)
                 if resp.status_code not in RETRY_STATUSES:
                     resp.raise_for_status()
                     span.set_data("http.status_code", resp.status_code)
                     return resp
+                if resp.status_code == 429:
+                    self._raise_if_quota_exhausted(method, path, resp)
                 delay = self._compute_retry_delay(resp, attempt)
                 self._log_retry(method, path, resp.status_code, attempt, delay)
                 await asyncio.sleep(delay)
@@ -580,10 +740,13 @@ class IntervalsSyncClient(IntervalsClientBase):
                     self._log_transport_retry(method, path, e, attempt, delay)
                     time.sleep(delay)
                     continue
+                self._record_quota(resp)
                 if resp.status_code not in RETRY_STATUSES:
                     resp.raise_for_status()
                     span.set_data("http.status_code", resp.status_code)
                     return resp
+                if resp.status_code == 429:
+                    self._raise_if_quota_exhausted(method, path, resp)
                 delay = self._compute_retry_delay(resp, attempt)
                 self._log_retry(method, path, resp.status_code, attempt, delay)
                 time.sleep(delay)
