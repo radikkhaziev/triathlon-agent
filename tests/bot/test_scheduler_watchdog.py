@@ -10,13 +10,14 @@ Behaviour under test:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from bot.scheduler import _BOOTSTRAP_MAX_WATCHDOG_KICKS, _parse_kick_count, scheduler_watchdog_bootstrap
+from data.db.backfill import QUOTA_PAUSED_PREFIX, parse_quota_pause
 
 pytestmark = pytest.mark.real_db  # mocks only; skips DB truncate
 
@@ -185,3 +186,70 @@ class TestWatchdog:
         watchdog_mocks.actor.send.assert_called_once()
         assert watchdog_mocks.state_cls.bump_watchdog_kick.await_count == 1
         watchdog_mocks.state_cls.mark_failed.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Quota pause — a parked chain is not a stuck chain
+# ---------------------------------------------------------------------------
+
+
+class TestParseQuotaPause:
+    def test_none_and_unrelated(self):
+        assert parse_quota_pause(None) is None
+        assert parse_quota_pause("watchdog_kick_2") is None
+        assert parse_quota_pause("EMPTY_INTERVALS") is None
+
+    def test_valid_iso(self):
+        ts = datetime(2026, 9, 11, 0, 3, tzinfo=timezone.utc)
+        assert parse_quota_pause(f"{QUOTA_PAUSED_PREFIX}{ts.isoformat()}") == ts
+
+    def test_malformed_timestamp(self):
+        assert parse_quota_pause(f"{QUOTA_PAUSED_PREFIX}tomorrow-ish") is None
+
+    def test_naive_timestamp_assumed_utc(self):
+        parsed = parse_quota_pause(f"{QUOTA_PAUSED_PREFIX}2026-09-11T00:03:00")
+        assert parsed == datetime(2026, 9, 11, 0, 3, tzinfo=timezone.utc)
+
+
+class TestWatchdogQuotaPause:
+    @pytest.mark.asyncio
+    async def test_active_pause_is_skipped(self, watchdog_mocks):
+        """Deferred bootstrap message sleeps in Redis for hours — must not be
+        kicked (duplicate chain) nor escalated to watchdog_exhausted."""
+        resume = datetime.now(timezone.utc) + timedelta(hours=5)
+        paused = _stuck_state(last_error=f"{QUOTA_PAUSED_PREFIX}{resume.isoformat()}")
+        watchdog_mocks.state_cls.list_stuck = AsyncMock(return_value=[paused])
+
+        await scheduler_watchdog_bootstrap()
+
+        watchdog_mocks.actor.send.assert_not_called()
+        watchdog_mocks.state_cls.bump_watchdog_kick.assert_not_awaited()
+        watchdog_mocks.state_cls.mark_failed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pause_exactly_at_grace_boundary_is_kicked(self, watchdog_mocks):
+        """``now < resume + grace`` is the skip condition — at the boundary the
+        row is stuck again."""
+        from bot.scheduler import _BOOTSTRAP_PAUSE_GRACE
+
+        resume = datetime.now(timezone.utc) - _BOOTSTRAP_PAUSE_GRACE
+        state = _stuck_state(last_error=f"{QUOTA_PAUSED_PREFIX}{resume.isoformat()}")
+        watchdog_mocks.state_cls.list_stuck = AsyncMock(return_value=[state])
+
+        await scheduler_watchdog_bootstrap()
+
+        watchdog_mocks.actor.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_expired_pause_is_stuck_again_from_kick_one(self, watchdog_mocks):
+        """resume + 15 min grace has passed and the cursor never moved → the
+        deferred copy is gone; treat as stuck, counter restarts at 1."""
+        resume = datetime.now(timezone.utc) - timedelta(minutes=30)
+        stale = _stuck_state(last_error=f"{QUOTA_PAUSED_PREFIX}{resume.isoformat()}")
+        watchdog_mocks.state_cls.list_stuck = AsyncMock(return_value=[stale])
+
+        await scheduler_watchdog_bootstrap()
+
+        watchdog_mocks.state_cls.bump_watchdog_kick.assert_awaited_once_with(user_id=stale.user_id, kick_number=1)
+        watchdog_mocks.actor.send.assert_called_once()
+        watchdog_mocks.state_cls.mark_failed.assert_not_awaited()

@@ -12,6 +12,23 @@ from .decorator import dual
 
 logger = logging.getLogger(__name__)
 
+# ``last_error`` sentinel written while a running backfill waits for the
+# Intervals.icu daily quota to reset: ``QUOTA_PAUSED:<ISO-8601 resume time>``.
+# The watchdog treats such a row as «not stuck» until that time (+ grace);
+# ``advance_cursor`` clears it on the next successful chunk.
+QUOTA_PAUSED_PREFIX = "QUOTA_PAUSED:"
+
+
+def parse_quota_pause(last_error: str | None) -> datetime | None:
+    """``QUOTA_PAUSED:<iso>`` → aware ``datetime``; anything else → ``None``."""
+    if not last_error or not last_error.startswith(QUOTA_PAUSED_PREFIX):
+        return None
+    try:
+        parsed = datetime.fromisoformat(last_error[len(QUOTA_PAUSED_PREFIX) :])
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
 
 class UserBackfillState(Base):
     """Per-user cursor for the OAuth bootstrap backfill.
@@ -112,21 +129,36 @@ class UserBackfillState(Base):
 
     @classmethod
     @dual
-    def advance_cursor(cls, user_id: int, cursor_dt: date, *, session: Session) -> None:
+    def advance_cursor(
+        cls,
+        user_id: int,
+        cursor_dt: date,
+        *,
+        expected_cursor: date | None = None,
+        session: Session,
+    ) -> bool:
         """Atomic cursor advance + chunks_done bump + last_step_at touch.
 
-        Also clears ``last_error`` — during ``status='running'`` the only thing
-        that writes to it is the watchdog's ``watchdog_kick_N`` counter, and
-        a successful advance means the chain recovered and we shouldn't treat
-        future stuck events as continuing the same kick streak.
+        Also clears ``last_error`` — during ``status='running'`` its two
+        writers are the watchdog's ``watchdog_kick_N`` counter and the quota
+        pause ``QUOTA_PAUSED:<iso>``; a successful advance means the chain
+        recovered / resumed, so neither the kick streak nor the pause should
+        outlive it.
+
+        ``expected_cursor`` makes the advance a compare-and-set: the UPDATE
+        only applies if the row still points at the chunk this step processed.
+        Returns ``False`` when another copy of the chain (watchdog kick vs.
+        a woken quota-deferred message, or a ``--force`` restart) already
+        moved the cursor — the caller must then stop instead of forking.
 
         Guarded by ``status='running'`` so a concurrent mark_failed/mark_finished
         cannot be silently undone.
         """
-        session.execute(
-            update(cls)
-            .where(cls.user_id == user_id, cls.status == "running")
-            .values(
+        stmt = update(cls).where(cls.user_id == user_id, cls.status == "running")
+        if expected_cursor is not None:
+            stmt = stmt.where(cls.cursor_dt == expected_cursor)
+        result = session.execute(
+            stmt.values(
                 cursor_dt=cursor_dt,
                 chunks_done=cls.chunks_done + 1,
                 last_step_at=func.now(),
@@ -134,6 +166,7 @@ class UserBackfillState(Base):
             )
         )
         session.commit()
+        return result.rowcount == 1
 
     @classmethod
     @dual
@@ -169,6 +202,22 @@ class UserBackfillState(Base):
             update(cls)
             .where(cls.user_id == user_id, cls.status == "running")
             .values(last_error=f"watchdog_kick_{kick_number}")
+        )
+        session.commit()
+
+    @classmethod
+    @dual
+    def mark_quota_paused(cls, user_id: int, resume_at: datetime, *, session: Session) -> None:
+        """Stamp ``last_error = QUOTA_PAUSED:<resume_at>`` on a running row.
+
+        Overwrites a ``watchdog_kick_N`` counter on purpose — a quota pause is
+        not a stuck chain, and the escalation budget restarts once the chunk
+        resumes. Guarded by ``status='running'`` like every other writer.
+        """
+        session.execute(
+            update(cls)
+            .where(cls.user_id == user_id, cls.status == "running")
+            .values(last_error=f"{QUOTA_PAUSED_PREFIX}{resume_at.isoformat()}")
         )
         session.commit()
 

@@ -86,6 +86,10 @@ class TestSanitizeLastError:
         assert _sanitize_last_error("watchdog_exhausted") == "watchdog_exhausted"
         assert _sanitize_last_error("OAuth revoked during backfill") == "OAuth revoked during backfill"
 
+    def test_quota_pause_collapsed_to_bare_sentinel(self):
+        """UI only needs the state; the resume timestamp stays server-side."""
+        assert _sanitize_last_error("QUOTA_PAUSED:2026-09-11T00:03:00+00:00") == "QUOTA_PAUSED"
+
     def test_watchdog_kick_hidden(self):
         """In-flight watchdog counter is bookkeeping, not a user-facing error."""
         assert _sanitize_last_error("watchdog_kick_1") is None

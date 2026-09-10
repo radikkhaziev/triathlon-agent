@@ -40,6 +40,11 @@ FIT_MAX_SIZE = 50 * 1024 * 1024  # 50 MB
 # https://forum.intervals.icu/t/api-access-to-intervals-icu/609
 DAILY_QUOTA_WARN_THRESHOLD = 1500
 
+# Jitter added to every quota deferral / pause so a backlog doesn't slam the
+# 15-minute window the moment a quota resets. Shared by
+# ``tasks.middleware.QuotaAwareRetries`` and the bootstrap pause stamp.
+QUOTA_DEFER_JITTER_SEC = 120
+
 # UTC date on which the low-quota warning already fired in this process —
 # without it every request below the threshold would emit a WARNING line.
 # Per process (N worker processes → N lines/day) and racy across threads
@@ -57,8 +62,8 @@ class QuotaSnapshot:
     limit_day: int | None = None
 
     def __str__(self) -> str:
-        limit_15m = self.limit_15m or "?"
-        limit_day = self.limit_day or "?"
+        limit_15m = "?" if self.limit_15m is None else str(self.limit_15m)
+        limit_day = "?" if self.limit_day is None else str(self.limit_day)
         return f"{self.remaining_15m}/{limit_15m} per 15m, {self.remaining_day}/{limit_day} per day"
 
 
@@ -73,6 +78,20 @@ def _parse_pair(raw: str | None) -> tuple[int, int] | None:
         return int(parts[0].strip()), int(parts[1].strip())
     except ValueError:
         return None
+
+
+def seconds_until_quota_reset(now: datetime | None = None) -> int:
+    """Seconds until the next 00:00 UTC — when Intervals.icu resets the daily quota.
+
+    A naive ``now`` is taken as UTC (mirrors ``parse_quota_pause``) rather than
+    blowing up on aware-minus-naive subtraction.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    tomorrow = (now + timedelta(days=1)).date()
+    reset = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+    return max(1, int((reset - now).total_seconds()))
 
 
 def _fmt_duration(seconds: int) -> str:
