@@ -42,6 +42,7 @@ function explainLastError(
   if (raw === 'watchdog_exhausted') return t('settings.backfill.error_watchdog_exhausted')
   if (raw === 'OAuth revoked during backfill') return t('settings.backfill.error_oauth_revoked')
   if (raw === 'EMPTY_INTERVALS') return null  // handled via isEmptyImport branch
+  if (raw === 'QUOTA_PAUSED') return null     // running-state copy, not an error
   return t('settings.backfill.error_generic')
 }
 
@@ -143,10 +144,15 @@ export default function BackfillSection() {
   // --- Running: progress bar + poll in background ---------------------------
   if (status.status === 'running') {
     const pct = Math.round(status.progress_pct ?? 0)
+    // Server collapses `QUOTA_PAUSED:<iso>` to bare `QUOTA_PAUSED` — the chain
+    // is parked on an Intervals.icu API rate limit: the rolling 15-minute
+    // window (minutes) or the daily quota (until 00:00 UTC). Same sentinel for
+    // both, so the copy stays neutral about the duration.
+    const paused = status.last_error === 'QUOTA_PAUSED'
     return (
       <div>
         <p className="text-[12px] text-halo-ink-dim mb-2 leading-snug">
-          {t('settings.backfill.in_progress_desc')}
+          {paused ? t('settings.backfill.paused_quota') : t('settings.backfill.in_progress_desc')}
         </p>
         <div className="w-full h-2 bg-halo-surface-2 rounded-full overflow-hidden">
           <div

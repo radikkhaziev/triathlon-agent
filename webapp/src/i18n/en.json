@@ -400,6 +400,7 @@
     },
     "backfill": {
       "in_progress_desc": "Loading the last year of training history...",
+      "paused_quota": "Paused: the Intervals.icu API rate limit is reached. The import resumes automatically — within minutes for the rolling limit, or after 00:00 UTC if the daily quota is used up.",
       "chunks_done": "chunks: {{done}}",
       "completed": "History loaded",
       "retry_failed": "Failed to start re-import",

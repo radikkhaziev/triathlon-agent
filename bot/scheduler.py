@@ -1,5 +1,5 @@
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from config import settings
 from data.db import AthleteGoal, User, UserBackfillState, UserDTO, get_session
+from data.db.backfill import parse_quota_pause
 from tasks.actors import (
     actor_bootstrap_step,
     actor_compose_user_evening_report,
@@ -35,6 +36,10 @@ _BOOTSTRAP_STUCK_THRESHOLD_MIN = 15
 # chain that Dramatiq exhausted retries on (e.g. persistent Intervals 5xx on
 # one date range) — see code review M1 + docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md §17.
 _BOOTSTRAP_MAX_WATCHDOG_KICKS = 3
+# How long after a quota pause's ``resume_at`` the watchdog keeps its hands
+# off — one stuck-threshold, so the woken step has the same window to touch
+# ``last_step_at`` as any other step.
+_BOOTSTRAP_PAUSE_GRACE = timedelta(minutes=_BOOTSTRAP_STUCK_THRESHOLD_MIN)
 _WATCHDOG_KICK_PREFIX = "watchdog_kick_"
 _WATCHDOG_EXHAUSTED_SENTINEL = "watchdog_exhausted"
 
@@ -119,8 +124,22 @@ async def scheduler_watchdog_bootstrap() -> None:
     if not stuck:
         return
 
+    now = datetime.now(timezone.utc)
     async with get_session() as session:
         for state in stuck:
+            # Quota pause (``QUOTA_PAUSED:<resume>``) — the chain is parked on
+            # purpose until the Intervals.icu daily reset; the deferred message
+            # is in Redis, not lost. Only past ``resume + grace`` does silence
+            # mean «stuck» again (kick counter restarts from 0 then).
+            paused_until = parse_quota_pause(state.last_error)
+            if paused_until is not None and now < paused_until + _BOOTSTRAP_PAUSE_GRACE:
+                logger.debug(
+                    "watchdog_bootstrap: user=%d quota-paused until %s — not stuck",
+                    state.user_id,
+                    paused_until.isoformat(timespec="minutes"),
+                )
+                continue
+
             prev_kicks = _parse_kick_count(state.last_error)
             if prev_kicks >= _BOOTSTRAP_MAX_WATCHDOG_KICKS:
                 logger.error(

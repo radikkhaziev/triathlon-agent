@@ -9,7 +9,7 @@ from dramatiq.encoder import JSONEncoder
 from dramatiq.middleware import Retries
 from pydantic import BaseModel
 
-from data.intervals.client import IntervalsRateLimitError
+from data.intervals.client import QUOTA_DEFER_JITTER_SEC, IntervalsRateLimitError  # noqa: F401 — re-exported for tests
 
 # --- 1. Patch message_with_options: auto-dump Pydantic in kwargs ---
 
@@ -49,10 +49,6 @@ dramatiq.set_encoder(PydanticEncoder())
 
 
 # --- 3. Quota-aware retries: an Intervals.icu quota hit is a deferral, not a failure ---
-
-# Spread re-enqueued messages over the first minutes of the fresh window so
-# a backlog doesn't slam the 15-minute limit the moment the day resets.
-QUOTA_DEFER_JITTER_SEC = 120
 
 # Total time one message may spend quota-deferred before it dead-letters —
 # enforced on the *projected* total (already deferred + the deferral about to

@@ -11,7 +11,8 @@ See ``docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md``.
 """
 
 import logging
-from datetime import date, timedelta
+import random
+from datetime import date, datetime, timedelta, timezone
 
 import dramatiq
 import sentry_sdk
@@ -20,11 +21,19 @@ from sqlalchemy import func, select
 
 from bot.i18n import _, set_language
 from data.db import Activity, User, UserBackfillState, UserDTO, Wellness, get_sync_session
-from data.intervals.client import IntervalsAccessError, IntervalsRateLimitError, IntervalsSyncClient
+from data.intervals.client import (
+    QUOTA_DEFER_JITTER_SEC,
+    IntervalsAccessError,
+    IntervalsRateLimitError,
+    IntervalsSyncClient,
+    QuotaSnapshot,
+    seconds_until_quota_reset,
+)
 from data.intervals.dto import ActivityDTO, WellnessDTO
 from tasks.dto import DateDTO, local_today
 from tasks.tools import TelegramTool
 
+from ._constants import BOOTSTRAP_DAILY_RESERVE, BOOTSTRAP_PAUSE_JITTER_SEC, BOOTSTRAP_REQUESTS_PER_ACTIVITY
 from .activities import actor_update_activity_details
 from .wellness import process_wellness_analysis_sync
 
@@ -82,6 +91,18 @@ def actor_bootstrap_step(
     # Trust the DB as source of truth: skip the chunk, re-enqueue with the current
     # ``state.cursor_dt`` so the chain continues exactly once from where it really is.
     if state_cursor != cursor_dt:
+        if cursor_dt > state_cursor:
+            # The DB cursor moved *backwards* relative to this message: a
+            # ``start()`` reset (``bootstrap-sync --force`` / retry-backfill)
+            # started a fresh generation while this copy slept in the delay
+            # queue. It belongs to a superseded chain — drop it, or we'd fork.
+            logger.info(
+                "bootstrap_step: superseded generation arg=%s state=%s user=%d — dropping",
+                cursor_dt,
+                state_cursor,
+                user.id,
+            )
+            return
         logger.info(
             "bootstrap_step: retry with stale cursor arg=%s state=%s user=%d — re-enqueuing from state cursor",
             cursor_dt,
@@ -114,26 +135,69 @@ def actor_bootstrap_step(
     )
 
     try:
-        with IntervalsSyncClient.for_user(user) as client:
-            wellness_rows: list[WellnessDTO] = client.get_wellness_range(oldest=cursor_dt, newest=chunk_end)
-            activity_rows: list[ActivityDTO] = client.get_activities(oldest=cursor_dt, newest=chunk_end)
-    except IntervalsAccessError as e:
-        # Two scenarios collapse into this catch:
-        #   (a) Race window — user revokes between the pre-check commit at the
-        #       top of this actor and the API call here (auth_method flips
-        #       'oauth' → 'none' under us).
-        #   (b) Broken OAuth state — auth_method='oauth' but
-        #       intervals_access_token decrypts to None (Fernet key mismatch
-        #       after a key rotation, or an inconsistent partial write). The
-        #       pre-check can't catch this because it only inspects
-        #       auth_method, not the actual credential payload.
-        # Both require backfill abort. Persist only the exception class name
-        # in `state.last_error` — full `str(e)` may include API paths / auth
-        # tokens in future subclasses; see backfill.py:181-187 warning.
-        logger.info("Bootstrap chunk aborted for user=%d: %s", user.id, e)
-        UserBackfillState.mark_failed(user.id, error=type(e).__name__)
-        return
+        try:
+            with IntervalsSyncClient.for_user(user) as client:
+                wellness_rows: list[WellnessDTO] = client.get_wellness_range(oldest=cursor_dt, newest=chunk_end)
+                activity_rows: list[ActivityDTO] = client.get_activities(oldest=cursor_dt, newest=chunk_end)
+                # Snapshot while the client is open — never rely on state
+                # surviving ``close()``.
+                quota: QuotaSnapshot | None = client.quota
+        except IntervalsAccessError as e:
+            # Two scenarios collapse into this catch:
+            #   (a) Race window — user revokes between the pre-check commit at the
+            #       top of this actor and the API call here (auth_method flips
+            #       'oauth' → 'none' under us).
+            #   (b) Broken OAuth state — auth_method='oauth' but
+            #       intervals_access_token decrypts to None (Fernet key mismatch
+            #       after a key rotation, or an inconsistent partial write). The
+            #       pre-check can't catch this because it only inspects
+            #       auth_method, not the actual credential payload.
+            # Both require backfill abort. Persist only the exception class name
+            # in `state.last_error` — full `str(e)` may include API paths / auth
+            # tokens in future subclasses; see backfill.py:181-187 warning.
+            logger.info("Bootstrap chunk aborted for user=%d: %s", user.id, e)
+            UserBackfillState.mark_failed(user.id, error=type(e).__name__)
+            return
 
+        _process_chunk(
+            user,
+            cursor_dt=cursor_dt,
+            chunk_end=chunk_end,
+            newest_dt=newest_dt,
+            period_days=period_days,
+            wellness_rows=wellness_rows,
+            activity_rows=activity_rows,
+            quota=quota,
+        )
+    except IntervalsRateLimitError as e:
+        # QuotaAwareRetries re-enqueues this very message after Retry-After —
+        # wherever inside the chunk the 429 surfaced. Stamp the pause so the
+        # watchdog doesn't read the multi-hour silence as «stuck» and
+        # mark_failed the row before the deferred copy wakes.
+        _stamp_rate_limit_pause(user, e)
+        raise
+
+
+def _stamp_rate_limit_pause(user: UserDTO, e: IntervalsRateLimitError) -> None:
+    resume_at = datetime.now(timezone.utc) + timedelta(seconds=e.retry_after + QUOTA_DEFER_JITTER_SEC)
+    UserBackfillState.mark_quota_paused(user.id, resume_at=resume_at)
+
+
+def _process_chunk(
+    user: UserDTO,
+    *,
+    cursor_dt: date,
+    chunk_end: date,
+    newest_dt: date,
+    period_days: int,
+    wellness_rows: list[WellnessDTO],
+    activity_rows: list[ActivityDTO],
+    quota: QuotaSnapshot | None,
+) -> None:
+    """Persist and fan out one fetched chunk, then advance the cursor and
+    continue the chain. Split out of the actor so one ``except
+    IntervalsRateLimitError`` in the caller covers every API call of a chunk.
+    """
     # Strava activities cannot be read via Intervals.icu API (licensing).
     # Mirrors actor_fetch_user_activities — filter before persisting.
     before = len(activity_rows)
@@ -144,6 +208,31 @@ def actor_bootstrap_step(
             before - len(activity_rows),
             user.id,
         )
+
+    # Daily-quota reserve — decided BEFORE anything is persisted: ``save_bulk``
+    # returns only NEW ids, so pausing after it would leave this chunk's
+    # activities without their details fan-out forever. On resume the two
+    # range fetches simply repeat. ``est_cost`` is an upper bound — rows the
+    # ACTIVITY_UPLOADED webhook already ingested are deduped by ``save_bulk``
+    # and never fan out.
+    est_cost = BOOTSTRAP_REQUESTS_PER_ACTIVITY * len(activity_rows)
+    needed = BOOTSTRAP_DAILY_RESERVE + est_cost
+    if quota is not None and quota.remaining_day < needed:
+        if quota.limit_day is not None and needed > quota.limit_day:
+            # Unsatisfiable even on a fresh day — pausing would loop forever
+            # (each wake burns two fetches and re-pauses). Proceed; the
+            # Phase 2 deferral absorbs whatever 429s the fan-out hits.
+            logger.error(
+                "bootstrap_step: chunk from %s needs ~%d requests > daily limit %d for user=%d — "
+                "cannot fit in any day, proceeding unpaused",
+                cursor_dt,
+                needed,
+                quota.limit_day,
+                user.id,
+            )
+        else:
+            _pause_for_quota(user, cursor_dt=cursor_dt, period_days=period_days, quota=quota, est_cost=est_cost)
+            return
 
     # Save activities in bulk (ON CONFLICT) — returns only NEW ids so we can
     # dispatch activity-details only for fresh rows (idempotent re-chunk = no-op).
@@ -176,7 +265,8 @@ def actor_bootstrap_step(
         except IntervalsRateLimitError:
             # No API call lives in the helper today; this is insurance so a
             # future one can't be swallowed by the broad catch below. The
-            # whole chunk re-runs after the deferral (saves are idempotent).
+            # caller stamps the quota pause; the whole chunk re-runs after
+            # the deferral (saves are idempotent).
             raise
         except Exception:
             # Swallowing here is deliberate — we want the chunk to finish and
@@ -206,7 +296,16 @@ def actor_bootstrap_step(
         actor_update_activity_details.send(user=user, activity_id=aid)
 
     next_cursor = chunk_end + timedelta(days=1)
-    UserBackfillState.advance_cursor(user_id=user.id, cursor_dt=next_cursor)
+    if not UserBackfillState.advance_cursor(user_id=user.id, cursor_dt=next_cursor, expected_cursor=cursor_dt):
+        # Another copy of the chain (watchdog kick vs. woken quota-deferred
+        # message, or a --force restart) already moved the cursor. It owns
+        # the continuation — stopping here is what prevents a fork.
+        logger.warning(
+            "bootstrap_step: lost the cursor race at %s for user=%d — another copy owns the chain, stopping",
+            cursor_dt,
+            user.id,
+        )
+        return
 
     if chunk_end < newest_dt:
         actor_bootstrap_step.send(
@@ -217,6 +316,42 @@ def actor_bootstrap_step(
         return
 
     _finalize_bootstrap(user)
+
+
+def _pause_for_quota(
+    user: UserDTO,
+    *,
+    cursor_dt: date,
+    period_days: int,
+    quota: QuotaSnapshot,
+    est_cost: int,
+) -> None:
+    """Park the chain until the 00:00 UTC quota reset (+ jitter), leaving the
+    cursor untouched so the same chunk re-runs. See spec «Intervals.icu rate
+    limits», Phase 3."""
+    delay_sec = seconds_until_quota_reset() + random.randint(0, BOOTSTRAP_PAUSE_JITTER_SEC)
+    resume_at = datetime.now(timezone.utc) + timedelta(seconds=delay_sec)
+    logger.warning(
+        "bootstrap_step: user=%d chunk from %s needs ~%d requests + reserve %d but only %d/day left "
+        "(%s) — pausing until %s",
+        user.id,
+        cursor_dt,
+        est_cost,
+        BOOTSTRAP_DAILY_RESERVE,
+        quota.remaining_day,
+        quota,
+        resume_at.isoformat(timespec="minutes"),
+    )
+    sentry_sdk.add_breadcrumb(
+        category="bootstrap",
+        message=f"quota pause user={user.id} cursor={cursor_dt} remaining_day={quota.remaining_day}",
+        level="warning",
+    )
+    UserBackfillState.mark_quota_paused(user.id, resume_at=resume_at)
+    actor_bootstrap_step.send_with_options(
+        kwargs=dict(user=user, cursor_dt=cursor_dt, period_days=period_days),
+        delay=delay_sec * 1000,
+    )
 
 
 def _finalize_bootstrap(user: UserDTO) -> None:

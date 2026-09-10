@@ -11,7 +11,7 @@ whether the cursor advanced, whether the recursion fires on a non-final chunk,
 whether finalize fires on the last chunk, and the EMPTY_INTERVALS path.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -51,13 +51,25 @@ def _state(
     )
 
 
+def _healthy_quota():
+    from data.intervals.client import QuotaSnapshot
+
+    return QuotaSnapshot(remaining_15m=2400, remaining_day=7000, limit_15m=2500, limit_day=8000)
+
+
 def _mock_client_ctx(wellness: list | None = None, activities: list | None = None) -> MagicMock:
-    """Context-manager-shaped mock for ``IntervalsSyncClient.for_user(user)``."""
+    """Context-manager-shaped mock for ``IntervalsSyncClient.for_user(user)``.
+
+    ``quota`` defaults to a healthy snapshot so the suite exercises the live
+    reserve branch; tests that need the «no headers» passthrough set
+    ``mock.quota = None`` explicitly.
+    """
     mock = MagicMock()
     mock.__enter__ = MagicMock(return_value=mock)
     mock.__exit__ = MagicMock(return_value=False)
     mock.get_wellness_range.return_value = wellness or []
     mock.get_activities.return_value = activities or []
+    mock.quota = _healthy_quota()
     return mock
 
 
@@ -96,6 +108,7 @@ def bootstrap_mocks():
         patch("tasks.actors.bootstrap.process_wellness_analysis_sync") as mock_actor_wellness,
         patch("tasks.actors.bootstrap.actor_update_activity_details.send") as mock_actor_details_send,
         patch("tasks.actors.bootstrap.actor_bootstrap_step.send") as mock_self_send,
+        patch("tasks.actors.bootstrap.actor_bootstrap_step.send_with_options") as mock_self_send_delayed,
         patch(
             "tasks.actors.bootstrap._actor_send_bootstrap_completion_notification.send_with_options"
         ) as mock_notify_send,
@@ -107,7 +120,7 @@ def bootstrap_mocks():
         # Default: running state, no row at first call (test overrides as needed)
         mock_state_cls.get.return_value = None
         mock_state_cls.start.return_value = None
-        mock_state_cls.advance_cursor.return_value = None
+        mock_state_cls.advance_cursor.return_value = True  # CAS won
         mock_state_cls.mark_finished.return_value = None
         mock_state_cls.mark_failed.return_value = None
 
@@ -136,7 +149,7 @@ def bootstrap_mocks():
             save_bulk=mock_save_bulk,
             actor_wellness=mock_actor_wellness,
             actor_details=SimpleNamespace(send=mock_actor_details_send),
-            actor_self=SimpleNamespace(send=mock_self_send),
+            actor_self=SimpleNamespace(send=mock_self_send, send_with_options=mock_self_send_delayed),
             actor_notify=SimpleNamespace(send_with_options=mock_notify_send),
         )
 
@@ -322,6 +335,156 @@ class TestDeauthGuard:
         bootstrap_mocks.state_cls.mark_failed.assert_not_called()
         bootstrap_mocks.state_cls.advance_cursor.assert_not_called()
         bootstrap_mocks.actor_self.send.assert_not_called()
+        # Pause stamped so the watchdog doesn't mark_failed during the deferral.
+        bootstrap_mocks.state_cls.mark_quota_paused.assert_called_once()
+        resume_at = bootstrap_mocks.state_cls.mark_quota_paused.call_args.kwargs["resume_at"]
+        assert resume_at - datetime.now(timezone.utc) >= timedelta(seconds=24173)
+
+
+# ---------------------------------------------------------------------------
+# Daily-quota reserve — pause the chunk instead of draining the app-wide budget
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaReserve:
+    def _run_with_quota(
+        self,
+        bootstrap_mocks,
+        *,
+        remaining_day: int | None,
+        n_activities: int = 10,
+        limit_day: int | None = 8000,
+    ):
+        from data.intervals.client import QuotaSnapshot
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        oldest = date.today() - timedelta(days=365)
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
+        activity_rows = [SimpleNamespace(id=f"a{i}", source="GARMIN_CONNECT") for i in range(n_activities)]
+        client = _mock_client_ctx(activities=activity_rows)
+        client.quota = (
+            None
+            if remaining_day is None
+            else QuotaSnapshot(remaining_15m=2000, remaining_day=remaining_day, limit_15m=2500, limit_day=limit_day)
+        )
+        bootstrap_mocks.client_cls.for_user.return_value = client
+        bootstrap_mocks.save_bulk.return_value = [a.id for a in activity_rows]
+
+        actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat(), period_days=365)
+
+    def test_low_remaining_pauses_before_persisting(self, bootstrap_mocks):
+        """remaining_day < reserve + 3×activities → nothing persisted, cursor
+        untouched, chain re-enqueued for after the 00:00 UTC reset."""
+        from tasks.actors._constants import BOOTSTRAP_DAILY_RESERVE, BOOTSTRAP_PAUSE_JITTER_SEC
+
+        with patch("tasks.actors.bootstrap.seconds_until_quota_reset", return_value=3600):
+            self._run_with_quota(bootstrap_mocks, remaining_day=BOOTSTRAP_DAILY_RESERVE + 29, n_activities=10)
+
+        bootstrap_mocks.save_bulk.assert_not_called()
+        bootstrap_mocks.actor_wellness.assert_not_called()
+        bootstrap_mocks.actor_details.send.assert_not_called()
+        bootstrap_mocks.state_cls.advance_cursor.assert_not_called()
+        bootstrap_mocks.actor_self.send.assert_not_called()
+
+        bootstrap_mocks.state_cls.mark_quota_paused.assert_called_once()
+        resume_at = bootstrap_mocks.state_cls.mark_quota_paused.call_args.kwargs["resume_at"]
+        assert resume_at > datetime.now(timezone.utc) + timedelta(seconds=3500)
+
+        bootstrap_mocks.actor_self.send_with_options.assert_called_once()
+        kwargs = bootstrap_mocks.actor_self.send_with_options.call_args.kwargs
+        assert 3600 * 1000 <= kwargs["delay"] <= (3600 + BOOTSTRAP_PAUSE_JITTER_SEC) * 1000
+        assert kwargs["kwargs"]["cursor_dt"] == date.today() - timedelta(days=365)
+
+    def test_enough_remaining_proceeds(self, bootstrap_mocks):
+        from tasks.actors._constants import BOOTSTRAP_DAILY_RESERVE
+
+        self._run_with_quota(bootstrap_mocks, remaining_day=BOOTSTRAP_DAILY_RESERVE + 30, n_activities=10)
+
+        bootstrap_mocks.state_cls.mark_quota_paused.assert_not_called()
+        bootstrap_mocks.actor_self.send_with_options.assert_not_called()
+        bootstrap_mocks.save_bulk.assert_called_once()
+        bootstrap_mocks.state_cls.advance_cursor.assert_called_once()
+        assert bootstrap_mocks.actor_details.send.call_count == 10
+
+    def test_no_quota_headers_proceeds(self, bootstrap_mocks):
+        """No X-RateLimit headers (quota=None) → can't budget, don't block."""
+        self._run_with_quota(bootstrap_mocks, remaining_day=None, n_activities=3)
+
+        bootstrap_mocks.state_cls.mark_quota_paused.assert_not_called()
+        bootstrap_mocks.save_bulk.assert_called_once()
+
+    def test_unsatisfiable_reserve_proceeds_unpaused(self, bootstrap_mocks):
+        """reserve + est_cost > limit_day can never be met — pausing would loop
+        every day forever. Proceed and let the Phase 2 deferral absorb 429s."""
+        # 2200 activities × 3 + 1500 = 8100 > 8000
+        self._run_with_quota(bootstrap_mocks, remaining_day=0, n_activities=2200, limit_day=8000)
+
+        bootstrap_mocks.state_cls.mark_quota_paused.assert_not_called()
+        bootstrap_mocks.actor_self.send_with_options.assert_not_called()
+        bootstrap_mocks.save_bulk.assert_called_once()
+        bootstrap_mocks.state_cls.advance_cursor.assert_called_once()
+
+    def test_rate_limit_inside_wellness_loop_stamps_pause(self, bootstrap_mocks):
+        """The pause stamp covers the whole chunk, not just the range fetches —
+        otherwise a deferral from here leaves the row «stuck» for the watchdog."""
+        from data.intervals.client import IntervalsRateLimitError
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        oldest = date.today() - timedelta(days=365)
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
+        client = _mock_client_ctx(wellness=[SimpleNamespace(id="2025-09-10")])
+        bootstrap_mocks.client_cls.for_user.return_value = client
+        bootstrap_mocks.actor_wellness.side_effect = IntervalsRateLimitError(900, method="GET", path="/x")
+
+        with pytest.raises(IntervalsRateLimitError):
+            actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat(), period_days=365)
+
+        bootstrap_mocks.state_cls.mark_quota_paused.assert_called_once()
+        bootstrap_mocks.state_cls.advance_cursor.assert_not_called()
+        bootstrap_mocks.state_cls.mark_failed.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Chain-fork guards — a parked copy must never run alongside a fresh chain
+# ---------------------------------------------------------------------------
+
+
+class TestChainForkGuards:
+    def test_superseded_generation_is_dropped(self, bootstrap_mocks):
+        """DB cursor BEHIND the message arg ⇒ ``start()`` reset the row while this
+        copy slept (``--force`` / retry-backfill). Drop it: no fetch, no re-enqueue."""
+        from tasks.actors.bootstrap import CHUNK_DAYS, actor_bootstrap_step
+
+        user = _user()
+        oldest = date.today() - timedelta(days=365)
+        stale_arg = oldest + timedelta(days=3 * CHUNK_DAYS)  # where the old chain was
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)  # fresh generation
+
+        actor_bootstrap_step(user.model_dump(), cursor_dt=stale_arg.isoformat(), period_days=365)
+
+        bootstrap_mocks.client_cls.for_user.assert_not_called()
+        bootstrap_mocks.actor_self.send.assert_not_called()
+        bootstrap_mocks.actor_self.send_with_options.assert_not_called()
+        bootstrap_mocks.state_cls.advance_cursor.assert_not_called()
+
+    def test_lost_cursor_cas_stops_without_continuing(self, bootstrap_mocks):
+        """``advance_cursor`` returning False ⇒ another copy already moved the
+        cursor — do not send the next step, do not finalize."""
+        from tasks.actors.bootstrap import actor_bootstrap_step
+
+        user = _user()
+        oldest = date.today() - timedelta(days=365)
+        bootstrap_mocks.state_cls.get.return_value = _state(oldest_dt=oldest, cursor_dt=oldest)
+        bootstrap_mocks.state_cls.advance_cursor.return_value = False
+
+        actor_bootstrap_step(user.model_dump(), cursor_dt=oldest.isoformat(), period_days=365)
+
+        bootstrap_mocks.state_cls.advance_cursor.assert_called_once()
+        bootstrap_mocks.actor_self.send.assert_not_called()
+        bootstrap_mocks.state_cls.mark_finished.assert_not_called()
+        bootstrap_mocks.actor_notify.send_with_options.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +542,9 @@ class TestMiddleChunk:
         expected_chunk_end = cursor + timedelta(days=CHUNK_DAYS - 1)
         expected_next = expected_chunk_end + timedelta(days=1)
 
-        bootstrap_mocks.state_cls.advance_cursor.assert_called_once_with(user_id=1, cursor_dt=expected_next)
+        bootstrap_mocks.state_cls.advance_cursor.assert_called_once_with(
+            user_id=1, cursor_dt=expected_next, expected_cursor=cursor
+        )
 
         bootstrap_mocks.actor_self.send.assert_called_once()
         send_kwargs = bootstrap_mocks.actor_self.send.call_args.kwargs

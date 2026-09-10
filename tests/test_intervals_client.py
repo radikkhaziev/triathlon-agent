@@ -1,6 +1,6 @@
 """Tests for Intervals.icu client retry logic and endpoint specs."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -19,6 +19,7 @@ from data.intervals.client import (
     IntervalsScopeError,
     IntervalsSyncClient,
     QuotaSnapshot,
+    seconds_until_quota_reset,
 )
 
 
@@ -250,10 +251,37 @@ class TestParseRetryAfter:
         assert client._parse_retry_after(resp) is None
 
 
+class TestSecondsUntilQuotaReset:
+    def test_just_before_midnight(self):
+        now = datetime(2026, 9, 10, 23, 59, 30, tzinfo=timezone.utc)
+        assert seconds_until_quota_reset(now) == 30
+
+    def test_at_midnight_is_full_day(self):
+        now = datetime(2026, 9, 11, 0, 0, 0, tzinfo=timezone.utc)
+        assert seconds_until_quota_reset(now) == 86400
+
+    def test_noon(self):
+        now = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+        assert seconds_until_quota_reset(now) == 43200
+
+    def test_naive_now_assumed_utc(self):
+        assert seconds_until_quota_reset(datetime(2026, 9, 10, 12, 0, 0)) == 43200
+
+
 class TestRecordQuota:
     def test_parses_headers(self, client):
         client._record_quota(httpx.Response(200, headers=_QUOTA_HEADERS))
         assert client.quota == QuotaSnapshot(remaining_15m=2499, remaining_day=0, limit_15m=2500, limit_day=8000)
+
+    def test_str_renders_known_and_unknown_limits(self):
+        assert str(QuotaSnapshot(remaining_15m=2499, remaining_day=0, limit_15m=2500, limit_day=8000)) == (
+            "2499/2500 per 15m, 0/8000 per day"
+        )
+        assert str(QuotaSnapshot(remaining_15m=1, remaining_day=2)) == "1/? per 15m, 2/? per day"
+        # A literal 0 limit is a value, not «unknown».
+        assert str(QuotaSnapshot(remaining_15m=0, remaining_day=0, limit_15m=0, limit_day=0)) == (
+            "0/0 per 15m, 0/0 per day"
+        )
 
     def test_missing_headers_reset_stale_snapshot(self, client):
         """Per-second per-IP 429s carry no headers — the previous snapshot must

@@ -20,6 +20,7 @@ from api.dto import (
 from config import settings
 from data.avatar_storage import avatar_path
 from data.db import AthleteGoal, AthleteSettings, User, UserBackfillState, UserDTO, Wellness, get_session
+from data.db.backfill import QUOTA_PAUSED_PREFIX
 from tasks.actors import actor_bootstrap_step
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,11 @@ _LAST_ERROR_ALLOWLIST = frozenset(
 )
 _LAST_ERROR_WATCHDOG_PREFIX = "watchdog_kick_"
 _LAST_ERROR_INTERNAL = "internal"
+# ``QUOTA_PAUSED:<iso>`` → bare ``QUOTA_PAUSED``: the UI only needs the state
+# (it renders a neutral «paused on the API rate limit, resumes automatically» —
+# the same sentinel covers 15-minute-window and daily pauses); the timestamp
+# stays server-side.
+_LAST_ERROR_QUOTA_PAUSED = "QUOTA_PAUSED"
 
 
 def _sanitize_last_error(raw: str | None) -> str | None:
@@ -103,6 +109,8 @@ def _sanitize_last_error(raw: str | None) -> str | None:
         return None
     if raw.startswith(_LAST_ERROR_WATCHDOG_PREFIX):
         return None
+    if raw.startswith(QUOTA_PAUSED_PREFIX):
+        return _LAST_ERROR_QUOTA_PAUSED
     if raw in _LAST_ERROR_ALLOWLIST:
         return raw
     return _LAST_ERROR_INTERNAL
