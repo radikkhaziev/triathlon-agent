@@ -9,13 +9,13 @@ from dramatiq import group, pipeline
 from pydantic import validate_call
 from sqlalchemy import select
 
-from data.db import HrvAnalysis, RhrAnalysis, UserDTO, Wellness, get_sync_session
+from data.db import AthleteSettings, HrvAnalysis, RhrAnalysis, UserDTO, Wellness, get_sync_session
 from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
 from data.intervals.dto import RecoveryScoreDTO, RhrStatusDTO, RmssdStatusDTO, WellnessDTO
 from data.metrics import combined_recovery_score, rhr_baseline, rmssd_flatt_esco
 from tasks.dto import ORMDTO, DateDTO, local_today
 
-from ._constants import MORNING_REPORT_DELAY_SEC
+from ._constants import MORNING_REPORT_DELAY_SEC, SETTINGS_SYNC_MAX_AGE
 from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update, is_user_dormant
 from .endurance import actor_snapshot_endurance_scores
 
@@ -177,11 +177,14 @@ def process_wellness_analysis_sync(user: UserDTO, wellness: WellnessDTO) -> None
     This helper runs the same computation inline in the caller's transaction
     order: save wellness → RHR → HRV → Banister ESS → recovery score. Everything
     commits before return, so the next day's call sees a fully-analyzed prior
-    day. Post-activity enrichment (sport CTL, training_log) and athlete-settings
-    sync still fan out async — those have no cross-day ordering dependency.
-    """
-    from .athlets import actor_sync_athlete_settings
+    day. Post-activity enrichment (sport CTL, training_log) still fans out
+    async — it has no cross-day ordering dependency.
 
+    Deliberately no sport-settings sync here: settings are current state, not
+    per-day data, and the OAuth fast-path already fetched them once. Syncing
+    per historical day cost ~365 API calls per new user against the app-wide
+    daily quota (2026-09-10 outage).
+    """
     result: ORMDTO = Wellness.save(user_id=user.id, wellness=wellness)
     dt: date = date.fromisoformat(wellness.id) if wellness.id else local_today()
 
@@ -201,7 +204,6 @@ def process_wellness_analysis_sync(user: UserDTO, wellness: WellnessDTO) -> None
     _actor_update_banister_ess(user=user, dt=dt)
     _actor_update_recovery_score(user=user, dt=dt)
 
-    actor_sync_athlete_settings.send(user=user)
     actor_after_activity_update.send(user=user, dt=dt)
 
 
@@ -262,13 +264,13 @@ def actor_user_wellness(
     # actor + actor_fetch_user_activities + Level-2 cron) safe.
     actor_snapshot_endurance_scores.send(user_id=user.id)
 
-    # all independent tasks run in parallel
-    group(
-        [
-            actor_sync_athlete_settings.message(user=user),
-            actor_after_activity_update.message(user=user, dt=_dt),
-        ]
-    ).run()
+    # Independent fan-out. Sport settings arrive via the SPORT_SETTINGS_UPDATED
+    # webhook (payload inline); the API fetch is only a safety net for a missed
+    # webhook, gated on synced_at so it costs ≤1 request/user/day.
+    fanout = [actor_after_activity_update.message(user=user, dt=_dt)]
+    if AthleteSettings.is_stale(user.id, max_age=SETTINGS_SYNC_MAX_AGE):
+        fanout.append(actor_sync_athlete_settings.message(user=user))
+    group(fanout).run()
 
     g = group(
         [

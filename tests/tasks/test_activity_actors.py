@@ -521,6 +521,30 @@ class TestActorDownloadFitFile:
 
         mock_client_cls.assert_not_called()
 
+    def test_rate_limit_propagates_for_deferral(self):
+        """IntervalsRateLimitError must escape the broad ``except Exception`` —
+        QuotaAwareRetries re-enqueues it; swallowing = FIT lost + Sentry noise."""
+        from data.intervals.client import IntervalsRateLimitError
+        from tasks.actors.activities import _actor_download_fit_file
+
+        user = _user()
+        mock_session = self._mock_session(self._make_activity())
+        client = MagicMock()
+        client.download_fit.side_effect = IntervalsRateLimitError(24173, method="GET", path="/activity/i1/file")
+        client_cm = MagicMock()
+        client_cm.__enter__ = MagicMock(return_value=client)
+        client_cm.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("tasks.actors.activities.get_sync_session", return_value=mock_session),
+            patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=client_cm),
+            patch("tasks.actors.activities.sentry_sdk.capture_exception") as capture,
+        ):
+            with pytest.raises(IntervalsRateLimitError):
+                _actor_download_fit_file(user.model_dump(), activity_id="i12345")
+
+        capture.assert_not_called()
+
     def test_skips_when_fit_file_already_exists(self):
         """fit_file_path already set → returns immediately, no download."""
         from tasks.actors.activities import _actor_download_fit_file

@@ -1357,3 +1357,76 @@ class TestWellnessPipelineIntegration:
             fe_row = session.get(HrvAnalysis, (user.id, dt_str, "flatt_esco"))
             assert fe_row is not None
             assert fe_row.status == hrv_result["flatt_esco"].status
+
+
+# ---------------------------------------------------------------------------
+# Sport-settings sync gating (Intervals.icu app-wide daily quota, 2026-09-10)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessWellnessAnalysisSync:
+    """Bootstrap path — settings are current state, never re-fetched per historical day."""
+
+    def test_does_not_dispatch_settings_sync(self):
+        from tasks.actors import wellness as w
+
+        with (
+            patch.object(w.Wellness, "save", return_value=ORMDTO(is_changed=True, row=MagicMock())),
+            patch.object(w, "_actor_calculate_rhr"),
+            patch.object(w, "_actor_update_rhr_analysis"),
+            patch.object(w, "_actor_calculate_hrv"),
+            patch.object(w, "_actor_update_hrv_analysis"),
+            patch.object(w, "_actor_update_banister_ess"),
+            patch.object(w, "_actor_update_recovery_score"),
+            patch.object(w.actor_after_activity_update, "send") as after_send,
+            patch("tasks.actors.athlets.actor_sync_athlete_settings.send") as settings_send,
+        ):
+            w.process_wellness_analysis_sync(_user(), WellnessDTO(id=_DT_STR))
+
+        after_send.assert_called_once()
+        settings_send.assert_not_called()
+
+
+class TestActorUserWellnessSettingsGate:
+    """Steady state — the API settings fetch is a missed-webhook safety net,
+    fired only when ``synced_at`` is older than ``SETTINGS_SYNC_MAX_AGE``."""
+
+    def _fanout_actor_names(self, *, stale: bool) -> list[str]:
+        from tasks.actors import wellness as w
+
+        row = MagicMock(ai_recommendation=None, sleep_score=None)
+        with (
+            patch.object(w, "is_user_dormant", return_value=False),
+            patch.object(w.Wellness, "save", return_value=ORMDTO(is_changed=True, row=row)),
+            patch.object(w.AthleteSettings, "is_stale", return_value=stale) as is_stale,
+            patch.object(w.actor_snapshot_endurance_scores, "send"),
+            patch.object(w, "group") as mock_group,
+        ):
+            w.actor_user_wellness(_user(), dt=_DT_STR, wellness=WellnessDTO(id=_DT_STR))
+
+        is_stale.assert_called_once_with(1, max_age=w.SETTINGS_SYNC_MAX_AGE)
+        fanout = mock_group.call_args_list[0].args[0]
+        return [m.actor_name for m in fanout]
+
+    def test_stale_settings_trigger_api_sync(self):
+        names = self._fanout_actor_names(stale=True)
+        assert "actor_sync_athlete_settings" in names
+        assert "actor_after_activity_update" in names
+
+    def test_fresh_settings_skip_api_sync(self):
+        assert self._fanout_actor_names(stale=False) == ["actor_after_activity_update"]
+
+    def test_unchanged_wellness_never_consults_gate(self):
+        """Early return on ``is_changed=False`` sits above the gate — no DB lookup, no fan-out."""
+        from tasks.actors import wellness as w
+
+        with (
+            patch.object(w, "is_user_dormant", return_value=False),
+            patch.object(w.Wellness, "save", return_value=ORMDTO(is_changed=False, row=MagicMock())),
+            patch.object(w.AthleteSettings, "is_stale") as is_stale,
+            patch.object(w, "group") as mock_group,
+        ):
+            w.actor_user_wellness(_user(), dt=_DT_STR, wellness=WellnessDTO(id=_DT_STR))
+
+        is_stale.assert_not_called()
+        mock_group.assert_not_called()

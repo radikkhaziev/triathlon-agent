@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 
 from bot.i18n import _, set_language
 from data.db import Activity, User, UserBackfillState, UserDTO, Wellness, get_sync_session
-from data.intervals.client import IntervalsAccessError, IntervalsSyncClient
+from data.intervals.client import IntervalsAccessError, IntervalsRateLimitError, IntervalsSyncClient
 from data.intervals.dto import ActivityDTO, WellnessDTO
 from tasks.dto import DateDTO, local_today
 from tasks.tools import TelegramTool
@@ -173,6 +173,11 @@ def actor_bootstrap_step(
     for w in sorted(wellness_rows, key=_sort_key):
         try:
             process_wellness_analysis_sync(user, w)
+        except IntervalsRateLimitError:
+            # No API call lives in the helper today; this is insurance so a
+            # future one can't be swallowed by the broad catch below. The
+            # whole chunk re-runs after the deferral (saves are idempotent).
+            raise
         except Exception:
             # Swallowing here is deliberate — we want the chunk to finish and
             # the cursor to advance even if one day's analysis fails. But we

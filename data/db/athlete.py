@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import (
     JSON,
@@ -173,6 +173,20 @@ class AthleteSettings(Base):
     def get(cls, user_id: int, sport: str, *, session: Session) -> AthleteSettings | None:
         result = session.execute(select(cls).where(cls.user_id == user_id, cls.sport == sport))
         return result.scalar_one_or_none()
+
+    @classmethod
+    @dual
+    def is_stale(cls, user_id: int, *, max_age: timedelta, session: Session) -> bool:
+        """True when no sport row was synced within ``max_age`` (or none exist).
+
+        ``synced_at`` is bumped by every ``upsert`` — both the webhook path and
+        the API fetch — so this measures «time since Intervals.icu last told us
+        anything», which is what the missed-webhook safety net needs.
+        """
+        latest = session.execute(select(func.max(cls.synced_at)).where(cls.user_id == user_id)).scalar_one()
+        if latest is None:
+            return True
+        return datetime.now(timezone.utc) - latest > max_age
 
     @classmethod
     @dual

@@ -36,8 +36,27 @@ CLAUDE.md «Operations §Onboarding» — точка входа из docs; эт�
 1. **Chunk-recursion, не bulk+drain.** Хронологическая корректность downstream-анализа: HRV baseline rolling 7/60 дней — bulk + 365 concurrent compute'ов даст race на окно. Внутри чанка — chronological loop с inline `process_wellness_analysis_sync` (sort key через `date.fromisoformat(w.id)`, не lexicographic — code-reviewer 🔴 catch 2026-04-22).
 2. **Cursor через atomic UPDATE, без Redis.** Один step пишет `cursor=chunk_end+1`, следующий читает. Lost-update race'а нет — single-statement UPDATE WHERE status='running'. ORM helpers (`advance_cursor` / `mark_finished` / `mark_failed`) — все без read-modify-write.
 3. **Watchdog escalation cap = 3 kick'а без advance'а cursor'а** → `mark_failed('watchdog_exhausted')`. Защита от infinite re-kick сломанной цепочки. Counter живёт в `last_error` как `watchdog_kick_N`, `advance_cursor` чистит при успешном прогрессе → reset автоматически.
-4. **HRV baseline inline sync, не fan-out.** `process_wellness_analysis_sync` делает save + RHR + HRV + Banister + recovery синхронно в chronological loop — bootstrap вызывает inline, не через `actor_user_wellness.send()`. Cross-day ordering требует sync; training_log/athlete_settings остались async (per-day idempotent).
+4. **HRV baseline inline sync, не fan-out.** `process_wellness_analysis_sync` делает save + RHR + HRV + Banister + recovery синхронно в chronological loop — bootstrap вызывает inline, не через `actor_user_wellness.send()`. Cross-day ordering требует sync; training_log остался async (per-day idempotent). Sport-settings в bootstrap **не** синхронятся вовсе — см. «Intervals.icu rate limits» ниже.
 5. **Completion notification `delay=60_000`.** `actor_user_wellness.send()` fire-and-forget — к моменту finalize последний chunk's wellness actors ещё в полёте. 60s delay + completion actor пере-читает счётчики из БД.
+
+---
+
+## Intervals.icu rate limits (2026-09-10 outage)
+
+Лимиты — на OAuth-приложение целиком, не per-athlete ([гайд](https://forum.intervals.icu/t/api-access-to-intervals-icu/609)): **100 запросов/день на каждого авторизовавшего атлета** (min 5000, max 50000; у нас 80 → 8000/day), **1/8 от дневного за скользящие 15 минут** (min 2500), плюс 10 req/s на IP (без заголовков). Каждый ответ несёт `X-RateLimit-Limit: <15m>,<day>` / `X-RateLimit-Remaining: <15m>,<day>`; 429 — `Retry-After` в секундах (для дневной квоты — до 00:00 UTC, т.е. часы) и `retry_after_seconds` в body.
+
+**Что случилось 2026-09-10:** 6 новых юзеров за день (~2200 активностей). Bootstrap = 3 вызова на активность (detail / intervals / FIT) + `process_wellness_analysis_sync` слал `actor_sync_athlete_settings` на **каждый** wellness-день (~365 GET sport-settings на юзера, ~28% дневной квоты впустую). Квота кончилась в ~17:30 Belgrade; дальше retry-шторм: клиент резал `Retry-After` до 60 с × 5 попыток, Dramatiq добавлял ×3 — 1860 пустых 429 за час, 125 dead-letter'ов, бэкфиллы 105/106 в `failed`/stuck.
+
+**Что сделано (Phase 1–2):**
+
+- **Settings-sync только по делу.** Убран из `process_wellness_analysis_sync` (настройки — текущее состояние, не per-day). В `actor_user_wellness` API-fetch остался как страховка от пропущенного `SPORT_SETTINGS_UPDATED` webhook'а, но гейтится `AthleteSettings.is_stale(user_id, max_age=SETTINGS_SYNC_MAX_AGE)` (24h по `max(synced_at)`, который бампит и webhook-путь, и API-путь) → ≤1 запрос/юзер/день. Начальная загрузка при OAuth connect (fast-path) не тронута.
+- **Quota-aware клиент** (`data/intervals/client.py`). На 429 с `Retry-After > RETRY_MAX_DELAY` (60 с) `_request` не спит, а сразу бросает `IntervalsRateLimitError(retry_after, method, path, quota)`. Короткий/отсутствующий `Retry-After` (per-second лимит) — прежний sleep-retry. Заголовки `X-RateLimit-*` парсятся в `client.quota: QuotaSnapshot` на каждом ответе; WARNING «daily quota low» раз в сутки на процесс при `remaining_day < DAILY_QUOTA_WARN_THRESHOLD` (1500).
+- **`QuotaAwareRetries`** (`tasks/middleware.py`, подменяет `Retries` в `tasks/broker.py`). `IntervalsRateLimitError` наследует `dramatiq.Retry` — воркер не пишет error-трейсбек, Sentry не создаёт событие. Middleware пере-ставит сообщение в очередь с `delay = retry_after + jitter(0..120 с)` **без** инкремента `retries`, так что дневной outage не dead-letter'ит работу; после сброса квоты очередь доезжает сама. Единственный предохранитель — `QUOTA_MAX_DEFER_TOTAL_SEC` (3 суток суммарно на сообщение, проверяется по *прогнозу* «уже отложено + следующий delay»): структурная нехватка квоты dead-letter'ит с ERROR-логом вместо вечного цикла в delay-queue. Для pipeline/group это тот же `broker.enqueue(message, delay=)`, что и у штатных ретраев. MCP-тулы ловят `Exception` и возвращают Claude `str(e)` («quota exhausted … retry after 6h 42m»).
+- `IntervalsRateLimitError` **не** наследует `IntervalsAccessError` — акторы глотают последний как «skip user», а квоту глотать нельзя.
+
+**Восстановление после outage:** `bootstrap-sync --user-id N --force` (перезапуск с oldest; details только для новых активностей) + `sync-activities --user-id N --period A:B --force` для активностей без `activity_details`. Dead-letter'ы не переигрываются.
+
+**Pending (Phase 3–4):** бюджетный резерв в `actor_bootstrap_step` (пауза чанка с `delay` до сброса при `remaining_day < 1500 + 3 × new_activities`, сентинел `QUOTA_PAUSED:<reset>` в `last_error`, чтобы watchdog не кикал); отдельная очередь `backfill` — только если после 1–3 наплыв регистраций всё ещё тормозит `default`.
 
 ---
 

@@ -232,6 +232,8 @@ Per-user Intervals.icu credentials are OAuth-only. The legacy `api_key` mode (HT
 
 **Client** (`data/intervals/client.py`): `IntervalsClient(*, athlete_id, access_token)`. `_resolve_credentials(user)` raises `IntervalsCredsMissingError` if either `athlete_id` is missing or `intervals_access_token` is empty (post-revoke / never connected). Bearer-token auth header on every request. `for_user()` factories (async + sync) delegate to `_resolve_credentials`. 401 path clears the token via `User.clear_oauth_tokens()` and raises `IntervalsAuthError`.
 
+**Rate limits (app-wide, not per-athlete):** 100 req/day per authorized athlete (min 5000) + 1/8 of that per rolling 15 min (min 2500) + 10 req/s per IP. Every response carries `X-RateLimit-Remaining: <15m>,<day>` → `client.quota` (`QuotaSnapshot`). A 429 whose `Retry-After` exceeds 60 s raises `IntervalsRateLimitError` (subclass of `dramatiq.Retry`, **not** of `IntervalsAccessError`) instead of sleep-retrying; `tasks.middleware.QuotaAwareRetries` re-enqueues the actor message after `Retry-After` without consuming a retry slot. Sport settings sync via API only when `AthleteSettings.is_stale(..., 24h)` — the `SPORT_SETTINGS_UPDATED` webhook is the primary source. Numbers, outage post-mortem and pending budget-reserve phase: `docs/OAUTH_BOOTSTRAP_SYNC_SPEC.md` «Intervals.icu rate limits».
+
 **Webhook receiver** (`POST /api/intervals/webhook`): verifies `body.secret` via `hmac.compare_digest`, resolves tenant by `athlete_id`, parses records into typed DTOs for drift detection (errors go to app logs, not Sentry). 5 delivery patterns documented: `records[]`, `activity`, `sportSettings[]`, top-level fields, empty notification. See `docs/INTERVALS_WEBHOOKS_RESEARCH.md` for full payload samples (10/10 event types researched).
 
 **Onboarding routing:** `bot/main.py:start` branches on `user.athlete_id` — new users get "🔗 Подключить Intervals.icu" WebApp button → `/settings`. `webapp/src/pages/Login.tsx:routeAfterLogin` sends users without `athlete_id` to `/settings`. Global auth gate in `App.tsx` blocks all data routes for unauthenticated users or users without `athlete_id` (issue #185 fix).
@@ -267,6 +269,7 @@ Specs and plans in `docs/`. Key references:
 - ORM methods: use `@with_session` (async), `@with_sync_session` (sync), or `@dual` (both). `user_id` always first param after `cls`
 - New MCP tools: add to `mcp_server/tools/`, use `get_current_user_id()` from `mcp_server.context`, never accept `user_id` as tool parameter
 - New data tools: add only to MCP, not to `TOOL_HANDLERS` (deprecated)
+- Actors calling Intervals.icu: never swallow `IntervalsRateLimitError` in a broad `except Exception` — add `except IntervalsRateLimitError: raise` first so `QuotaAwareRetries` can defer the message. `data/intervals/client.py` intentionally imports `dramatiq.Retry` for this (documented exception to keeping `data/` framework-agnostic)
 - Write deterministic tests for metric calculations
 - Keep prompts in `bot/prompts.py`
 - i18n: wrap user-facing bot strings in `_()` from `bot.i18n`. Add translations to `locale/en/LC_MESSAGES/messages.po`, run `pybabel compile -d locale`. Webapp: add keys to `webapp/src/i18n/ru.json` + `en.json`
