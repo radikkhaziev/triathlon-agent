@@ -18,6 +18,7 @@ from tasks.dto import ORMDTO, DateDTO, local_today
 from ._constants import MORNING_REPORT_DELAY_SEC, SETTINGS_SYNC_MAX_AGE
 from .common import CATEGORY_TO_READINESS, _actor_update_banister_ess, actor_after_activity_update, is_user_dormant
 from .endurance import actor_snapshot_endurance_scores
+from .reports import actor_compose_user_morning_report
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,17 @@ def _actor_update_recovery_score(
     user: UserDTO,
     dt: DateDTO,
     force: bool = False,
+    dispatch_report: bool = False,
 ):
+    """Compute + persist the recovery score for ``dt``.
+
+    ``dispatch_report=True`` (webhook path, set by ``actor_user_wellness``)
+    then schedules the morning report. The gate lives here, not in
+    ``actor_user_wellness``: it needs ``recovery_score``, which only exists
+    once this completion callback has committed. Bootstrap backfill calls the
+    actor inline per historical day and keeps the default. No HRV/RHR analysis
+    row (first 14 days) → no score → no report, same as before.
+    """
     with get_sync_session() as session:
         _wellness_row = Wellness.get(user_id=user.id, dt=dt, session=session)
         _hrv_row = HrvAnalysis.get(user_id=user.id, dt=dt, algorithm="flatt_esco", session=session)
@@ -161,6 +172,9 @@ def _actor_update_recovery_score(
         _wellness_row.readiness_level = CATEGORY_TO_READINESS.get(recovery.category, "yellow")
 
         session.commit()
+
+    if dispatch_report:
+        _dispatch_morning_report_if_ready(user, dt)
 
 
 def process_wellness_analysis_sync(user: UserDTO, wellness: WellnessDTO) -> None:
@@ -217,7 +231,6 @@ def actor_user_wellness(
     force_inactive: bool = False,
 ):
     from .athlets import actor_sync_athlete_settings
-    from .reports import actor_compose_user_morning_report
 
     # Skip dormant accounts — the WELLNESS_UPDATED webhook keeps firing for
     # inactive users (we intentionally don't filter at the webhook layer so
@@ -288,42 +301,49 @@ def actor_user_wellness(
             ),
         ]
     )
-    g.add_completion_callback(_actor_update_recovery_score.message(user=user, dt=_dt, force=force))
+    # The callback also owns the morning-report dispatch — see its docstring.
+    g.add_completion_callback(
+        _actor_update_recovery_score.message(user=user, dt=_dt, force=force, dispatch_report=True)
+    )
     g.run()
 
-    _row: Wellness = result.row
-    # Reuse the ``today`` snapshot taken at the top of the actor — re-reading
-    # ``local_today()`` here would let a long-running invocation that crosses
-    # midnight evaluate the same wellness row against two different dates,
-    # which can either skip or double-fire the morning-report dispatch.
-    if (
-        _dt == today.isoformat()
-        and _is_free_for_morning_report(_row.ai_recommendation)
-        and _row.sleep_score is not None
-        and _row.recovery_score is not None
-    ):
-        # Intervals.icu sometimes recomputes yesterday's CTL/ATL shortly after
-        # wake-up (late activities, late HRV). `recompute_today_loads` uses
-        # yesterday's value as the baseline, so we delay the compose by
-        # 10 min to let Intervals settle. Re-firing cron in this window sees
-        # ai_recommendation = "__scheduled__:..." and `_is_free_for_morning_report`
-        # returns False → skip re-dispatch. The compose actor has a matching
-        # `__scheduled__` branch that lets the delayed run claim the slot.
-        with get_sync_session() as session:
-            locked = session.execute(
-                select(Wellness).where(Wellness.user_id == user.id, Wellness.date == _dt).with_for_update()
-            ).scalar_one_or_none()
-            if not locked or not _is_free_for_morning_report(locked.ai_recommendation):
-                return
-            # Sentinel stores SET-time (not eligibility) to keep the format
-            # symmetric with ``__generating__:{set_at}`` and avoid easy mix-ups
-            # in future fixes. Eligibility is derived in `_is_free_for_morning_report`.
-            locked.ai_recommendation = f"__scheduled__:{time.time():.0f}"
-            session.commit()
 
-        actor_compose_user_morning_report.send_with_options(
-            kwargs={"user": user}, delay=MORNING_REPORT_DELAY_SEC * 1000
-        )
+def _dispatch_morning_report_if_ready(user: UserDTO, dt: date) -> None:
+    """Schedule today's morning report once sleep + recovery score are in.
+
+    Intervals.icu sometimes recomputes yesterday's CTL/ATL shortly after
+    wake-up (late activities, late HRV). `recompute_today_loads` uses
+    yesterday's value as the baseline, so we delay the compose by 10 min to
+    let Intervals settle. A re-fire in this window sees
+    ai_recommendation = "__scheduled__:..." and `_is_free_for_morning_report`
+    returns False → skip re-dispatch. The compose actor has a matching
+    `__scheduled__` branch that lets the delayed run claim the slot.
+
+    ``local_today()`` is read fresh on purpose: this runs in its own message,
+    so a callback that drains after midnight must not schedule yesterday's row.
+    """
+    if dt != local_today():
+        return
+
+    with get_sync_session() as session:
+        locked = session.execute(
+            select(Wellness).where(Wellness.user_id == user.id, Wellness.date == dt.isoformat()).with_for_update()
+        ).scalar_one_or_none()
+        if (
+            not locked
+            or locked.sleep_score is None
+            or locked.recovery_score is None
+            or not _is_free_for_morning_report(locked.ai_recommendation)
+        ):
+            return
+        # Sentinel stores SET-time (not eligibility) to keep the format
+        # symmetric with ``__generating__:{set_at}`` and avoid easy mix-ups
+        # in future fixes. Eligibility is derived in `_is_free_for_morning_report`.
+        locked.ai_recommendation = f"__scheduled__:{time.time():.0f}"
+        session.commit()
+
+    actor_compose_user_morning_report.send_with_options(kwargs={"user": user}, delay=MORNING_REPORT_DELAY_SEC * 1000)
+    logger.info("Morning report scheduled for user %d, date %s", user.id, dt)
 
 
 def _is_free_for_morning_report(ai_recommendation: str | None) -> bool:

@@ -351,12 +351,12 @@ def actor_compose_user_morning_report(
             select(Wellness).where(Wellness.user_id == user.id, Wellness.date == _dt).with_for_update()
         ).scalar_one_or_none()
 
-        if not _wellness_row or not _wellness_row.sleep_score:
+        if not _wellness_row or _wellness_row.sleep_score is None:
             return
 
         # Sentinel formats:
-        #   "__scheduled__:{eligible_at}" — wellness cron deferred the report
-        #     via dramatiq delay; this delayed run is the rightful owner, so
+        #   "__scheduled__:{set_at}"      — `_dispatch_morning_report_if_ready`
+        #     deferred the report via dramatiq delay; this delayed run is the rightful owner, so
         #     just fall through to claim it as __generating__.
         #   "__generating__:{set_at}"     — another actor is currently running;
         #     skip if fresh (< 10 min), else assume worker crash and retry.

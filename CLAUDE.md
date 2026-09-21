@@ -193,8 +193,10 @@ Auth: `X-Telegram-Bot-Api-Secret-Token` header (SHA256 of bot token, first 32 he
 ### Multi-Tenant Data Flow
 
 ```
-Wellness cron → actor_user_wellness (per-user) → auto-fires
-  → actor_compose_user_morning_report.send(user=UserDTO)
+WELLNESS_UPDATED webhook → actor_user_wellness (per-user) → RHR/HRV group
+  → completion callback _actor_update_recovery_score(dispatch_report=True)
+  → today + sleep_score + recovery_score + free slot → `__scheduled__` sentinel
+  → actor_compose_user_morning_report.send_with_options(delay=10 min)
   → Dramatiq actor (sync) → MCPTool (sync HTTP to /mcp)
   → MCPAuthMiddleware → User.get_by_mcp_token → set_current_user_id
   → MCP tools → get_current_user_id() → user-scoped queries
