@@ -4,9 +4,9 @@ The sentinel lives in ``Wellness.ai_recommendation`` and serializes the
 state of the per-user morning-report slot:
 
 - ``None`` / empty                      → free, anyone can claim.
-- ``"__scheduled__:{set_at}"``         → wellness cron deferred the compose
+- ``"__scheduled__:{set_at}"``         → recovery-score callback deferred the compose
                                            by ``MORNING_REPORT_DELAY_SEC``;
-                                           cron must NOT re-dispatch in this
+                                           webhooks must NOT re-dispatch in this
                                            window. Stale after 2× the delay.
 - ``"__generating__:{set_at}"``        → compose actor is currently running;
                                            skip if fresh (< delay), else
@@ -19,16 +19,36 @@ complaint surface) or fires them twice (sentry storm). Worth testing.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
+from datetime import date, timedelta
+from unittest.mock import MagicMock, patch
 
+from data.db import Wellness
+from data.db.user import UserDTO
+from data.intervals.dto import WellnessDTO
+from tasks.actors import wellness as wellness_mod
 from tasks.actors._constants import MORNING_REPORT_DELAY_SEC
 from tasks.actors.wellness import _is_free_for_morning_report
+from tasks.dto import ORMDTO
+
+_TODAY = date(2026, 9, 21)
+
+
+def _user() -> UserDTO:
+    return UserDTO(id=48, chat_id="111", username="tester", athlete_id="i001")
+
+
+def _session_returning(row) -> MagicMock:
+    session = MagicMock()
+    session.__enter__ = MagicMock(return_value=session)
+    session.__exit__ = MagicMock(return_value=False)
+    session.execute.return_value.scalar_one_or_none.return_value = row
+    return session
 
 
 class TestIsFreeForMorningReport:
-    """Pure-unit tests on the sentinel parser used by the wellness cron's
-    pre-check. Direct UPDATE wins are guarded by SELECT FOR UPDATE in the
-    actor itself — these tests cover the lock-free pre-check shape only.
+    """Pure-unit tests on the sentinel parser. Direct UPDATE wins are guarded
+    by SELECT FOR UPDATE in ``_dispatch_morning_report_if_ready`` — these
+    tests cover the parser shape only.
     """
 
     def test_none_is_free(self):
@@ -78,24 +98,8 @@ class TestIsFreeForMorningReport:
         assert _is_free_for_morning_report(sentinel) is False
 
 
-class TestActorScheduledClaim:
-    """Integration-style test for the SELECT FOR UPDATE claim inside
-    ``actor_user_wellness``: a concurrent second invocation must see the
-    sentinel and skip re-dispatching the compose."""
-
-    def test_second_invocation_sees_scheduled_sentinel_and_skips_dispatch(self):
-        """First invocation writes `__scheduled__:t`; second invocation's
-        post-lock re-check sees it and returns without enqueueing a second
-        delayed message. We mock both the DB row and the delayed send so
-        the test stays unit-fast — the lock semantics live in `with_for_update`
-        which is integration-tested by Postgres itself."""
-        # Simulate a freshly-set sentinel (well within the 20-min grace).
-        recent_sentinel = f"__scheduled__:{time.time():.0f}"
-
-        # _is_free_for_morning_report is the only gate the second invocation
-        # consults inside the lock — if it returns False, the function `return`s
-        # before calling `send_with_options`. Verify that contract directly.
-        assert _is_free_for_morning_report(recent_sentinel) is False
+class TestScheduledSentinelFormat:
+    """Regression guard on what ``_dispatch_morning_report_if_ready`` writes."""
 
     def test_scheduled_format_uses_set_at_not_eligibility(self):
         """Regression guard: the on-disk format must be SET-time, not
@@ -108,13 +112,129 @@ class TestActorScheduledClaim:
         # this test fails loudly, prompting them to also update the parser.
         import inspect
 
-        from tasks.actors import wellness as wellness_mod
-
-        src = inspect.getsource(wellness_mod.actor_user_wellness.fn)
+        src = inspect.getsource(wellness_mod._dispatch_morning_report_if_ready)
         assert "__scheduled__:{time.time():.0f}" in src, (
-            "actor_user_wellness no longer serializes `__scheduled__` as SET-time; "
+            "_dispatch_morning_report_if_ready no longer serializes `__scheduled__` as SET-time; "
             "update `_is_free_for_morning_report` accordingly (and this test)."
         )
+
+
+class TestDispatchAfterRecoveryScore:
+    """The dispatch gate needs ``recovery_score``, which is written by the
+    ``_actor_update_recovery_score`` completion callback — *after*
+    ``actor_user_wellness`` returns. Gating inside ``actor_user_wellness``
+    read a pre-callback row, so the day's first wellness webhook never fired
+    the report and athletes with sparse webhooks got it in the evening.
+    """
+
+    @staticmethod
+    def _row(**fields) -> MagicMock:
+        return MagicMock(spec=Wellness, **fields)
+
+    def _dispatch(self, row, dt: date = _TODAY) -> tuple[MagicMock, MagicMock]:
+        session = _session_returning(row)
+        with (
+            patch.object(wellness_mod, "local_today", return_value=_TODAY),
+            patch.object(wellness_mod, "get_sync_session", return_value=session),
+            patch("tasks.actors.reports.actor_compose_user_morning_report.send_with_options") as send,
+        ):
+            wellness_mod._dispatch_morning_report_if_ready(_user(), dt)
+        return session, send
+
+    def test_ready_row_claims_slot_and_schedules_delayed_compose(self):
+        row = self._row(sleep_score=68.0, recovery_score=57.0, ai_recommendation=None)
+        session, send = self._dispatch(row)
+
+        assert row.ai_recommendation.startswith("__scheduled__:")
+        session.commit.assert_called_once()
+        send.assert_called_once_with(kwargs={"user": _user()}, delay=MORNING_REPORT_DELAY_SEC * 1000)
+
+    def test_skips_without_recovery_score(self):
+        row = self._row(sleep_score=68.0, recovery_score=None, ai_recommendation=None)
+        session, send = self._dispatch(row)
+
+        assert row.ai_recommendation is None
+        session.commit.assert_not_called()
+        send.assert_not_called()
+
+    def test_skips_without_sleep_score(self):
+        row = self._row(sleep_score=None, recovery_score=57.0, ai_recommendation=None)
+        _, send = self._dispatch(row)
+        send.assert_not_called()
+
+    def test_skips_when_slot_already_taken(self):
+        row = self._row(sleep_score=68.0, recovery_score=57.0, ai_recommendation="Real report text.")
+        session, send = self._dispatch(row)
+
+        assert row.ai_recommendation == "Real report text."
+        session.commit.assert_not_called()
+        send.assert_not_called()
+
+    def test_skips_when_compose_already_scheduled(self):
+        """Second webhook inside the 10-min delay must not enqueue a second compose."""
+        sentinel = f"__scheduled__:{time.time():.0f}"
+        row = self._row(sleep_score=68.0, recovery_score=57.0, ai_recommendation=sentinel)
+        session, send = self._dispatch(row)
+
+        assert row.ai_recommendation == sentinel
+        session.commit.assert_not_called()
+        send.assert_not_called()
+
+    def test_skips_other_dates_without_touching_db(self):
+        row = self._row(sleep_score=68.0, recovery_score=57.0, ai_recommendation=None)
+        session, send = self._dispatch(row, dt=_TODAY - timedelta(days=1))
+
+        session.execute.assert_not_called()
+        send.assert_not_called()
+
+    def _run_recovery_actor(self, *, hrv_row=True, **kwargs) -> MagicMock:
+        recovery = MagicMock(score=57.0, category="moderate", recommendation="zone1_long")
+        with (
+            patch.object(wellness_mod, "get_sync_session", return_value=_session_returning(None)),
+            patch.object(wellness_mod.Wellness, "get", return_value=MagicMock(sleep_score=68.0)),
+            patch.object(wellness_mod.HrvAnalysis, "get", return_value=MagicMock() if hrv_row else None),
+            patch.object(wellness_mod.RhrAnalysis, "get", return_value=MagicMock()),
+            patch.object(wellness_mod, "combined_recovery_score", return_value=recovery),
+            patch.object(wellness_mod, "_dispatch_morning_report_if_ready") as dispatch,
+        ):
+            wellness_mod._actor_update_recovery_score(user=_user(), dt=_TODAY, **kwargs)
+        return dispatch
+
+    def test_recovery_actor_dispatches_after_score_is_written(self):
+        dispatch = self._run_recovery_actor(dispatch_report=True)
+        dispatch.assert_called_once_with(_user(), _TODAY)
+
+    def test_recovery_actor_default_does_not_dispatch(self):
+        """Bootstrap backfill calls the actor inline per historical day —
+        it must not start scheduling reports."""
+        dispatch = self._run_recovery_actor()
+        dispatch.assert_not_called()
+
+    def test_recovery_actor_without_hrv_baseline_does_not_dispatch(self):
+        """<14 days of HRV → no analysis row → no score → nothing to report on."""
+        dispatch = self._run_recovery_actor(hrv_row=False, dispatch_report=True)
+        dispatch.assert_not_called()
+
+    def test_wellness_actor_delegates_dispatch_to_completion_callback(self):
+        """The actor must hand the dispatch to the callback, never decide inline
+        — it returns before ``recovery_score`` exists."""
+        row = self._row(sleep_score=68.0, recovery_score=57.0, ai_recommendation=None)
+        dt_str = _TODAY.isoformat()
+        with (
+            patch.object(wellness_mod, "is_user_dormant", return_value=False),
+            patch.object(wellness_mod, "local_today", return_value=_TODAY),
+            patch.object(wellness_mod.Wellness, "save", return_value=ORMDTO(is_changed=True, row=row)),
+            patch.object(wellness_mod.AthleteSettings, "is_stale", return_value=False),
+            patch.object(wellness_mod.actor_snapshot_endurance_scores, "send"),
+            patch.object(wellness_mod, "group") as mock_group,
+            patch("tasks.actors.reports.actor_compose_user_morning_report.send_with_options") as send,
+        ):
+            wellness_mod.actor_user_wellness(_user(), dt=dt_str, wellness=WellnessDTO(id=dt_str))
+
+        callback = mock_group.return_value.add_completion_callback.call_args.args[0]
+        assert callback.actor_name == "_actor_update_recovery_score"
+        assert callback.kwargs["dispatch_report"] is True
+        send.assert_not_called()
 
 
 class TestComposeActorClaimsScheduledSlot:
