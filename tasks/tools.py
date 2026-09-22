@@ -769,8 +769,8 @@ class MCPTool:
             max_iterations = 10
             for _ in range(max_iterations):
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=4096,
+                    model="claude-sonnet-5",
+                    max_tokens=8192,
                     system=system,
                     messages=messages,
                     tools=MORNING_TOOLS,
@@ -809,7 +809,7 @@ class MCPTool:
     # str literal would be safe today but a future ``: str = ...`` annotation
     # would silently turn it into an instance field per-call (consistent with
     # the ``_TG_400_PERMANENT_SUBSTRINGS`` precedent above).
-    WEEKLY_MODEL: ClassVar[str] = "claude-sonnet-4-6"
+    WEEKLY_MODEL: ClassVar[str] = "claude-sonnet-5"
 
     # Tools allowed in weekly report (no workout creation, no admin).
     # Some entries (get_activities, get_hrv_analysis, get_recovery, get_rhr_analysis,
@@ -886,7 +886,7 @@ class MCPTool:
             for _ in range(max_iterations):
                 response = client.messages.create(
                     model=self.WEEKLY_MODEL,
-                    max_tokens=4096,
+                    max_tokens=8192,
                     system=system,
                     messages=messages,
                     tools=tools,

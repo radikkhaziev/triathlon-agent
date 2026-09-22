@@ -8,10 +8,15 @@ Covers the pure helpers used by actor_rename_activity:
 - _render_comparison_markers, _generate_signature_prompt
 """
 
+from datetime import date
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
+from data.db.user import UserDTO
+from tasks.actors import activities as act
 from tasks.actors.activities import (
     _already_signed,
     _compose_description,
@@ -234,3 +239,77 @@ class TestGenerateSignaturePrompt:
     def test_fallback_instruction_when_no_comparison(self):
         prompt = _generate_signature_prompt(_activity(), _wellness(), None)
         assert "Сравнения с нормой нет" in prompt
+
+
+# ---------------------------------------------------------------------------
+# actor_rename_activity — Claude path (Sonnet 5 response shape)
+# ---------------------------------------------------------------------------
+
+
+class TestActorRenameActivityClaudePath:
+    """Sonnet 5 may prepend a ``thinking`` block; the actor must read the first
+    ``text`` block and fall back to the template when no text block exists."""
+
+    _AI_JSON = '{"title": "Утренний темп", "description": "Ровный бег в Z2."}'
+
+    @staticmethod
+    def _run(monkeypatch, content: list) -> tuple[MagicMock, MagicMock]:
+        """Run the actor with every integration mocked. Returns (create_mock, intervals_client)."""
+        monkeypatch.setattr(act.settings, "STRAVA_SIGNATURE_ENABLED", True)
+        monkeypatch.setattr(act.settings, "ANTHROPIC_API_KEY", SecretStr("sk-ant-test"))
+
+        activity = SimpleNamespace(
+            id="a001",
+            type="Run",
+            moving_time=3600,
+            average_hr=140,
+            icu_training_load=80.0,
+            start_date_local=date(2026, 4, 1),
+        )
+        session = MagicMock()
+        session.get.return_value = activity
+        session.execute.return_value.scalar_one_or_none.return_value = None  # no detail, no wellness
+        session_cm = MagicMock()
+        session_cm.__enter__.return_value = session
+
+        intervals = MagicMock()
+        intervals.__enter__.return_value = intervals
+        intervals.get_activity_detail.return_value = {"name": "Morning Run", "description": ""}
+
+        create = MagicMock(return_value=SimpleNamespace(content=content))
+        fake_anthropic = MagicMock()
+        fake_anthropic.Anthropic.return_value.messages.create = create
+
+        with (
+            patch("tasks.actors.activities.get_sync_session", return_value=session_cm),
+            patch("tasks.actors.activities.IntervalsSyncClient.for_user", return_value=intervals),
+            patch("tasks.actors.activities.anthropic", fake_anthropic),
+        ):
+            act.actor_rename_activity(UserDTO(id=1, chat_id="111", username="tester", athlete_id="i001"), "a001")
+        return create, intervals
+
+    def test_text_after_thinking_block_is_used(self, monkeypatch):
+        content = [
+            SimpleNamespace(type="thinking", thinking=""),
+            SimpleNamespace(type="text", text=self._AI_JSON),
+        ]
+        create, intervals = self._run(monkeypatch, content)
+
+        intervals.update_activity.assert_called_once()
+        _, payload = intervals.update_activity.call_args.args
+        assert "Утренний темп" in payload["name"]
+        assert "Ровный бег в Z2." in payload["description"]
+
+        kwargs = create.call_args.kwargs
+        assert kwargs["model"] == "claude-sonnet-5"
+        assert kwargs["thinking"] == {"type": "disabled"}
+        assert "temperature" not in kwargs
+
+    def test_no_text_block_falls_back_to_template(self, monkeypatch):
+        content = [SimpleNamespace(type="thinking", thinking="")]
+        _, intervals = self._run(monkeypatch, content)
+
+        intervals.update_activity.assert_called_once()
+        _, payload = intervals.update_activity.call_args.args
+        assert "Утренний темп" not in payload["name"]
+        assert payload["name"].startswith(act._sport_emoji("Run"))

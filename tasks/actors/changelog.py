@@ -28,9 +28,8 @@ logger = logging.getLogger(__name__)
 GITHUB_REST_BASE = "https://api.github.com"
 GITHUB_GRAPHQL = "https://api.github.com/graphql"
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-sonnet-5"
 CLAUDE_MAX_TOKENS = 800
-CLAUDE_TEMPERATURE = 0.3
 
 # Sentinel returned by Claude when every PR in the input is internal.
 NO_USER_FACING_CHANGES = "NO_USER_FACING_CHANGES"
@@ -251,10 +250,10 @@ def call_claude(prompt: str) -> str:
     resp = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=CLAUDE_MAX_TOKENS,
-        temperature=CLAUDE_TEMPERATURE,
+        thinking={"type": "disabled"},
         messages=[{"role": "user", "content": prompt}],
     )
-    return resp.content[0].text.strip()
+    return next(b.text for b in resp.content if b.type == "text").strip()
 
 
 # --------------------------------------------------------------------------- #

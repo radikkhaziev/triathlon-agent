@@ -283,17 +283,25 @@ class TestForceRegenAndRateLimit:
             model_version="v-original",
             payload={**PAYLOAD, "regen_count_today": 0, "marker": "before-regen"},
         )
+        fake_anthropic = _stub_anthropic(_VALID_PLAN_INPUT)
 
         with (
             patch("data.race_plan_service.AthleteSettings.get_all", AsyncMock(return_value=[])),
             patch("data.race_plan_service.FitnessProjection.get_projection", AsyncMock(return_value=[])),
-            patch("anthropic.AsyncAnthropic", _stub_anthropic(_VALID_PLAN_INPUT)),
+            patch("anthropic.AsyncAnthropic", fake_anthropic),
             patch("data.race_plan_service.settings") as fake_settings,
         ):
             fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
             out = await build_race_plan(user_id=1, goal_id=goal_id, force_regen=True)
 
         assert "error" not in out
+        # Request shape (Sonnet 5 migration): model, doubled budget, explicit
+        # thinking-off next to the forced tool_choice.
+        kwargs = fake_anthropic.return_value.messages.create.call_args.kwargs
+        assert kwargs["model"] == "claude-sonnet-5"
+        assert kwargs["max_tokens"] == 4096
+        assert kwargs["thinking"] == {"type": "disabled"}
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "submit_race_plan"}
         # Same id → in-place UPDATE, not DELETE+INSERT.
         assert out["id"] == original.id
         # Counter incremented.

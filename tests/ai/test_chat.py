@@ -24,7 +24,7 @@ class TestClaudeAgentChat:
         from bot.agent import ClaudeAgent
 
         agent = ClaudeAgent.__new__(ClaudeAgent)
-        agent.model = "claude-sonnet-4-6"
+        agent.model = "claude-sonnet-5"
         agent.client = MagicMock()
 
         text_response = _make_text_response("Z2 — это аэробная зона, 72-82% от LTHR.")
@@ -41,12 +41,12 @@ class TestClaudeAgentChat:
         assert agent.client.messages.create.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_chat_uses_max_tokens_2048(self):
-        """Chat uses 2048 max_tokens, not 4096."""
+    async def test_chat_request_shape(self):
+        """Real ``__init__`` (not ``__new__``): the default model reaches ``messages.create``,
+        and chat uses 4096 max_tokens, not the 8192 tool-loop default."""
         from bot.agent import ClaudeAgent
 
-        agent = ClaudeAgent.__new__(ClaudeAgent)
-        agent.model = "claude-sonnet-4-6"
+        agent = ClaudeAgent()
         agent.client = MagicMock()
 
         text_response = _make_text_response("Ответ")
@@ -60,7 +60,8 @@ class TestClaudeAgentChat:
             await agent.chat("Вопрос")
 
         call_kwargs = agent.client.messages.create.call_args.kwargs
-        assert call_kwargs["max_tokens"] == 2048
+        assert call_kwargs["model"] == "claude-sonnet-5"
+        assert call_kwargs["max_tokens"] == 4096
 
     @pytest.mark.asyncio
     async def test_chat_empty_response(self):
@@ -68,7 +69,7 @@ class TestClaudeAgentChat:
         from bot.agent import ClaudeAgent
 
         agent = ClaudeAgent.__new__(ClaudeAgent)
-        agent.model = "claude-sonnet-4-6"
+        agent.model = "claude-sonnet-5"
         agent.client = MagicMock()
 
         # Response with no text blocks
@@ -225,7 +226,7 @@ class TestClaudeAgentMCPWiring:
         from bot.agent import ClaudeAgent
 
         agent = ClaudeAgent.__new__(ClaudeAgent)
-        agent.model = "claude-sonnet-4-6"
+        agent.model = "claude-sonnet-5"
         agent.client = MagicMock()
 
         text_resp = _make_text_response("Ответ")
@@ -246,7 +247,7 @@ class TestClaudeAgentMCPWiring:
         from bot.agent import ClaudeAgent
 
         agent = ClaudeAgent.__new__(ClaudeAgent)
-        agent.model = "claude-sonnet-4-6"
+        agent.model = "claude-sonnet-5"
         agent.client = MagicMock()
 
         text_resp = _make_text_response("Ответ")
@@ -266,7 +267,7 @@ class TestClaudeAgentMCPWiring:
         from bot.agent import ClaudeAgent
 
         agent = ClaudeAgent.__new__(ClaudeAgent)
-        agent.model = "claude-sonnet-4-6"
+        agent.model = "claude-sonnet-5"
         agent.client = MagicMock()
 
         text_resp = _make_text_response("Вижу скриншот")

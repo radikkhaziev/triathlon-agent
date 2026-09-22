@@ -406,6 +406,32 @@ class TestMCPToolGenerateMorningReport:
             result = tool.generate_morning_report_via_mcp("2026-04-03")
 
         assert result == "Morning report: recovery is good."
+        # Request shape (Sonnet 5 migration): migrated model, doubled budget,
+        # adaptive thinking left on for the tool loop (no explicit ``thinking``).
+        kwargs = mock_client.messages.create.call_args.kwargs
+        assert kwargs["model"] == "claude-sonnet-5"
+        assert kwargs["max_tokens"] == 8192
+        assert "thinking" not in kwargs
+
+    def test_weekly_report_request_shape(self):
+        """Weekly loop sends ``WEEKLY_MODEL`` (the migrated model) and the doubled budget."""
+        from tasks.tools import MCPTool
+
+        tool = self._make_tool()
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = self._make_text_response("Weekly report.")
+
+        with (
+            patch("tasks.tools.anthropic.Anthropic", return_value=mock_client),
+            patch.object(MCPTool, "_list_mcp_tools", return_value=[]),
+        ):
+            result = tool.generate_weekly_report_via_mcp()
+
+        assert result == "Weekly report."
+        kwargs = mock_client.messages.create.call_args.kwargs
+        assert kwargs["model"] == MCPTool.WEEKLY_MODEL == "claude-sonnet-5"
+        assert kwargs["max_tokens"] == 8192
+        assert "thinking" not in kwargs
 
     def test_returns_none_on_empty_text(self):
         """Empty text blocks → returns None."""

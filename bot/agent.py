@@ -53,7 +53,7 @@ class ClaudeAgent:
             api_key=settings.ANTHROPIC_API_KEY.get_secret_value(),
             max_retries=5,
         )
-        self.model = "claude-sonnet-4-6"
+        self.model = "claude-sonnet-5"
 
     async def _run_tool_use_loop(
         self,
@@ -61,7 +61,7 @@ class ClaudeAgent:
         system: str | list[dict],
         messages: list[dict],
         tools: list[dict],
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         max_iterations: int = 10,
         tool_calls_filter: set[str] | None = None,
     ) -> tuple[str, dict, list[dict]]:
@@ -223,7 +223,7 @@ class ClaudeAgent:
             system,
             messages,
             tools,
-            max_tokens=2048,
+            max_tokens=4096,
             tool_calls_filter=tool_calls_filter,
         )
 

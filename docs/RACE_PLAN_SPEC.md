@@ -61,7 +61,7 @@ Schema: `migrations/versions/c3c3d4e5f6a7_add_race_plans.py`. Ключевые �
 - **`goal_id` nullable**, `ondelete='SET NULL'` + inline race-block в `payload.race` (§11.3) — plan остаётся читаемым после удаления goal'а.
 - **Partial unique index** `(goal_id, UTC-day) WHERE goal_id IS NOT NULL` — идемпотентность same-day generation.
 - **`payload` JSONB** — schema-flexible, индексируем по конкретным полям позже без миграции; enforcement в коде (validator + JSON schema).
-- **`model_version`** провенанс. Bump при изменении промпта / JSON schema / Claude модели (текущая `claude-sonnet-4-6`).
+- **`model_version`** провенанс. Bump при изменении промпта / JSON schema / Claude модели (текущая `claude-sonnet-5`).
 
 ### Payload shape
 
@@ -108,7 +108,7 @@ Hard bounds: `carbs_g_per_hour 30-120`, `legs[].notes ≤200 chars` (~25 сло�
 3. **Refusal gates** (§5).
 4. **Build context** — `sport_role` from `_resolve_coach_role(goal.sport_type)`, `response_language` from `user.language`, `event_name[:100]` (prompt-injection clamp), `_summarize_activities` (per-sport aggregates + 8 long efforts), `_summarize_zones`, `race_day_projection` from `FitnessProjection.get_projection`, latest `Wellness` as today-anchor.
    - **PR4 enrichment (planned)**: personal race history (`Race.get_recent_for_user(sport_type=goal.sport_type, since=today-18m, limit=5)`), long-term user facts (`list_facts` whitelist topics: `injury, gi, nutrition, equipment, pacing, heat_response, race_history, recovery_pattern`), wellness 10-14d trend, training calibration (race-rehearsal flag, FTP trajectory).
-5. **Claude call** — `claude-sonnet-4-6`, forced `tool_use=submit_race_plan`, `max_tokens=2048`. `ApiUsageDaily.increment` после ответа (включая validator-reject — токены уже потрачены).
+5. **Claude call** — `claude-sonnet-5`, forced `tool_use=submit_race_plan`, `max_tokens=4096`, `thinking={"type": "disabled"}` (forced tool_choice и так не запускает adaptive thinking — проверено live, `thinking_tokens=0`; явный флаг фиксирует форму запроса). `ApiUsageDaily.increment` после ответа (включая validator-reject — токены уже потрачены).
 6. **Validate** (§6) — errors → generic error → юзер, детали → логи. **Не персистим.**
 7. **Tag `preliminary = days_to_race > 14`.**
 8. **Persist** (skip if dry_run) — INSERT (first-of-day) OR UPDATE in-place (force_regen). `IntegrityError` на INSERT → fallback на `get_today_for_goal`.
@@ -233,11 +233,11 @@ ROI-ranked hard structural checks:
 
 ## 12. Schema versioning policy
 
-Bump `RACE_PLAN_MODEL_VERSION` (`data/race_plan_service.py:52`) при:
+Bump `RACE_PLAN_MODEL_VERSION` (`data/race_plan_service.py:54`, сейчас `v2-2026-09-22`) при:
 
 - Изменении JSON schema (`_RACE_PLAN_SCHEMA`).
 - Изменении system prompt (`_RACE_PLAN_SYSTEM_PROMPT_TEMPLATE`).
-- Смене Claude модели (текущая `claude-sonnet-4-6`).
+- Смене Claude модели (текущая `claude-sonnet-5`).
 
 Старые rows остаются read-only с прежним `model_version`. При breaking change — миграционный actor `regenerate plans WHERE model_version != latest AND goal.event_date >= today` (Phase 3 TODO).
 
@@ -317,3 +317,4 @@ Resolved findings из 6 review rounds (architect ×2 + code-review ×4) on PR1-
 | 2026-05-09 | — | Service extracted в `data/race_plan_service.py` | MCP wrapper now thin; router shares logic |
 | 2026-05-09 | §10 | Inherit-from-past UI selector, not name-matching | Explicit user choice; no fragile fuzzy match |
 | 2026-05-09 | §12 | Модель остаётся `claude-sonnet-4-6` | Рассматривали opus (quality > tokens для once-per-race call), но в код не флипнули — sonnet даёт достаточное качество |
+| 2026-09-22 | §12 | Миграция на `claude-sonnet-5`, `RACE_PLAN_MODEL_VERSION` → `v2-2026-09-22` | Sonnet 4.6 помечен legacy; Sonnet 5 дешевле ($2/$10) и сильнее; bump версии по правилу §11 — планы с разных моделей различимы по `model_version`; `max_tokens` 2048→4096 под новый токенизатор (~+30%) |
