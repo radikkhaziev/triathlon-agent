@@ -17,7 +17,7 @@ Personal AI agent for a triathlete: syncs wellness/HRV/training from Intervals.i
 | Language          | Python 3.12+                                                          |
 | Package Manager   | Poetry                                                                |
 | Data Source       | Intervals.icu API                                                     |
-| AI Analysis       | Anthropic Claude API (`claude-sonnet-4-6`)                            |
+| AI Analysis       | Anthropic Claude API (`claude-sonnet-5`)                              |
 | Telegram Bot      | `python-telegram-bot` v21+                                            |
 | Scheduler         | `APScheduler`                                                         |
 | Database          | PostgreSQL 16 + `SQLAlchemy` (async) + Alembic                        |
@@ -123,7 +123,7 @@ All AI tool calls go through MCP server via HTTP — no direct DB access from AI
 ```
 Telegram text → ClaudeAgent (bot/agent.py)
   → MCPClient.list_tools() → HTTP /mcp tools/list (Streamable HTTP, SSE)
-  → Claude API (claude-sonnet-4-6, tools from MCP)
+  → Claude API (claude-sonnet-5, tools from MCP)
   → tool_use? → MCPClient.call_tool() → HTTP /mcp tools/call
   → final text → Telegram
 ```

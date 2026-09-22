@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 
 # Tag the model + prompt revision that produced a payload so we can reason
 # about plan provenance later (and decide when to regenerate stale rows).
-# Bump on prompt or schema changes.
-RACE_PLAN_MODEL_VERSION = "v1-2026-05-09"
+# Bump on prompt, schema or Claude model changes (spec §model_version).
+RACE_PLAN_MODEL_VERSION = "v2-2026-09-22"
 
 
 # Whitelist of user_facts topics that meaningfully shape a race plan. Spec §4
@@ -923,8 +923,12 @@ async def build_race_plan(
     )
     try:
         resp = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
+            model="claude-sonnet-5",
+            max_tokens=4096,
+            # Forced tool_choice below never triggers adaptive thinking on Sonnet 5
+            # (verified live, thinking_tokens=0); make that explicit so the
+            # request shape stays valid if the implicit default changes.
+            thinking={"type": "disabled"},
             system=system_prompt,
             tools=[
                 {

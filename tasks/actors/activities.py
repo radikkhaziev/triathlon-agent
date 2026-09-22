@@ -1078,11 +1078,13 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
         prompt = _generate_signature_prompt(activity, wellness, comparison)
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY.get_secret_value())
         resp = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-5",
             max_tokens=220,
+            thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}],
         )
-        parsed = _parse_signature_json(resp.content[0].text)
+        text = next(b.text for b in resp.content if b.type == "text")
+        parsed = _parse_signature_json(text)
         descriptor = (parsed.get("title") or descriptor)[:40]
         ai_desc = parsed.get("description")
         if ai_desc:

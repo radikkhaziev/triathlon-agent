@@ -38,7 +38,7 @@ The agent knows your target event (date, distance, required fitness). It tracks 
 
 ## The AI Layer
 
-**Claude** (`claude-sonnet-4-6`) is the sole AI engine. All tool calls go through MCP -- the bot never accesses the database directly. Morning reports are generated via a tool-use loop: Claude requests data (recovery, HRV, workouts), the MCP server returns user-scoped results, Claude produces a concise assessment in Russian. Free-form chat works the same way -- you ask anything, Claude queries relevant tools, responds with context.
+**Claude** (`claude-sonnet-5`) is the sole AI engine. All tool calls go through MCP -- the bot never accesses the database directly. Morning reports are generated via a tool-use loop: Claude requests data (recovery, HRV, workouts), the MCP server returns user-scoped results, Claude produces a concise assessment in Russian. Free-form chat works the same way -- you ask anything, Claude queries relevant tools, responds with context.
 
 Each user's chat goes through MCP with their personal token, so tool calls return only their data. The Anthropic API key is shared (one per service), but data access is per-user.
 
