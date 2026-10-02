@@ -23,7 +23,7 @@ import anthropic
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from config import settings
+from config import CLAUDE_MODEL, settings
 from data.db import (
     Activity,
     AthleteGoal,
@@ -911,7 +911,7 @@ async def build_race_plan(
         f"```json\n{json.dumps(context, default=str, indent=2)}\n```"
     )
 
-    # ---------- 5. Call Claude with forced tool_use ----------
+    # ---------- 5. Call Claude (tool_choice=auto; system prompt rule 10 demands the tool call) ----------
     api_key = settings.ANTHROPIC_API_KEY.get_secret_value() if settings.ANTHROPIC_API_KEY else ""
     if not api_key:
         return {"error": "ANTHROPIC_API_KEY is not configured — cannot generate plan."}
@@ -923,12 +923,10 @@ async def build_race_plan(
     )
     try:
         resp = await client.messages.create(
-            model="claude-sonnet-5",
+            model=CLAUDE_MODEL,
             max_tokens=4096,
-            # Forced tool_choice below never triggers adaptive thinking on Sonnet 5
-            # (verified live, thinking_tokens=0); make that explicit so the
-            # request shape stays valid if the implicit default changes.
-            thinking={"type": "disabled"},
+            # Sonnet 5.5 rejects `disabled`; `between_tools` is its no-thinking mode.
+            thinking={"type": "between_tools"},
             system=system_prompt,
             tools=[
                 {
@@ -937,7 +935,6 @@ async def build_race_plan(
                     "input_schema": _RACE_PLAN_SCHEMA,
                 }
             ],
-            tool_choice={"type": "tool", "name": "submit_race_plan"},
             messages=[{"role": "user", "content": user_message}],
         )
     except Exception:

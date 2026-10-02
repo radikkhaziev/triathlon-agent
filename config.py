@@ -112,4 +112,9 @@ class Settings(BaseSettings):
     FIELD_ENCRYPTION_KEY: SecretStr = SecretStr("")  # Fernet key for encrypting per-user secrets in DB
 
 
+# Single Claude model for every API call site (chat, reports, signatures,
+# race plans, changelog). Sonnet 5.5 rejects `thinking: disabled` (use
+# `between_tools`) and forced `tool_choice` — keep call sites in line.
+CLAUDE_MODEL = "claude-sonnet-5-5"
+
 settings = Settings()

@@ -15,7 +15,7 @@ import anthropic
 import httpx
 
 from bot.prompts import get_system_prompt_v2
-from config import settings
+from config import CLAUDE_MODEL, settings
 from data.db import User
 from tasks.dto import DateDTO
 
@@ -769,7 +769,7 @@ class MCPTool:
             max_iterations = 10
             for _ in range(max_iterations):
                 response = client.messages.create(
-                    model="claude-sonnet-5",
+                    model=CLAUDE_MODEL,
                     max_tokens=8192,
                     system=system,
                     messages=messages,
@@ -809,7 +809,7 @@ class MCPTool:
     # str literal would be safe today but a future ``: str = ...`` annotation
     # would silently turn it into an instance field per-call (consistent with
     # the ``_TG_400_PERMANENT_SUBSTRINGS`` precedent above).
-    WEEKLY_MODEL: ClassVar[str] = "claude-sonnet-5"
+    WEEKLY_MODEL: ClassVar[str] = CLAUDE_MODEL
 
     # Tools allowed in weekly report (no workout creation, no admin).
     # Some entries (get_activities, get_hrv_analysis, get_recovery, get_rhr_analysis,

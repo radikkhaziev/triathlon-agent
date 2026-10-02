@@ -295,13 +295,13 @@ class TestForceRegenAndRateLimit:
             out = await build_race_plan(user_id=1, goal_id=goal_id, force_regen=True)
 
         assert "error" not in out
-        # Request shape (Sonnet 5 migration): model, doubled budget, explicit
-        # thinking-off next to the forced tool_choice.
+        # Request shape (Sonnet 5.5): `disabled` thinking and forced tool_choice
+        # both 400 there — `between_tools` + default auto tool_choice instead.
         kwargs = fake_anthropic.return_value.messages.create.call_args.kwargs
-        assert kwargs["model"] == "claude-sonnet-5"
+        assert kwargs["model"] == "claude-sonnet-5-5"
         assert kwargs["max_tokens"] == 4096
-        assert kwargs["thinking"] == {"type": "disabled"}
-        assert kwargs["tool_choice"] == {"type": "tool", "name": "submit_race_plan"}
+        assert kwargs["thinking"] == {"type": "between_tools"}
+        assert "tool_choice" not in kwargs
         # Same id → in-place UPDATE, not DELETE+INSERT.
         assert out["id"] == original.id
         # Counter incremented.

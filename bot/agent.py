@@ -15,7 +15,7 @@ import sentry_sdk
 from bot.prompts import get_static_system_prompt, render_athlete_block
 from bot.tool_filter import filter_tools, select_tool_groups
 from bot.tools import MCPClient
-from config import settings
+from config import CLAUDE_MODEL, settings
 from data.db import ApiUsageDaily
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class ClaudeAgent:
             api_key=settings.ANTHROPIC_API_KEY.get_secret_value(),
             max_retries=5,
         )
-        self.model = "claude-sonnet-5"
+        self.model = CLAUDE_MODEL
 
     async def _run_tool_use_loop(
         self,
