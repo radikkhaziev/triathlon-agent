@@ -12,6 +12,7 @@ Covers:
   fallback.
 """
 
+import re
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -545,6 +546,11 @@ def _valid_plan_input() -> dict:
     }
 
 
+def _mojibake(text: str) -> str:
+    """UTF-8 decoded as Latin-1 with the C1 controls dropped — the shape stored in prod plan id 27."""
+    return re.sub(r"[\u0080-\u009f]", "", text.encode().decode("latin-1"))
+
+
 def _anthropic_response(blocks: list[Any], stop_reason: str = "tool_use"):
     """Build a fake Anthropic Messages response with .content / .stop_reason."""
     return SimpleNamespace(content=blocks, stop_reason=stop_reason)
@@ -706,14 +712,22 @@ class TestGenerateRacePlanDryRun:
         anthropic_patch.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stop_reason, expected_calls", [("end_turn", 2), ("refusal", 1)])
-    async def test_no_tool_use_block_returned_returns_error(self, stop_reason, expected_calls):
-        """If Claude returns only text and skips submit_race_plan, surface a clean error —
-        after one retry for a prose reply, without a retry for a refusal."""
+    @pytest.mark.parametrize(
+        "plan_input, stop_reason, expected_calls",
+        [
+            (None, "end_turn", 2),
+            (None, "refusal", 1),
+            # Cut off mid-call: the partial tool input must not be read, and the same request isn't re-sent.
+            ({"warmup": "10 min easy", "legs": [{"leg": "swim", "pacing": {}}]}, "max_tokens", 1),
+        ],
+    )
+    async def test_no_usable_plan_returns_error(self, plan_input, stop_reason, expected_calls):
+        """No submit_race_plan call (prose / refusal) or a truncated one → clean error;
+        only the prose reply is worth a retry."""
         from mcp_server.tools.races import generate_race_plan
 
         goal = _race_goal(days_to_race=30)
-        anthropic_patch = _patch_anthropic(plan_input=None, stop_reason=stop_reason)
+        anthropic_patch = _patch_anthropic(plan_input=plan_input, stop_reason=stop_reason)
         save_mock = AsyncMock()
 
         get_session_patch, _ = _patch_session_for_plan()
@@ -738,12 +752,18 @@ class TestGenerateRacePlanDryRun:
         assert anthropic_patch.return_value.messages.create.await_count == expected_calls
 
     @pytest.mark.asyncio
-    async def test_prose_reply_retried_once_then_succeeds(self):
-        """tool_choice is not forced (400 on Sonnet 5.5) — a prose reply gets one retry."""
+    @pytest.mark.parametrize(
+        "first_plan_input, first_stop_reason",
+        [
+            (None, "end_turn"),  # prose instead of the tool call (tool_choice can't be forced on Sonnet 5.5)
+            ({**_valid_plan_input(), "warmup": _mojibake("Утром 10 минут лёгкого бега и ускорения")}, "tool_use"),
+        ],
+    )
+    async def test_unusable_first_reply_retried_once_then_succeeds(self, first_plan_input, first_stop_reason):
         from mcp_server.tools.races import generate_race_plan
 
         goal = _race_goal(days_to_race=30)
-        anthropic_patch = _patch_anthropic(plan_input=None, stop_reason="end_turn")
+        anthropic_patch = _patch_anthropic(plan_input=first_plan_input, stop_reason=first_stop_reason)
         create_mock = anthropic_patch.return_value.messages.create
         create_mock.side_effect = [
             create_mock.return_value,
@@ -779,6 +799,92 @@ class TestGenerateRacePlanValidator:
 
         errors = _validate_race_plan(_valid_plan_input(), athlete_max_hr=190)
         assert errors == []
+
+    @pytest.mark.parametrize(
+        "broken, expected",
+        [
+            # prod 2026-10-02: 500 on a string in place of the array
+            ({"legs": '\n<parameter name="leg">swim'}, "legs: expected a non-empty list of objects"),
+            ({"legs": ["swim", "bike"]}, "legs: expected a non-empty list of objects"),
+            ({"legs": []}, "legs: expected a non-empty list of objects"),
+            ({"legs": None}, "legs: expected a non-empty list of objects"),
+            ({"legs": [{"leg": "run", "pacing": "easy"}]}, "legs: leg must be a string and pacing an object"),
+            ({"legs": [{"leg": 3, "pacing": {}}]}, "legs: leg must be a string and pacing an object"),
+            # Falsy stand-ins must not slip through as "absent".
+            ({"legs": [{"leg": None, "pacing": None}]}, "legs: leg must be a string and pacing an object"),
+            ({"legs": [{"leg": 0, "pacing": []}]}, "legs: leg must be a string and pacing an object"),
+            ({"legs": [{}]}, "legs: leg must be a string and pacing an object"),
+            ({"fueling": "70 g/h"}, "fueling: expected an object"),
+            ({"contingencies": []}, "contingencies: expected a non-empty list of objects"),
+            ({"contingencies": ["heat"]}, "contingencies: expected a non-empty list of objects"),
+            ({"transitions": ["T1"]}, "transitions: expected a list of objects"),
+            ({"transitions": ""}, "transitions: expected a list of objects"),
+            ({"transitions": {}}, "transitions: expected a list of objects"),
+            ({"transitions": None}, "transitions: expected a list of objects"),
+        ],
+    )
+    def test_malformed_structure_is_an_error_not_a_crash(self, broken, expected):
+        from data.race_plan_service import _validate_race_plan
+
+        # Floor set so the fueling / per-leg duration branches would run if the guards let the plan through.
+        errors = _validate_race_plan({**_valid_plan_input(), **broken}, athlete_max_hr=190, goal_time_floor_sec=7200)
+        assert errors == [expected]
+
+    def test_rejects_plan_with_missing_sections(self):
+        """A response cut off after ``legs`` must not be persisted as a hollow plan."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        del plan["fueling"], plan["contingencies"]
+        assert _validate_race_plan(plan, athlete_max_hr=190) == ["missing sections: contingencies, fueling"]
+
+    @pytest.mark.parametrize("hr, carbs, fragment", [(0, 70, "hr_ceiling_bpm 0"), (175, 0, "carbs_g_per_hour 0")])
+    def test_rejects_out_of_range_numbers(self, hr, carbs, fragment):
+        """Strict tool schemas can't carry minimum/maximum — the validator owns these bounds."""
+        from data.race_plan_service import _validate_race_plan
+
+        plan = _valid_plan_input()
+        plan["legs"][0]["hr_ceiling_bpm"] = hr
+        plan["fueling"]["carbs_g_per_hour"] = carbs
+        errors = _validate_race_plan(plan, athlete_max_hr=190)
+        assert len(errors) == 1 and fragment in errors[0]
+
+    def test_has_mojibake(self):
+        from data.race_plan_service import _has_mojibake
+
+        plan = _valid_plan_input()
+        assert not _has_mojibake(plan)
+        # One short garbled field is enough.
+        assert _has_mojibake({**plan, "headline": _mojibake("Спокойный старт, сильный финиш")})
+        # Legit non-ASCII: Cyrillic, accented Latin, and the symbols plans actually use.
+        legit = "Спокойно до 16 км — затем ≤ 4:50/км, 4×30 с, 25 °C. «Café» déjà vu, ½ геля."
+        assert not _has_mojibake({**plan, "headline": legit, "warmup": legit})
+
+    def test_schema_fits_strict_tool_subset(self):
+        """The tool is sent with ``strict: true`` — an unsupported keyword would 400 every generation."""
+        from data.race_plan_service import _RACE_PLAN_SCHEMA
+
+        allowed = {"type", "description", "properties", "required", "additionalProperties", "items", "minItems"}
+        allowed |= {"enum", "const", "anyOf", "allOf", "$ref", "$defs", "format"}
+        optional = 0
+
+        def walk(node: dict, path: str) -> None:
+            nonlocal optional
+            assert node.keys() <= allowed, f"{path}: {sorted(node.keys() - allowed)}"
+            assert node.get("minItems", 0) in (0, 1), path
+            if "properties" in node:
+                assert node.get("type") == "object" and node.get("additionalProperties") is False, path
+                optional += len(node["properties"].keys() - set(node.get("required", [])))
+            children = {f".{name}": sub for name, sub in node.get("properties", {}).items()}
+            children |= {f".$defs.{name}": sub for name, sub in node.get("$defs", {}).items()}
+            children |= {f".{kw}[{i}]": sub for kw in ("anyOf", "allOf") for i, sub in enumerate(node.get(kw, []))}
+            if "items" in node:
+                children["[]"] = node["items"]
+            for suffix, sub in children.items():
+                walk(sub, path + suffix)
+
+        walk(_RACE_PLAN_SCHEMA, "$")
+        assert optional <= 24  # API limit on optional parameters across strict tools in a request
 
     def test_rejects_inverted_pace_corridor(self):
         """For pace, low (slow) > target > cap (fast). Inverted → error."""

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -75,11 +76,15 @@ RACE_PLAN_FACT_TOPICS: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
-#  JSON schema for forced tool_use
+#  JSON schema for the submit_race_plan tool
 # ---------------------------------------------------------------------------
 
+# Sent with ``strict: true``, so it must stay inside the strict-tool subset:
+# ``additionalProperties: false`` on every object and no ``minimum`` / ``maximum`` /
+# ``maxLength`` / ``minItems > 1`` / ``maxItems`` — bounds live in descriptions.
 _RACE_PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
+    "additionalProperties": False,
     "required": ["warmup", "legs", "fueling", "contingencies"],
     "properties": {
         "warmup": {
@@ -96,6 +101,7 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
             ),
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "required": ["leg", "pacing"],
                 "properties": {
                     "leg": {
@@ -108,6 +114,7 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
                     },
                     "pacing": {
                         "type": "object",
+                        "additionalProperties": False,
                         "description": (
                             "Pacing corridor low/target/cap. Units appropriate to the leg (min/km, W, min/100m)."
                         ),
@@ -120,13 +127,10 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
                     },
                     "hr_ceiling_bpm": {
                         "type": "integer",
-                        "minimum": 80,
-                        "maximum": 220,
-                        "description": "Maximum HR for this leg in bpm. Omit for transitions.",
+                        "description": "Maximum HR for this leg in bpm (80-220). Omit for transitions.",
                     },
                     "notes": {
                         "type": "string",
-                        "maxLength": 200,
                         "description": (
                             "1-2 sentence executional cue tied to the athlete's data. "
                             "HARD CAP 200 chars (~25 words) — athlete reads this on a phone "
@@ -138,13 +142,12 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
         },
         "fueling": {
             "type": "object",
+            "additionalProperties": False,
             "required": ["carbs_g_per_hour"],
             "properties": {
                 "carbs_g_per_hour": {
                     "type": "integer",
-                    "minimum": 30,
-                    "maximum": 120,
-                    "description": "Target carb intake g/hr. Conservative band 60-90 unless gut-trained.",
+                    "description": "Target carb intake g/hr (30-120). Conservative band 60-90 unless gut-trained.",
                 },
                 "fluid_ml_per_hour": {"type": "integer"},
                 "sodium_mg_per_hour": {"type": "integer"},
@@ -159,6 +162,7 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
             "description": "Tri-only. T1/T2 checklists. Empty for single-sport races.",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "required": ["name", "checklist"],
                 "properties": {
                     "name": {"type": "string", "description": "T1 / T2"},
@@ -169,8 +173,6 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
         },
         "contingencies": {
             "type": "array",
-            "minItems": 3,
-            "maxItems": 5,
             "description": (
                 "3-5 contingency plans. Default trio (heat / cramp / off-pace) is a starting "
                 "point, not a quota — pick what's actually relevant to this race's distance, "
@@ -178,6 +180,7 @@ _RACE_PLAN_SCHEMA: dict[str, Any] = {
             ),
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "required": ["scenario", "plan"],
                 "properties": {
                     "scenario": {"type": "string", "description": "heat / cramp / off-pace / gi / mech / etc."},
@@ -484,6 +487,33 @@ def _infer_race_distance_and_floor(event_name: str | None) -> tuple[float | None
     return (None, None)
 
 
+# Lead-byte + continuation-byte pairs left when UTF-8 text is decoded as Latin-1
+# ("Ð¡Ð¿Ð¾ÐºÐ¾Ð¹Ð½Ð¾Ðµ"). Sonnet 5.5 returned a whole plan like this in prod
+# (2026-10-02). Counted per string so a single garbled field is enough; the
+# threshold keeps legit pairs like "é»" from tripping it.
+_MOJIBAKE_RE = re.compile(r"[\u00c2-\u00f4][\u0080-\u00bf]")
+_MOJIBAKE_MIN_PAIRS = 5
+
+
+def _iter_strings(node: Any) -> Iterator[str]:
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _iter_strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_strings(item)
+
+
+def _has_mojibake(plan: dict[str, Any]) -> bool:
+    return any(len(_MOJIBAKE_RE.findall(text)) >= _MOJIBAKE_MIN_PAIRS for text in _iter_strings(plan))
+
+
+def _is_list_of_dicts(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, dict) for item in value)
+
+
 def _validate_race_plan(
     plan: dict[str, Any],
     *,
@@ -505,7 +535,24 @@ def _validate_race_plan(
     """
     errors: list[str] = []
 
-    legs = plan.get("legs") or []
+    # Structural backstop: ``strict: true`` on the tool guarantees the shape, but
+    # a non-conforming input must surface as a validation error — not a 500, and
+    # not a hollow plan persisted with sections missing.
+    missing = sorted(set(_RACE_PLAN_SCHEMA["required"]) - plan.keys())
+    if missing:
+        return [f"missing sections: {', '.join(missing)}"]
+    legs = plan["legs"]
+    if not legs or not _is_list_of_dicts(legs):
+        return ["legs: expected a non-empty list of objects"]
+    if not all(isinstance(leg.get("leg"), str) and isinstance(leg.get("pacing"), dict) for leg in legs):
+        return ["legs: leg must be a string and pacing an object"]
+    if not isinstance(plan["fueling"], dict):
+        return ["fueling: expected an object"]
+    if not plan["contingencies"] or not _is_list_of_dicts(plan["contingencies"]):
+        return ["contingencies: expected a non-empty list of objects"]
+    if "transitions" in plan and not _is_list_of_dicts(plan["transitions"]):
+        return ["transitions: expected a list of objects"]
+
     for idx, leg in enumerate(legs):
         leg_name = leg.get("leg") or f"#{idx}"
 
@@ -529,9 +576,12 @@ def _validate_race_plan(
                 if not (vals[0] < vals[1] < vals[2]):
                     errors.append(f"leg {leg_name}: corridor not low<target<cap")
 
-        # HR ceiling sanity vs athlete max.
+        # HR ceiling sanity: absolute range (a strict schema can't carry
+        # minimum/maximum, and a 0 "placeholder" would render) + vs athlete max.
         hr = leg.get("hr_ceiling_bpm")
-        if isinstance(hr, int) and athlete_max_hr is not None and hr > athlete_max_hr + 5:
+        if isinstance(hr, int) and not 80 <= hr <= 220:
+            errors.append(f"leg {leg_name}: hr_ceiling_bpm {hr} outside 80-220")
+        elif isinstance(hr, int) and athlete_max_hr is not None and hr > athlete_max_hr + 5:
             errors.append(f"leg {leg_name}: hr_ceiling_bpm {hr} exceeds athlete max+5 ({athlete_max_hr + 5})")
 
     # ---------- Sum of leg distances ≈ race total ----------
@@ -546,6 +596,11 @@ def _validate_race_plan(
                     f"sum of leg distances ({total:.0f}m) deviates from race total "
                     f"({race_total_m:.0f}m) by more than {tolerance:.0f}m"
                 )
+
+    # ---------- Fueling bounds (same reason as the HR range) ----------
+    carbs = plan["fueling"].get("carbs_g_per_hour")
+    if isinstance(carbs, (int, float)) and not 30 <= carbs <= 120:
+        errors.append(f"fueling: carbs_g_per_hour {carbs} outside 30-120")
 
     # ---------- Fueling × duration sanity ----------
     if goal_time_floor_sec is not None and goal_time_floor_sec > 0:
@@ -922,7 +977,8 @@ async def build_race_plan(
         response_language=response_language,
     )
     # Sonnet 5.5 rejects forced `tool_choice`, so the tool call is only
-    # prompt-enforced — retry once if the model answers in prose instead.
+    # prompt-enforced — retry once if the model answers in prose instead, or
+    # if the plan text comes back mis-encoded (a one-off sampling glitch).
     plan_input: dict[str, Any] | None = None
     for attempt in range(2):
         try:
@@ -935,6 +991,8 @@ async def build_race_plan(
                     {
                         "name": "submit_race_plan",
                         "description": "Submit the structured race execution plan.",
+                        # tool_choice can't be forced on Sonnet 5.5; strict keeps the input schema-valid.
+                        "strict": True,
                         "input_schema": _RACE_PLAN_SCHEMA,
                     }
                 ],
@@ -959,19 +1017,27 @@ async def build_race_plan(
         except Exception:
             logger.warning("build_race_plan: failed to track token usage for user %d", user_id, exc_info=True)
 
-        for block in resp.content:
-            if getattr(block, "type", None) == "tool_use" and block.name == "submit_race_plan":
-                plan_input = dict(block.input) if block.input else None
-                break
+        # A response cut off by max_tokens isn't schema-valid even under strict — don't read it.
+        problem = "truncated"
+        if resp.stop_reason != "max_tokens":
+            problem = "no submit_race_plan call"
+            for block in resp.content:
+                if getattr(block, "type", None) == "tool_use" and block.name == "submit_race_plan":
+                    plan_input = dict(block.input) if block.input else None
+                    break
+        if plan_input and _has_mojibake(plan_input):
+            plan_input, problem = None, "mojibake"
 
         if plan_input:
             break
         logger.warning(
-            "build_race_plan: model did not call submit_race_plan, attempt=%d stop_reason=%s",
+            "build_race_plan: no usable plan (%s), attempt=%d stop_reason=%s",
+            problem,
             attempt + 1,
             resp.stop_reason,
         )
-        if resp.stop_reason == "refusal":
+        # Same request would refuse / truncate again — don't pay for it twice.
+        if resp.stop_reason in ("refusal", "max_tokens"):
             break
 
     if not plan_input:

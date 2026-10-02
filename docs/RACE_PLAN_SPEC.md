@@ -87,7 +87,7 @@ Schema: `migrations/versions/c3c3d4e5f6a7_add_race_plans.py`. Ключевые �
 }
 ```
 
-Hard bounds: `carbs_g_per_hour 30-120`, `legs[].notes ≤200 chars` (~25 слов; scannable on race-day phone), `contingencies` 3-5 items (selection через system prompt по distance/discipline/conditions).
+Bounds (strict-режим tool не поддерживает `minimum`/`maximum`/`maxLength`/`maxItems`, поэтому в schema они только в `description`; `carbs_g_per_hour` и `hr_ceiling_bpm 80-220` дополнительно проверяет validator §6, остальные — soft): `carbs_g_per_hour 30-120`, `legs[].notes ≤200 chars` (~25 слов; scannable on race-day phone), `contingencies` 3-5 items (selection через system prompt по distance/discipline/conditions).
 
 ### Planned schema extensions (Phase 2.5 / Phase 3)
 
@@ -108,7 +108,7 @@ Hard bounds: `carbs_g_per_hour 30-120`, `legs[].notes ≤200 chars` (~25 сло�
 3. **Refusal gates** (§5).
 4. **Build context** — `sport_role` from `_resolve_coach_role(goal.sport_type)`, `response_language` from `user.language`, `event_name[:100]` (prompt-injection clamp), `_summarize_activities` (per-sport aggregates + 8 long efforts), `_summarize_zones`, `race_day_projection` from `FitnessProjection.get_projection`, latest `Wellness` as today-anchor.
    - **PR4 enrichment (planned)**: personal race history (`Race.get_recent_for_user(sport_type=goal.sport_type, since=today-18m, limit=5)`), long-term user facts (`list_facts` whitelist topics: `injury, gi, nutrition, equipment, pacing, heat_response, race_history, recovery_pattern`), wellness 10-14d trend, training calibration (race-rehearsal flag, FTP trajectory).
-5. **Claude call** — `config.CLAUDE_MODEL` (`claude-sonnet-5-5`), `max_tokens=4096`, `thinking=config.CLAUDE_NO_THINKING` (`between_tools`), `tool_choice` не передаём (auto): Sonnet 5.5 отвечает 400 и на `thinking: disabled`, и на forced `tool_choice`. Вызов `submit_race_plan` требует правило 10 system prompt; если модель ответила прозой — один повтор запроса (на `stop_reason=refusal` не повторяем), затем generic error. `ApiUsageDaily.increment` после каждого ответа (включая повтор и validator-reject — токены уже потрачены).
+5. **Claude call** — `config.CLAUDE_MODEL` (`claude-sonnet-5-5`), `max_tokens=4096`, `thinking=config.CLAUDE_NO_THINKING` (`between_tools`), `tool_choice` не передаём (auto): Sonnet 5.5 отвечает 400 и на `thinking: disabled`, и на forced `tool_choice`. Tool `submit_race_plan` объявлен со `strict: true` — без него 5.5 присылала невалидный input (`legs` строкой). `_RACE_PLAN_SCHEMA` поэтому держится в strict-подмножестве: `additionalProperties: false` на каждом объекте, без `minimum`/`maximum`/`maxLength`/`minItems>1`/`maxItems` (границы — в `description`). Вызов `submit_race_plan` требует правило 10 system prompt; если модель ответила прозой или текст плана пришёл в mojibake (`_has_mojibake`) — один повтор запроса; на `stop_reason=refusal` / `max_tokens` не повторяем (обрезанный tool input не читаем — он не обязан соответствовать schema даже под `strict`), затем generic error. `ApiUsageDaily.increment` после каждого ответа (включая повтор и validator-reject — токены уже потрачены).
 6. **Validate** (§6) — errors → generic error → юзер, детали → логи. **Не персистим.**
 7. **Tag `preliminary = days_to_race > 14`.**
 8. **Persist** (skip if dry_run) — INSERT (first-of-day) OR UPDATE in-place (force_regen). `IntegrityError` на INSERT → fallback на `get_today_for_goal`.
@@ -130,11 +130,13 @@ Hard bounds: `carbs_g_per_hour 30-120`, `legs[].notes ≤200 chars` (~25 сло�
 
 ## 6. Validator
 
-JSON schema ловит структуру/типы. Validator (`_validate_race_plan`) ловит то, что схема не может:
+JSON schema (`strict: true`) ловит структуру/типы. Validator (`_validate_race_plan`) ловит то, что схема не может:
 
 1. **Pace/power corridor monotonicity** — `low < target < cap` в effort-space (pace: `MM:SS/km|100m|mi` → секунды → negate; power: `\d+w` → watts as-is). All-prose corridor → skip (false-reject ломает иначе валидный plan). **Mixed numeric+prose в одном корридоре → reject** (H2 fix 2026-05-09: structurally plausible / physiologically nonsense). **Mixed units (pace+power) → reject.**
 2. **HR ceiling vs `max_hr + 5`** — если в zones есть `max_hr`, ceiling > `max_hr + 5` → reject.
-3. **Transitions iff is_tri** — `transitions[]` непустой для не-триатлона → reject. Симметрично: пустые transitions для триатлона → warning в логах (не reject — допустим minimalist plan).
+3. **Transitions iff is_tri** — `transitions[]` непустой для не-триатлона → reject. Симметрично: пустые transitions для триатлона → warning в логах (не reject — допустим minimalist plan). _Не реализовано в `_validate_race_plan`: правило живёт только в system prompt (rule 4)._
+4. **Structural backstop** — required-секции schema на месте, `legs` / `contingencies` — непустые списки объектов, `pacing` / `fueling` — объекты, `transitions` — список объектов. `strict` это гарантирует, но нарушение должно давать reject, а не 500 или сохранённый пустой план.
+5. **Numeric ranges** — `hr_ceiling_bpm` 80-220, `carbs_g_per_hour` 30-120 (strict schema не несёт `minimum`/`maximum`; `0` вместо пропуска поля иначе отрисовался бы в webapp).
 
 ### System-prompt rules (PR1 — soft, не validator)
 
@@ -319,3 +321,5 @@ Resolved findings из 6 review rounds (architect ×2 + code-review ×4) on PR1-
 | 2026-05-09 | §12 | Модель остаётся `claude-sonnet-4-6` | Рассматривали opus (quality > tokens для once-per-race call), но в код не флипнули — sonnet даёт достаточное качество |
 | 2026-09-22 | §12 | Миграция на `claude-sonnet-5`, `RACE_PLAN_MODEL_VERSION` → `v2-2026-09-22` | Sonnet 4.6 помечен legacy; Sonnet 5 дешевле ($2/$10) и сильнее; bump версии по правилу §11 — планы с разных моделей различимы по `model_version`; `max_tokens` 2048→4096 под новый токенизатор (~+30%) |
 | 2026-10-02 | §12 | Миграция на `claude-sonnet-5-5`, `RACE_PLAN_MODEL_VERSION` → `v3-2026-10-02`; forced `tool_choice` убран, `thinking` → `between_tools`, один повтор при ответе без tool-call | Sonnet 5.5 отвечает 400 на forced `tool_choice` и `thinking: disabled`; без forced tool-call вызов гарантирует только промпт → проверка + один retry; `strict: true` на tool отложен до аудита `_RACE_PLAN_SCHEMA` (`additionalProperties`/`required`) |
+| 2026-10-02 | §6, §12 | `strict: true` на `submit_race_plan` + schema в strict-подмножестве; валидатор отклоняет битую структуру и mojibake (версия остаётся `v3-2026-10-02`) | Прод-инцидент в день миграции: без forced tool-call 5.5 делала два вызова подряд, первый с `legs`-строкой → `AttributeError` → 500 (4 из 4); пятая генерация прошла, но весь текст пришёл как UTF-8, прочитанный в Latin-1 (plan id 27). Live-проверка со `strict`: 3/3 один валидный вызов. Structured outputs (`output_config.format`) не взяли — `strict` даёт ту же гарантию без смены формы ответа |
+| 2026-10-02 | §4, §6 | Обрезанный (`max_tokens`) ответ не читается; mojibake → «нет плана» + один retry (детектор per-string, порог 5 пар); validator: required-секции, непустые `legs`/`contingencies`, диапазоны HR/carbs | Ревью `777440bb`: под `strict` несоответствие schema возможно только при обрезке, и такой план сохранялся бы пустым; общий порог 20 пар пропускал одно испорченное короткое поле; mojibake — разовый сбой сэмплинга, повтор дешевле, чем сожжённый dry-run слот. Счётчики `notes ≤200` и `contingencies 3-5` в validator не переносили — косметика, не повод отклонять оплаченную генерацию |

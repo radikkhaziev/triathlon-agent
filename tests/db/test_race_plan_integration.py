@@ -302,6 +302,7 @@ class TestForceRegenAndRateLimit:
         assert kwargs["max_tokens"] == 4096
         assert kwargs["thinking"] == {"type": "between_tools"}
         assert "tool_choice" not in kwargs
+        assert kwargs["tools"][0]["strict"] is True
         # Same id → in-place UPDATE, not DELETE+INSERT.
         assert out["id"] == original.id
         # Counter incremented.
