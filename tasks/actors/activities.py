@@ -18,7 +18,7 @@ from pydantic import validate_call
 from sqlalchemy import select
 
 from bot.i18n import _, set_language
-from config import settings
+from config import CLAUDE_MODEL, CLAUDE_NO_THINKING, settings
 from data.db import (
     Activity,
     ActivityAchievement,
@@ -1078,9 +1078,9 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
         prompt = _generate_signature_prompt(activity, wellness, comparison)
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY.get_secret_value())
         resp = client.messages.create(
-            model="claude-sonnet-5",
+            model=CLAUDE_MODEL,
             max_tokens=220,
-            thinking={"type": "disabled"},
+            thinking=CLAUDE_NO_THINKING,
             messages=[{"role": "user", "content": prompt}],
         )
         text = next(b.text for b in resp.content if b.type == "text")

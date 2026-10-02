@@ -15,7 +15,7 @@ import sentry_sdk
 from bot.prompts import get_static_system_prompt, render_athlete_block
 from bot.tool_filter import filter_tools, select_tool_groups
 from bot.tools import MCPClient
-from config import settings
+from config import CLAUDE_MODEL, settings
 from data.db import ApiUsageDaily
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class ClaudeAgent:
             api_key=settings.ANTHROPIC_API_KEY.get_secret_value(),
             max_retries=5,
         )
-        self.model = "claude-sonnet-5"
+        self.model = CLAUDE_MODEL
 
     async def _run_tool_use_loop(
         self,
@@ -144,6 +144,10 @@ class ClaudeAgent:
             )
             self._accumulate_usage(total_usage, response)
             iterations += 1
+
+        if response.stop_reason != "end_turn":
+            # max_tokens (thinking counts toward the budget) / refusal / iteration cap
+            logger.warning("tool-use loop ended with stop_reason=%s", response.stop_reason)
 
         text_blocks = [b.text for b in response.content if b.type == "text"]
         return "\n".join(text_blocks), total_usage, tool_calls

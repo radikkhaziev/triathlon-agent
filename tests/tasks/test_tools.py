@@ -409,7 +409,7 @@ class TestMCPToolGenerateMorningReport:
         # Request shape (Sonnet 5 migration): migrated model, doubled budget,
         # adaptive thinking left on for the tool loop (no explicit ``thinking``).
         kwargs = mock_client.messages.create.call_args.kwargs
-        assert kwargs["model"] == "claude-sonnet-5"
+        assert kwargs["model"] == "claude-sonnet-5-5"
         assert kwargs["max_tokens"] == 8192
         assert "thinking" not in kwargs
 
@@ -429,7 +429,7 @@ class TestMCPToolGenerateMorningReport:
 
         assert result == "Weekly report."
         kwargs = mock_client.messages.create.call_args.kwargs
-        assert kwargs["model"] == MCPTool.WEEKLY_MODEL == "claude-sonnet-5"
+        assert kwargs["model"] == MCPTool.WEEKLY_MODEL == "claude-sonnet-5-5"
         assert kwargs["max_tokens"] == 8192
         assert "thinking" not in kwargs
 

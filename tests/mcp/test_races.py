@@ -706,12 +706,14 @@ class TestGenerateRacePlanDryRun:
         anthropic_patch.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_tool_use_block_returned_returns_error(self):
-        """If Claude returns only text and skips submit_race_plan, surface a clean error."""
+    @pytest.mark.parametrize("stop_reason, expected_calls", [("end_turn", 2), ("refusal", 1)])
+    async def test_no_tool_use_block_returned_returns_error(self, stop_reason, expected_calls):
+        """If Claude returns only text and skips submit_race_plan, surface a clean error —
+        after one retry for a prose reply, without a retry for a refusal."""
         from mcp_server.tools.races import generate_race_plan
 
         goal = _race_goal(days_to_race=30)
-        anthropic_patch = _patch_anthropic(plan_input=None, stop_reason="end_turn")
+        anthropic_patch = _patch_anthropic(plan_input=None, stop_reason=stop_reason)
         save_mock = AsyncMock()
 
         get_session_patch, _ = _patch_session_for_plan()
@@ -733,6 +735,40 @@ class TestGenerateRacePlanDryRun:
         assert "error" in out
         assert "structured plan" in out["error"]
         save_mock.assert_not_called()
+        assert anthropic_patch.return_value.messages.create.await_count == expected_calls
+
+    @pytest.mark.asyncio
+    async def test_prose_reply_retried_once_then_succeeds(self):
+        """tool_choice is not forced (400 on Sonnet 5.5) — a prose reply gets one retry."""
+        from mcp_server.tools.races import generate_race_plan
+
+        goal = _race_goal(days_to_race=30)
+        anthropic_patch = _patch_anthropic(plan_input=None, stop_reason="end_turn")
+        create_mock = anthropic_patch.return_value.messages.create
+        create_mock.side_effect = [
+            create_mock.return_value,
+            _anthropic_response([_tool_use_block(_valid_plan_input())]),
+        ]
+
+        get_session_patch, _ = _patch_session_for_plan()
+        with (
+            patch(f"{_MODULE}.get_current_user_id", return_value=1),
+            patch(f"{_SERVICE}.AthleteGoal.get_by_category", AsyncMock(return_value=goal)),
+            patch(f"{_SERVICE}.Activity.get_range", AsyncMock(return_value=([_activity(i) for i in range(8)], None))),
+            patch(f"{_SERVICE}.AthleteSettings.get_all", AsyncMock(return_value=[])),
+            patch(f"{_SERVICE}.FitnessProjection.get_projection", AsyncMock(return_value=[])),
+            patch(f"{_SERVICE}.get_session", get_session_patch),
+            patch(f"{_SERVICE}.RacePlan.save", AsyncMock()),
+            patch(f"{_SERVICE}.RacePlan.get_today_for_goal", AsyncMock(return_value=None)),
+            patch(f"{_SERVICE}.settings") as fake_settings,
+            patch("anthropic.AsyncAnthropic", anthropic_patch),
+        ):
+            fake_settings.ANTHROPIC_API_KEY = SimpleNamespace(get_secret_value=lambda: "test-key")
+            out = await generate_race_plan(dry_run=True)
+
+        assert "error" not in out
+        assert out["payload"]["plan"]["headline"].startswith("Steady")
+        assert create_mock.await_count == 2
 
 
 class TestGenerateRacePlanValidator:

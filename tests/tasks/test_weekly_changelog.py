@@ -629,7 +629,7 @@ class TestWeeklyIdempotency:
 
 class TestCallClaude:
     def test_request_shape_and_text_extraction(self, monkeypatch):
-        """No sampling params (400 on Sonnet 5), thinking disabled explicitly,
+        """No sampling params (400 on Sonnet 5.5), thinking off via ``between_tools``,
         text taken from the first ``text`` block even when a thinking block leads."""
         monkeypatch.setattr(cl.settings, "ANTHROPIC_API_KEY", SecretStr("sk-ant-test"))
         captured: dict[str, Any] = {}
@@ -647,7 +647,7 @@ class TestCallClaude:
         monkeypatch.setattr(cl, "anthropic", SimpleNamespace(Anthropic=lambda **_: fake_client))
 
         assert cl.call_claude("prompt") == "## 🎯 Цели\n- Теперь можно X"
-        assert captured["model"] == cl.CLAUDE_MODEL == "claude-sonnet-5"
+        assert captured["model"] == cl.CLAUDE_MODEL == "claude-sonnet-5-5"
         assert captured["max_tokens"] == cl.CLAUDE_MAX_TOKENS
-        assert captured["thinking"] == {"type": "disabled"}
+        assert captured["thinking"] == {"type": "between_tools"}
         assert "temperature" not in captured

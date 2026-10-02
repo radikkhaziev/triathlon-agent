@@ -301,8 +301,8 @@ class TestActorRenameActivityClaudePath:
         assert "Ровный бег в Z2." in payload["description"]
 
         kwargs = create.call_args.kwargs
-        assert kwargs["model"] == "claude-sonnet-5"
-        assert kwargs["thinking"] == {"type": "disabled"}
+        assert kwargs["model"] == "claude-sonnet-5-5"
+        assert kwargs["thinking"] == {"type": "between_tools"}
         assert "temperature" not in kwargs
 
     def test_no_text_block_falls_back_to_template(self, monkeypatch):

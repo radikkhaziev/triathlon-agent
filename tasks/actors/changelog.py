@@ -20,7 +20,7 @@ import dramatiq
 import httpx
 import sentry_sdk
 
-from config import settings
+from config import CLAUDE_MODEL, CLAUDE_NO_THINKING, settings
 from data.github import LATEST_DISCUSSION_QUERY
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 GITHUB_REST_BASE = "https://api.github.com"
 GITHUB_GRAPHQL = "https://api.github.com/graphql"
 
-CLAUDE_MODEL = "claude-sonnet-5"
 CLAUDE_MAX_TOKENS = 800
 
 # Sentinel returned by Claude when every PR in the input is internal.
@@ -250,7 +249,7 @@ def call_claude(prompt: str) -> str:
     resp = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=CLAUDE_MAX_TOKENS,
-        thinking={"type": "disabled"},
+        thinking=CLAUDE_NO_THINKING,
         messages=[{"role": "user", "content": prompt}],
     )
     return next(b.text for b in resp.content if b.type == "text").strip()
