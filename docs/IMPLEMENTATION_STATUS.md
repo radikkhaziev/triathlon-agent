@@ -15,11 +15,11 @@ All core modules done. Multi-tenant Phase 1.3 complete (per-user MCP auth, conte
 
 Все call-site'ы переведены на `claude-sonnet-5-5`; имя модели вынесено в `config.CLAUDE_MODEL` (`MCPTool.WEEKLY_MODEL` ссылается на него же).
 
-- **Ломающие изменения Sonnet 5.5, закрытые в коде:** `thinking: disabled` → 400 — на неагентных маршрутах (подпись активности, changelog, race plan) теперь `config.CLAUDE_NO_THINKING` (`between_tools`; значение принимает только 5.5, поэтому меняется вместе с `CLAUDE_MODEL`); forced `tool_choice` → 400 — в race plan убран, вызов `submit_race_plan` требует правило 10 system prompt + один повтор запроса при ответе прозой.
+- **Ломающие изменения Sonnet 5.5, закрытые в коде:** `thinking: disabled` → 400 — на неагентных маршрутах (подпись активности, changelog, race plan) теперь `config.CLAUDE_NO_THINKING` (`between_tools`; значение принимает только 5.5, поэтому меняется вместе с `CLAUDE_MODEL`); forced `tool_choice` → 400 — в race plan убран, вызов `submit_race_plan` требует правило 10 system prompt + один повтор запроса при ответе прозой; tool объявлен со `strict: true` (schema приведена к strict-подмножеству) — без него 5.5 в проде присылала `legs` строкой (500) и текст в mojibake; битая структура, пропавшие секции и выход `hr_ceiling_bpm` / `carbs_g_per_hour` за диапазон отклоняются валидатором, а mojibake и обрезанный по `max_tokens` ответ считаются «нет плана» (mojibake — с одним повтором).
 - **Провенанс:** `RACE_PLAN_MODEL_VERSION` → `v3-2026-10-02` (правило `docs/RACE_PLAN_SPEC.md` §12).
 - **Наблюдаемость:** чат и утренний/недельный tool-loop'ы пишут warning, если финальный `stop_reason != end_turn` (`max_tokens` / `refusal` / лимит итераций).
-- **Tests:** `tests/mcp/test_races.py::TestGenerateRacePlanDryRun` (retry при прозе, без retry на refusal), `tests/db/test_race_plan_integration.py` (форма запроса), `tests/tasks/test_weekly_changelog.py::TestCallClaude`, `tests/tasks/test_activity_signature.py`.
-- **Follow-ups:** `strict: true` на `submit_race_plan` после аудита `_RACE_PLAN_SCHEMA`; тюнинг `effort` на чат/отчёты — после замера `scripts/measure_report_cost.py`.
+- **Tests:** `tests/mcp/test_races.py::TestGenerateRacePlanDryRun` (retry при прозе, без retry на refusal), `::TestGenerateRacePlanValidator` (битая структура, пропавшие секции, диапазоны, `_has_mojibake`, strict-подмножество schema), `tests/db/test_race_plan_integration.py` (форма запроса), `tests/tasks/test_weekly_changelog.py::TestCallClaude`, `tests/tasks/test_activity_signature.py`.
+- **Follow-ups:** тюнинг `effort` на чат/отчёты — после замера `scripts/measure_report_cost.py`.
 
 ---
 
