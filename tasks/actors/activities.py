@@ -18,7 +18,7 @@ from pydantic import validate_call
 from sqlalchemy import select
 
 from bot.i18n import _, set_language
-from config import CLAUDE_MODEL, settings
+from config import CLAUDE_MODEL, CLAUDE_NO_THINKING, settings
 from data.db import (
     Activity,
     ActivityAchievement,
@@ -1080,7 +1080,7 @@ def actor_rename_activity(user: UserDTO, activity_id: str) -> None:
         resp = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=220,
-            thinking={"type": "between_tools"},
+            thinking=CLAUDE_NO_THINKING,
             messages=[{"role": "user", "content": prompt}],
         )
         text = next(b.text for b in resp.content if b.type == "text")

@@ -23,7 +23,7 @@ import anthropic
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from config import CLAUDE_MODEL, settings
+from config import CLAUDE_MODEL, CLAUDE_NO_THINKING, settings
 from data.db import (
     Activity,
     AthleteGoal,
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 # Tag the model + prompt revision that produced a payload so we can reason
 # about plan provenance later (and decide when to regenerate stale rows).
 # Bump on prompt, schema or Claude model changes (spec §model_version).
-RACE_PLAN_MODEL_VERSION = "v2-2026-09-22"
+RACE_PLAN_MODEL_VERSION = "v3-2026-10-02"
 
 
 # Whitelist of user_facts topics that meaningfully shape a race plan. Spec §4
@@ -921,49 +921,60 @@ async def build_race_plan(
         sport_role=sport_role,
         response_language=response_language,
     )
-    try:
-        resp = await client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=4096,
-            # Sonnet 5.5 rejects `disabled`; `between_tools` is its no-thinking mode.
-            thinking={"type": "between_tools"},
-            system=system_prompt,
-            tools=[
-                {
-                    "name": "submit_race_plan",
-                    "description": "Submit the structured race execution plan.",
-                    "input_schema": _RACE_PLAN_SCHEMA,
-                }
-            ],
-            messages=[{"role": "user", "content": user_message}],
-        )
-    except Exception:
-        logger.exception("build_race_plan: Claude call failed for user %d", user_id)
-        return {"error": "Plan generation failed — please retry."}
-
-    # Track token cost regardless of whether the response is structurally valid:
-    # the validator and tool_use checks below can still reject, but the tokens
-    # were already spent. Match the bot/agent.py increment shape.
-    try:
-        usage = resp.usage
-        await ApiUsageDaily.increment(
-            user_id=user_id,
-            input_tokens=getattr(usage, "input_tokens", 0) or 0,
-            output_tokens=getattr(usage, "output_tokens", 0) or 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        )
-    except Exception:
-        logger.warning("build_race_plan: failed to track token usage for user %d", user_id, exc_info=True)
-
+    # Sonnet 5.5 rejects forced `tool_choice`, so the tool call is only
+    # prompt-enforced — retry once if the model answers in prose instead.
     plan_input: dict[str, Any] | None = None
-    for block in resp.content:
-        if getattr(block, "type", None) == "tool_use" and block.name == "submit_race_plan":
-            plan_input = dict(block.input) if block.input else None
+    for attempt in range(2):
+        try:
+            resp = await client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=4096,
+                thinking=CLAUDE_NO_THINKING,
+                system=system_prompt,
+                tools=[
+                    {
+                        "name": "submit_race_plan",
+                        "description": "Submit the structured race execution plan.",
+                        "input_schema": _RACE_PLAN_SCHEMA,
+                    }
+                ],
+                messages=[{"role": "user", "content": user_message}],
+            )
+        except Exception:
+            logger.exception("build_race_plan: Claude call failed for user %d", user_id)
+            return {"error": "Plan generation failed — please retry."}
+
+        # Track token cost regardless of whether the response is structurally valid:
+        # the validator and tool_use checks below can still reject, but the tokens
+        # were already spent. Match the bot/agent.py increment shape.
+        try:
+            usage = resp.usage
+            await ApiUsageDaily.increment(
+                user_id=user_id,
+                input_tokens=getattr(usage, "input_tokens", 0) or 0,
+                output_tokens=getattr(usage, "output_tokens", 0) or 0,
+                cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+                cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            )
+        except Exception:
+            logger.warning("build_race_plan: failed to track token usage for user %d", user_id, exc_info=True)
+
+        for block in resp.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "submit_race_plan":
+                plan_input = dict(block.input) if block.input else None
+                break
+
+        if plan_input:
+            break
+        logger.warning(
+            "build_race_plan: model did not call submit_race_plan, attempt=%d stop_reason=%s",
+            attempt + 1,
+            resp.stop_reason,
+        )
+        if resp.stop_reason == "refusal":
             break
 
     if not plan_input:
-        logger.warning("build_race_plan: model did not call submit_race_plan, stop_reason=%s", resp.stop_reason)
         return {"error": "Model did not return a structured plan. Try again."}
 
     # Defensive post-generation pass — schema can't enforce per-athlete HR or

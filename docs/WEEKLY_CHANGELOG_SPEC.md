@@ -70,7 +70,7 @@ Flow реализован в `tasks/actors/changelog.py:publish_weekly_changelog
 
 ## 5. Claude prompt & output
 
-Source of truth: `tasks/actors/changelog.py:PROMPT_TEMPLATE` (3-7 русских буллетов, активный залог, тематические emoji-заголовки, без PR-номеров/файлов; sentinel `NO_USER_FACING_CHANGES` если всё internal). Model `claude-sonnet-5`, `max_tokens=800`, `thinking={"type": "disabled"}`; sampling-параметры не передаём — Sonnet 5 отвечает 400 на non-default `temperature`.
+Source of truth: `tasks/actors/changelog.py:PROMPT_TEMPLATE` (3-7 русских буллетов, активный залог, тематические emoji-заголовки, без PR-номеров/файлов; sentinel `NO_USER_FACING_CHANGES` если всё internal). Model `config.CLAUDE_MODEL` (`claude-sonnet-5-5`), `max_tokens=800`, `thinking=config.CLAUDE_NO_THINKING` (`between_tools` — `disabled` на Sonnet 5.5 даёт 400); sampling-параметры не передаём — 400 на non-default `temperature`.
 
 **Body truncation rationale (deviation от initial 500-char):** 1500 chars + `"... [truncated]"` суффикс. Наши PR descriptions в среднем 800-1500 chars («What was done / How to verify»), 500 резали бы именно «How to verify» — ту часть откуда Claude видит user impact. **Worst case с top-50 cap:** 50×1500 ≈ 18.75k input tokens, ~$0.06/прогон. Реалистично 30-40 PR/неделю → ~$0.04/неделю.
 
@@ -214,3 +214,4 @@ Body wrapper становится `## 🇷🇺 Русский / <!--LANG-SEPARAT
 | 2026-05-19 | §9 | Halo-port: `Sidebar` → `HaloSidebar` (desktop), `BottomTabs` More-menu → Wellness inline teaser (mobile) | Halo `HaloBottomTabs` — 4-tab strip без More-меню (F1/F16 IA decision); мобильная changelog-ссылка переехала в inline teaser на Wellness home. Singleton hook + `flatMap` injection после `/plan` сохранены byte-identical |
 | 2026-05-17 | §3/§12 | Idempotency window `7d 12h` → `week_start` (`now − 6d`) | **Инцидент:** `7d 12h` шире 7d-периода cron → каждый Sun ловил прошлый Sun Discussion (~7d) как «уже было» и скипал → дайджест де-факто biweekly. #338 создан Sun 07:06Z подавил следующий Sun 13:00Z (7d6h < 7d12h). Окно должно быть строго < периода cron; `now − 6d` даёт ~1 сутки запаса над джиттером и ловит внутринедельный ручной run. Тесты-регрессии: `test_consecutive_weekly_run_not_suppressed`, `test_idempotency_window_is_one_day_short_of_cron_period` |
 | 2026-09-22 | §5 | Миграция на `claude-sonnet-5`: `temperature` убран, `thinking` выключен явно | Sonnet 5 → 400 на non-default sampling; adaptive thinking по умолчанию съедал бы `max_tokens=800`; текст берётся из первого `text`-блока |
+| 2026-10-02 | §5 | Миграция на `claude-sonnet-5-5`: `thinking` `disabled` → `between_tools`, модель из `config.CLAUDE_MODEL` | Sonnet 5.5 → 400 на `thinking: disabled`; `between_tools` принимает только 5.5, поэтому значение живёт рядом с моделью в `config.py` |

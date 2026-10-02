@@ -17,7 +17,7 @@ Personal AI agent for a triathlete: syncs wellness/HRV/training from Intervals.i
 | Language          | Python 3.12+                                                          |
 | Package Manager   | Poetry                                                                |
 | Data Source       | Intervals.icu API                                                     |
-| AI Analysis       | Anthropic Claude API (`claude-sonnet-5-5`)                              |
+| AI Analysis       | Anthropic Claude API (`claude-sonnet-5-5`)                            |
 | Telegram Bot      | `python-telegram-bot` v21+                                            |
 | Scheduler         | `APScheduler`                                                         |
 | Database          | PostgreSQL 16 + `SQLAlchemy` (async) + Alembic                        |

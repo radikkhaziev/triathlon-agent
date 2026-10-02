@@ -20,7 +20,7 @@ import dramatiq
 import httpx
 import sentry_sdk
 
-from config import CLAUDE_MODEL, settings
+from config import CLAUDE_MODEL, CLAUDE_NO_THINKING, settings
 from data.github import LATEST_DISCUSSION_QUERY
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ def call_claude(prompt: str) -> str:
     resp = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=CLAUDE_MAX_TOKENS,
-        thinking={"type": "between_tools"},
+        thinking=CLAUDE_NO_THINKING,
         messages=[{"role": "user", "content": prompt}],
     )
     return next(b.text for b in resp.content if b.type == "text").strip()

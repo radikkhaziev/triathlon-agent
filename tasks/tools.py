@@ -794,6 +794,9 @@ class MCPTool:
                 messages.append({"role": "assistant", "content": response.content})
                 messages.append({"role": "user", "content": tool_results})
 
+            if response.stop_reason != "end_turn":
+                logger.warning("morning report loop ended with stop_reason=%s", response.stop_reason)
+
             text_blocks = [b.text for b in response.content if b.type == "text"]
             text = "\n".join(text_blocks)
             return text or None
@@ -909,6 +912,9 @@ class MCPTool:
 
                 messages.append({"role": "assistant", "content": response.content})
                 messages.append({"role": "user", "content": tool_results})
+
+            if response.stop_reason != "end_turn":
+                logger.warning("weekly report loop ended with stop_reason=%s", response.stop_reason)
 
             text_blocks = [b.text for b in response.content if b.type == "text"]
             text = "\n".join(text_blocks)

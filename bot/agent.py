@@ -145,6 +145,10 @@ class ClaudeAgent:
             self._accumulate_usage(total_usage, response)
             iterations += 1
 
+        if response.stop_reason != "end_turn":
+            # max_tokens (thinking counts toward the budget) / refusal / iteration cap
+            logger.warning("tool-use loop ended with stop_reason=%s", response.stop_reason)
+
         text_blocks = [b.text for b in response.content if b.type == "text"]
         return "\n".join(text_blocks), total_usage, tool_calls
 
