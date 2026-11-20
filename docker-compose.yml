@@ -74,6 +74,12 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - static_data:/app/static
+    # Default soft limit is 1024 — a scanner burst exhausted it on 2026-11-20 and
+    # uvicorn stopped accepting connections (bot + webhooks down for ~3h).
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
 
   worker:
