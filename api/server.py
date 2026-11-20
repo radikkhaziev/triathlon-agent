@@ -210,20 +210,40 @@ _spa_dir = _webapp_dist if os.path.isdir(_webapp_dist) else _webapp_root
 
 
 class SPAStaticFiles(StaticFiles):
-    """Serves static files with SPA fallback to index.html for client-side routing."""
+    """Serves static files with SPA fallback to index.html for client-side routing.
+
+    The SPA shell is served from memory, not via ``FileResponse``: every scanner 404
+    lands on the fallback, and a 1.5k-request burst on 2026-11-20 left ~1000
+    ``index.html`` handles open in uvicorn until it hit the 1024 fd limit and stopped
+    accepting connections. In-memory bytes need no per-request file handle at all.
+    The shell is read once at mount: after a local ``npm run build`` restart uvicorn.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        index_path = os.path.join(str(self.directory), "index.html")
+        with open(index_path, "rb") as f:
+            self._index_html = f.read()
+
+    def _index_response(self) -> Response:
+        return Response(self._index_html, media_type="text/html")
 
     async def get_response(self, path: str, scope) -> Response:
-        try:
-            resp = await super().get_response(path, scope)
-        except StarletteHTTPException as exc:
-            if exc.status_code == 404:
-                resp = await super().get_response("index.html", scope)
-            else:
-                raise
+        is_shell = True
+        if path in (".", "index.html") and scope["method"] in ("GET", "HEAD"):
+            resp = self._index_response()
+        else:
+            try:
+                resp = await super().get_response(path, scope)
+                is_shell = False
+            except StarletteHTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                resp = self._index_response()
 
-        # Hashed assets (/assets/index-abc123.js) — cache aggressively
-        # index.html and SPA fallback routes — never cache (so deploys take effect immediately)
-        if "/assets/" in path:
+        # Hashed assets (assets/index-abc123.js — path has no leading slash) — cache aggressively.
+        # index.html and SPA fallback routes (incl. stale asset hashes after a deploy) — never cache.
+        if not is_shell and path.startswith("assets/"):
             resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         else:
             resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -231,8 +251,10 @@ class SPAStaticFiles(StaticFiles):
         return resp
 
 
-if os.path.isdir(_spa_dir):
+if os.path.isfile(os.path.join(_spa_dir, "index.html")):
     app.mount("/", SPAStaticFiles(directory=_spa_dir, html=True), name="webapp")
+else:
+    logger.warning("SPA not mounted: %s/index.html is missing", _spa_dir)
 
 
 if __name__ == "__main__":
