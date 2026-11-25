@@ -256,7 +256,7 @@ Specs and plans in `docs/`. Key references:
 
 ## Next Steps
 
-1. **Webhook dispatchers** — all done: `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓, `FITNESS_UPDATED` ✓, `APP_SCOPE_CHANGED` ✓, `ACTIVITY_ACHIEVEMENTS` ✓, `ACTIVITY_UPLOADED` ✓, `ACTIVITY_UPDATED` ✓. Skipped: `ACTIVITY_ANALYZED` (rare, re-analysis only), `ACTIVITY_DELETED`.
+1. **Webhook dispatchers** — all done: `WELLNESS_UPDATED` ✓, `CALENDAR_UPDATED` ✓, `SPORT_SETTINGS_UPDATED` ✓, `FITNESS_UPDATED` ✓, `APP_SCOPE_CHANGED` ✓, `ACTIVITY_ACHIEVEMENTS` ✓, `ACTIVITY_UPLOADED` ✓, `ACTIVITY_UPDATED` ✓, `ACTIVITY_ANALYZED` ✓ (fires on manual TSS edit / re-analyze — same save-only path as UPDATED). Skipped: `ACTIVITY_DELETED`.
 2. **OAuth** — ✅ disconnect endpoint, ✅ lazy 401 handling, ✅ bootstrap Phase 1+2 (watchdog cron, retry endpoint, HRV ordering fix, progress UI, last_error allowlist), ✅ api_key auth retired (migration `a8b9c0d1e2f3`). When scaling to multi-worker uvicorn, migrate `_retry_backfill_last_success` and `_mcp_config_last_access` to Redis INCR+EXPIRE
 3. **Multi-Tenant Phase 2** — JWT upgrade (tenant_id, role, scope claims), bot middleware (resolve_tenant). See `docs/MULTI_TENANT_SECURITY_SPEC.md`
 4. **Taper Planner** — ✅ COMPLETE (Phases 1–5): `build_taper_plan` core + tests, `get_taper_plan` MCP tool, `GET /api/taper-plan` + LoadDetail overlay (stepped budget line / window tint / RACE flag / race-day TSB dot), deterministic `taper` block in race-plan JSONB (`build_race_plan`, not LLM-generated), morning-report taper line (`_taper_report_line` via sync-twin resolver `get_taper_plan_for_user_sync`). All surfaces resolve through `data/taper_service.py`. See `docs/TAPER_PLANNER_SPEC.md`
