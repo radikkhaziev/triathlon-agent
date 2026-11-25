@@ -448,7 +448,7 @@ End-to-end cleanup of `athlete_goals` after the table accumulated a mix of orpha
 
 ## Webhook dispatchers — 8/10 implemented
 
-`WELLNESS`, `CALENDAR`, `SPORT_SETTINGS`, `FITNESS`, `APP_SCOPE`, `ACHIEVEMENTS`, `ACTIVITY_UPLOADED`, `ACTIVITY_UPDATED`. Skipped: `ACTIVITY_ANALYZED` (rare, re-analysis only), `ACTIVITY_DELETED`.
+`WELLNESS`, `CALENDAR`, `SPORT_SETTINGS`, `FITNESS`, `APP_SCOPE`, `ACHIEVEMENTS`, `ACTIVITY_UPLOADED`, `ACTIVITY_UPDATED`, `ACTIVITY_ANALYZED` (2026-11-25: manual TSS edit fires it — routed to the UPDATED save-only path). Skipped: `ACTIVITY_DELETED`.
 
 ### Strava signature (`actor_rename_activity`)
 

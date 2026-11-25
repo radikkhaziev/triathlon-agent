@@ -6,7 +6,7 @@
 **Status:** ✅ Завершено — все 10 из 10 event types исследованы, 8 из 10 dispatchers реализованы (2026-04-18)
 **Monitoring:** parse/drift ошибки логируются в stdout; Sentry получает только `capture_exception` при падении диспатчера.
 **Endpoint:** `POST /api/intervals/webhook` (`api/routers/intervals/webhook.py`)
-**Dispatchers:** WELLNESS ✓, CALENDAR ✓, SPORT_SETTINGS ✓, FITNESS ✓, APP_SCOPE ✓, ACHIEVEMENTS ✓, ACTIVITY_UPLOADED ✓, ACTIVITY_UPDATED ✓. Skipped: ACTIVITY_ANALYZED, ACTIVITY_DELETED.
+**Dispatchers:** WELLNESS ✓, CALENDAR ✓, SPORT_SETTINGS ✓, FITNESS ✓, APP_SCOPE ✓, ACHIEVEMENTS ✓, ACTIVITY_UPLOADED ✓, ACTIVITY_UPDATED ✓, ACTIVITY_ANALYZED ✓ (save-only, as UPDATED). Skipped: ACTIVITY_DELETED.
 
 ---
 
@@ -430,11 +430,11 @@ T+2s    FITNESS_UPDATED         — 14 records projection
 - **`activity` shape:** идентичен ACTIVITY_UPDATED — полный объект 70+ полей
 - **Заметки:**
   - **Не приходит при первом upload'е** если analysis мгновенный. За 3 тренировки ни разу не пришёл автоматически.
-  - Trigger: **ручной re-analysis** через Intervals.icu UI (Actions → Re-analyze)
+  - Trigger: **ручной re-analysis** через Intervals.icu UI (Actions → Re-analyze) **и ручная правка TSS/load** активности (подтверждено на prod 2026-11-25: load 52 → 32 пришёл только через ACTIVITY_ANALYZED, ACTIVITY_UPDATED не было)
   - `icu_sync_date` и `analyzed` обновляются на время re-analysis
   - Новое поле vs остальные ACTIVITY_*: `icu_intervals_edited: false`
   - Shape идентичен ACTIVITY_UPDATED (включая `icu_atl`/`icu_ctl` snapshot)
-- **Dispatch plan:** re-fetch activity details + пересчитать DFA/HRV pipeline (результаты analysis могут измениться)
+- **Dispatch:** `_dispatch_activity_updated` (save-only `Activity.save_bulk`, обновляет `icu_training_load`). Re-fetch details / DFA не делаем — может прилетать пачкой (4× за 10 мин при правке).
 
 #### ~~ACTIVITY_UPDATED~~ → перенесён в ✅ Исследовано (см. ниже)
 

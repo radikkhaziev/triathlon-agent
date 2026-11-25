@@ -934,6 +934,18 @@ class TestHandleWebhookEvent:
             mock_dispatch.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_activity_analyzed_dispatched_as_update(self):
+        """Manual TSS edit in Intervals fires ACTIVITY_ANALYZED — must be saved."""
+        event = _make_event({**ACTIVITY_UPLOADED_EVENT, "type": "ACTIVITY_ANALYZED"})
+        with (
+            patch("api.routers.intervals.webhook.User") as mock_user_cls,
+            patch("api.routers.intervals.webhook._dispatch_activity_updated", new_callable=AsyncMock) as mock_dispatch,
+        ):
+            mock_user_cls.get_by_athlete_id = AsyncMock(return_value=_make_orm_user_mock())
+            await _handle_webhook_event(event)
+            mock_dispatch.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_unknown_athlete_skipped(self):
         event = _make_event(WELLNESS_UPDATED_EVENT)
         with (

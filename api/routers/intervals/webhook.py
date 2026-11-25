@@ -306,7 +306,10 @@ async def _dispatch_activity_uploaded(user: UserDTO, event: IntervalsWebhookEven
 
 
 async def _dispatch_activity_updated(user: UserDTO, event: IntervalsWebhookEvent) -> None:
-    """Save updated activity to DB. No actors — avoids rename→update loop."""
+    """Save updated / re-analyzed activity to DB (ACTIVITY_UPDATED + ACTIVITY_ANALYZED).
+
+    No actors — avoids rename→update loop.
+    """
     if not event.activity:
         return
     if _is_stub_activity(event.activity):
@@ -392,6 +395,9 @@ async def _handle_webhook_event(event: IntervalsWebhookEvent) -> None:
         "ACTIVITY_ACHIEVEMENTS": lambda: _dispatch_achievements(user_dto, event),
         "ACTIVITY_UPLOADED": lambda: _dispatch_activity_uploaded(user_dto, event),
         "ACTIVITY_UPDATED": lambda: _dispatch_activity_updated(user_dto, event),
+        # Manual TSS edit / re-analyze in Intervals UI fires ACTIVITY_ANALYZED
+        # (not ACTIVITY_UPDATED) with the recalculated icu_training_load.
+        "ACTIVITY_ANALYZED": lambda: _dispatch_activity_updated(user_dto, event),
     }
     dispatcher = dispatchers.get(normalized_type)
     if dispatcher is not None:
@@ -411,7 +417,8 @@ async def intervals_webhook(request: Request) -> dict:
     APP_SCOPE_CHANGED → update scope / clear tokens on deauthorize,
     FITNESS_UPDATED → save projection + write today's CTL/ATL into wellness,
     ACTIVITY_ACHIEVEMENTS → Telegram notification,
-    ACTIVITY_UPLOADED / ACTIVITY_UPDATED → direct save + ``actor_update_activity_details``.
+    ACTIVITY_UPLOADED → direct save + ``actor_update_activity_details``,
+    ACTIVITY_UPDATED / ACTIVITY_ANALYZED → direct save only.
     """
 
     try:
